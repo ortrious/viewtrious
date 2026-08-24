@@ -2,6 +2,7 @@
 #include <windowsx.h>
 #include <shellapi.h>
 #include <shlwapi.h>
+#include <dwmapi.h>
 #include <d2d1.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -26,9 +27,10 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"mediaViewWindow";
 constexpr wchar_t kWindowTitle[] = L"mediaView";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
-constexpr float kMinimumZoom = 0.05f;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kZoomStep = 1.20f;
+constexpr wchar_t kSettingsKey[] = L"Software\\mediaView";
+constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 
 #if defined(_DEBUG)
 class StartupTimer {
@@ -71,6 +73,58 @@ bool PathsEqual(const fs::path& left, const fs::path& right) {
     const std::wstring rightText = right.lexically_normal().wstring();
     return CompareStringOrdinal(leftText.c_str(), static_cast<int>(leftText.size()),
         rightText.c_str(), static_cast<int>(rightText.size()), TRUE) == CSTR_EQUAL;
+}
+
+bool ReadSetting(const wchar_t* name, DWORD& value) {
+    DWORD size = sizeof(value);
+    return RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, name, RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS;
+}
+
+struct SavedPlacement {
+    RECT rect{};
+    bool maximized = false;
+};
+
+bool LoadPlacement(SavedPlacement& placement) {
+    DWORD left = 0, top = 0, width = 0, height = 0, maximized = 0;
+    if (!ReadSetting(L"WindowLeft", left) || !ReadSetting(L"WindowTop", top) ||
+        !ReadSetting(L"WindowWidth", width) || !ReadSetting(L"WindowHeight", height) ||
+        width < 200 || height < 150) {
+        return false;
+    }
+    const LONG savedLeft = static_cast<LONG>(left);
+    const LONG savedTop = static_cast<LONG>(top);
+    placement.rect = { savedLeft, savedTop, savedLeft + static_cast<LONG>(width),
+        savedTop + static_cast<LONG>(height) };
+    ReadSetting(L"WindowMaximized", maximized);
+    placement.maximized = maximized != 0;
+    return true;
+}
+
+void MakePlacementVisible(RECT& rect) {
+    if (MonitorFromRect(&rect, MONITOR_DEFAULTTONULL)) return;
+    MONITORINFO monitor{ sizeof(monitor) };
+    GetMonitorInfoW(MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST), &monitor);
+    const RECT work = monitor.rcWork;
+    const LONG width = std::min(rect.right - rect.left, work.right - work.left);
+    const LONG height = std::min(rect.bottom - rect.top, work.bottom - work.top);
+    rect.left = std::clamp(rect.left, work.left, work.right - width);
+    rect.top = std::clamp(rect.top, work.top, work.bottom - height);
+    rect.right = rect.left + width;
+    rect.bottom = rect.top + height;
+}
+
+bool UseDarkAppMode() {
+    DWORD appsUseLightTheme = 1;
+    DWORD size = sizeof(appsUseLightTheme);
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &appsUseLightTheme, &size);
+    return appsUseLightTheme == 0;
+}
+
+void ApplyTitleBarTheme(HWND window) {
+    const BOOL dark = UseDarkAppMode() ? TRUE : FALSE;
+    DwmSetWindowAttribute(window, kDwmUseImmersiveDarkMode, &dark, sizeof(dark));
 }
 
 class Viewer {
@@ -141,7 +195,7 @@ public:
             renderTarget_->Resize(D2D1::SizeU(std::max(1L, client.right - client.left),
                 std::max(1L, client.bottom - client.top)));
         }
-        ClampPan();
+        if (!fitToWindow_) zoom_ = std::max(zoom_, FitScale());
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -224,7 +278,7 @@ public:
     void ZoomAt(POINT cursor, float factor) {
         if (!source_) return;
         const float oldScale = CurrentScale();
-        const float newScale = std::clamp(oldScale * factor, kMinimumZoom, kMaximumZoom);
+        const float newScale = std::clamp(oldScale * factor, FitScale(), kMaximumZoom);
         if (std::abs(newScale - oldScale) < 0.0001f) return;
 
         const D2D1_SIZE_F target = ClientSize();
@@ -236,7 +290,6 @@ public:
             imageHeight_ * newScale / 2.0f - target.height / 2.0f;
         fitToWindow_ = false;
         zoom_ = newScale;
-        ClampPan();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -264,7 +317,6 @@ public:
         pan_.x += static_cast<float>(point.x - lastDragPoint_.x);
         pan_.y += static_cast<float>(point.y - lastDragPoint_.y);
         lastDragPoint_ = point;
-        ClampPan();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -283,6 +335,23 @@ public:
                 PostMessageW(window_, kBuildNavigationMessage, 0, 0);
             }
         }
+    }
+
+    void SaveWindowPlacement() const {
+        WINDOWPLACEMENT placement{ sizeof(placement) };
+        if (!GetWindowPlacement(window_, &placement)) return;
+        const RECT& rect = placement.rcNormalPosition;
+        HKEY key = nullptr;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
+        const auto write = [key](const wchar_t* name, DWORD value) {
+            RegSetValueExW(key, name, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&value), sizeof(value));
+        };
+        write(L"WindowLeft", static_cast<DWORD>(rect.left));
+        write(L"WindowTop", static_cast<DWORD>(rect.top));
+        write(L"WindowWidth", static_cast<DWORD>(rect.right - rect.left));
+        write(L"WindowHeight", static_cast<DWORD>(rect.bottom - rect.top));
+        write(L"WindowMaximized", placement.showCmd == SW_SHOWMAXIMIZED ? 1 : 0);
+        RegCloseKey(key);
     }
 
 private:
@@ -360,7 +429,7 @@ private:
         return std::min(target.width / static_cast<float>(imageWidth_), target.height / static_cast<float>(imageHeight_));
     }
 
-    float CurrentScale() const { return fitToWindow_ ? FitScale() : zoom_; }
+    float CurrentScale() const { return fitToWindow_ ? FitScale() : std::max(zoom_, FitScale()); }
 
     D2D1_POINT_2F ImageTopLeft(float scale, const D2D1_SIZE_F& target) const {
         return D2D1::Point2F((target.width - imageWidth_ * scale) / 2.0f + pan_.x,
@@ -368,23 +437,10 @@ private:
     }
 
     bool CanPan() const {
-        if (!source_ || fitToWindow_) return false;
-        const D2D1_SIZE_F target = ClientSize();
-        return imageWidth_ * zoom_ > target.width || imageHeight_ * zoom_ > target.height;
-    }
-
-    void ClampPan() {
-        if (!source_) return;
-        const D2D1_SIZE_F target = ClientSize();
-        const float scale = CurrentScale();
-        const float maxX = std::max(0.0f, (imageWidth_ * scale - target.width) / 2.0f);
-        const float maxY = std::max(0.0f, (imageHeight_ * scale - target.height) / 2.0f);
-        pan_.x = std::clamp(pan_.x, -maxX, maxX);
-        pan_.y = std::clamp(pan_.y, -maxY, maxY);
+        return source_ && !fitToWindow_;
     }
 
     void DrawImage() {
-        ClampPan();
         const D2D1_SIZE_F target = renderTarget_->GetSize();
         const float scale = CurrentScale();
         const D2D1_POINT_2F topLeft = ImageTopLeft(scale, target);
@@ -448,6 +504,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_MOUSEMOVE: viewer->PanTo({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
     case WM_LBUTTONUP: viewer->EndPan(); return 0;
     case WM_CAPTURECHANGED: viewer->EndPan(); return 0;
+    case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE) { DestroyWindow(window); return 0; }
@@ -457,7 +514,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) { viewer->ZoomCentered(1.0f / kZoomStep); return 0; }
         if (wParam == L'0' || wParam == VK_NUMPAD0) { viewer->FitToWindow(); return 0; }
         break;
-    case WM_DESTROY: PostQuitMessage(0); return 0;
+    case WM_DESTROY: viewer->SaveWindowPlacement(); PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(window, message, wParam, lParam);
 }
@@ -488,13 +545,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     const SIZE client = viewer.SuggestedClientSize();
     RECT bounds{ 0, 0, client.cx, client.cy };
     AdjustWindowRectEx(&bounds, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    SavedPlacement savedPlacement{};
+    const bool hasSavedPlacement = LoadPlacement(savedPlacement);
+    if (hasSavedPlacement) {
+        bounds = savedPlacement.rect;
+        MakePlacementVisible(bounds);
+    } else {
+        MONITORINFO monitor{ sizeof(monitor) };
+        GetMonitorInfoW(MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY), &monitor);
+        const LONG width = bounds.right - bounds.left;
+        const LONG height = bounds.bottom - bounds.top;
+        bounds.left = monitor.rcWork.left + ((monitor.rcWork.right - monitor.rcWork.left) - width) / 2;
+        bounds.top = monitor.rcWork.top + ((monitor.rcWork.bottom - monitor.rcWork.top) - height) / 2;
+        bounds.right = bounds.left + width;
+        bounds.bottom = bounds.top + height;
+    }
     HWND window = CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
+        bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
         nullptr, nullptr, instance, &viewer);
     if (!window) { CoUninitialize(); return 1; }
 
     DragAcceptFiles(window, TRUE);
-    ShowWindow(window, showCommand);
+    ApplyTitleBarTheme(window);
+    ShowWindow(window, hasSavedPlacement && savedPlacement.maximized ? SW_MAXIMIZE : showCommand);
     UpdateWindow(window);
 
     MSG message{};

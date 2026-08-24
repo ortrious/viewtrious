@@ -17,12 +17,12 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName", "mediaView"
-            VALUE "FileDescription", "mediaView native image viewer"
+            VALUE "CompanyName", "FeatherView"
+            VALUE "FileDescription", "FeatherView native image viewer"
             VALUE "FileVersion", "@PROJECT_VERSION@"
-            VALUE "InternalName", "mediaView"
-            VALUE "OriginalFilename", "mediaView.exe"
-            VALUE "ProductName", "mediaView"
+            VALUE "InternalName", "FeatherView"
+            VALUE "OriginalFilename", "FeatherView.exe"
+            VALUE "ProductName", "FeatherView"
             VALUE "ProductVersion", "@PROJECT_VERSION@"
         END
     END

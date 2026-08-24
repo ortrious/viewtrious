@@ -24,12 +24,12 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr wchar_t kWindowClass[] = L"mediaViewWindow";
-constexpr wchar_t kWindowTitle[] = L"mediaView";
+constexpr wchar_t kWindowClass[] = L"FeatherViewWindow";
+constexpr wchar_t kWindowTitle[] = L"FeatherView";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kZoomStep = 1.20f;
-constexpr wchar_t kSettingsKey[] = L"Software\\mediaView";
+constexpr wchar_t kSettingsKey[] = L"Software\\FeatherView";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 
 #if defined(_DEBUG)
@@ -43,7 +43,7 @@ public:
         const double elapsedMs = 1000.0 * static_cast<double>(now.QuadPart - start_.QuadPart) /
             static_cast<double>(frequency_.QuadPart);
         wchar_t message[160]{};
-        swprintf_s(message, L"mediaView startup: %s: %.2f ms\n", label, elapsedMs);
+        swprintf_s(message, L"FeatherView startup: %s: %.2f ms\n", label, elapsedMs);
         OutputDebugStringW(message);
     }
 
@@ -144,7 +144,7 @@ public:
             return hr;
         }
         if (!path.empty()) return LoadImage(path);
-        error_ = L"Drop an image here, or launch mediaView with an image path.";
+        error_ = L"Drop an image here, or launch FeatherView with an image path.";
         return S_OK;
     }
 

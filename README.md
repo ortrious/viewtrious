@@ -1,6 +1,6 @@
-# mediaView
+# FeatherView
 
-`mediaView` is a deliberately small Windows-native image viewer focused on fast launch, direct image display, and immediate shutdown. It has no background process, network activity, settings framework, or bundled codec library.
+`FeatherView` is a deliberately small Windows-native image viewer focused on fast launch, direct image display, and immediate shutdown. It has no background process, network activity, settings framework, or bundled codec library.
 
 ## Current scope
 
@@ -35,10 +35,10 @@ cmake --build out/release
 Run a built executable with a quoted path, as Explorer would:
 
 ```powershell
-.\out\release\mediaView.exe "C:\path\to\image.jpg"
+.\out\release\FeatherView.exe "C:\path\to\image.jpg"
 ```
 
-`out\release\mediaView.exe` is the permanent Release path for any future Windows file association. No file associations are changed by the build or application.
+`out\release\FeatherView.exe` is the permanent Release path for any future Windows file association. No file associations are changed by the build or application.
 
 ## Development timing
 

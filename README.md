@@ -8,7 +8,7 @@
 - Fits and centers the image in a resizable native window with a dark background.
 - Closes with `Esc` and accepts a replacement image via drag-and-drop.
 - Navigates sibling images with the Left and Right arrow keys (natural filename order).
-- Zooms with the mouse wheel or `+`/`-`, returns to fit with `0`, and pans zoomed images by dragging with the left mouse button.
+- Zooms with the mouse wheel or `+`/`-`, returns to base scale with `0`, and pans images freely by dragging with the left mouse button.
 - Stops zoom-out at Fit to Window, supports free manual panning, and restores the last normal window placement (including maximized state).
 - Uses the current Windows app light/dark preference for the native title bar.
 - Uses Windows Imaging Component (WIC), supporting JPEG/JPG, PNG, BMP, GIF, TIFF/TIF, and ICO. Other installed WIC codecs (such as WebP, HEIF, or AVIF) work automatically when available.

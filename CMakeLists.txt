@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(mediaView VERSION 0.1.2.0 LANGUAGES CXX)
+project(mediaView VERSION 0.1.2.1 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "mediaView currently targets Windows only.")

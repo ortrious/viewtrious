@@ -195,7 +195,7 @@ public:
             renderTarget_->Resize(D2D1::SizeU(std::max(1L, client.right - client.left),
                 std::max(1L, client.bottom - client.top)));
         }
-        if (!fitToWindow_) zoom_ = std::max(zoom_, FitScale());
+        if (!fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -278,7 +278,12 @@ public:
     void ZoomAt(POINT cursor, float factor) {
         if (!source_) return;
         const float oldScale = CurrentScale();
-        const float newScale = std::clamp(oldScale * factor, FitScale(), kMaximumZoom);
+        const float baseScale = BaseScale();
+        const float newScale = std::clamp(oldScale * factor, baseScale, kMaximumZoom);
+        if (newScale <= baseScale + 0.0001f) {
+            FitToWindow();
+            return;
+        }
         if (std::abs(newScale - oldScale) < 0.0001f) return;
 
         const D2D1_SIZE_F target = ClientSize();
@@ -423,13 +428,15 @@ private:
             static_cast<float>(std::max(1L, client.bottom - client.top)));
     }
 
-    float FitScale() const {
+    float BaseScale() const {
         if (!source_) return 1.0f;
         const D2D1_SIZE_F target = ClientSize();
-        return std::min(target.width / static_cast<float>(imageWidth_), target.height / static_cast<float>(imageHeight_));
+        const float fitScale = std::min(target.width / static_cast<float>(imageWidth_),
+            target.height / static_cast<float>(imageHeight_));
+        return std::min(1.0f, fitScale);
     }
 
-    float CurrentScale() const { return fitToWindow_ ? FitScale() : std::max(zoom_, FitScale()); }
+    float CurrentScale() const { return fitToWindow_ ? BaseScale() : std::max(zoom_, BaseScale()); }
 
     D2D1_POINT_2F ImageTopLeft(float scale, const D2D1_SIZE_F& target) const {
         return D2D1::Point2F((target.width - imageWidth_ * scale) / 2.0f + pan_.x,
@@ -437,7 +444,7 @@ private:
     }
 
     bool CanPan() const {
-        return source_ && !fitToWindow_;
+        return source_.Get() != nullptr;
     }
 
     void DrawImage() {
@@ -450,11 +457,15 @@ private:
     }
 
     void DrawErrorText(HDC dc) const {
-        RECT rect{};
-        GetClientRect(window_, &rect);
+        RECT client{};
+        GetClientRect(window_, &client);
+        RECT text{ 0, 0, std::max(1L, client.right - client.left - 48), client.bottom - client.top };
         SetTextColor(dc, RGB(220, 220, 220));
         SetBkMode(dc, TRANSPARENT);
-        DrawTextW(dc, error_.c_str(), -1, &rect, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+        DrawTextW(dc, error_.c_str(), -1, &text, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+        OffsetRect(&text, (client.right - client.left - (text.right - text.left)) / 2,
+            (client.bottom - client.top - (text.bottom - text.top)) / 2);
+        DrawTextW(dc, error_.c_str(), -1, &text, DT_CENTER | DT_WORDBREAK);
     }
 
     void DiscardRenderResources() { bitmap_.Reset(); renderTarget_.Reset(); }

@@ -38,6 +38,15 @@ const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.
 enum class OverlayKind { None, KeyboardShortcuts, About };
 enum class DropdownItem { None, KeyboardShortcuts, About, Close };
 
+struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
+constexpr ShortcutEntry kShortcutEntries[] = {
+    { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom" },
+    { L"+ / =", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
+    { L"Left mouse drag", L"Pan" }, { L"Double-click image", L"Toggle fullscreen" }, { L"F11", L"Toggle fullscreen" },
+    { L"Esc", L"Exit fullscreen, or close FeatherView" },
+};
+constexpr size_t kShortcutEntryCount = sizeof(kShortcutEntries) / sizeof(kShortcutEntries[0]);
+
 #if defined(_DEBUG)
 class StartupTimer {
 public:
@@ -154,26 +163,28 @@ FrameMetrics GetFrameMetrics(HWND window) {
     const int hamburgerWidth = MulDiv(46, dpi, 96);
     const int separatorWidth = MulDiv(1, dpi, 96);
     const int separatorHeight = MulDiv(20, dpi, 96);
-    const int metadataGap = MulDiv(12, dpi, 96);
-    const int filenameGap = MulDiv(18, dpi, 96);
+    const int sectionGutter = MulDiv(14, dpi, 96);
+    const int hamburgerSeparatorInset = MulDiv(4, dpi, 96);
     const int resolutionWidth = MulDiv(92, dpi, 96);
     const int fileSizeWidth = MulDiv(72, dpi, 96);
     RECT client{};
     GetClientRect(window, &client);
     const int buttonLeft = std::max(0L, client.right - buttonWidth * 3);
     const int separatorTop = std::max(0, (titleBarHeight - separatorHeight) / 2);
-    const int separatorOffset = (metadataGap - separatorWidth) / 2;
-    const int resolutionLeft = hamburgerWidth + metadataGap;
-    const int fileSizeLeft = resolutionLeft + resolutionWidth + metadataGap;
-    const int filenameLeft = fileSizeLeft + fileSizeWidth + filenameGap;
+    const int hamburgerSeparatorLeft = hamburgerWidth - hamburgerSeparatorInset;
+    const int resolutionLeft = hamburgerSeparatorLeft + separatorWidth + sectionGutter;
+    const int resolutionSeparatorLeft = resolutionLeft + resolutionWidth + sectionGutter;
+    const int fileSizeLeft = resolutionSeparatorLeft + separatorWidth + sectionGutter;
+    const int fileSizeSeparatorLeft = fileSizeLeft + fileSizeWidth + sectionGutter;
+    const int filenameLeft = fileSizeSeparatorLeft + separatorWidth + sectionGutter;
     return { titleBarHeight, border,
         { 0, 0, buttonLeft, titleBarHeight },
         { 0, 0, hamburgerWidth, titleBarHeight },
-        { hamburgerWidth + separatorOffset, separatorTop, hamburgerWidth + separatorOffset + separatorWidth, separatorTop + separatorHeight },
+        { hamburgerSeparatorLeft, separatorTop, hamburgerSeparatorLeft + separatorWidth, separatorTop + separatorHeight },
         resolutionLeft, resolutionWidth,
-        { resolutionLeft + resolutionWidth + separatorOffset, separatorTop, resolutionLeft + resolutionWidth + separatorOffset + separatorWidth, separatorTop + separatorHeight },
+        { resolutionSeparatorLeft, separatorTop, resolutionSeparatorLeft + separatorWidth, separatorTop + separatorHeight },
         fileSizeLeft, fileSizeWidth,
-        { fileSizeLeft + fileSizeWidth + separatorOffset, separatorTop, fileSizeLeft + fileSizeWidth + separatorOffset + separatorWidth, separatorTop + separatorHeight },
+        { fileSizeSeparatorLeft, separatorTop, fileSizeSeparatorLeft + separatorWidth, separatorTop + separatorHeight },
         filenameLeft,
         { buttonLeft, 0, buttonLeft + buttonWidth, titleBarHeight },
         { buttonLeft + buttonWidth, 0, buttonLeft + buttonWidth * 2, titleBarHeight },
@@ -804,8 +815,17 @@ private:
         GetClientRect(window_, &client);
         if (!HasOverlay()) return {};
         const UINT dpi = GetDpiForWindow(window_);
-        const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 : 440, dpi, 96);
-        const int desiredHeight = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 344 : 370, dpi, 96);
+        const int panelPadding = MulDiv(24, dpi, 96);
+        const int titleHeight = MulDiv(24, dpi, 96);
+        const int titleGap = MulDiv(14, dpi, 96);
+        const int rowHeight = MulDiv(25, dpi, 96);
+        const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 : 720, dpi, 96);
+        const int aboutLogoWidth = std::min(MulDiv(520, dpi, 96), desiredWidth - panelPadding * 2);
+        const int aboutLogoHeight = MulDiv(aboutLogoWidth, 941, 1672);
+        const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
+            ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
+            : panelPadding + aboutLogoHeight + MulDiv(16, dpi, 96) + MulDiv(26, dpi, 96) + MulDiv(5, dpi, 96) +
+                MulDiv(20, dpi, 96) + MulDiv(20, dpi, 96) + MulDiv(18, dpi, 96) + panelPadding;
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -817,12 +837,13 @@ private:
     }
 
     void DrawOverlayText(const wchar_t* text, float x, float y, float width, float height, float size,
-        DWRITE_FONT_WEIGHT weight, ID2D1Brush* brush) {
+        DWRITE_FONT_WEIGHT weight, ID2D1Brush* brush, bool verticallyCenter = false) {
         ComPtr<IDWriteTextFormat> format;
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL, size * dpiScale, L"", &format))) return;
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        if (verticallyCenter) format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         ComPtr<IDWriteTextLayout> layout;
         if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), width, height, &layout))) return;
         renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
@@ -865,42 +886,37 @@ private:
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(panelRect, 8.0f, 8.0f), panelBrush.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(panelRect, 8.0f, 8.0f), borderBrush.Get(), 1.0f);
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const float left = static_cast<float>(bounds.left) + 22.0f * dpiScale;
-        const float contentWidth = static_cast<float>(bounds.right - bounds.left) - 44.0f * dpiScale;
+        const float panelPadding = 24.0f * dpiScale;
+        const float left = static_cast<float>(bounds.left) + panelPadding;
+        const float contentWidth = static_cast<float>(bounds.right - bounds.left) - panelPadding * 2.0f;
         if (overlay_ == OverlayKind::KeyboardShortcuts) {
-            DrawOverlayText(L"Keyboard Shortcuts", left, static_cast<float>(bounds.top) + 18.0f * dpiScale,
+            DrawOverlayText(L"Keyboard Shortcuts", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            struct ShortcutLine { const wchar_t* shortcut; const wchar_t* description; };
-            constexpr ShortcutLine lines[] = {
-                { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom" },
-                { L"+ / =", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
-                { L"Left mouse drag", L"Pan" }, { L"Double-click image", L"Toggle fullscreen" }, { L"F11", L"Toggle fullscreen" },
-                { L"Esc", L"Exit fullscreen, or close FeatherView" } };
             const float shortcutWidth = 154.0f * dpiScale;
-            float y = static_cast<float>(bounds.top) + 56.0f * dpiScale;
-            for (const ShortcutLine& line : lines) {
+            float y = static_cast<float>(bounds.top) + panelPadding + 38.0f * dpiScale;
+            for (const ShortcutEntry& line : kShortcutEntries) {
                 DrawOverlayText(line.shortcut, left, y, shortcutWidth, 18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
                 DrawOverlayText(line.description, left + shortcutWidth, y, contentWidth - shortcutWidth,
                     18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
                 y += 25.0f * dpiScale;
             }
         } else {
-            float logoBottom = static_cast<float>(bounds.top) + 34.0f * dpiScale;
+            float logoBottom = static_cast<float>(bounds.top) + panelPadding;
             if (EnsureAboutLogo()) {
                 const D2D1_SIZE_F logoSource = aboutLogo_->GetSize();
-                const float logoWidth = std::min(210.0f * dpiScale, contentWidth);
+                const float logoWidth = std::min(520.0f * dpiScale, contentWidth);
                 const float logoHeight = logoWidth * logoSource.height / logoSource.width;
                 const float logoLeft = static_cast<float>(bounds.left) + (bounds.right - bounds.left - logoWidth) / 2.0f;
                 const float logoTop = logoBottom;
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
                 logoBottom = logoTop + logoHeight;
             }
-            const float titleTop = logoBottom + 28.0f * dpiScale;
+            const float titleTop = logoBottom + 16.0f * dpiScale;
             DrawOverlayText(L"FeatherView", left, titleTop, contentWidth, 26.0f * dpiScale,
                 18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             DrawOverlayText(L"Version " FEATHERVIEW_VERSION, left, titleTop + 31.0f * dpiScale, contentWidth, 20.0f * dpiScale,
                 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            DrawOverlayText(L"Extremely lightweight image viewer", left, static_cast<float>(bounds.bottom) - 44.0f * dpiScale,
+            DrawOverlayText(L"Extremely lightweight image viewer", left, static_cast<float>(bounds.bottom) - panelPadding - 18.0f * dpiScale,
                 contentWidth, 18.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
         }
     }
@@ -931,8 +947,8 @@ private:
         const UINT dpi = GetDpiForWindow(window_);
         const int rowHeight = MulDiv(38, dpi, 96);
         const int separatorGap = MulDiv(9, dpi, 96);
-        const auto row = [&](int top) { return D2D1::RectF(static_cast<float>(bounds.left + 4), static_cast<float>(top),
-            static_cast<float>(bounds.right - 4), static_cast<float>(top + rowHeight)); };
+        const auto row = [&](int top) { return D2D1::RectF(static_cast<float>(bounds.left + 1), static_cast<float>(top),
+            static_cast<float>(bounds.right - 1), static_cast<float>(top + rowHeight)); };
         const int shortcutsTop = bounds.top + 4;
         const int aboutTop = shortcutsTop + rowHeight + separatorGap;
         const int closeTop = aboutTop + rowHeight;
@@ -941,7 +957,7 @@ private:
             else if (dropdownHovered_ == item) renderTarget_->FillRectangle(row(top), hoverBrush.Get());
             DrawOverlayText(label, static_cast<float>(bounds.left + MulDiv(14, dpi, 96)), static_cast<float>(top),
                 static_cast<float>(bounds.right - bounds.left - MulDiv(28, dpi, 96)), static_cast<float>(rowHeight),
-                13.0f, DWRITE_FONT_WEIGHT_NORMAL, textBrush.Get());
+                13.0f, DWRITE_FONT_WEIGHT_NORMAL, textBrush.Get(), true);
         };
         drawItem(DropdownItem::KeyboardShortcuts, shortcutsTop, L"Keyboard Shortcuts");
         const float separatorY = static_cast<float>(shortcutsTop + rowHeight + separatorGap / 2);
@@ -1025,11 +1041,9 @@ private:
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float stroke = 1.0f;
         const auto pixelCenter = [](float value) { return std::floor(value) + 0.5f; };
-        const auto center = [](const RECT& value) {
-            return D2D1::Point2F((value.left + value.right) / 2.0f, (value.top + value.bottom) / 2.0f);
-        };
         renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
-        const D2D1_POINT_2F hamburgerCenter = center(frame.hamburger);
+        const D2D1_POINT_2F hamburgerCenter = D2D1::Point2F(frame.hamburgerSeparator.left / 2.0f,
+            (frame.hamburger.top + frame.hamburger.bottom) / 2.0f);
         const float hamburgerHalfWidth = 7.0f * dpiScale;
         const float hamburgerSpacing = 4.0f * dpiScale;
         for (int line = -1; line <= 1; ++line) {

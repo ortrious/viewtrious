@@ -32,8 +32,9 @@ constexpr wchar_t kWindowClass[] = L"FeatherViewWindow";
 constexpr wchar_t kWindowTitle[] = L"FeatherView";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
-constexpr int kContextMenuRowCount = 9;
+constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 3;
+constexpr int kContextMenuPaddingDip = 8;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kZoomStep = 1.20f;
 constexpr wchar_t kSettingsKey[] = L"Software\\FeatherView";
@@ -395,7 +396,7 @@ public:
         if (!PtInRect(&bounds, point)) return ContextAction::None;
         const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
         const int separatorGap = MulDiv(9, GetDpiForWindow(window_), 96);
-        int top = bounds.top + MulDiv(4, GetDpiForWindow(window_), 96);
+        int top = bounds.top + MulDiv(kContextMenuPaddingDip, GetDpiForWindow(window_), 96);
         const auto hit = [&](ContextAction action) {
             const bool contains = point.y >= top && point.y < top + rowHeight;
             top += rowHeight;
@@ -727,7 +728,7 @@ private:
         const LONG width = std::min<LONG>(MulDiv(250, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
         const LONG height = margin * 2 + row * (static_cast<LONG>(openWithHandlers_.size()) + 1) + gap;
         const LONG rightX = parent.right + margin; const LONG left = rightX + width <= client.right - margin ? rightX : std::max<LONG>(margin, parent.left - margin - width);
-        const LONG top = std::clamp<LONG>(parent.top + row * 2 + gap, margin, std::max<LONG>(margin, client.bottom - height - margin));
+        const LONG top = std::clamp<LONG>(parent.top + MulDiv(kContextMenuPaddingDip, dpi, 96) + row * 2 + gap, margin, std::max<LONG>(margin, client.bottom - height - margin));
         return { left, top, left + width, top + height };
     }
 
@@ -739,7 +740,8 @@ private:
         const LONG width = std::min<LONG>(MulDiv(260, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
         const LONG rowHeight = MulDiv(38, dpi, 96);
         const LONG separatorGap = MulDiv(9, dpi, 96);
-        const LONG height = margin * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
+        const LONG padding = MulDiv(kContextMenuPaddingDip, dpi, 96);
+        const LONG height = padding * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
         const LONG left = std::clamp<LONG>(contextMenuAnchor_.x, margin, std::max<LONG>(margin, client.right - width - margin));
         const LONG top = std::clamp<LONG>(contextMenuAnchor_.y, margin, std::max<LONG>(margin, client.bottom - height - margin));
         return { left, top, left + width, top + height };
@@ -1192,7 +1194,7 @@ private:
         const D2D1_RECT_F menu = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), surfaceBrush.Get());
         const UINT dpi = GetDpiForWindow(window_); const int rowHeight = MulDiv(38, dpi, 96); const int gap = MulDiv(9, dpi, 96);
-        int top = bounds.top + MulDiv(4, dpi, 96);
+        int top = bounds.top + MulDiv(kContextMenuPaddingDip, dpi, 96);
         const auto drawItem = [&](ContextAction action, const wchar_t* label) {
             const bool enabled = ContextActionEnabled(action);
             const D2D1_RECT_F row = D2D1::RectF(static_cast<float>(bounds.left + 1), static_cast<float>(top), static_cast<float>(bounds.right - 1), static_cast<float>(top + rowHeight));

@@ -123,6 +123,58 @@ bool UseDarkAppMode() {
     return appsUseLightTheme == 0;
 }
 
+struct FrameMetrics {
+    int titleBarHeight;
+    int border;
+    RECT titleBarContent;
+    RECT minimize;
+    RECT maximize;
+    RECT close;
+};
+
+FrameMetrics GetFrameMetrics(HWND window) {
+    const UINT dpi = GetDpiForWindow(window);
+    const int titleBarHeight = MulDiv(42, dpi, 96);
+    const int border = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+    const int buttonWidth = MulDiv(46, dpi, 96);
+    RECT client{};
+    GetClientRect(window, &client);
+    const int buttonLeft = std::max(0L, client.right - buttonWidth * 3);
+    return { titleBarHeight, border,
+        { 0, 0, buttonLeft, titleBarHeight },
+        { buttonLeft, 0, buttonLeft + buttonWidth, titleBarHeight },
+        { buttonLeft + buttonWidth, 0, buttonLeft + buttonWidth * 2, titleBarHeight },
+        { buttonLeft + buttonWidth * 2, 0, client.right, titleBarHeight } };
+}
+
+enum class CaptionButton { None, Minimize, Maximize, Close };
+
+CaptionButton CaptionButtonAt(const FrameMetrics& frame, POINT point) {
+    if (PtInRect(&frame.minimize, point)) return CaptionButton::Minimize;
+    if (PtInRect(&frame.maximize, point)) return CaptionButton::Maximize;
+    if (PtInRect(&frame.close, point)) return CaptionButton::Close;
+    return CaptionButton::None;
+}
+
+CaptionButton CaptionButtonFromHitTest(WPARAM hitTest) {
+    if (hitTest == HTMINBUTTON) return CaptionButton::Minimize;
+    if (hitTest == HTMAXBUTTON) return CaptionButton::Maximize;
+    if (hitTest == HTCLOSE) return CaptionButton::Close;
+    return CaptionButton::None;
+}
+
+WPARAM SystemCommandForCaptionButton(HWND window, CaptionButton button) {
+    if (button == CaptionButton::Minimize) return SC_MINIMIZE;
+    if (button == CaptionButton::Maximize) return IsZoomed(window) ? SC_RESTORE : SC_MAXIMIZE;
+    if (button == CaptionButton::Close) return SC_CLOSE;
+    return 0;
+}
+
+void ApplyWindowCornerPreference(HWND window, bool roundCorners) {
+    const DWM_WINDOW_CORNER_PREFERENCE preference = roundCorners ? DWMWCP_ROUND : DWMWCP_DONOTROUND;
+    DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE, &preference, sizeof(preference));
+}
+
 void ApplyTitleBarTheme(HWND window) {
     const BOOL dark = UseDarkAppMode() ? TRUE : FALSE;
     DwmSetWindowAttribute(window, kDwmUseImmersiveDarkMode, &dark, sizeof(dark));
@@ -170,6 +222,21 @@ public:
 
     void SetWindow(HWND window) { window_ = window; }
     bool IsFullscreen() const { return fullscreen_; }
+    void SetCaptionButtonHover(CaptionButton button) {
+        if (hoveredCaptionButton_ == button) return;
+        hoveredCaptionButton_ = button;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void SetCaptionButtonPressed(CaptionButton button) {
+        pressedCaptionButton_ = button;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    CaptionButton PressedCaptionButton() const { return pressedCaptionButton_; }
+    void ClearCaptionButtonPressed() {
+        if (pressedCaptionButton_ == CaptionButton::None) return;
+        pressedCaptionButton_ = CaptionButton::None;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void ToggleFullscreen() {
         if (!fullscreen_) {
             fullscreenStyle_ = GetWindowLongPtrW(window_, GWL_STYLE);
@@ -181,12 +248,14 @@ public:
                 monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top,
                 SWP_FRAMECHANGED | SWP_SHOWWINDOW);
             fullscreen_ = true;
+            ApplyWindowCornerPreference(window_, false);
         } else {
             SetWindowLongPtrW(window_, GWL_STYLE, fullscreenStyle_);
             SetWindowPos(window_, HWND_NOTOPMOST, fullscreenRect_.left, fullscreenRect_.top,
                 fullscreenRect_.right - fullscreenRect_.left, fullscreenRect_.bottom - fullscreenRect_.top,
                 SWP_FRAMECHANGED | SWP_SHOWWINDOW);
             fullscreen_ = false;
+            ApplyWindowCornerPreference(window_, !IsZoomed(window_));
         }
     }
     void Paint() {
@@ -199,6 +268,7 @@ public:
                 EnsureBitmap();
                 if (bitmap_) DrawImage();
             }
+            DrawTitleBar();
             const HRESULT hr = renderTarget_->EndDraw();
             if (SUCCEEDED(hr) && bitmap_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
@@ -493,6 +563,86 @@ private:
         renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
+    void DrawTitleBar() {
+        if (fullscreen_) return;
+
+        const FrameMetrics frame = GetFrameMetrics(window_);
+        const bool dark = UseDarkAppMode();
+        const D2D1_COLOR_F stripColor = dark ? D2D1::ColorF(29.0f / 255.0f, 32.0f / 255.0f, 38.0f / 255.0f)
+            : D2D1::ColorF(242.0f / 255.0f, 242.0f / 255.0f, 242.0f / 255.0f);
+        const D2D1_COLOR_F hoverColor = dark ? D2D1::ColorF(48.0f / 255.0f, 52.0f / 255.0f, 62.0f / 255.0f)
+            : D2D1::ColorF(224.0f / 255.0f, 224.0f / 255.0f, 224.0f / 255.0f);
+        const D2D1_COLOR_F pressedColor = dark ? D2D1::ColorF(64.0f / 255.0f, 68.0f / 255.0f, 80.0f / 255.0f)
+            : D2D1::ColorF(204.0f / 255.0f, 204.0f / 255.0f, 204.0f / 255.0f);
+        const D2D1_COLOR_F closeHoverColor = D2D1::ColorF(196.0f / 255.0f, 43.0f / 255.0f, 28.0f / 255.0f);
+        const D2D1_COLOR_F closePressedColor = D2D1::ColorF(153.0f / 255.0f, 27.0f / 255.0f, 20.0f / 255.0f);
+        const D2D1_COLOR_F glyphColor = dark ? D2D1::ColorF(D2D1::ColorF::White)
+            : D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f);
+        ComPtr<ID2D1SolidColorBrush> stripBrush;
+        ComPtr<ID2D1SolidColorBrush> hoverBrush;
+        ComPtr<ID2D1SolidColorBrush> pressedBrush;
+        ComPtr<ID2D1SolidColorBrush> closeHoverBrush;
+        ComPtr<ID2D1SolidColorBrush> closePressedBrush;
+        ComPtr<ID2D1SolidColorBrush> glyphBrush;
+        ComPtr<ID2D1SolidColorBrush> closeGlyphBrush;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(stripColor, &stripBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(hoverColor, &hoverBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(pressedColor, &pressedBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(closeHoverColor, &closeHoverBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(closePressedColor, &closePressedBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(glyphColor, &glyphBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &closeGlyphBrush))) return;
+
+        const D2D1_RECT_F top = D2D1::RectF(0.0f, 0.0f, renderTarget_->GetSize().width, static_cast<float>(frame.titleBarHeight));
+        renderTarget_->FillRectangle(top, stripBrush.Get());
+        const auto rect = [](const RECT& value) {
+            return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top),
+                static_cast<float>(value.right), static_cast<float>(value.bottom));
+        };
+        const auto drawButton = [&](CaptionButton button, const RECT& bounds) {
+            if (pressedCaptionButton_ == button) {
+                renderTarget_->FillRectangle(rect(bounds), button == CaptionButton::Close ? closePressedBrush.Get() : pressedBrush.Get());
+            } else if (hoveredCaptionButton_ == button) {
+                renderTarget_->FillRectangle(rect(bounds), button == CaptionButton::Close ? closeHoverBrush.Get() : hoverBrush.Get());
+            }
+        };
+        drawButton(CaptionButton::Minimize, frame.minimize);
+        drawButton(CaptionButton::Maximize, frame.maximize);
+        drawButton(CaptionButton::Close, frame.close);
+
+        const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const float glyphSize = 12.0f * dpiScale;
+        const float stroke = 1.0f;
+        const auto pixelCenter = [](float value) { return std::floor(value) + 0.5f; };
+        const auto center = [](const RECT& value) {
+            return D2D1::Point2F((value.left + value.right) / 2.0f, (value.top + value.bottom) / 2.0f);
+        };
+        renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+        const D2D1_POINT_2F minimizeCenter = center(frame.minimize);
+        const float minimizeY = pixelCenter(minimizeCenter.y + glyphSize / 3.0f);
+        renderTarget_->DrawLine(D2D1::Point2F(pixelCenter(minimizeCenter.x - glyphSize / 2.0f), minimizeY),
+            D2D1::Point2F(pixelCenter(minimizeCenter.x + glyphSize / 2.0f), minimizeY), glyphBrush.Get(), stroke);
+        const D2D1_RECT_F maximize = rect(frame.maximize);
+        const D2D1_RECT_F maximizeGlyph = D2D1::RectF(pixelCenter(maximize.left + (maximize.right - maximize.left - glyphSize) / 2.0f),
+            pixelCenter(maximize.top + (maximize.bottom - maximize.top - glyphSize) / 2.0f),
+            pixelCenter(maximize.left + (maximize.right - maximize.left + glyphSize) / 2.0f),
+            pixelCenter(maximize.top + (maximize.bottom - maximize.top + glyphSize) / 2.0f));
+        renderTarget_->DrawRectangle(maximizeGlyph, glyphBrush.Get(), stroke);
+        if (IsZoomed(window_)) {
+            const float offset = 3.0f * dpiScale;
+            renderTarget_->DrawRectangle(D2D1::RectF(maximizeGlyph.left - offset, maximizeGlyph.top + offset,
+                maximizeGlyph.right - offset, maximizeGlyph.bottom + offset), glyphBrush.Get(), stroke);
+        }
+        const D2D1_POINT_2F closeCenter = center(frame.close);
+        ID2D1Brush* closeGlyph = (hoveredCaptionButton_ == CaptionButton::Close || pressedCaptionButton_ == CaptionButton::Close)
+            ? closeGlyphBrush.Get() : glyphBrush.Get();
+        renderTarget_->DrawLine(D2D1::Point2F(pixelCenter(closeCenter.x - glyphSize / 2.0f), pixelCenter(closeCenter.y - glyphSize / 2.0f)),
+            D2D1::Point2F(pixelCenter(closeCenter.x + glyphSize / 2.0f), pixelCenter(closeCenter.y + glyphSize / 2.0f)), closeGlyph, stroke);
+        renderTarget_->DrawLine(D2D1::Point2F(pixelCenter(closeCenter.x + glyphSize / 2.0f), pixelCenter(closeCenter.y - glyphSize / 2.0f)),
+            D2D1::Point2F(pixelCenter(closeCenter.x - glyphSize / 2.0f), pixelCenter(closeCenter.y + glyphSize / 2.0f)), closeGlyph, stroke);
+        renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    }
+
     void DrawErrorText(HDC dc) const {
         RECT client{};
         GetClientRect(window_, &client);
@@ -530,6 +680,8 @@ private:
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
     bool fullscreen_ = false;
+    CaptionButton hoveredCaptionButton_ = CaptionButton::None;
+    CaptionButton pressedCaptionButton_ = CaptionButton::None;
     LONG_PTR fullscreenStyle_ = 0;
     RECT fullscreenRect_{};
 };
@@ -543,9 +695,62 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     if (!viewer) return DefWindowProcW(window, message, wParam, lParam);
 
+    if (!viewer->IsFullscreen() && message == WM_NCCALCSIZE) return 0;
+    if (!viewer->IsFullscreen() && message == WM_NCHITTEST) {
+        const POINT screen{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }; RECT outer{}; GetWindowRect(window, &outer);
+        FrameMetrics frame = GetFrameMetrics(window); const int x = screen.x - outer.left; const int y = screen.y - outer.top;
+        if (!IsZoomed(window)) {
+            const bool left = x < frame.border, right = x >= (outer.right - outer.left - frame.border), top = y < frame.border, bottom = y >= (outer.bottom - outer.top - frame.border);
+            if (top && left) return HTTOPLEFT; if (top && right) return HTTOPRIGHT; if (bottom && left) return HTBOTTOMLEFT; if (bottom && right) return HTBOTTOMRIGHT;
+            if (top) return HTTOP; if (bottom) return HTBOTTOM; if (left) return HTLEFT; if (right) return HTRIGHT;
+        }
+        POINT client = screen; ScreenToClient(window, &client);
+        switch (CaptionButtonAt(frame, client)) {
+        case CaptionButton::Minimize: return HTMINBUTTON;
+        case CaptionButton::Maximize: return HTMAXBUTTON;
+        case CaptionButton::Close: return HTCLOSE;
+        case CaptionButton::None: break;
+        }
+        if (client.y >= 0 && client.y < frame.titleBarHeight) return HTCAPTION;
+        return HTCLIENT;
+    }
+
     switch (message) {
     case WM_PAINT: viewer->Paint(); return 0;
-    case WM_SIZE: viewer->Resize(); return 0;
+    case WM_SIZE:
+        viewer->Resize();
+        ApplyWindowCornerPreference(window, !viewer->IsFullscreen() && !IsZoomed(window));
+        return 0;
+    case WM_DPICHANGED: {
+        if (!viewer->IsFullscreen()) {
+            const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+            SetWindowPos(window, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
+                suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        return 0;
+    }
+    case WM_NCMOUSEMOVE: {
+        viewer->SetCaptionButtonHover(CaptionButtonFromHitTest(wParam));
+        TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE | TME_NONCLIENT, window, 0 };
+        TrackMouseEvent(&track);
+        return 0;
+    }
+    case WM_NCMOUSELEAVE: viewer->SetCaptionButtonHover(CaptionButton::None); return 0;
+    case WM_NCLBUTTONDOWN: {
+        const CaptionButton button = CaptionButtonFromHitTest(wParam);
+        if (button == CaptionButton::None) break;
+        viewer->SetCaptionButtonPressed(button);
+        SetCapture(window);
+        return 0;
+    }
+    case WM_NCLBUTTONUP: {
+        const CaptionButton button = CaptionButtonFromHitTest(wParam);
+        const CaptionButton pressed = viewer->PressedCaptionButton();
+        viewer->ClearCaptionButtonPressed();
+        if (GetCapture() == window) ReleaseCapture();
+        if (pressed == button) SendMessageW(window, WM_SYSCOMMAND, SystemCommandForCaptionButton(window, button), 0);
+        return 0;
+    }
     case WM_DROPFILES: viewer->DropFile(reinterpret_cast<HDROP>(wParam)); return 0;
     case WM_MOUSEWHEEL: {
         POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
@@ -556,8 +761,17 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_LBUTTONDBLCLK: viewer->ToggleFullscreen(); return 0;
     case WM_LBUTTONDOWN: viewer->BeginPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
     case WM_MOUSEMOVE: viewer->PanTo({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
-    case WM_LBUTTONUP: viewer->EndPan(); return 0;
-    case WM_CAPTURECHANGED: viewer->EndPan(); return 0;
+    case WM_LBUTTONUP: {
+        const CaptionButton pressed = viewer->PressedCaptionButton();
+        if (pressed == CaptionButton::None) { viewer->EndPan(); return 0; }
+        const FrameMetrics frame = GetFrameMetrics(window);
+        const CaptionButton released = CaptionButtonAt(frame, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+        viewer->ClearCaptionButtonPressed();
+        if (GetCapture() == window) ReleaseCapture();
+        if (pressed == released) SendMessageW(window, WM_SYSCOMMAND, SystemCommandForCaptionButton(window, released), 0);
+        return 0;
+    }
+    case WM_CAPTURECHANGED: viewer->EndPan(); viewer->ClearCaptionButtonPressed(); return 0;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case WM_KEYDOWN:
@@ -618,7 +832,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         bounds.right = bounds.left + width;
         bounds.bottom = bounds.top + height;
     }
-    HWND window = CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW,
+    const DWORD windowStyle = WS_OVERLAPPEDWINDOW;
+    HWND window = CreateWindowExW(0, kWindowClass, kWindowTitle, windowStyle,
         bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
         nullptr, nullptr, instance, &viewer);
     if (!window) { CoUninitialize(); return 1; }
@@ -627,6 +842,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(windowClass.hIconSm));
     DragAcceptFiles(window, TRUE);
     ApplyTitleBarTheme(window);
+    ApplyWindowCornerPreference(window, true);
     ShowWindow(window, hasSavedPlacement && savedPlacement.maximized ? SW_MAXIMIZE : showCommand);
     UpdateWindow(window);
 
@@ -638,12 +854,3 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     CoUninitialize();
     return static_cast<int>(message.wParam);
 }
-
-
-
-
-
-
-
-
-

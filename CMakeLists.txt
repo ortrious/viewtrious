@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(FeatherView VERSION 0.1.3.2 LANGUAGES CXX)
+project(FeatherView VERSION 0.1.3.3 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FeatherView currently targets Windows only.")
@@ -24,6 +24,7 @@ if(MSVC)
     target_compile_options(FeatherView PRIVATE /W4 /permissive-)
     target_compile_options(FeatherView PRIVATE $<$<CONFIG:Release>:/O2>)
 endif()
+
 
 
 

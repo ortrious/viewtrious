@@ -431,6 +431,7 @@ private:
             D2D1::HwndRenderTargetProperties(window_, D2D1::SizeU(
                 static_cast<UINT32>(std::max(1.0f, client.width)),
                 static_cast<UINT32>(std::max(1.0f, client.height)))), &renderTarget_);
+        renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f), &backgroundBrush_);
         timer_.Log(L"rendering/window initialization complete");
     }
 
@@ -471,6 +472,7 @@ private:
         const D2D1_POINT_2F topLeft = ImageTopLeft(scale, target);
         const D2D1_RECT_F destination = D2D1::RectF(topLeft.x, topLeft.y,
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
+        if (backgroundBrush_) renderTarget_->FillRectangle(destination, backgroundBrush_.Get());
         renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
@@ -486,7 +488,7 @@ private:
         DrawTextW(dc, error_.c_str(), -1, &text, DT_CENTER | DT_WORDBREAK);
     }
 
-    void DiscardRenderResources() { bitmap_.Reset(); watermarkBitmap_.Reset(); renderTarget_.Reset(); }
+    void DiscardRenderResources() { bitmap_.Reset(); watermarkBitmap_.Reset(); backgroundBrush_.Reset(); renderTarget_.Reset(); }
 
     const StartupTimer& timer_;
     HWND window_ = nullptr;
@@ -495,6 +497,7 @@ private:
     ComPtr<IWICBitmapSource> source_;
     ComPtr<ID2D1HwndRenderTarget> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
+    ComPtr<ID2D1SolidColorBrush> backgroundBrush_;
     ComPtr<IWICBitmapSource> watermarkSource_;
     ComPtr<ID2D1Bitmap> watermarkBitmap_;
     UINT imageWidth_ = 0;
@@ -617,5 +620,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     CoUninitialize();
     return static_cast<int>(message.wParam);
 }
+
 
 

@@ -2,6 +2,7 @@
 #include <windowsx.h>
 #include <shellapi.h>
 #include <shlobj_core.h>
+#include <shobjidl_core.h>
 #include <shlwapi.h>
 #include <dwmapi.h>
 #include <d2d1.h>
@@ -44,6 +45,7 @@ enum class DropdownItem { None, KeyboardShortcuts, About, Close };
 enum class ContextAction { None, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, SetLockScreen, Delete };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
+struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
 constexpr ShortcutEntry kShortcutEntries[] = {
     { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom" },
     { L"+ / =", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
@@ -382,6 +384,7 @@ public:
     void DismissContextMenu() {
         if (!contextMenuOpen_) return;
         contextMenuOpen_ = false;
+        openWithSubmenuOpen_ = false;
         contextHovered_ = ContextAction::None;
         contextPressed_ = ContextAction::None;
         InvalidateRect(window_, nullptr, FALSE);
@@ -426,10 +429,35 @@ public:
     ContextAction PressedContextAction() const { return contextPressed_; }
     void ClearContextPressed() { SetContextPressed(ContextAction::None); }
     void InvokeContextAction(ContextAction action) {
+        if (action == ContextAction::OpenWith) { OpenWithSubmenu(); return; }
         DismissContextMenu();
-        if (action == ContextAction::OpenWith) OpenWith();
-        else if (action == ContextAction::Copy) CopyImage();
+        if (action == ContextAction::Copy) CopyImage();
         else if (action == ContextAction::Print) PrintImage();
+    }
+    bool OpenWithSubmenuOpen() const { return openWithSubmenuOpen_; }
+    void DismissOpenWithSubmenu() { openWithSubmenuOpen_ = false; openWithHovered_ = -1; InvalidateRect(window_, nullptr, FALSE); }
+    int OpenWithItemAt(POINT point) const {
+        if (!openWithSubmenuOpen_) return -1;
+        const RECT bounds = GetOpenWithSubmenuBounds();
+        if (!PtInRect(&bounds, point)) return -1;
+        const int row = MulDiv(38, GetDpiForWindow(window_), 96);
+        const int top = bounds.top + MulDiv(4, GetDpiForWindow(window_), 96);
+        const int index = (point.y - top) / row;
+        if (point.y < top || index < 0) return -1;
+        if (index < static_cast<int>(openWithHandlers_.size())) return index;
+        const int chooseTop = top + static_cast<int>(openWithHandlers_.size()) * row + MulDiv(9, GetDpiForWindow(window_), 96);
+        return point.y >= chooseTop && point.y < chooseTop + row ? static_cast<int>(openWithHandlers_.size()) : -1;
+    }
+    void SetOpenWithHover(int index) { if (openWithHovered_ != index) { openWithHovered_ = index; InvalidateRect(window_, nullptr, FALSE); } }
+    void InvokeOpenWithItem(int index) {
+        if (index == static_cast<int>(openWithHandlers_.size())) { DismissContextMenu(); OpenWith(); return; }
+        if (index < 0 || index >= static_cast<int>(openWithHandlers_.size())) return;
+        ComPtr<IShellItem> item;
+        ComPtr<IDataObject> data;
+        if (FAILED(SHCreateItemFromParsingName(currentPath_.c_str(), nullptr, IID_PPV_ARGS(&item))) ||
+            FAILED(item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&data))) ||
+            FAILED(openWithHandlers_[index].handler->Invoke(data.Get()))) ShowActionError(L"Windows could not open this image with the selected application.");
+        DismissContextMenu();
     }
     void UpdateCopyFeedback() {
         if (!copyFeedbackActive_) return;
@@ -492,6 +520,7 @@ public:
             DrawTitleBar();
             DrawDropdown();
             DrawContextMenu();
+            DrawOpenWithSubmenu();
             DrawOverlay();
             DrawCopyFeedback();
             const HRESULT hr = renderTarget_->EndDraw();
@@ -674,6 +703,34 @@ public:
     }
 
 private:
+    void OpenWithSubmenu() {
+        const std::wstring extension = fs::path(currentPath_).extension().wstring();
+        if (openWithExtension_ != extension) {
+            openWithHandlers_.clear(); openWithExtension_ = extension;
+            ComPtr<IEnumAssocHandlers> enumerator;
+            if (SUCCEEDED(SHAssocEnumHandlers(extension.c_str(), ASSOC_FILTER_RECOMMENDED, &enumerator))) for (;;) {
+                ComPtr<IAssocHandler> handler; ULONG fetched = 0;
+                if (enumerator->Next(1, &handler, &fetched) != S_OK || !handler) break;
+                LPWSTR name = nullptr;
+                if (SUCCEEDED(handler->GetUIName(&name)) && name && *name) {
+                    const std::wstring uiName(name); CoTaskMemFree(name);
+                    if (std::none_of(openWithHandlers_.begin(), openWithHandlers_.end(), [&](const OpenWithHandler& value) { return value.name == uiName; })) openWithHandlers_.push_back({ uiName, handler });
+                } else if (name) CoTaskMemFree(name);
+            }
+        }
+        openWithSubmenuOpen_ = true; openWithHovered_ = -1; InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    RECT GetOpenWithSubmenuBounds() const {
+        const RECT parent = GetContextMenuBounds(); RECT client{}; GetClientRect(window_, &client);
+        const UINT dpi = GetDpiForWindow(window_); const LONG margin = MulDiv(4, dpi, 96), row = MulDiv(38, dpi, 96), gap = MulDiv(9, dpi, 96);
+        const LONG width = std::min<LONG>(MulDiv(250, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
+        const LONG height = margin * 2 + row * (static_cast<LONG>(openWithHandlers_.size()) + 1) + gap;
+        const LONG rightX = parent.right + margin; const LONG left = rightX + width <= client.right - margin ? rightX : std::max<LONG>(margin, parent.left - margin - width);
+        const LONG top = std::clamp<LONG>(parent.top + row * 2 + gap, margin, std::max<LONG>(margin, client.bottom - height - margin));
+        return { left, top, left + width, top + height };
+    }
+
     RECT GetContextMenuBounds() const {
         RECT client{};
         GetClientRect(window_, &client);
@@ -1056,7 +1113,7 @@ private:
                 const D2D1_SIZE_F logoSource = aboutLogo_->GetSize();
                 const float logoWidth = std::min(520.0f * dpiScale, contentWidth);
                 const float logoHeight = logoWidth * logoSource.height / logoSource.width;
-                const float logoLeft = static_cast<float>(bounds.left) + (bounds.right - bounds.left - logoWidth) / 2.0f;
+                const float logoLeft = static_cast<float>(bounds.left) + 40.0f * dpiScale;
                 const float logoTop = logoBottom;
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
                 logoBottom = logoTop + logoHeight;
@@ -1151,35 +1208,53 @@ private:
             top += gap;
         };
         drawItem(ContextAction::RotateLeft, L"Rotate Left"); drawItem(ContextAction::RotateRight, L"Rotate Right"); separator();
-        drawItem(ContextAction::OpenWith, L"Open With..."); drawItem(ContextAction::Copy, L"Copy"); drawItem(ContextAction::Print, L"Print"); separator();
+        drawItem(ContextAction::OpenWith, L"Open With  >"); drawItem(ContextAction::Copy, L"Copy"); drawItem(ContextAction::Print, L"Print"); separator();
         drawItem(ContextAction::SetBackground, L"Set as Background"); drawItem(ContextAction::SetLockScreen, L"Set as Lock Screen"); separator(); drawItem(ContextAction::Delete, L"Delete");
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
+    }
+
+    void DrawOpenWithSubmenu() {
+        if (!openWithSubmenuOpen_) return;
+        const RECT bounds = GetOpenWithSubmenuBounds(); const bool dark = UseDarkAppMode();
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, hover;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(40.f/255,43.f/255,50.f/255) : D2D1::ColorF(250.f/255,250.f/255,250.f/255), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(82.f/255,86.f/255,96.f/255) : D2D1::ColorF(190.f/255,190.f/255,190.f/255), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(28.f/255,28.f/255,28.f/255), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f/255,64.f/255,74.f/255) : D2D1::ColorF(228.f/255,228.f/255,228.f/255), &hover))) return;
+        const D2D1_RECT_F menu = D2D1::RectF((float)bounds.left,(float)bounds.top,(float)bounds.right,(float)bounds.bottom);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(menu,7,7),surface.Get());
+        const UINT dpi=GetDpiForWindow(window_); const int row=MulDiv(38,dpi,96), gap=MulDiv(9,dpi,96); int top=bounds.top+MulDiv(4,dpi,96);
+        const auto draw=[&](int index,const wchar_t* label){ if(openWithHovered_==index) renderTarget_->FillRectangle(D2D1::RectF((float)bounds.left+1,(float)top,(float)bounds.right-1,(float)(top+row)),hover.Get()); DrawOverlayText(label,(float)bounds.left+MulDiv(14,dpi,96),(float)top,(float)(bounds.right-bounds.left-MulDiv(28,dpi,96)),(float)row,13,DWRITE_FONT_WEIGHT_NORMAL,text.Get(),true); top+=row; };
+        for(int i=0;i<(int)openWithHandlers_.size();++i) draw(i,openWithHandlers_[i].name.c_str());
+        const float y=(float)(top+gap/2); renderTarget_->DrawLine(D2D1::Point2F((float)bounds.left+MulDiv(12,dpi,96),y),D2D1::Point2F((float)bounds.right-MulDiv(12,dpi,96),y),border.Get()); top+=gap;
+        draw((int)openWithHandlers_.size(),L"Choose another app");
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu,7,7),border.Get());
     }
 
     void DrawCopyFeedback() {
         if (!copyFeedbackActive_) return;
         const ULONGLONG elapsed = GetTickCount64() - copyFeedbackStart_;
         if (elapsed >= 1000) return;
-        const float opacity = 0.70f * (1.0f - static_cast<float>(elapsed) / 1000.0f);
-        ComPtr<ID2D1SolidColorBrush> brush;
+        const float opacity = 1.0f - static_cast<float>(elapsed) / 1000.0f;
+        ComPtr<ID2D1SolidColorBrush> brush, outline;
         const D2D1_COLOR_F color = D2D1::ColorF(0.0f, 142.0f / 255.0f, 1.0f, opacity);
-        if (FAILED(renderTarget_->CreateSolidColorBrush(color, &brush))) return;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(color, &brush)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White, opacity), &outline))) return;
         const D2D1_SIZE_F size = renderTarget_->GetSize(); const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
-        const float glyph = 104.0f * scale;
-        const float stroke = 6.0f * scale;
-        const float offset = 19.0f * scale;
-        const float textHeight = 22.0f * scale;
-        const float gap = 16.0f * scale;
+        const float glyph = 200.0f * scale;
+        const float stroke = 12.0f * scale;
+        const float offset = 36.0f * scale;
+        const float textHeight = 40.0f * scale;
+        const float gap = 24.0f * scale;
         const float totalHeight = glyph + gap + textHeight;
         const float x = (size.width - glyph) / 2.0f;
         const float y = top + (size.height - top - totalHeight) / 2.0f;
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x, y, x + glyph - offset, y + glyph - offset),
-            10.0f * scale, 10.0f * scale), brush.Get(), stroke);
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x + offset, y + offset, x + glyph, y + glyph),
-            10.0f * scale, 10.0f * scale), brush.Get(), stroke);
-        DrawOverlayText(L"Copied to Clipboard", 0.0f, y + glyph + gap, size.width, textHeight, 15.0f,
-            DWRITE_FONT_WEIGHT_SEMI_BOLD, brush.Get(), true, false, true);
+        const D2D1_ROUNDED_RECT rear=D2D1::RoundedRect(D2D1::RectF(x,y,x+glyph-offset,y+glyph-offset),18.f*scale,18.f*scale), front=D2D1::RoundedRect(D2D1::RectF(x+offset,y+offset,x+glyph,y+glyph),18.f*scale,18.f*scale);
+        renderTarget_->DrawRoundedRectangle(rear,outline.Get(),stroke+6.f*scale); renderTarget_->DrawRoundedRectangle(front,outline.Get(),stroke+6.f*scale);
+        renderTarget_->DrawRoundedRectangle(rear,brush.Get(),stroke); renderTarget_->DrawRoundedRectangle(front,brush.Get(),stroke);
+        const float textY=y+glyph+gap;
+        for(int dx=-2;dx<=2;++dx) for(int dy=-2;dy<=2;++dy) if(dx||dy) DrawOverlayText(L"Copied to Clipboard",(float)dx*scale,textY+(float)dy*scale,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,outline.Get(),true,false,true);
+        DrawOverlayText(L"Copied to Clipboard",0,textY,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,brush.Get(),true,false,true);
     }
 
     void DrawTitleBar() {
@@ -1339,6 +1414,10 @@ private:
     ContextAction contextHovered_ = ContextAction::None;
     ContextAction contextPressed_ = ContextAction::None;
     POINT contextMenuAnchor_{};
+    bool openWithSubmenuOpen_ = false;
+    int openWithHovered_ = -1;
+    std::wstring openWithExtension_;
+    std::vector<OpenWithHandler> openWithHandlers_;
     bool copyFeedbackActive_ = false;
     ULONGLONG copyFeedbackStart_ = 0;
     LONG_PTR fullscreenStyle_ = 0;
@@ -1427,6 +1506,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_LBUTTONDOWN: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->OpenWithSubmenuOpen()) {
+            const int item = viewer->OpenWithItemAt(point);
+            if (item >= 0) { viewer->InvokeOpenWithItem(item); return 0; }
+            const ContextAction parent = viewer->ContextActionAt(point);
+            if (parent != ContextAction::OpenWith) viewer->DismissContextMenu();
+            return 0;
+        }
         if (viewer->ContextMenuOpen()) {
             const FrameMetrics frame = GetFrameMetrics(window);
             if (!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point)) {
@@ -1468,6 +1554,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_MOUSEMOVE: {
+        if (viewer->OpenWithSubmenuOpen()) { viewer->SetOpenWithHover(viewer->OpenWithItemAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })); return 0; }
         if (viewer->ContextMenuOpen()) {
             viewer->SetContextHover(viewer->ContextActionAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }));
             TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE, window, 0 };
@@ -1534,6 +1621,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case WM_KEYDOWN:
+        if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }
         if (viewer->ContextMenuOpen()) {
             if (wParam == VK_ESCAPE) viewer->DismissContextMenu();
             return 0;

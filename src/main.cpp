@@ -33,12 +33,10 @@ constexpr float kMaximumZoom = 16.0f;
 constexpr float kZoomStep = 1.20f;
 constexpr wchar_t kSettingsKey[] = L"Software\\FeatherView";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
-constexpr UINT kMenuKeyboardShortcuts = 1;
-constexpr UINT kMenuAbout = 2;
-constexpr UINT kMenuClose = 3;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
 enum class OverlayKind { None, KeyboardShortcuts, About };
+enum class DropdownItem { None, KeyboardShortcuts, About, Close };
 
 #if defined(_DEBUG)
 class StartupTimer {
@@ -307,6 +305,52 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool HamburgerPressed() const { return hamburgerPressed_; }
+    bool DropdownOpen() const { return dropdownOpen_; }
+    void ToggleDropdown() {
+        if (fullscreen_) return;
+        dropdownOpen_ = !dropdownOpen_;
+        if (dropdownOpen_) DismissOverlay();
+        dropdownHovered_ = DropdownItem::None;
+        dropdownPressed_ = DropdownItem::None;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void DismissDropdown() {
+        if (!dropdownOpen_) return;
+        dropdownOpen_ = false;
+        dropdownHovered_ = DropdownItem::None;
+        dropdownPressed_ = DropdownItem::None;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    DropdownItem DropdownItemAt(POINT point) const {
+        if (!dropdownOpen_) return DropdownItem::None;
+        const RECT bounds = GetDropdownBounds();
+        if (!PtInRect(&bounds, point)) return DropdownItem::None;
+        const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
+        const int firstRowTop = bounds.top + MulDiv(4, GetDpiForWindow(window_), 96);
+        const int firstRowBottom = firstRowTop + rowHeight;
+        const int secondRowTop = firstRowBottom + MulDiv(9, GetDpiForWindow(window_), 96);
+        if (point.y >= firstRowTop && point.y < firstRowBottom) return DropdownItem::KeyboardShortcuts;
+        if (point.y < secondRowTop) return DropdownItem::None;
+        if (point.y < secondRowTop + rowHeight) return DropdownItem::About;
+        return DropdownItem::Close;
+    }
+    void SetDropdownHover(DropdownItem item) {
+        if (dropdownHovered_ == item) return;
+        dropdownHovered_ = item;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void SetDropdownPressed(DropdownItem item) {
+        dropdownPressed_ = item;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    DropdownItem PressedDropdownItem() const { return dropdownPressed_; }
+    void ClearDropdownPressed() { SetDropdownPressed(DropdownItem::None); }
+    void InvokeDropdownItem(DropdownItem item) {
+        DismissDropdown();
+        if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
+        else if (item == DropdownItem::About) ShowOverlay(OverlayKind::About);
+        else if (item == DropdownItem::Close) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
+    }
     bool HasOverlay() const { return overlay_ != OverlayKind::None; }
     void ShowOverlay(OverlayKind overlay) {
         overlay_ = overlay;
@@ -321,24 +365,6 @@ public:
     bool OverlayContains(POINT point) const {
         const RECT bounds = GetOverlayBounds();
         return HasOverlay() && PtInRect(&bounds, point);
-    }
-    void ShowHamburgerMenu() {
-        if (fullscreen_) return;
-        HMENU menu = CreatePopupMenu();
-        if (!menu) return;
-        AppendMenuW(menu, MF_STRING, kMenuKeyboardShortcuts, L"Keyboard Shortcuts");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, kMenuAbout, L"About");
-        AppendMenuW(menu, MF_STRING, kMenuClose, L"Close");
-        const FrameMetrics frame = GetFrameMetrics(window_);
-        POINT anchor{ frame.hamburger.left, frame.hamburger.bottom };
-        ClientToScreen(window_, &anchor);
-        const UINT command = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_RIGHTBUTTON,
-            anchor.x, anchor.y, 0, window_, nullptr);
-        DestroyMenu(menu);
-        if (command == kMenuKeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
-        else if (command == kMenuAbout) ShowOverlay(OverlayKind::About);
-        else if (command == kMenuClose) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
     }
     void ToggleFullscreen() {
         if (!fullscreen_) DismissOverlay();
@@ -373,6 +399,7 @@ public:
                 if (bitmap_) DrawImage();
             }
             DrawTitleBar();
+            DrawDropdown();
             DrawOverlay();
             const HRESULT hr = renderTarget_->EndDraw();
             if (SUCCEEDED(hr) && bitmap_) MarkFirstPresentation();
@@ -554,6 +581,20 @@ public:
     }
 
 private:
+    RECT GetDropdownBounds() const {
+        RECT client{};
+        GetClientRect(window_, &client);
+        const UINT dpi = GetDpiForWindow(window_);
+        const FrameMetrics frame = GetFrameMetrics(window_);
+        const LONG margin = MulDiv(4, dpi, 96);
+        const LONG width = std::min<LONG>(MulDiv(236, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
+        const LONG height = MulDiv(131, dpi, 96);
+        const LONG left = std::clamp<LONG>(frame.hamburger.left + margin, margin,
+            std::max<LONG>(margin, client.right - width - margin));
+        const LONG top = frame.hamburger.bottom + margin;
+        return { left, top, left + width, std::min<LONG>(client.bottom - margin, top + height) };
+    }
+
     HRESULT DecodeImage(const std::wstring& path, ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height) {
         timer_.Log(L"decode start");
         ComPtr<IWICBitmapDecoder> decoder;
@@ -763,8 +804,8 @@ private:
         GetClientRect(window_, &client);
         if (!HasOverlay()) return {};
         const UINT dpi = GetDpiForWindow(window_);
-        const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 : 330, dpi, 96);
-        const int desiredHeight = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 344 : 206, dpi, 96);
+        const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 : 440, dpi, 96);
+        const int desiredHeight = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 344 : 370, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -829,28 +870,86 @@ private:
         if (overlay_ == OverlayKind::KeyboardShortcuts) {
             DrawOverlayText(L"Keyboard Shortcuts", left, static_cast<float>(bounds.top) + 18.0f * dpiScale,
                 contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            constexpr const wchar_t* lines[] = {
-                L"Left Arrow     Previous image", L"Right Arrow    Next image", L"Mouse Wheel    Zoom",
-                L"+ / =          Zoom in", L"-              Zoom out", L"0              Reset zoom and center",
-                L"Left mouse drag  Pan", L"Double-click image  Toggle fullscreen", L"F11            Toggle fullscreen",
-                L"Esc            Exit fullscreen, or close FeatherView" };
+            struct ShortcutLine { const wchar_t* shortcut; const wchar_t* description; };
+            constexpr ShortcutLine lines[] = {
+                { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom" },
+                { L"+ / =", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
+                { L"Left mouse drag", L"Pan" }, { L"Double-click image", L"Toggle fullscreen" }, { L"F11", L"Toggle fullscreen" },
+                { L"Esc", L"Exit fullscreen, or close FeatherView" } };
+            const float shortcutWidth = 154.0f * dpiScale;
             float y = static_cast<float>(bounds.top) + 56.0f * dpiScale;
-            for (const wchar_t* line : lines) {
-                DrawOverlayText(line, left, y, contentWidth, 18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            for (const ShortcutLine& line : lines) {
+                DrawOverlayText(line.shortcut, left, y, shortcutWidth, 18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+                DrawOverlayText(line.description, left + shortcutWidth, y, contentWidth - shortcutWidth,
+                    18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
                 y += 25.0f * dpiScale;
             }
         } else {
-            const float logoSize = 64.0f * dpiScale;
-            const float logoLeft = static_cast<float>(bounds.left) + 22.0f * dpiScale;
-            const float logoTop = static_cast<float>(bounds.top) + 50.0f * dpiScale;
-            if (EnsureAboutLogo()) renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoSize, logoTop + logoSize));
-            DrawOverlayText(L"FeatherView", logoLeft + logoSize + 16.0f * dpiScale, logoTop + 8.0f * dpiScale,
-                contentWidth - logoSize - 16.0f * dpiScale, 26.0f * dpiScale, 17.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            DrawOverlayText(L"Version 0.2.2.0", logoLeft + logoSize + 16.0f * dpiScale, logoTop + 38.0f * dpiScale,
-                contentWidth - logoSize - 16.0f * dpiScale, 20.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            DrawOverlayText(L"Lightweight native image viewer", left, static_cast<float>(bounds.bottom) - 42.0f * dpiScale,
+            float logoBottom = static_cast<float>(bounds.top) + 34.0f * dpiScale;
+            if (EnsureAboutLogo()) {
+                const D2D1_SIZE_F logoSource = aboutLogo_->GetSize();
+                const float logoWidth = std::min(210.0f * dpiScale, contentWidth);
+                const float logoHeight = logoWidth * logoSource.height / logoSource.width;
+                const float logoLeft = static_cast<float>(bounds.left) + (bounds.right - bounds.left - logoWidth) / 2.0f;
+                const float logoTop = logoBottom;
+                renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
+                logoBottom = logoTop + logoHeight;
+            }
+            const float titleTop = logoBottom + 28.0f * dpiScale;
+            DrawOverlayText(L"FeatherView", left, titleTop, contentWidth, 26.0f * dpiScale,
+                18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            DrawOverlayText(L"Version " FEATHERVIEW_VERSION, left, titleTop + 31.0f * dpiScale, contentWidth, 20.0f * dpiScale,
+                12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            DrawOverlayText(L"Extremely lightweight image viewer", left, static_cast<float>(bounds.bottom) - 44.0f * dpiScale,
                 contentWidth, 18.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
         }
+    }
+
+    void DrawDropdown() {
+        if (!dropdownOpen_) return;
+        const RECT bounds = GetDropdownBounds();
+        if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) return;
+        const bool dark = UseDarkAppMode();
+        const D2D1_COLOR_F surface = dark ? D2D1::ColorF(40.0f / 255.0f, 43.0f / 255.0f, 50.0f / 255.0f)
+            : D2D1::ColorF(250.0f / 255.0f, 250.0f / 255.0f, 250.0f / 255.0f);
+        const D2D1_COLOR_F border = dark ? D2D1::ColorF(82.0f / 255.0f, 86.0f / 255.0f, 96.0f / 255.0f)
+            : D2D1::ColorF(190.0f / 255.0f, 190.0f / 255.0f, 190.0f / 255.0f);
+        const D2D1_COLOR_F text = dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(28.0f / 255.0f, 28.0f / 255.0f, 28.0f / 255.0f);
+        const D2D1_COLOR_F hover = dark ? D2D1::ColorF(60.0f / 255.0f, 64.0f / 255.0f, 74.0f / 255.0f)
+            : D2D1::ColorF(228.0f / 255.0f, 228.0f / 255.0f, 228.0f / 255.0f);
+        const D2D1_COLOR_F pressed = dark ? D2D1::ColorF(75.0f / 255.0f, 80.0f / 255.0f, 92.0f / 255.0f)
+            : D2D1::ColorF(210.0f / 255.0f, 210.0f / 255.0f, 210.0f / 255.0f);
+        ComPtr<ID2D1SolidColorBrush> surfaceBrush, borderBrush, textBrush, hoverBrush, pressedBrush;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(surface, &surfaceBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(border, &borderBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(text, &textBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(hover, &hoverBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(pressed, &pressedBrush))) return;
+        const D2D1_RECT_F menu = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top),
+            static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), surfaceBrush.Get());
+        const UINT dpi = GetDpiForWindow(window_);
+        const int rowHeight = MulDiv(38, dpi, 96);
+        const int separatorGap = MulDiv(9, dpi, 96);
+        const auto row = [&](int top) { return D2D1::RectF(static_cast<float>(bounds.left + 4), static_cast<float>(top),
+            static_cast<float>(bounds.right - 4), static_cast<float>(top + rowHeight)); };
+        const int shortcutsTop = bounds.top + 4;
+        const int aboutTop = shortcutsTop + rowHeight + separatorGap;
+        const int closeTop = aboutTop + rowHeight;
+        const auto drawItem = [&](DropdownItem item, int top, const wchar_t* label) {
+            if (dropdownPressed_ == item) renderTarget_->FillRectangle(row(top), pressedBrush.Get());
+            else if (dropdownHovered_ == item) renderTarget_->FillRectangle(row(top), hoverBrush.Get());
+            DrawOverlayText(label, static_cast<float>(bounds.left + MulDiv(14, dpi, 96)), static_cast<float>(top),
+                static_cast<float>(bounds.right - bounds.left - MulDiv(28, dpi, 96)), static_cast<float>(rowHeight),
+                13.0f, DWRITE_FONT_WEIGHT_NORMAL, textBrush.Get());
+        };
+        drawItem(DropdownItem::KeyboardShortcuts, shortcutsTop, L"Keyboard Shortcuts");
+        const float separatorY = static_cast<float>(shortcutsTop + rowHeight + separatorGap / 2);
+        renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(bounds.left + MulDiv(12, dpi, 96)), separatorY),
+            D2D1::Point2F(static_cast<float>(bounds.right - MulDiv(12, dpi, 96)), separatorY), borderBrush.Get(), 1.0f);
+        drawItem(DropdownItem::About, aboutTop, L"About");
+        drawItem(DropdownItem::Close, closeTop, L"Close");
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 
     void DrawTitleBar() {
@@ -1005,6 +1104,9 @@ private:
     bool hamburgerHovered_ = false;
     bool hamburgerPressed_ = false;
     OverlayKind overlay_ = OverlayKind::None;
+    bool dropdownOpen_ = false;
+    DropdownItem dropdownHovered_ = DropdownItem::None;
+    DropdownItem dropdownPressed_ = DropdownItem::None;
     LONG_PTR fullscreenStyle_ = 0;
     RECT fullscreenRect_{};
 };
@@ -1084,14 +1186,29 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
-        if (viewer->HasOverlay()) return 0;
+        if (viewer->HasOverlay() || viewer->DropdownOpen()) return 0;
         const FrameMetrics frame = GetFrameMetrics(window);
         if (!PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) viewer->ToggleFullscreen();
         return 0;
     }
     case WM_LBUTTONDOWN: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->DropdownOpen()) {
+            const FrameMetrics frame = GetFrameMetrics(window);
+            if (PtInRect(&frame.hamburger, point)) {
+                viewer->DismissDropdown();
+                return 0;
+            }
+            const DropdownItem item = viewer->DropdownItemAt(point);
+            if (item == DropdownItem::None) viewer->DismissDropdown();
+            else {
+                viewer->SetDropdownPressed(item);
+                SetCapture(window);
+            }
+            return 0;
+        }
         if (viewer->HasOverlay()) {
-            if (!viewer->OverlayContains({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) viewer->DismissOverlay();
+            if (!viewer->OverlayContains(point)) viewer->DismissOverlay();
             return 0;
         }
         const FrameMetrics frame = GetFrameMetrics(window);
@@ -1104,6 +1221,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_MOUSEMOVE: {
+        if (viewer->DropdownOpen()) {
+            viewer->SetDropdownHover(viewer->DropdownItemAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }));
+            TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE, window, 0 };
+            TrackMouseEvent(&track);
+            return 0;
+        }
         if (viewer->HasOverlay()) {
             viewer->SetHamburgerHover(false);
             return 0;
@@ -1116,14 +1239,22 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (!viewer->HamburgerPressed()) viewer->PanTo(point);
         return 0;
     }
-    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); return 0;
+    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetDropdownHover(DropdownItem::None); return 0;
     case WM_LBUTTONUP: {
+        if (viewer->PressedDropdownItem() != DropdownItem::None) {
+            const DropdownItem pressed = viewer->PressedDropdownItem();
+            const DropdownItem released = viewer->DropdownItemAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            viewer->ClearDropdownPressed();
+            if (GetCapture() == window) ReleaseCapture();
+            if (pressed == released) viewer->InvokeDropdownItem(pressed);
+            return 0;
+        }
         if (viewer->HamburgerPressed()) {
             const FrameMetrics frame = GetFrameMetrics(window);
             const bool releasedOnHamburger = PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
             viewer->SetHamburgerPressed(false);
             if (GetCapture() == window) ReleaseCapture();
-            if (releasedOnHamburger) viewer->ShowHamburgerMenu();
+            if (releasedOnHamburger) viewer->ToggleDropdown();
             return 0;
         }
         const CaptionButton pressed = viewer->PressedCaptionButton();
@@ -1135,10 +1266,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (pressed == released) SendMessageW(window, WM_SYSCOMMAND, SystemCommandForCaptionButton(window, released), 0);
         return 0;
     }
-    case WM_CAPTURECHANGED: viewer->EndPan(); viewer->ClearCaptionButtonPressed(); viewer->SetHamburgerPressed(false); return 0;
+    case WM_CAPTURECHANGED:
+        viewer->EndPan(); viewer->ClearCaptionButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); return 0;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case WM_KEYDOWN:
+        if (viewer->DropdownOpen()) {
+            if (wParam == VK_ESCAPE) viewer->DismissDropdown();
+            return 0;
+        }
         if (viewer->HasOverlay()) {
             if (wParam == VK_ESCAPE) viewer->DismissOverlay();
             return 0;

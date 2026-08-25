@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(FeatherView VERSION 0.2.2.0 LANGUAGES CXX)
+project(FeatherView VERSION 0.2.2.1 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FeatherView currently targets Windows only.")
@@ -17,7 +17,7 @@ add_executable(FeatherView WIN32
 )
 
 target_compile_features(FeatherView PRIVATE cxx_std_20)
-target_compile_definitions(FeatherView PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_definitions(FeatherView PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX FEATHERVIEW_VERSION=L\"${PROJECT_VERSION}\")
 target_link_libraries(FeatherView PRIVATE d2d1 dwrite windowscodecs shell32 shlwapi dwmapi advapi32)
 
 if(MSVC)

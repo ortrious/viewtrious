@@ -4,6 +4,7 @@
 #include <shlwapi.h>
 #include <dwmapi.h>
 #include <d2d1.h>
+#include <dwrite.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 
@@ -16,6 +17,7 @@
 #include <vector>
 
 #pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "shlwapi.lib")
 
@@ -127,6 +129,12 @@ struct FrameMetrics {
     int titleBarHeight;
     int border;
     RECT titleBarContent;
+    RECT hamburger;
+    int resolutionLeft;
+    int resolutionWidth;
+    int fileSizeLeft;
+    int fileSizeWidth;
+    int filenameLeft;
     RECT minimize;
     RECT maximize;
     RECT close;
@@ -134,14 +142,25 @@ struct FrameMetrics {
 
 FrameMetrics GetFrameMetrics(HWND window) {
     const UINT dpi = GetDpiForWindow(window);
-    const int titleBarHeight = MulDiv(42, dpi, 96);
+    const int titleBarHeight = MulDiv(36, dpi, 96);
     const int border = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
     const int buttonWidth = MulDiv(46, dpi, 96);
+    const int hamburgerSize = MulDiv(28, dpi, 96);
+    const int leftPadding = MulDiv(8, dpi, 96);
+    const int metadataGap = MulDiv(12, dpi, 96);
+    const int resolutionWidth = MulDiv(92, dpi, 96);
+    const int fileSizeWidth = MulDiv(72, dpi, 96);
     RECT client{};
     GetClientRect(window, &client);
     const int buttonLeft = std::max(0L, client.right - buttonWidth * 3);
+    const int hamburgerTop = std::max(0, (titleBarHeight - hamburgerSize) / 2);
+    const int resolutionLeft = leftPadding + hamburgerSize + metadataGap;
+    const int fileSizeLeft = resolutionLeft + resolutionWidth + metadataGap;
+    const int filenameLeft = fileSizeLeft + fileSizeWidth + metadataGap;
     return { titleBarHeight, border,
         { 0, 0, buttonLeft, titleBarHeight },
+        { leftPadding, hamburgerTop, leftPadding + hamburgerSize, hamburgerTop + hamburgerSize },
+        resolutionLeft, resolutionWidth, fileSizeLeft, fileSizeWidth, filenameLeft,
         { buttonLeft, 0, buttonLeft + buttonWidth, titleBarHeight },
         { buttonLeft + buttonWidth, 0, buttonLeft + buttonWidth * 2, titleBarHeight },
         { buttonLeft + buttonWidth * 2, 0, client.right, titleBarHeight } };
@@ -180,6 +199,22 @@ void ApplyTitleBarTheme(HWND window) {
     DwmSetWindowAttribute(window, kDwmUseImmersiveDarkMode, &dark, sizeof(dark));
 }
 
+std::wstring FormatFileSize(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes)) return L"";
+    ULARGE_INTEGER size{};
+    size.HighPart = attributes.nFileSizeHigh;
+    size.LowPart = attributes.nFileSizeLow;
+    constexpr wchar_t units[] = L"BKMGT";
+    double value = static_cast<double>(size.QuadPart);
+    int unit = 0;
+    while (value >= 1024.0 && unit < 4) { value /= 1024.0; ++unit; }
+    wchar_t text[32]{};
+    if (unit == 0 || value >= 10.0) swprintf_s(text, L"%.0f %cB", value, units[unit]);
+    else swprintf_s(text, L"%.1f %cB", value, units[unit]);
+    return text;
+}
+
 class Viewer {
 public:
     explicit Viewer(const StartupTimer& timer) : timer_(timer) {}
@@ -194,6 +229,12 @@ public:
         hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2dFactory_.GetAddressOf());
         if (FAILED(hr)) {
             error_ = L"Direct2D could not be initialized.";
+            return hr;
+        }
+        hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+            reinterpret_cast<IUnknown**>(dwriteFactory_.GetAddressOf()));
+        if (FAILED(hr)) {
+            error_ = L"DirectWrite could not be initialized.";
             return hr;
         }
         if (!path.empty()) return LoadImage(path);
@@ -213,6 +254,9 @@ public:
             bitmap_.Reset();
             imageWidth_ = imageHeight_ = 0;
             currentPath_.clear();
+            resolutionText_.clear();
+            fileSizeText_.clear();
+            filenameText_.clear();
             navigationFiles_.clear();
             navigationBuilt_ = false;
             error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
@@ -237,6 +281,16 @@ public:
         pressedCaptionButton_ = CaptionButton::None;
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void SetHamburgerHover(bool hovered) {
+        if (hamburgerHovered_ == hovered) return;
+        hamburgerHovered_ = hovered;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void SetHamburgerPressed(bool pressed) {
+        hamburgerPressed_ = pressed;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool HamburgerPressed() const { return hamburgerPressed_; }
     void ToggleFullscreen() {
         if (!fullscreen_) {
             fullscreenStyle_ = GetWindowLongPtrW(window_, GWL_STYLE);
@@ -483,6 +537,9 @@ private:
         imageWidth_ = width;
         imageHeight_ = height;
         currentPath_ = path;
+        resolutionText_ = std::to_wstring(width) + L"×" + std::to_wstring(height);
+        fileSizeText_ = FormatFileSize(path);
+        filenameText_ = fs::path(path).filename().wstring();
         error_.clear();
         fitToWindow_ = true;
         zoom_ = 1.0f;
@@ -563,6 +620,36 @@ private:
         renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
+    bool EnsureTitleTextFormat() {
+        const UINT dpi = GetDpiForWindow(window_);
+        if (titleTextFormat_ && titleTextDpi_ == dpi) return true;
+        titleTextFormat_.Reset();
+        titleTextDpi_ = dpi;
+        if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13.0f * static_cast<float>(dpi) / 96.0f,
+                L"", &titleTextFormat_))) return false;
+        titleTextFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        return true;
+    }
+
+    void DrawTitleText(const std::wstring& text, float left, float width, ID2D1Brush* brush, bool trim) {
+        if (text.empty() || width <= 0.0f || !EnsureTitleTextFormat()) return;
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), titleTextFormat_.Get(),
+                width, static_cast<float>(GetFrameMetrics(window_).titleBarHeight), &layout))) return;
+        if (trim) {
+            DWRITE_TRIMMING trimming{ DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+            ComPtr<IDWriteInlineObject> ellipsis;
+            if (SUCCEEDED(dwriteFactory_->CreateEllipsisTrimmingSign(titleTextFormat_.Get(), &ellipsis))) {
+                layout->SetTrimming(&trimming, ellipsis.Get());
+            }
+        }
+        DWRITE_TEXT_METRICS metrics{};
+        layout->GetMetrics(&metrics);
+        const float top = std::max(0.0f, (static_cast<float>(GetFrameMetrics(window_).titleBarHeight) - metrics.height) / 2.0f);
+        renderTarget_->DrawTextLayout(D2D1::Point2F(left, top), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
     void DrawTitleBar() {
         if (fullscreen_) return;
 
@@ -578,6 +665,10 @@ private:
         const D2D1_COLOR_F closePressedColor = D2D1::ColorF(153.0f / 255.0f, 27.0f / 255.0f, 20.0f / 255.0f);
         const D2D1_COLOR_F glyphColor = dark ? D2D1::ColorF(D2D1::ColorF::White)
             : D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f);
+        const D2D1_COLOR_F metadataColor = dark ? D2D1::ColorF(190.0f / 255.0f, 193.0f / 255.0f, 198.0f / 255.0f)
+            : D2D1::ColorF(85.0f / 255.0f, 85.0f / 255.0f, 85.0f / 255.0f);
+        const D2D1_COLOR_F filenameColor = dark ? D2D1::ColorF(240.0f / 255.0f, 240.0f / 255.0f, 240.0f / 255.0f)
+            : D2D1::ColorF(35.0f / 255.0f, 35.0f / 255.0f, 35.0f / 255.0f);
         ComPtr<ID2D1SolidColorBrush> stripBrush;
         ComPtr<ID2D1SolidColorBrush> hoverBrush;
         ComPtr<ID2D1SolidColorBrush> pressedBrush;
@@ -585,13 +676,17 @@ private:
         ComPtr<ID2D1SolidColorBrush> closePressedBrush;
         ComPtr<ID2D1SolidColorBrush> glyphBrush;
         ComPtr<ID2D1SolidColorBrush> closeGlyphBrush;
+        ComPtr<ID2D1SolidColorBrush> metadataBrush;
+        ComPtr<ID2D1SolidColorBrush> filenameBrush;
         if (FAILED(renderTarget_->CreateSolidColorBrush(stripColor, &stripBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(hoverColor, &hoverBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(pressedColor, &pressedBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(closeHoverColor, &closeHoverBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(closePressedColor, &closePressedBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(glyphColor, &glyphBrush)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &closeGlyphBrush))) return;
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &closeGlyphBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(metadataColor, &metadataBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(filenameColor, &filenameBrush))) return;
 
         const D2D1_RECT_F top = D2D1::RectF(0.0f, 0.0f, renderTarget_->GetSize().width, static_cast<float>(frame.titleBarHeight));
         renderTarget_->FillRectangle(top, stripBrush.Get());
@@ -609,6 +704,14 @@ private:
         drawButton(CaptionButton::Minimize, frame.minimize);
         drawButton(CaptionButton::Maximize, frame.maximize);
         drawButton(CaptionButton::Close, frame.close);
+        if (hamburgerPressed_) renderTarget_->FillRectangle(rect(frame.hamburger), pressedBrush.Get());
+        else if (hamburgerHovered_) renderTarget_->FillRectangle(rect(frame.hamburger), hoverBrush.Get());
+
+        DrawTitleText(resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), metadataBrush.Get(), false);
+        DrawTitleText(fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), metadataBrush.Get(), false);
+        const float filenameWidth = static_cast<float>(std::max(0L,
+            frame.titleBarContent.right - frame.filenameLeft - MulDiv(8, GetDpiForWindow(window_), 96)));
+        DrawTitleText(filenameText_, static_cast<float>(frame.filenameLeft), filenameWidth, filenameBrush.Get(), true);
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float glyphSize = 12.0f * dpiScale;
@@ -618,6 +721,14 @@ private:
             return D2D1::Point2F((value.left + value.right) / 2.0f, (value.top + value.bottom) / 2.0f);
         };
         renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+        const D2D1_POINT_2F hamburgerCenter = center(frame.hamburger);
+        const float hamburgerHalfWidth = 7.0f * dpiScale;
+        const float hamburgerSpacing = 4.0f * dpiScale;
+        for (int line = -1; line <= 1; ++line) {
+            const float y = pixelCenter(hamburgerCenter.y + line * hamburgerSpacing);
+            renderTarget_->DrawLine(D2D1::Point2F(pixelCenter(hamburgerCenter.x - hamburgerHalfWidth), y),
+                D2D1::Point2F(pixelCenter(hamburgerCenter.x + hamburgerHalfWidth), y), glyphBrush.Get(), stroke);
+        }
         const D2D1_POINT_2F minimizeCenter = center(frame.minimize);
         const float minimizeY = pixelCenter(minimizeCenter.y + glyphSize / 3.0f);
         renderTarget_->DrawLine(D2D1::Point2F(pixelCenter(minimizeCenter.x - glyphSize / 2.0f), minimizeY),
@@ -661,14 +772,20 @@ private:
     HWND window_ = nullptr;
     ComPtr<IWICImagingFactory> wicFactory_;
     ComPtr<ID2D1Factory> d2dFactory_;
+    ComPtr<IDWriteFactory> dwriteFactory_;
     ComPtr<IWICBitmapSource> source_;
     ComPtr<ID2D1HwndRenderTarget> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
     ComPtr<ID2D1SolidColorBrush> checkerLightBrush_;
     ComPtr<ID2D1SolidColorBrush> checkerDarkBrush_;
+    ComPtr<IDWriteTextFormat> titleTextFormat_;
+    UINT titleTextDpi_ = 0;
     UINT imageWidth_ = 0;
     UINT imageHeight_ = 0;
     std::wstring currentPath_;
+    std::wstring resolutionText_;
+    std::wstring fileSizeText_;
+    std::wstring filenameText_;
     std::wstring error_;
     std::vector<fs::path> navigationFiles_;
     D2D1_POINT_2F pan_ = D2D1::Point2F();
@@ -682,6 +799,8 @@ private:
     bool fullscreen_ = false;
     CaptionButton hoveredCaptionButton_ = CaptionButton::None;
     CaptionButton pressedCaptionButton_ = CaptionButton::None;
+    bool hamburgerHovered_ = false;
+    bool hamburgerPressed_ = false;
     LONG_PTR fullscreenStyle_ = 0;
     RECT fullscreenRect_{};
 };
@@ -711,6 +830,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case CaptionButton::Close: return HTCLOSE;
         case CaptionButton::None: break;
         }
+        if (PtInRect(&frame.hamburger, client)) return HTCLIENT;
         if (client.y >= 0 && client.y < frame.titleBarHeight) return HTCAPTION;
         return HTCLIENT;
     }
@@ -759,9 +879,32 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_LBUTTONDBLCLK: viewer->ToggleFullscreen(); return 0;
-    case WM_LBUTTONDOWN: viewer->BeginPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
-    case WM_MOUSEMOVE: viewer->PanTo({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
+    case WM_LBUTTONDOWN: {
+        const FrameMetrics frame = GetFrameMetrics(window);
+        if (PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
+            viewer->SetHamburgerPressed(true);
+            SetCapture(window);
+        } else {
+            viewer->BeginPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+        }
+        return 0;
+    }
+    case WM_MOUSEMOVE: {
+        const FrameMetrics frame = GetFrameMetrics(window);
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        viewer->SetHamburgerHover(!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point));
+        TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE, window, 0 };
+        TrackMouseEvent(&track);
+        if (!viewer->HamburgerPressed()) viewer->PanTo(point);
+        return 0;
+    }
+    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); return 0;
     case WM_LBUTTONUP: {
+        if (viewer->HamburgerPressed()) {
+            viewer->SetHamburgerPressed(false);
+            if (GetCapture() == window) ReleaseCapture();
+            return 0;
+        }
         const CaptionButton pressed = viewer->PressedCaptionButton();
         if (pressed == CaptionButton::None) { viewer->EndPan(); return 0; }
         const FrameMetrics frame = GetFrameMetrics(window);
@@ -771,7 +914,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (pressed == released) SendMessageW(window, WM_SYSCOMMAND, SystemCommandForCaptionButton(window, released), 0);
         return 0;
     }
-    case WM_CAPTURECHANGED: viewer->EndPan(); viewer->ClearCaptionButtonPressed(); return 0;
+    case WM_CAPTURECHANGED: viewer->EndPan(); viewer->ClearCaptionButtonPressed(); viewer->SetHamburgerPressed(false); return 0;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case WM_KEYDOWN:

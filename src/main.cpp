@@ -285,10 +285,10 @@ public:
             source_.Reset();
             bitmap_.Reset();
             imageWidth_ = imageHeight_ = 0;
-            currentPath_.clear();
+            currentPath_ = path;
             resolutionText_.clear();
-            fileSizeText_.clear();
-            filenameText_.clear();
+            fileSizeText_ = FormatFileSize(path);
+            filenameText_ = fs::path(path).filename().wstring();
             navigationFiles_.clear();
             navigationBuilt_ = false;
             error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
@@ -523,11 +523,11 @@ public:
             DrawOpenWithSubmenu();
             DrawOverlay();
             DrawCopyFeedback();
+            if (!source_ && !error_.empty()) DrawErrorText();
             const HRESULT hr = renderTarget_->EndDraw();
             if (SUCCEEDED(hr) && bitmap_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
         }
-        if (!source_ && !error_.empty()) DrawErrorText(paint.hdc);
         EndPaint(window_, &paint);
     }
 
@@ -1235,10 +1235,13 @@ private:
         if (!copyFeedbackActive_) return;
         const ULONGLONG elapsed = GetTickCount64() - copyFeedbackStart_;
         if (elapsed >= 1000) return;
-        const float opacity = 1.0f - static_cast<float>(elapsed) / 1000.0f;
-        ComPtr<ID2D1SolidColorBrush> brush, outline;
-        const D2D1_COLOR_F color = D2D1::ColorF(0.0f, 142.0f / 255.0f, 1.0f, opacity);
-        if (FAILED(renderTarget_->CreateSolidColorBrush(color, &brush)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White, opacity), &outline))) return;
+        const float opacity = 0.75f * (1.0f - static_cast<float>(elapsed) / 1000.0f);
+        ComPtr<ID2D1SolidColorBrush> brush, outline, textHalo, textOutline;
+        const D2D1_COLOR_F color = D2D1::ColorF(D2D1::ColorF::White, opacity);
+        if (FAILED(renderTarget_->CreateSolidColorBrush(color, &brush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f, opacity), &outline)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, opacity * 0.45f), &textHalo)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f, opacity), &textOutline))) return;
         const D2D1_SIZE_F size = renderTarget_->GetSize(); const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
         const float glyph = 200.0f * scale;
@@ -1250,10 +1253,11 @@ private:
         const float x = (size.width - glyph) / 2.0f;
         const float y = top + (size.height - top - totalHeight) / 2.0f;
         const D2D1_ROUNDED_RECT rear=D2D1::RoundedRect(D2D1::RectF(x,y,x+glyph-offset,y+glyph-offset),18.f*scale,18.f*scale), front=D2D1::RoundedRect(D2D1::RectF(x+offset,y+offset,x+glyph,y+glyph),18.f*scale,18.f*scale);
-        renderTarget_->DrawRoundedRectangle(rear,outline.Get(),stroke+6.f*scale); renderTarget_->DrawRoundedRectangle(front,outline.Get(),stroke+6.f*scale);
+        renderTarget_->DrawRoundedRectangle(rear,outline.Get(),stroke+3.f*scale); renderTarget_->DrawRoundedRectangle(front,outline.Get(),stroke+3.f*scale);
         renderTarget_->DrawRoundedRectangle(rear,brush.Get(),stroke); renderTarget_->DrawRoundedRectangle(front,brush.Get(),stroke);
         const float textY=y+glyph+gap;
-        for(int dx=-2;dx<=2;++dx) for(int dy=-2;dy<=2;++dy) if(dx||dy) DrawOverlayText(L"Copied to Clipboard",(float)dx*scale,textY+(float)dy*scale,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,outline.Get(),true,false,true);
+        for (const POINT offsetPoint : { POINT{ -1, 0 }, POINT{ 1, 0 }, POINT{ 0, -1 }, POINT{ 0, 1 } }) DrawOverlayText(L"Copied to Clipboard",offsetPoint.x*scale,textY+offsetPoint.y*scale,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,textHalo.Get(),true,false,true);
+        for (const POINT offsetPoint : { POINT{ -1, 0 }, POINT{ 1, 0 }, POINT{ 0, -1 }, POINT{ 0, 1 }, POINT{ -1, -1 }, POINT{ 1, -1 }, POINT{ -1, 1 }, POINT{ 1, 1 } }) DrawOverlayText(L"Copied to Clipboard",offsetPoint.x*scale,textY+offsetPoint.y*scale,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,textOutline.Get(),true,false,true);
         DrawOverlayText(L"Copied to Clipboard",0,textY,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,brush.Get(),true,false,true);
     }
 
@@ -1348,16 +1352,14 @@ private:
         DrawCaptionGlyph(L'\uE8BB', frame.close, closeGlyph);
     }
 
-    void DrawErrorText(HDC dc) const {
+    void DrawErrorText() {
         RECT client{};
         GetClientRect(window_, &client);
-        RECT text{ 0, 0, std::max(1L, client.right - client.left - 48), client.bottom - client.top };
-        SetTextColor(dc, RGB(220, 220, 220));
-        SetBkMode(dc, TRANSPARENT);
-        DrawTextW(dc, error_.c_str(), -1, &text, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
-        OffsetRect(&text, (client.right - client.left - (text.right - text.left)) / 2,
-            (client.bottom - client.top - (text.bottom - text.top)) / 2);
-        DrawTextW(dc, error_.c_str(), -1, &text, DT_CENTER | DT_WORDBREAK);
+        ComPtr<ID2D1SolidColorBrush> brush;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(220.0f / 255.0f, 220.0f / 255.0f, 220.0f / 255.0f), &brush))) return;
+        const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
+        DrawOverlayText(error_.c_str(), 24.0f, top, static_cast<float>(std::max(1L, client.right - 48L)), static_cast<float>(client.bottom) - top,
+            13.0f, DWRITE_FONT_WEIGHT_NORMAL, brush.Get(), true, false, true);
     }
 
     void DiscardRenderResources() {

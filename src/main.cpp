@@ -33,7 +33,12 @@ constexpr float kMaximumZoom = 16.0f;
 constexpr float kZoomStep = 1.20f;
 constexpr wchar_t kSettingsKey[] = L"Software\\FeatherView";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
+constexpr UINT kMenuKeyboardShortcuts = 1;
+constexpr UINT kMenuAbout = 2;
+constexpr UINT kMenuClose = 3;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
+
+enum class OverlayKind { None, KeyboardShortcuts, About };
 
 #if defined(_DEBUG)
 class StartupTimer {
@@ -302,7 +307,41 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool HamburgerPressed() const { return hamburgerPressed_; }
+    bool HasOverlay() const { return overlay_ != OverlayKind::None; }
+    void ShowOverlay(OverlayKind overlay) {
+        overlay_ = overlay;
+        EndPan();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void DismissOverlay() {
+        if (!HasOverlay()) return;
+        overlay_ = OverlayKind::None;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool OverlayContains(POINT point) const {
+        const RECT bounds = GetOverlayBounds();
+        return HasOverlay() && PtInRect(&bounds, point);
+    }
+    void ShowHamburgerMenu() {
+        if (fullscreen_) return;
+        HMENU menu = CreatePopupMenu();
+        if (!menu) return;
+        AppendMenuW(menu, MF_STRING, kMenuKeyboardShortcuts, L"Keyboard Shortcuts");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, kMenuAbout, L"About");
+        AppendMenuW(menu, MF_STRING, kMenuClose, L"Close");
+        const FrameMetrics frame = GetFrameMetrics(window_);
+        POINT anchor{ frame.hamburger.left, frame.hamburger.bottom };
+        ClientToScreen(window_, &anchor);
+        const UINT command = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            anchor.x, anchor.y, 0, window_, nullptr);
+        DestroyMenu(menu);
+        if (command == kMenuKeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
+        else if (command == kMenuAbout) ShowOverlay(OverlayKind::About);
+        else if (command == kMenuClose) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
+    }
     void ToggleFullscreen() {
+        if (!fullscreen_) DismissOverlay();
         if (!fullscreen_) {
             fullscreenStyle_ = GetWindowLongPtrW(window_, GWL_STYLE);
             GetWindowRect(window_, &fullscreenRect_);
@@ -334,6 +373,7 @@ public:
                 if (bitmap_) DrawImage();
             }
             DrawTitleBar();
+            DrawOverlay();
             const HRESULT hr = renderTarget_->EndDraw();
             if (SUCCEEDED(hr) && bitmap_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
@@ -718,6 +758,101 @@ private:
         renderTarget_->DrawTextLayout(D2D1::Point2F(textLeft, top), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
+    RECT GetOverlayBounds() const {
+        RECT client{};
+        GetClientRect(window_, &client);
+        if (!HasOverlay()) return {};
+        const UINT dpi = GetDpiForWindow(window_);
+        const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 : 330, dpi, 96);
+        const int desiredHeight = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 344 : 206, dpi, 96);
+        const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
+        const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
+        const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
+        const int width = std::min(desiredWidth, availableWidth);
+        const int height = std::min(desiredHeight, availableHeight);
+        const int left = (client.right - width) / 2;
+        const int overlayTop = top + std::max(0L, (client.bottom - top - height) / 2);
+        return { left, overlayTop, left + width, overlayTop + height };
+    }
+
+    void DrawOverlayText(const wchar_t* text, float x, float y, float width, float height, float size,
+        DWRITE_FONT_WEIGHT weight, ID2D1Brush* brush) {
+        ComPtr<IDWriteTextFormat> format;
+        const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, size * dpiScale, L"", &format))) return;
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), width, height, &layout))) return;
+        renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    bool EnsureAboutLogo() {
+        if (aboutLogo_) return true;
+        wchar_t modulePath[MAX_PATH]{};
+        if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) return false;
+        ComPtr<IWICBitmapSource> source;
+        UINT width = 0, height = 0;
+        if (FAILED(DecodeImage((fs::path(modulePath).parent_path() / L"FeatherViewLogo.png").wstring(), source, width, height))) return false;
+        return SUCCEEDED(renderTarget_->CreateBitmapFromWicBitmap(source.Get(), nullptr, &aboutLogo_));
+    }
+
+    void DrawOverlay() {
+        if (!HasOverlay()) return;
+        const RECT bounds = GetOverlayBounds();
+        if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) return;
+        const bool dark = UseDarkAppMode();
+        const D2D1_COLOR_F veil = D2D1::ColorF(0.0f, 0.0f, 0.0f, dark ? 0.38f : 0.18f);
+        const D2D1_COLOR_F panel = dark ? D2D1::ColorF(40.0f / 255.0f, 43.0f / 255.0f, 50.0f / 255.0f)
+            : D2D1::ColorF(250.0f / 255.0f, 250.0f / 255.0f, 250.0f / 255.0f);
+        const D2D1_COLOR_F border = dark ? D2D1::ColorF(82.0f / 255.0f, 86.0f / 255.0f, 96.0f / 255.0f)
+            : D2D1::ColorF(190.0f / 255.0f, 190.0f / 255.0f, 190.0f / 255.0f);
+        const D2D1_COLOR_F primary = dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(28.0f / 255.0f, 28.0f / 255.0f, 28.0f / 255.0f);
+        const D2D1_COLOR_F secondary = dark ? D2D1::ColorF(205.0f / 255.0f, 208.0f / 255.0f, 214.0f / 255.0f)
+            : D2D1::ColorF(78.0f / 255.0f, 78.0f / 255.0f, 78.0f / 255.0f);
+        ComPtr<ID2D1SolidColorBrush> veilBrush, panelBrush, borderBrush, primaryBrush, secondaryBrush;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(veil, &veilBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(panel, &panelBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(border, &borderBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(primary, &primaryBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(secondary, &secondaryBrush))) return;
+        const D2D1_SIZE_F size = renderTarget_->GetSize();
+        const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
+        renderTarget_->FillRectangle(D2D1::RectF(0, top, size.width, size.height), veilBrush.Get());
+        const D2D1_RECT_F panelRect = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top),
+            static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(panelRect, 8.0f, 8.0f), panelBrush.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(panelRect, 8.0f, 8.0f), borderBrush.Get(), 1.0f);
+        const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const float left = static_cast<float>(bounds.left) + 22.0f * dpiScale;
+        const float contentWidth = static_cast<float>(bounds.right - bounds.left) - 44.0f * dpiScale;
+        if (overlay_ == OverlayKind::KeyboardShortcuts) {
+            DrawOverlayText(L"Keyboard Shortcuts", left, static_cast<float>(bounds.top) + 18.0f * dpiScale,
+                contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            constexpr const wchar_t* lines[] = {
+                L"Left Arrow     Previous image", L"Right Arrow    Next image", L"Mouse Wheel    Zoom",
+                L"+ / =          Zoom in", L"-              Zoom out", L"0              Reset zoom and center",
+                L"Left mouse drag  Pan", L"Double-click image  Toggle fullscreen", L"F11            Toggle fullscreen",
+                L"Esc            Exit fullscreen, or close FeatherView" };
+            float y = static_cast<float>(bounds.top) + 56.0f * dpiScale;
+            for (const wchar_t* line : lines) {
+                DrawOverlayText(line, left, y, contentWidth, 18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                y += 25.0f * dpiScale;
+            }
+        } else {
+            const float logoSize = 64.0f * dpiScale;
+            const float logoLeft = static_cast<float>(bounds.left) + 22.0f * dpiScale;
+            const float logoTop = static_cast<float>(bounds.top) + 50.0f * dpiScale;
+            if (EnsureAboutLogo()) renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoSize, logoTop + logoSize));
+            DrawOverlayText(L"FeatherView", logoLeft + logoSize + 16.0f * dpiScale, logoTop + 8.0f * dpiScale,
+                contentWidth - logoSize - 16.0f * dpiScale, 26.0f * dpiScale, 17.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            DrawOverlayText(L"Version 0.2.2.0", logoLeft + logoSize + 16.0f * dpiScale, logoTop + 38.0f * dpiScale,
+                contentWidth - logoSize - 16.0f * dpiScale, 20.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            DrawOverlayText(L"Lightweight native image viewer", left, static_cast<float>(bounds.bottom) - 42.0f * dpiScale,
+                contentWidth, 18.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+        }
+    }
+
     void DrawTitleBar() {
         if (fullscreen_) return;
 
@@ -825,6 +960,7 @@ private:
 
     void DiscardRenderResources() {
         bitmap_.Reset();
+        aboutLogo_.Reset();
         checkerboardBrush_.Reset();
         checkerboardBitmap_.Reset();
         checkerboardDpi_ = 0;
@@ -839,6 +975,7 @@ private:
     ComPtr<IWICBitmapSource> source_;
     ComPtr<ID2D1HwndRenderTarget> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
+    ComPtr<ID2D1Bitmap> aboutLogo_;
     ComPtr<ID2D1Bitmap> checkerboardBitmap_;
     ComPtr<ID2D1BitmapBrush> checkerboardBrush_;
     UINT checkerboardDpi_ = 0;
@@ -867,6 +1004,7 @@ private:
     CaptionButton pressedCaptionButton_ = CaptionButton::None;
     bool hamburgerHovered_ = false;
     bool hamburgerPressed_ = false;
+    OverlayKind overlay_ = OverlayKind::None;
     LONG_PTR fullscreenStyle_ = 0;
     RECT fullscreenRect_{};
 };
@@ -939,17 +1077,23 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_DROPFILES: viewer->DropFile(reinterpret_cast<HDROP>(wParam)); return 0;
     case WM_MOUSEWHEEL: {
+        if (viewer->HasOverlay()) return 0;
         POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(window, &point);
         viewer->ZoomAt(point, std::pow(kZoomStep, static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA));
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
+        if (viewer->HasOverlay()) return 0;
         const FrameMetrics frame = GetFrameMetrics(window);
         if (!PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) viewer->ToggleFullscreen();
         return 0;
     }
     case WM_LBUTTONDOWN: {
+        if (viewer->HasOverlay()) {
+            if (!viewer->OverlayContains({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) viewer->DismissOverlay();
+            return 0;
+        }
         const FrameMetrics frame = GetFrameMetrics(window);
         if (PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
             viewer->SetHamburgerPressed(true);
@@ -960,6 +1104,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_MOUSEMOVE: {
+        if (viewer->HasOverlay()) {
+            viewer->SetHamburgerHover(false);
+            return 0;
+        }
         const FrameMetrics frame = GetFrameMetrics(window);
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         viewer->SetHamburgerHover(!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point));
@@ -971,8 +1119,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); return 0;
     case WM_LBUTTONUP: {
         if (viewer->HamburgerPressed()) {
+            const FrameMetrics frame = GetFrameMetrics(window);
+            const bool releasedOnHamburger = PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
             viewer->SetHamburgerPressed(false);
             if (GetCapture() == window) ReleaseCapture();
+            if (releasedOnHamburger) viewer->ShowHamburgerMenu();
             return 0;
         }
         const CaptionButton pressed = viewer->PressedCaptionButton();
@@ -988,6 +1139,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case WM_KEYDOWN:
+        if (viewer->HasOverlay()) {
+            if (wParam == VK_ESCAPE) viewer->DismissOverlay();
+            return 0;
+        }
         if (wParam == VK_ESCAPE) { if (viewer->IsFullscreen()) viewer->ToggleFullscreen(); else DestroyWindow(window); return 0; }
         if (wParam == VK_F11) { viewer->ToggleFullscreen(); return 0; }
         if (wParam == VK_RIGHT) { viewer->Navigate(1); return 0; }

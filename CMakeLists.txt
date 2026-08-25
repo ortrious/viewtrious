@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(FeatherView VERSION 0.2.2.2 LANGUAGES CXX)
+project(FeatherView VERSION 0.2.3.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FeatherView currently targets Windows only.")

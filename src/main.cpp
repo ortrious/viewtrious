@@ -31,6 +31,8 @@ constexpr wchar_t kWindowClass[] = L"FeatherViewWindow";
 constexpr wchar_t kWindowTitle[] = L"FeatherView";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
+constexpr int kContextMenuRowCount = 9;
+constexpr int kContextMenuSeparatorCount = 3;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kZoomStep = 1.20f;
 constexpr wchar_t kSettingsKey[] = L"Software\\FeatherView";
@@ -680,7 +682,7 @@ private:
         const LONG width = std::min<LONG>(MulDiv(260, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
         const LONG rowHeight = MulDiv(38, dpi, 96);
         const LONG separatorGap = MulDiv(9, dpi, 96);
-        const LONG height = margin * 2 + rowHeight * 9 + separatorGap * 3;
+        const LONG height = margin * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
         const LONG left = std::clamp<LONG>(contextMenuAnchor_.x, margin, std::max<LONG>(margin, client.right - width - margin));
         const LONG top = std::clamp<LONG>(contextMenuAnchor_.y, margin, std::max<LONG>(margin, client.bottom - height - margin));
         return { left, top, left + width, top + height };
@@ -982,7 +984,8 @@ private:
     }
 
     void DrawOverlayText(const wchar_t* text, float x, float y, float width, float height, float size,
-        DWRITE_FONT_WEIGHT weight, ID2D1Brush* brush, bool verticallyCenter = false, bool rightAlign = false) {
+        DWRITE_FONT_WEIGHT weight, ID2D1Brush* brush, bool verticallyCenter = false, bool rightAlign = false,
+        bool centerAlign = false) {
         ComPtr<IDWriteTextFormat> format;
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
@@ -990,6 +993,7 @@ private:
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         if (verticallyCenter) format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         if (rightAlign) format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+        else if (centerAlign) format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         ComPtr<IDWriteTextLayout> layout;
         if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), width, height, &layout))) return;
         renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
@@ -1059,9 +1063,9 @@ private:
             }
             const float titleTop = logoBottom + 16.0f * dpiScale;
             DrawOverlayText(L"FeatherView", left, titleTop, contentWidth, 26.0f * dpiScale,
-                18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+                18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, true);
             DrawOverlayText(L"Version " FEATHERVIEW_VERSION, left, titleTop + 31.0f * dpiScale, contentWidth, 20.0f * dpiScale,
-                12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
             DrawOverlayText(L"Extremely lightweight image viewer", left, static_cast<float>(bounds.bottom) - panelPadding - 18.0f * dpiScale,
                 contentWidth, 18.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         }
@@ -1157,15 +1161,25 @@ private:
         const ULONGLONG elapsed = GetTickCount64() - copyFeedbackStart_;
         if (elapsed >= 1000) return;
         const float opacity = 0.70f * (1.0f - static_cast<float>(elapsed) / 1000.0f);
-        const bool dark = UseDarkAppMode();
         ComPtr<ID2D1SolidColorBrush> brush;
-        const D2D1_COLOR_F color = dark ? D2D1::ColorF(D2D1::ColorF::White, opacity) : D2D1::ColorF(20.0f / 255.0f, 20.0f / 255.0f, 20.0f / 255.0f, opacity);
+        const D2D1_COLOR_F color = D2D1::ColorF(0.0f, 142.0f / 255.0f, 1.0f, opacity);
         if (FAILED(renderTarget_->CreateSolidColorBrush(color, &brush))) return;
         const D2D1_SIZE_F size = renderTarget_->GetSize(); const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
-        const float glyph = 62.0f * scale; const float x = (size.width - glyph) / 2.0f; const float y = top + (size.height - top - glyph) / 2.0f;
-        renderTarget_->DrawRectangle(D2D1::RectF(x + 12.0f * scale, y, x + glyph, y + glyph - 12.0f * scale), brush.Get(), 2.0f * scale);
-        renderTarget_->DrawRectangle(D2D1::RectF(x, y + 12.0f * scale, x + glyph - 12.0f * scale, y + glyph), brush.Get(), 2.0f * scale);
+        const float glyph = 104.0f * scale;
+        const float stroke = 6.0f * scale;
+        const float offset = 19.0f * scale;
+        const float textHeight = 22.0f * scale;
+        const float gap = 16.0f * scale;
+        const float totalHeight = glyph + gap + textHeight;
+        const float x = (size.width - glyph) / 2.0f;
+        const float y = top + (size.height - top - totalHeight) / 2.0f;
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x, y, x + glyph - offset, y + glyph - offset),
+            10.0f * scale, 10.0f * scale), brush.Get(), stroke);
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x + offset, y + offset, x + glyph, y + glyph),
+            10.0f * scale, 10.0f * scale), brush.Get(), stroke);
+        DrawOverlayText(L"Copied to Clipboard", 0.0f, y + glyph + gap, size.width, textHeight, 15.0f,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, brush.Get(), true, false, true);
     }
 
     void DrawTitleBar() {

@@ -24,7 +24,7 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName", "FeatherView"
-            VALUE "FileDescription", "FeatherView native image viewer"
+            VALUE "FileDescription", "FeatherView"
             VALUE "FileVersion", "@PROJECT_VERSION@"
             VALUE "InternalName", "FeatherView"
             VALUE "OriginalFilename", "FeatherView.exe"
@@ -37,4 +37,5 @@ BEGIN
         VALUE "Translation", 0x0409, 1200
     END
 END
+
 

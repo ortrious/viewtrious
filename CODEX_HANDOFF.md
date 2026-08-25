@@ -1,6 +1,6 @@
 # FeatherView handoff
 
-- Current version: `0.1.3.0` (CMake is the source of truth; the executable embeds matching VERSIONINFO metadata).
+- Current version: `0.1.3.1` (CMake is the source of truth; the executable embeds matching VERSIONINFO metadata).
 - Branch: `master`.
 - Purpose: FeatherView is a tiny Windows-native image viewer optimized for rapid startup, first presentation, and shutdown.
 - Architecture: C++20, Win32, WIC decoding, and Direct2D rendering; no framework or background process. Embedded icon and logo watermark resources are reused after one decode.
@@ -11,5 +11,6 @@
 - Versioning: `major.minor.feature.fix`; features increment `feature`, fixes increment `fix`. Commit every implementation pass separately.
 - Performance principle: first requested image wins; sibling discovery happens only after first presentation or lazily after a dropped image.
 - Deferred: buttons/menus, video, metadata, editing, thumbnails, settings framework, and file-association installation.
+
 
 

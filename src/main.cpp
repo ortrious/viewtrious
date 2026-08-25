@@ -9,11 +9,13 @@
 #include <dwmapi.h>
 #include <d2d1.h>
 #include <dwrite.h>
+#include <gdiplus.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <string>
@@ -24,6 +26,7 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
@@ -874,86 +877,421 @@ private:
         }
     }
 
-    HRESULT RotateJpeg(bool clockwise) {
+    void LogRotationStage(const wchar_t* stage, HRESULT hr, DWORD win32Error = ERROR_SUCCESS) const {
+        if (SUCCEEDED(hr)) return;
+        wchar_t text[320]{};
+        swprintf_s(text, L"FeatherView image rotation [%s]: HRESULT=0x%08X, Win32=%lu\n", stage,
+            static_cast<unsigned int>(hr), win32Error);
+        OutputDebugStringW(text);
+    }
+
+    void ShowRotationFailure(const wchar_t* stage, HRESULT hr, DWORD win32Error) const {
+        wchar_t text[512]{};
+        swprintf_s(text, L"Image rotation failed at %s.\n\nHRESULT: 0x%08X\nWin32 error: %lu%s%s\n\nThe original file was left unchanged.",
+            stage, static_cast<unsigned int>(hr), win32Error, rotationDiagnosticDetail_.empty() ? L"" : L"\n",
+            rotationDiagnosticDetail_.c_str());
+        MessageBoxW(window_, text, kWindowTitle, MB_OK | MB_ICONWARNING);
+    }
+
+    void DiagnoseRotationSharingViolation() const {
+        HANDLE probe = CreateFileW(currentPath_.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (probe == INVALID_HANDLE_VALUE) {
+            LogRotationStage(L"sharing probe after FeatherView WIC release: external incompatible handle", HRESULT_FROM_WIN32(GetLastError()), GetLastError());
+            return;
+        }
+        CloseHandle(probe);
+        LogRotationStage(L"sharing probe after FeatherView WIC release: source is externally writable; Shell property-store-specific conflict", S_OK);
+    }
+
+    HRESULT RotateJpeg(bool clockwise, const wchar_t*& failedStage, DWORD& failedWin32Error) {
+        failedStage = nullptr;
+        failedWin32Error = ERROR_SUCCESS;
+        LogRotationStage(L"strategy: EXIF Orientation metadata change (no JPEG re-encode)", S_OK);
+        const auto stage = [&](const wchar_t* name, HRESULT result) {
+            const DWORD win32Error = FAILED(result) ? GetLastError() : ERROR_SUCCESS;
+            LogRotationStage(name, result, win32Error);
+            if (FAILED(result)) { failedStage = name; failedWin32Error = win32Error; }
+            return SUCCEEDED(result);
+        };
         ComPtr<IWICBitmapDecoder> decoder;
         HRESULT hr = wicFactory_->CreateDecoderFromFilename(currentPath_.c_str(), nullptr, GENERIC_READ,
             WICDecodeMetadataCacheOnLoad, &decoder);
+        if (!stage(L"source file open: IWICImagingFactory::CreateDecoderFromFilename", hr)) return hr;
         ComPtr<IWICBitmapFrameDecode> frame;
-        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
-        const UINT orientation = SUCCEEDED(hr) ? ReadPhotoOrientation(frame.Get()) : 1;
+        hr = decoder->GetFrame(0, &frame);
+        if (!stage(L"source frame read: IWICBitmapDecoder::GetFrame", hr)) return hr;
+        const UINT orientation = ReadPhotoOrientation(frame.Get());
+        LogRotationStage(L"metadata/orientation read", S_OK);
+        frame.Reset();
+        decoder.Reset();
+        LogRotationStage(L"release rotation-owned WIC decoder/frame before writable property store", S_OK);
 
         ComPtr<IPropertyStore> store;
-        if (SUCCEEDED(hr)) hr = SHGetPropertyStoreFromParsingName(currentPath_.c_str(), nullptr, GPS_READWRITE, IID_PPV_ARGS(&store));
+        hr = SHGetPropertyStoreFromParsingName(currentPath_.c_str(), nullptr, GPS_READWRITE, IID_PPV_ARGS(&store));
+        if (hr == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)) DiagnoseRotationSharingViolation();
+        if (!stage(L"metadata store open: SHGetPropertyStoreFromParsingName(GPS_READWRITE)", hr)) return hr;
         PROPVARIANT value{};
         PropVariantInit(&value);
         value.vt = VT_UI2;
         value.uiVal = static_cast<USHORT>(RotatedOrientation(orientation, clockwise));
-        if (SUCCEEDED(hr)) hr = store->SetValue(PKEY_Photo_Orientation, value);
-        if (SUCCEEDED(hr)) hr = store->Commit();
+        hr = store->SetValue(PKEY_Photo_Orientation, value);
+        if (!stage(L"metadata/orientation write: IPropertyStore::SetValue", hr)) { PropVariantClear(&value); return hr; }
+        hr = store->Commit();
         PropVariantClear(&value);
+        if (!stage(L"metadata commit: IPropertyStore::Commit", hr)) return hr;
+        LogRotationStage(L"temporary output creation: not applicable to metadata-only JPEG rotation", S_OK);
+        LogRotationStage(L"transform operation: EXIF orientation value updated", S_OK);
+        LogRotationStage(L"output write/close/flush/original-file replacement: not applicable to metadata-only JPEG rotation", S_OK);
         return hr;
     }
 
-    HRESULT RotatePng(bool clockwise) {
+    HRESULT RotatePngWithWic(bool clockwise, const wchar_t*& failedStage, DWORD& failedWin32Error) {
+        failedStage = nullptr;
+        failedWin32Error = ERROR_SUCCESS;
+        const auto stage = [&](const wchar_t* name, HRESULT result) {
+            const DWORD win32Error = FAILED(result) ? GetLastError() : ERROR_SUCCESS;
+            LogRotationStage(name, result, win32Error);
+            if (FAILED(result)) { failedStage = name; failedWin32Error = win32Error; }
+            return SUCCEEDED(result);
+        };
         WIN32_FILE_ATTRIBUTE_DATA attributes{};
-        if (!GetFileAttributesExW(currentPath_.c_str(), GetFileExInfoStandard, &attributes))
-            return HRESULT_FROM_WIN32(GetLastError());
+        if (!GetFileAttributesExW(currentPath_.c_str(), GetFileExInfoStandard, &attributes)) {
+            const HRESULT openError = HRESULT_FROM_WIN32(GetLastError());
+            stage(L"source PNG attributes: GetFileAttributesExW", openError);
+            return openError;
+        }
 
         ComPtr<IWICBitmapDecoder> decoder;
         HRESULT hr = wicFactory_->CreateDecoderFromFilename(currentPath_.c_str(), nullptr, GENERIC_READ,
             WICDecodeMetadataCacheOnLoad, &decoder);
+        if (!stage(L"source PNG open/decode: IWICImagingFactory::CreateDecoderFromFilename", hr)) return hr;
         ComPtr<IWICBitmapFrameDecode> frame;
-        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+        hr = decoder->GetFrame(0, &frame);
+        if (!stage(L"source PNG frame read: IWICBitmapDecoder::GetFrame", hr)) return hr;
         ComPtr<IWICFormatConverter> converter;
-        if (SUCCEEDED(hr)) hr = wicFactory_->CreateFormatConverter(&converter);
-        if (SUCCEEDED(hr)) hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppBGRA,
+        hr = wicFactory_->CreateFormatConverter(&converter);
+        if (!stage(L"source PNG format conversion: CreateFormatConverter", hr)) return hr;
+        hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppBGRA,
             WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+        if (!stage(L"source PNG format conversion: IWICFormatConverter::Initialize", hr)) return hr;
         ComPtr<IWICBitmapFlipRotator> rotator;
-        if (SUCCEEDED(hr)) hr = wicFactory_->CreateBitmapFlipRotator(&rotator);
-        if (SUCCEEDED(hr)) hr = rotator->Initialize(converter.Get(), clockwise ? WICBitmapTransformRotate90 : WICBitmapTransformRotate270);
+        hr = wicFactory_->CreateBitmapFlipRotator(&rotator);
+        if (!stage(L"WIC transform/rotation: CreateBitmapFlipRotator", hr)) return hr;
+        hr = rotator->Initialize(converter.Get(), clockwise ? WICBitmapTransformRotate90 : WICBitmapTransformRotate270);
+        if (!stage(L"WIC transform/rotation: IWICBitmapFlipRotator::Initialize", hr)) return hr;
+
+        struct TemporarySiblingFile {
+            std::wstring path;
+            ~TemporarySiblingFile() { if (!path.empty()) DeleteFileW(path.c_str()); }
+            void Release() { path.clear(); }
+        } temporary;
+        wchar_t tempPath[MAX_PATH]{};
+        const std::wstring directory = fs::path(currentPath_).parent_path().wstring();
+        if (!GetTempFileNameW(directory.c_str(), L"FV", 0, tempPath)) {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            stage(L"temp sibling path creation: GetTempFileNameW", hr);
+            return hr;
+        }
+        temporary.path = tempPath;
+        LogRotationStage(L"temp sibling path creation: GetTempFileNameW", S_OK);
+
+        ComPtr<IWICStream> stream;
+        hr = wicFactory_->CreateStream(&stream);
+        if (!stage(L"temp output stream creation: CreateStream", hr)) return hr;
+        hr = stream->InitializeFromFilename(temporary.path.c_str(), GENERIC_WRITE);
+        if (!stage(L"temp output stream creation: IWICStream::InitializeFromFilename", hr)) return hr;
+        ComPtr<IWICBitmapEncoder> encoder;
+        hr = wicFactory_->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+        if (!stage(L"PNG encoder creation: CreateEncoder", hr)) return hr;
+        hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+        if (!stage(L"PNG encoder initialization: IWICBitmapEncoder::Initialize", hr)) return hr;
+        ComPtr<IWICBitmapFrameEncode> encodedFrame;
+        IPropertyBag2* options = nullptr;
+        hr = encoder->CreateNewFrame(&encodedFrame, &options);
+        if (options) options->Release();
+        if (!stage(L"PNG frame creation: IWICBitmapEncoder::CreateNewFrame", hr)) return hr;
+        hr = encodedFrame->Initialize(nullptr);
+        if (!stage(L"frame initialization: IWICBitmapFrameEncode::Initialize", hr)) return hr;
+        UINT width = 0, height = 0;
+        hr = rotator->GetSize(&width, &height);
+        if (!stage(L"WIC transform output size: IWICBitmapSource::GetSize", hr)) return hr;
+        hr = encodedFrame->SetSize(width, height);
+        if (!stage(L"PNG frame size: IWICBitmapFrameEncode::SetSize", hr)) return hr;
+        WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
+        hr = encodedFrame->SetPixelFormat(&pixelFormat);
+        if (!stage(L"PNG pixel format: IWICBitmapFrameEncode::SetPixelFormat", hr)) return hr;
+        hr = encodedFrame->WriteSource(rotator.Get(), nullptr);
+        if (!stage(L"pixel write: IWICBitmapFrameEncode::WriteSource", hr)) return hr;
+        hr = encodedFrame->Commit();
+        if (!stage(L"frame commit: IWICBitmapFrameEncode::Commit", hr)) return hr;
+        hr = encoder->Commit();
+        if (!stage(L"encoder commit: IWICBitmapEncoder::Commit", hr)) return hr;
+        encodedFrame.Reset();
+        encoder.Reset();
+        stream.Reset();
+        rotator.Reset();
+        converter.Reset();
+        frame.Reset();
+        decoder.Reset();
+        LogRotationStage(L"stream/file close: released WIC encoder, frame, stream, and source decoder graph", S_OK);
+
+        ComPtr<IWICBitmapDecoder> validationDecoder;
+        hr = wicFactory_->CreateDecoderFromFilename(temporary.path.c_str(), nullptr, GENERIC_READ,
+            WICDecodeMetadataCacheOnLoad, &validationDecoder);
+        if (!stage(L"validation of temporary PNG: CreateDecoderFromFilename", hr)) return hr;
+        ComPtr<IWICBitmapFrameDecode> validationFrame;
+        hr = validationDecoder->GetFrame(0, &validationFrame);
+        if (!stage(L"validation of temporary PNG: IWICBitmapDecoder::GetFrame", hr)) return hr;
+        validationFrame.Reset();
+        validationDecoder.Reset();
+        LogRotationStage(L"validation of temporary PNG", S_OK);
+
+        const auto replacementProbe = [&](const std::wstring& path, const wchar_t* name) {
+            HANDLE probe = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (probe == INVALID_HANDLE_VALUE) {
+                const HRESULT probeError = HRESULT_FROM_WIN32(GetLastError());
+                stage(name, probeError);
+                return probeError;
+            }
+            CloseHandle(probe);
+            LogRotationStage(name, S_OK);
+            return S_OK;
+        };
+        hr = replacementProbe(currentPath_, L"replacement boundary probe: original source path");
+        if (FAILED(hr)) return hr;
+        hr = replacementProbe(temporary.path, L"replacement boundary probe: temporary replacement path");
+        if (FAILED(hr)) return hr;
+
+        if (!ReplaceFileW(currentPath_.c_str(), temporary.path.c_str(), nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr)) {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            stage(L"replacement of original: ReplaceFileW", hr);
+            return hr;
+        }
+        temporary.Release();
+        LogRotationStage(L"replacement of original: ReplaceFileW", S_OK);
+        SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, currentPath_.c_str(), nullptr);
+        return hr;
+    }
+
+    static HRESULT GdiplusStatusToHresult(Gdiplus::Status status) {
+        if (status == Gdiplus::Ok) return S_OK;
+        if (status == Gdiplus::OutOfMemory) return E_OUTOFMEMORY;
+        if (status == Gdiplus::InvalidParameter) return E_INVALIDARG;
+        if (status == Gdiplus::AccessDenied) return E_ACCESSDENIED;
+        return E_FAIL;
+    }
+
+    static bool FindPngEncoder(CLSID& encoderClsid) {
+        UINT count = 0, bytes = 0;
+        if (Gdiplus::GetImageEncodersSize(&count, &bytes) != Gdiplus::Ok || bytes == 0) return false;
+        std::vector<BYTE> storage(bytes);
+        auto* encoders = reinterpret_cast<Gdiplus::ImageCodecInfo*>(storage.data());
+        if (Gdiplus::GetImageEncoders(count, bytes, encoders) != Gdiplus::Ok) return false;
+        for (UINT index = 0; index < count; ++index) {
+            if (encoders[index].MimeType && wcscmp(encoders[index].MimeType, L"image/png") == 0) {
+                encoderClsid = encoders[index].Clsid;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    HRESULT RotatePngWithGdiPlus(bool clockwise, const wchar_t*& failedStage, DWORD& failedWin32Error) {
+        failedStage = nullptr;
+        failedWin32Error = ERROR_SUCCESS;
+        rotationDiagnosticDetail_.clear();
+        const auto stage = [&](const wchar_t* name, HRESULT result) {
+            const DWORD win32Error = FAILED(result) ? GetLastError() : ERROR_SUCCESS;
+            LogRotationStage(name, result, win32Error);
+            if (FAILED(result)) { failedStage = name; failedWin32Error = win32Error; }
+            return SUCCEEDED(result);
+        };
+        const auto gdiplusStage = [&](const wchar_t* name, Gdiplus::Status status) {
+            const HRESULT result = GdiplusStatusToHresult(status);
+            if (FAILED(result)) rotationDiagnosticDetail_ = L"GDI+ Status: " + std::to_wstring(static_cast<unsigned int>(status));
+            return stage(name, result);
+        };
+        struct TemporarySiblingFile {
+            std::wstring path;
+            ~TemporarySiblingFile() { if (!path.empty()) DeleteFileW(path.c_str()); }
+            void Release() { path.clear(); }
+        } temporary;
+
+        WIN32_FILE_ATTRIBUTE_DATA originalAttributes{};
+        if (!GetFileAttributesExW(currentPath_.c_str(), GetFileExInfoStandard, &originalAttributes)) {
+            const HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+            stage(L"GDI+ source PNG attributes: GetFileAttributesExW", hr);
+            return hr;
+        }
 
         wchar_t tempPath[MAX_PATH]{};
         const std::wstring directory = fs::path(currentPath_).parent_path().wstring();
-        if (SUCCEEDED(hr) && !GetTempFileNameW(directory.c_str(), L"FV", 0, tempPath)) hr = HRESULT_FROM_WIN32(GetLastError());
-        const auto cleanup = [&] { if (tempPath[0]) DeleteFileW(tempPath); };
-
-        ComPtr<IWICStream> stream;
-        if (SUCCEEDED(hr)) hr = wicFactory_->CreateStream(&stream);
-        if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(tempPath, GENERIC_WRITE);
-        ComPtr<IWICBitmapEncoder> encoder;
-        if (SUCCEEDED(hr)) hr = wicFactory_->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
-        if (SUCCEEDED(hr)) hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
-        ComPtr<IWICBitmapFrameEncode> encodedFrame;
-        IPropertyBag2* options = nullptr;
-        if (SUCCEEDED(hr)) hr = encoder->CreateNewFrame(&encodedFrame, &options);
-        if (options) options->Release();
-        if (SUCCEEDED(hr)) hr = encodedFrame->Initialize(nullptr);
-        UINT width = 0, height = 0;
-        if (SUCCEEDED(hr)) hr = rotator->GetSize(&width, &height);
-        if (SUCCEEDED(hr)) hr = encodedFrame->SetSize(width, height);
-        WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
-        if (SUCCEEDED(hr)) hr = encodedFrame->SetPixelFormat(&pixelFormat);
-        if (SUCCEEDED(hr)) hr = encodedFrame->WriteSource(rotator.Get(), nullptr);
-        if (SUCCEEDED(hr)) hr = encodedFrame->Commit();
-        if (SUCCEEDED(hr)) hr = encoder->Commit();
-        stream.Reset();
-        encoder.Reset();
-        if (FAILED(hr)) { cleanup(); return hr; }
-        if (!ReplaceFileW(currentPath_.c_str(), tempPath, nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr)) {
-            hr = HRESULT_FROM_WIN32(GetLastError());
-            cleanup();
+        if (!GetTempFileNameW(directory.c_str(), L"FV", 0, tempPath)) {
+            const HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+            stage(L"GDI+ temp sibling path creation: GetTempFileNameW", hr);
+            return hr;
         }
-        return hr;
+        temporary.path = tempPath;
+        if (!DeleteFileW(temporary.path.c_str())) {
+            const HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+            stage(L"GDI+ temp output preparation: DeleteFileW", hr);
+            return hr;
+        }
+
+        struct GdiplusSession {
+            ULONG_PTR token = 0;
+            bool active = false;
+            ~GdiplusSession() { if (active) Gdiplus::GdiplusShutdown(token); }
+            void Close() { if (active) { Gdiplus::GdiplusShutdown(token); active = false; } }
+        } gdiplus;
+        Gdiplus::GdiplusStartupInput startupInput;
+        Gdiplus::Status gdiplusStatus = Gdiplus::GdiplusStartup(&gdiplus.token, &startupInput, nullptr);
+        HRESULT hr = GdiplusStatusToHresult(gdiplusStatus);
+        if (!gdiplusStage(L"GDI+ initialization: GdiplusStartup", gdiplusStatus)) return hr;
+        gdiplus.active = true;
+        UINT sourceProperties = 0, outputProperties = 0;
+        std::vector<PROPID> sourcePropertyIds, outputPropertyIds;
+        bool sourceHasAlpha = false, outputHasAlpha = false;
+        {
+            Gdiplus::Image image(currentPath_.c_str(), FALSE);
+            gdiplusStatus = image.GetLastStatus();
+            hr = GdiplusStatusToHresult(gdiplusStatus);
+            if (!gdiplusStage(L"GDI+ source PNG open/decode: Image::GetLastStatus", gdiplusStatus)) return hr;
+            sourceProperties = image.GetPropertyCount();
+            sourcePropertyIds.resize(sourceProperties);
+            if (sourceProperties != 0 && image.GetPropertyIdList(sourceProperties, sourcePropertyIds.data()) != Gdiplus::Ok) {
+                failedStage = L"GDI+ source PNG metadata enumeration";
+                return E_FAIL;
+            }
+            sourceHasAlpha = (image.GetPixelFormat() & 0x00040000u) != 0;
+            gdiplusStatus = image.RotateFlip(clockwise ? Gdiplus::Rotate90FlipNone : Gdiplus::Rotate270FlipNone);
+            hr = GdiplusStatusToHresult(gdiplusStatus);
+            if (!gdiplusStage(L"GDI+ transform/rotation: Image::RotateFlip", gdiplusStatus)) return hr;
+            CLSID pngEncoder{};
+            if (!FindPngEncoder(pngEncoder)) { failedStage = L"GDI+ PNG encoder discovery"; return E_FAIL; }
+            gdiplusStatus = image.Save(temporary.path.c_str(), &pngEncoder, nullptr);
+            hr = GdiplusStatusToHresult(gdiplusStatus);
+            if (!gdiplusStage(L"GDI+ PNG save: Image::Save", gdiplusStatus)) return hr;
+        }
+
+        WIN32_FILE_ATTRIBUTE_DATA temporaryAttributes{};
+        if (!GetFileAttributesExW(temporary.path.c_str(), GetFileExInfoStandard, &temporaryAttributes)) {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            stage(L"GDI+ output file check: GetFileAttributesExW", hr);
+            return hr;
+        }
+        HANDLE signatureFile = CreateFileW(temporary.path.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (signatureFile == INVALID_HANDLE_VALUE) {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            stage(L"GDI+ output PNG signature open: CreateFileW", hr);
+            return hr;
+        }
+        BYTE signature[8]{};
+        DWORD bytesRead = 0;
+        const bool signatureRead = ReadFile(signatureFile, signature, sizeof(signature), &bytesRead, nullptr) && bytesRead == sizeof(signature);
+        CloseHandle(signatureFile);
+        static constexpr BYTE kPngSignature[] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+        if (!signatureRead || memcmp(signature, kPngSignature, sizeof(signature)) != 0) {
+            hr = E_FAIL;
+            stage(L"GDI+ output PNG signature validation", hr);
+            return hr;
+        }
+
+        {
+            Gdiplus::Image output(temporary.path.c_str(), FALSE);
+            gdiplusStatus = output.GetLastStatus();
+            hr = GdiplusStatusToHresult(gdiplusStatus);
+            if (!gdiplusStage(L"GDI+ temporary PNG validation: Image::GetLastStatus", gdiplusStatus)) return hr;
+            outputProperties = output.GetPropertyCount();
+            outputPropertyIds.resize(outputProperties);
+            if (outputProperties != 0 && output.GetPropertyIdList(outputProperties, outputPropertyIds.data()) != Gdiplus::Ok) {
+                failedStage = L"GDI+ temporary PNG metadata enumeration";
+                return E_FAIL;
+            }
+            outputHasAlpha = (output.GetPixelFormat() & 0x00040000u) != 0;
+        }
+        gdiplus.Close();
+        LogRotationStage(L"GDI+ close: released source image, validation image, and encoder state", S_OK);
+        if (sourceHasAlpha && !outputHasAlpha) {
+            failedStage = L"PNG alpha preservation validation";
+            rotationDiagnosticDetail_ = L"The source PNG has alpha, but the GDI+ output does not.";
+            return E_FAIL;
+        }
+        const auto propertyName = [](PROPID id) -> const wchar_t* {
+            switch (id) {
+            case 0x010E: return L"ImageDescription";
+            case 0x0112: return L"Orientation";
+            case 0x011A: return L"XResolution";
+            case 0x011B: return L"YResolution";
+            case 0x0128: return L"ResolutionUnit";
+            case 0x0131: return L"Software";
+            case 0x0132: return L"DateTime";
+            case 0x013B: return L"Artist";
+            case 0x0301: return L"Gamma";
+            default: return L"unknown or codec-specific metadata";
+            }
+        };
+        const auto missing = std::find_if(sourcePropertyIds.begin(), sourcePropertyIds.end(), [&](PROPID id) {
+            return std::find(outputPropertyIds.begin(), outputPropertyIds.end(), id) == outputPropertyIds.end();
+        });
+        if (missing != sourcePropertyIds.end()) {
+            wchar_t detail[256]{};
+            swprintf_s(detail, L"GDI+ dropped property ID 0x%04X (%s). Source property count: %u; output count: %u.",
+                *missing, propertyName(*missing), sourceProperties, outputProperties);
+            failedStage = L"PNG metadata preservation validation";
+            rotationDiagnosticDetail_ = detail;
+            return E_FAIL;
+        }
+
+        const auto probe = [&](const std::wstring& path, const wchar_t* name) {
+            HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (handle == INVALID_HANDLE_VALUE) {
+                const HRESULT probeHr = HRESULT_FROM_WIN32(GetLastError());
+                stage(name, probeHr);
+                return probeHr;
+            }
+            CloseHandle(handle);
+            return S_OK;
+        };
+        hr = probe(currentPath_, L"GDI+ replacement boundary probe: original source path");
+        if (FAILED(hr)) return hr;
+        hr = probe(temporary.path, L"GDI+ replacement boundary probe: temporary replacement path");
+        if (FAILED(hr)) return hr;
+        if (!ReplaceFileW(currentPath_.c_str(), temporary.path.c_str(), nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr)) {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            stage(L"GDI+ replacement of original: ReplaceFileW", hr);
+            return hr;
+        }
+        temporary.Release();
+        SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, currentPath_.c_str(), nullptr);
+        return S_OK;
+    }
+
+    HRESULT RotatePng(bool clockwise, const wchar_t*& failedStage, DWORD& failedWin32Error) {
+        // GDI+ provides the fast, lossless PNG pixel rotation path while the transaction below keeps replacement safe.
+        return RotatePngWithGdiPlus(clockwise, failedStage, failedWin32Error);
     }
 
     void RotateImage(bool clockwise) {
         if (currentPath_.empty()) return;
-        const HRESULT hr = IsJpegPath(currentPath_) ? RotateJpeg(clockwise) : IsPngPath(currentPath_) ? RotatePng(clockwise) : E_NOTIMPL;
+        rotationDiagnosticDetail_.clear();
+        const wchar_t* failedStage = nullptr;
+        DWORD failedWin32Error = ERROR_SUCCESS;
+        const HRESULT hr = IsJpegPath(currentPath_) ? RotateJpeg(clockwise, failedStage, failedWin32Error) :
+            IsPngPath(currentPath_) ? RotatePng(clockwise, failedStage, failedWin32Error) : E_NOTIMPL;
         if (FAILED(hr)) {
-            ShowActionError(L"FeatherView could not safely rotate this image. The original file was not replaced.");
+            if (IsJpegPath(currentPath_) || IsPngPath(currentPath_))
+                ShowRotationFailure(failedStage ? failedStage : L"unknown rotation stage", hr, failedWin32Error);
+            else ShowActionError(L"FeatherView could not safely rotate this image. The original file was not replaced.");
             return;
         }
-        ReloadCurrentImage();
+        const HRESULT reload = ReloadCurrentImage();
+        if (IsJpegPath(currentPath_) || IsPngPath(currentPath_)) LogRotationStage(L"reload: DecodeImage", reload, FAILED(reload) ? GetLastError() : ERROR_SUCCESS);
+        if (FAILED(reload) && (IsJpegPath(currentPath_) || IsPngPath(currentPath_))) ShowRotationFailure(L"reload: DecodeImage", reload, GetLastError());
     }
 
     void ClearDeletedImage() {
@@ -1016,15 +1354,17 @@ private:
         return { left, top, left + width, std::min<LONG>(client.bottom - margin, top + height) };
     }
 
-    void ReloadCurrentImage() {
+    HRESULT ReloadCurrentImage() {
         ComPtr<IWICBitmapSource> source;
         UINT width = 0, height = 0;
-        if (SUCCEEDED(DecodeImage(currentPath_, source, width, height))) {
+        const HRESULT hr = DecodeImage(currentPath_, source, width, height);
+        if (SUCCEEDED(hr)) {
             CommitImage(currentPath_, source, width, height, false);
             InvalidateRect(window_, nullptr, FALSE);
         } else {
             ShowActionError(L"The image was changed, but FeatherView could not reload it.");
         }
+        return hr;
     }
 
     HRESULT DecodeImage(const std::wstring& path, ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height) {
@@ -1045,15 +1385,19 @@ private:
                             WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
                     }
                     const UINT orientation = ReadPhotoOrientation(frame.Get());
+                    ComPtr<IWICBitmapSource> transformed;
                     if (SUCCEEDED(hr) && orientation != 1) {
                         ComPtr<IWICBitmapFlipRotator> rotator;
                         hr = wicFactory_->CreateBitmapFlipRotator(&rotator);
                         if (SUCCEEDED(hr)) hr = rotator->Initialize(converter.Get(), TransformForOrientation(orientation));
-                        if (SUCCEEDED(hr)) source = rotator;
+                        if (SUCCEEDED(hr)) transformed = rotator;
                         if (orientation >= 5 && orientation <= 8) std::swap(width, height);
                     } else if (SUCCEEDED(hr)) {
-                        source = converter;
+                        transformed = converter;
                     }
+                    ComPtr<IWICBitmap> cachedBitmap;
+                    if (SUCCEEDED(hr)) hr = wicFactory_->CreateBitmapFromSource(transformed.Get(), WICBitmapCacheOnLoad, &cachedBitmap);
+                    if (SUCCEEDED(hr)) source = cachedBitmap;
                 } else if (SUCCEEDED(hr)) {
                     hr = E_FAIL;
                 }
@@ -1620,6 +1964,7 @@ private:
     std::wstring fileSizeText_;
     std::wstring filenameText_;
     std::wstring error_;
+    std::wstring rotationDiagnosticDetail_;
     std::vector<fs::path> navigationFiles_;
     D2D1_POINT_2F pan_ = D2D1::Point2F();
     POINT lastDragPoint_{};

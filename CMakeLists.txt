@@ -18,7 +18,7 @@ add_executable(FeatherView WIN32
 
 target_compile_features(FeatherView PRIVATE cxx_std_20)
 target_compile_definitions(FeatherView PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX FEATHERVIEW_VERSION=L\"${PROJECT_VERSION}\")
-target_link_libraries(FeatherView PRIVATE d2d1 dwrite windowscodecs shell32 shlwapi propsys dwmapi advapi32)
+target_link_libraries(FeatherView PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32)
 
 if(MSVC)
     target_compile_options(FeatherView PRIVATE /W4 /permissive-)

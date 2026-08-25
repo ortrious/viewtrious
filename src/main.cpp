@@ -4,6 +4,8 @@
 #include <shlobj_core.h>
 #include <shobjidl_core.h>
 #include <shlwapi.h>
+#include <propkey.h>
+#include <propsys.h>
 #include <dwmapi.h>
 #include <d2d1.h>
 #include <dwrite.h>
@@ -51,7 +53,8 @@ constexpr ShortcutEntry kShortcutEntries[] = {
     { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom" },
     { L"+ / =", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
     { L"Left mouse drag", L"Pan" }, { L"Double-click image", L"Toggle fullscreen" }, { L"F11", L"Toggle fullscreen" },
-    { L"Ctrl+C", L"Copy image" }, { L"Ctrl+P", L"Print" }, { L"Esc", L"Exit fullscreen, or close FeatherView" },
+    { L"Ctrl+C", L"Copy image" }, { L"Ctrl+P", L"Print" }, { L"Delete", L"Move image to Recycle Bin" },
+    { L"Esc", L"Exit fullscreen, or close FeatherView" },
 };
 constexpr size_t kShortcutEntryCount = sizeof(kShortcutEntries) / sizeof(kShortcutEntries[0]);
 
@@ -89,6 +92,22 @@ bool IsSupportedExtension(const fs::path& path) {
         extension == L".bmp" || extension == L".gif" || extension == L".tif" ||
         extension == L".tiff" || extension == L".ico" || extension == L".webp" ||
         extension == L".heic" || extension == L".heif" || extension == L".avif";
+}
+
+std::wstring LowercaseExtension(const std::wstring& path) {
+    std::wstring extension = fs::path(path).extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+        [](wchar_t character) { return static_cast<wchar_t>(std::towlower(character)); });
+    return extension;
+}
+
+bool IsJpegPath(const std::wstring& path) {
+    const std::wstring extension = LowercaseExtension(path);
+    return extension == L".jpg" || extension == L".jpeg";
+}
+
+bool IsPngPath(const std::wstring& path) {
+    return LowercaseExtension(path) == L".png";
 }
 
 bool PathsEqual(const fs::path& left, const fs::path& right) {
@@ -415,7 +434,10 @@ public:
         return hit(ContextAction::Delete);
     }
     bool ContextActionEnabled(ContextAction action) const {
-        return action == ContextAction::OpenWith || action == ContextAction::Copy || action == ContextAction::Print;
+        if (action == ContextAction::OpenWith || action == ContextAction::Copy || action == ContextAction::Print || action == ContextAction::Delete)
+            return true;
+        return (action == ContextAction::RotateLeft || action == ContextAction::RotateRight) &&
+            (IsJpegPath(currentPath_) || IsPngPath(currentPath_));
     }
     void SetContextHover(ContextAction action) {
         if (!ContextActionEnabled(action)) action = ContextAction::None;
@@ -430,13 +452,29 @@ public:
     ContextAction PressedContextAction() const { return contextPressed_; }
     void ClearContextPressed() { SetContextPressed(ContextAction::None); }
     void InvokeContextAction(ContextAction action) {
-        if (action == ContextAction::OpenWith) { OpenWithSubmenu(); return; }
+        if (action == ContextAction::OpenWith) { ToggleOpenWithSubmenu(); return; }
         DismissContextMenu();
         if (action == ContextAction::Copy) CopyImage();
         else if (action == ContextAction::Print) PrintImage();
+        else if (action == ContextAction::RotateLeft) RotateImage(false);
+        else if (action == ContextAction::RotateRight) RotateImage(true);
+        else if (action == ContextAction::Delete) DeleteImage();
     }
     bool OpenWithSubmenuOpen() const { return openWithSubmenuOpen_; }
     void DismissOpenWithSubmenu() { openWithSubmenuOpen_ = false; openWithHovered_ = -1; InvalidateRect(window_, nullptr, FALSE); }
+    bool OpenWithBridgeContains(POINT point) const {
+        if (!openWithSubmenuOpen_) return false;
+        const RECT parent = GetContextMenuBounds();
+        const RECT child = GetOpenWithSubmenuBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const LONG row = MulDiv(38, dpi, 96);
+        const LONG gap = MulDiv(9, dpi, 96);
+        const LONG top = parent.top + MulDiv(kContextMenuPaddingDip, dpi, 96) + row * 2 + gap;
+        const LONG bottom = top + row;
+        const LONG left = std::min(parent.right, child.right);
+        const LONG right = std::max(parent.left, child.left);
+        return point.x >= left && point.x < right && point.y >= top && point.y < bottom;
+    }
     int OpenWithItemAt(POINT point) const {
         if (!openWithSubmenuOpen_) return -1;
         const RECT bounds = GetOpenWithSubmenuBounds();
@@ -704,7 +742,11 @@ public:
     }
 
 private:
-    void OpenWithSubmenu() {
+    void ToggleOpenWithSubmenu() {
+        if (openWithSubmenuOpen_) {
+            DismissOpenWithSubmenu();
+            return;
+        }
         const std::wstring extension = fs::path(currentPath_).extension().wstring();
         if (openWithExtension_ != extension) {
             openWithHandlers_.clear(); openWithExtension_ = extension;
@@ -798,6 +840,168 @@ private:
         if (!ShellExecuteExW(&execute)) ShowActionError(L"Windows could not find a print handler for this image.");
     }
 
+    static UINT RotatedOrientation(UINT orientation, bool clockwise) {
+        static constexpr UINT clockwiseMap[] = { 0, 6, 7, 8, 5, 2, 3, 4, 1 };
+        static constexpr UINT counterClockwiseMap[] = { 0, 8, 5, 6, 7, 4, 1, 2, 3 };
+        if (orientation < 1 || orientation > 8) orientation = 1;
+        return clockwise ? clockwiseMap[orientation] : counterClockwiseMap[orientation];
+    }
+
+    UINT ReadPhotoOrientation(IWICBitmapFrameDecode* frame) const {
+        ComPtr<IWICMetadataQueryReader> metadata;
+        PROPVARIANT value{};
+        PropVariantInit(&value);
+        UINT orientation = 1;
+        if (SUCCEEDED(frame->GetMetadataQueryReader(&metadata)) &&
+            SUCCEEDED(metadata->GetMetadataByName(L"/app1/ifd/{ushort=274}", &value))) {
+            if (value.vt == VT_UI2) orientation = value.uiVal;
+            else if (value.vt == VT_UI4) orientation = value.ulVal;
+        }
+        PropVariantClear(&value);
+        return orientation >= 1 && orientation <= 8 ? orientation : 1;
+    }
+
+    WICBitmapTransformOptions TransformForOrientation(UINT orientation) const {
+        switch (orientation) {
+        case 2: return WICBitmapTransformFlipHorizontal;
+        case 3: return WICBitmapTransformRotate180;
+        case 4: return WICBitmapTransformFlipVertical;
+        case 5: return static_cast<WICBitmapTransformOptions>(WICBitmapTransformRotate90 | WICBitmapTransformFlipHorizontal);
+        case 6: return WICBitmapTransformRotate90;
+        case 7: return static_cast<WICBitmapTransformOptions>(WICBitmapTransformRotate270 | WICBitmapTransformFlipHorizontal);
+        case 8: return WICBitmapTransformRotate270;
+        default: return WICBitmapTransformRotate0;
+        }
+    }
+
+    HRESULT RotateJpeg(bool clockwise) {
+        ComPtr<IWICBitmapDecoder> decoder;
+        HRESULT hr = wicFactory_->CreateDecoderFromFilename(currentPath_.c_str(), nullptr, GENERIC_READ,
+            WICDecodeMetadataCacheOnLoad, &decoder);
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+        const UINT orientation = SUCCEEDED(hr) ? ReadPhotoOrientation(frame.Get()) : 1;
+
+        ComPtr<IPropertyStore> store;
+        if (SUCCEEDED(hr)) hr = SHGetPropertyStoreFromParsingName(currentPath_.c_str(), nullptr, GPS_READWRITE, IID_PPV_ARGS(&store));
+        PROPVARIANT value{};
+        PropVariantInit(&value);
+        value.vt = VT_UI2;
+        value.uiVal = static_cast<USHORT>(RotatedOrientation(orientation, clockwise));
+        if (SUCCEEDED(hr)) hr = store->SetValue(PKEY_Photo_Orientation, value);
+        if (SUCCEEDED(hr)) hr = store->Commit();
+        PropVariantClear(&value);
+        return hr;
+    }
+
+    HRESULT RotatePng(bool clockwise) {
+        WIN32_FILE_ATTRIBUTE_DATA attributes{};
+        if (!GetFileAttributesExW(currentPath_.c_str(), GetFileExInfoStandard, &attributes))
+            return HRESULT_FROM_WIN32(GetLastError());
+
+        ComPtr<IWICBitmapDecoder> decoder;
+        HRESULT hr = wicFactory_->CreateDecoderFromFilename(currentPath_.c_str(), nullptr, GENERIC_READ,
+            WICDecodeMetadataCacheOnLoad, &decoder);
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+        ComPtr<IWICFormatConverter> converter;
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateFormatConverter(&converter);
+        if (SUCCEEDED(hr)) hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppBGRA,
+            WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+        ComPtr<IWICBitmapFlipRotator> rotator;
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateBitmapFlipRotator(&rotator);
+        if (SUCCEEDED(hr)) hr = rotator->Initialize(converter.Get(), clockwise ? WICBitmapTransformRotate90 : WICBitmapTransformRotate270);
+
+        wchar_t tempPath[MAX_PATH]{};
+        const std::wstring directory = fs::path(currentPath_).parent_path().wstring();
+        if (SUCCEEDED(hr) && !GetTempFileNameW(directory.c_str(), L"FV", 0, tempPath)) hr = HRESULT_FROM_WIN32(GetLastError());
+        const auto cleanup = [&] { if (tempPath[0]) DeleteFileW(tempPath); };
+
+        ComPtr<IWICStream> stream;
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateStream(&stream);
+        if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(tempPath, GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encoder;
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+        if (SUCCEEDED(hr)) hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> encodedFrame;
+        IPropertyBag2* options = nullptr;
+        if (SUCCEEDED(hr)) hr = encoder->CreateNewFrame(&encodedFrame, &options);
+        if (options) options->Release();
+        if (SUCCEEDED(hr)) hr = encodedFrame->Initialize(nullptr);
+        UINT width = 0, height = 0;
+        if (SUCCEEDED(hr)) hr = rotator->GetSize(&width, &height);
+        if (SUCCEEDED(hr)) hr = encodedFrame->SetSize(width, height);
+        WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
+        if (SUCCEEDED(hr)) hr = encodedFrame->SetPixelFormat(&pixelFormat);
+        if (SUCCEEDED(hr)) hr = encodedFrame->WriteSource(rotator.Get(), nullptr);
+        if (SUCCEEDED(hr)) hr = encodedFrame->Commit();
+        if (SUCCEEDED(hr)) hr = encoder->Commit();
+        stream.Reset();
+        encoder.Reset();
+        if (FAILED(hr)) { cleanup(); return hr; }
+        if (!ReplaceFileW(currentPath_.c_str(), tempPath, nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr)) {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            cleanup();
+        }
+        return hr;
+    }
+
+    void RotateImage(bool clockwise) {
+        if (currentPath_.empty()) return;
+        const HRESULT hr = IsJpegPath(currentPath_) ? RotateJpeg(clockwise) : IsPngPath(currentPath_) ? RotatePng(clockwise) : E_NOTIMPL;
+        if (FAILED(hr)) {
+            ShowActionError(L"FeatherView could not safely rotate this image. The original file was not replaced.");
+            return;
+        }
+        ReloadCurrentImage();
+    }
+
+    void ClearDeletedImage() {
+        source_.Reset(); bitmap_.Reset(); imageWidth_ = imageHeight_ = 0;
+        currentPath_.clear(); resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
+        navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
+        fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
+        error_ = L"Drop an image here, or launch FeatherView with an image path.";
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void ShowImageAfterDelete() {
+        BuildNavigation();
+        const fs::path deleted(currentPath_);
+        auto current = std::find_if(navigationFiles_.begin(), navigationFiles_.end(),
+            [&deleted](const fs::path& path) { return PathsEqual(path, deleted); });
+        if (current == navigationFiles_.end()) { ClearDeletedImage(); return; }
+        const size_t index = static_cast<size_t>(std::distance(navigationFiles_.begin(), current));
+        navigationFiles_.erase(current);
+        for (size_t offset = 0; offset < navigationFiles_.size(); ++offset) {
+            const size_t candidate = (index + offset) % navigationFiles_.size();
+            ComPtr<IWICBitmapSource> source;
+            UINT width = 0, height = 0;
+            if (SUCCEEDED(DecodeImage(navigationFiles_[candidate].wstring(), source, width, height))) {
+                CommitImage(navigationFiles_[candidate].wstring(), source, width, height, false);
+                InvalidateRect(window_, nullptr, FALSE);
+                return;
+            }
+        }
+        ClearDeletedImage();
+    }
+
+    void DeleteImage() {
+        if (currentPath_.empty()) return;
+        ComPtr<IShellItem> item;
+        ComPtr<IFileOperation> operation;
+        HRESULT hr = SHCreateItemFromParsingName(currentPath_.c_str(), nullptr, IID_PPV_ARGS(&item));
+        if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&operation));
+        if (SUCCEEDED(hr)) hr = operation->SetOwnerWindow(window_);
+        if (SUCCEEDED(hr)) hr = operation->SetOperationFlags(FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE);
+        if (SUCCEEDED(hr)) hr = operation->DeleteItem(item.Get(), nullptr);
+        if (SUCCEEDED(hr)) hr = operation->PerformOperations();
+        BOOL aborted = FALSE;
+        if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
+        if (FAILED(hr)) { ShowActionError(L"Windows could not move this image to the Recycle Bin."); return; }
+        if (!aborted) ShowImageAfterDelete();
+    }
+
     RECT GetDropdownBounds() const {
         RECT client{};
         GetClientRect(window_, &client);
@@ -810,6 +1014,17 @@ private:
             std::max<LONG>(margin, client.right - width - margin));
         const LONG top = frame.hamburger.bottom + margin;
         return { left, top, left + width, std::min<LONG>(client.bottom - margin, top + height) };
+    }
+
+    void ReloadCurrentImage() {
+        ComPtr<IWICBitmapSource> source;
+        UINT width = 0, height = 0;
+        if (SUCCEEDED(DecodeImage(currentPath_, source, width, height))) {
+            CommitImage(currentPath_, source, width, height, false);
+            InvalidateRect(window_, nullptr, FALSE);
+        } else {
+            ShowActionError(L"The image was changed, but FeatherView could not reload it.");
+        }
     }
 
     HRESULT DecodeImage(const std::wstring& path, ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height) {
@@ -829,7 +1044,16 @@ private:
                         hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
                             WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
                     }
-                    if (SUCCEEDED(hr)) source = converter;
+                    const UINT orientation = ReadPhotoOrientation(frame.Get());
+                    if (SUCCEEDED(hr) && orientation != 1) {
+                        ComPtr<IWICBitmapFlipRotator> rotator;
+                        hr = wicFactory_->CreateBitmapFlipRotator(&rotator);
+                        if (SUCCEEDED(hr)) hr = rotator->Initialize(converter.Get(), TransformForOrientation(orientation));
+                        if (SUCCEEDED(hr)) source = rotator;
+                        if (orientation >= 5 && orientation <= 8) std::swap(width, height);
+                    } else if (SUCCEEDED(hr)) {
+                        source = converter;
+                    }
                 } else if (SUCCEEDED(hr)) {
                     hr = E_FAIL;
                 }
@@ -1514,7 +1738,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const int item = viewer->OpenWithItemAt(point);
             if (item >= 0) { viewer->InvokeOpenWithItem(item); return 0; }
             const ContextAction parent = viewer->ContextActionAt(point);
-            if (parent != ContextAction::OpenWith) viewer->DismissContextMenu();
+            if (parent != ContextAction::None) {
+                if (parent != ContextAction::OpenWith) viewer->DismissOpenWithSubmenu();
+                if (viewer->ContextActionEnabled(parent)) { viewer->SetContextPressed(parent); SetCapture(window); }
+                return 0;
+            }
+            if (!viewer->OpenWithBridgeContains(point)) viewer->DismissContextMenu();
             return 0;
         }
         if (viewer->ContextMenuOpen()) {
@@ -1558,9 +1787,21 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_MOUSEMOVE: {
-        if (viewer->OpenWithSubmenuOpen()) { viewer->SetOpenWithHover(viewer->OpenWithItemAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })); return 0; }
         if (viewer->ContextMenuOpen()) {
-            viewer->SetContextHover(viewer->ContextActionAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }));
+            const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            const ContextAction parent = viewer->ContextActionAt(point);
+            const int child = viewer->OpenWithItemAt(point);
+            if (child >= 0) {
+                viewer->SetOpenWithHover(child);
+                viewer->SetContextHover(ContextAction::None);
+            } else {
+                viewer->SetOpenWithHover(-1);
+                viewer->SetContextHover(parent);
+                if (viewer->OpenWithSubmenuOpen() && parent != ContextAction::OpenWith &&
+                    parent != ContextAction::None && !viewer->OpenWithBridgeContains(point)) {
+                    viewer->DismissOpenWithSubmenu();
+                }
+            }
             TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE, window, 0 };
             TrackMouseEvent(&track);
             return 0;
@@ -1640,6 +1881,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'C') { viewer->InvokeContextAction(ContextAction::Copy); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'P') { viewer->InvokeContextAction(ContextAction::Print); return 0; }
+        if (wParam == VK_DELETE) { viewer->InvokeContextAction(ContextAction::Delete); return 0; }
         if (wParam == VK_ESCAPE) { if (viewer->IsFullscreen()) viewer->ToggleFullscreen(); else DestroyWindow(window); return 0; }
         if (wParam == VK_F11) { viewer->ToggleFullscreen(); return 0; }
         if (wParam == VK_RIGHT) { viewer->Navigate(1); return 0; }

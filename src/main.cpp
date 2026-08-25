@@ -167,19 +167,19 @@ FrameMetrics GetFrameMetrics(HWND window) {
     const int separatorWidth = MulDiv(1, dpi, 96);
     const int separatorHeight = MulDiv(20, dpi, 96);
     const int sectionGutter = MulDiv(14, dpi, 96);
-    const int hamburgerSeparatorInset = MulDiv(4, dpi, 96);
+    const int filenameLeadIn = MulDiv(14, dpi, 96);
     const int resolutionWidth = MulDiv(92, dpi, 96);
     const int fileSizeWidth = MulDiv(72, dpi, 96);
     RECT client{};
     GetClientRect(window, &client);
     const int buttonLeft = std::max(0L, client.right - buttonWidth * 3);
     const int separatorTop = std::max(0, (titleBarHeight - separatorHeight) / 2);
-    const int hamburgerSeparatorLeft = hamburgerWidth - hamburgerSeparatorInset;
+    const int hamburgerSeparatorLeft = hamburgerWidth - separatorWidth;
     const int resolutionLeft = hamburgerSeparatorLeft + separatorWidth + sectionGutter;
     const int resolutionSeparatorLeft = resolutionLeft + resolutionWidth + sectionGutter;
     const int fileSizeLeft = resolutionSeparatorLeft + separatorWidth + sectionGutter;
     const int fileSizeSeparatorLeft = fileSizeLeft + fileSizeWidth + sectionGutter;
-    const int filenameLeft = fileSizeSeparatorLeft + separatorWidth + sectionGutter;
+    const int filenameLeft = fileSizeSeparatorLeft + separatorWidth + sectionGutter + filenameLeadIn;
     return { titleBarHeight, border,
         { 0, 0, buttonLeft, titleBarHeight },
         { 0, 0, hamburgerWidth, titleBarHeight },
@@ -982,13 +982,14 @@ private:
     }
 
     void DrawOverlayText(const wchar_t* text, float x, float y, float width, float height, float size,
-        DWRITE_FONT_WEIGHT weight, ID2D1Brush* brush, bool verticallyCenter = false) {
+        DWRITE_FONT_WEIGHT weight, ID2D1Brush* brush, bool verticallyCenter = false, bool rightAlign = false) {
         ComPtr<IDWriteTextFormat> format;
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL, size * dpiScale, L"", &format))) return;
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         if (verticallyCenter) format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        if (rightAlign) format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
         ComPtr<IDWriteTextLayout> layout;
         if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), width, height, &layout))) return;
         renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
@@ -1062,7 +1063,7 @@ private:
             DrawOverlayText(L"Version " FEATHERVIEW_VERSION, left, titleTop + 31.0f * dpiScale, contentWidth, 20.0f * dpiScale,
                 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             DrawOverlayText(L"Extremely lightweight image viewer", left, static_cast<float>(bounds.bottom) - panelPadding - 18.0f * dpiScale,
-                contentWidth, 18.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                contentWidth, 18.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         }
     }
 
@@ -1241,7 +1242,7 @@ private:
         const float stroke = 1.0f;
         const auto pixelCenter = [](float value) { return std::floor(value) + 0.5f; };
         renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
-        const D2D1_POINT_2F hamburgerCenter = D2D1::Point2F(frame.hamburgerSeparator.left / 2.0f,
+        const D2D1_POINT_2F hamburgerCenter = D2D1::Point2F((frame.hamburger.left + frame.hamburger.right) / 2.0f,
             (frame.hamburger.top + frame.hamburger.bottom) / 2.0f);
         const float hamburgerHalfWidth = 7.0f * dpiScale;
         const float hamburgerSpacing = 4.0f * dpiScale;

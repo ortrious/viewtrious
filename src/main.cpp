@@ -31,6 +31,7 @@ constexpr float kMaximumZoom = 16.0f;
 constexpr float kZoomStep = 1.20f;
 constexpr wchar_t kSettingsKey[] = L"Software\\FeatherView";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
+const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(0.10f, 0.10f, 0.10f);
 
 #if defined(_DEBUG)
 class StartupTimer {
@@ -168,6 +169,26 @@ public:
     }
 
     void SetWindow(HWND window) { window_ = window; }
+    bool IsFullscreen() const { return fullscreen_; }
+    void ToggleFullscreen() {
+        if (!fullscreen_) {
+            fullscreenStyle_ = GetWindowLongPtrW(window_, GWL_STYLE);
+            GetWindowRect(window_, &fullscreenRect_);
+            MONITORINFO monitor{ sizeof(monitor) };
+            GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor);
+            SetWindowLongPtrW(window_, GWL_STYLE, fullscreenStyle_ & ~WS_OVERLAPPEDWINDOW);
+            SetWindowPos(window_, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
+                monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+                SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+            fullscreen_ = true;
+        } else {
+            SetWindowLongPtrW(window_, GWL_STYLE, fullscreenStyle_);
+            SetWindowPos(window_, HWND_NOTOPMOST, fullscreenRect_.left, fullscreenRect_.top,
+                fullscreenRect_.right - fullscreenRect_.left, fullscreenRect_.bottom - fullscreenRect_.top,
+                SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+            fullscreen_ = false;
+        }
+    }
     void LoadWatermark() {
         HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(102), RT_RCDATA);
         if (!resource) return;
@@ -191,7 +212,7 @@ public:
         EnsureRenderTarget();
         if (renderTarget_) {
             renderTarget_->BeginDraw();
-            renderTarget_->Clear(D2D1::ColorF(0.10f, 0.10f, 0.10f));
+            renderTarget_->Clear(kViewerBackground);
             if (watermarkSource_ && !watermarkBitmap_) renderTarget_->CreateBitmapFromWicBitmap(watermarkSource_.Get(), nullptr, &watermarkBitmap_);
             if (watermarkBitmap_) { const D2D1_SIZE_F target = renderTarget_->GetSize(); const float width = 420.0f; const float height = width * watermarkHeight_ / watermarkWidth_; renderTarget_->DrawBitmap(watermarkBitmap_.Get(), D2D1::RectF((target.width - width) / 2.0f, (target.height - height) / 2.0f, (target.width + width) / 2.0f, (target.height + height) / 2.0f), 0.5f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR); }
             if (source_) {
@@ -431,7 +452,7 @@ private:
             D2D1::HwndRenderTargetProperties(window_, D2D1::SizeU(
                 static_cast<UINT32>(std::max(1.0f, client.width)),
                 static_cast<UINT32>(std::max(1.0f, client.height)))), &renderTarget_);
-        renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f), &backgroundBrush_);
+        renderTarget_->CreateSolidColorBrush(kViewerBackground, &backgroundBrush_);
         timer_.Log(L"rendering/window initialization complete");
     }
 
@@ -515,6 +536,9 @@ private:
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
+    bool fullscreen_ = false;
+    LONG_PTR fullscreenStyle_ = 0;
+    RECT fullscreenRect_{};
 };
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -538,6 +562,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->ZoomAt(point, std::pow(kZoomStep, static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA));
         return 0;
     }
+    case WM_LBUTTONDBLCLK: viewer->ToggleFullscreen(); return 0;
     case WM_LBUTTONDOWN: viewer->BeginPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
     case WM_MOUSEMOVE: viewer->PanTo({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
     case WM_LBUTTONUP: viewer->EndPan(); return 0;
@@ -545,7 +570,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case WM_KEYDOWN:
-        if (wParam == VK_ESCAPE) { DestroyWindow(window); return 0; }
+        if (wParam == VK_ESCAPE) { if (viewer->IsFullscreen()) viewer->ToggleFullscreen(); else DestroyWindow(window); return 0; }
+        if (wParam == VK_F11) { viewer->ToggleFullscreen(); return 0; }
         if (wParam == VK_RIGHT) { viewer->Navigate(1); return 0; }
         if (wParam == VK_LEFT) { viewer->Navigate(-1); return 0; }
         if (wParam == VK_OEM_PLUS || wParam == VK_ADD || wParam == L'=') { viewer->ZoomCentered(kZoomStep); return 0; }
@@ -620,6 +646,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     CoUninitialize();
     return static_cast<int>(message.wParam);
 }
+
+
 
 
 

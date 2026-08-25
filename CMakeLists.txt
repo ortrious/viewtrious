@@ -1,12 +1,14 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(FeatherView VERSION 0.1.2.2 LANGUAGES CXX)
+project(FeatherView VERSION 0.1.3.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FeatherView currently targets Windows only.")
 endif()
 
 string(REPLACE "." "," PROJECT_VERSION_COMMAS "${PROJECT_VERSION}")
+configure_file(assets/FeatherView.ico "${CMAKE_CURRENT_BINARY_DIR}/FeatherView.ico" COPYONLY)
+configure_file(assets/FeatherViewLogo.png "${CMAKE_CURRENT_BINARY_DIR}/FeatherViewLogo.png" COPYONLY)
 configure_file(src/FeatherView.rc.in "${CMAKE_CURRENT_BINARY_DIR}/FeatherView.rc" @ONLY)
 
 add_executable(FeatherView WIN32
@@ -22,3 +24,4 @@ if(MSVC)
     target_compile_options(FeatherView PRIVATE /W4 /permissive-)
     target_compile_options(FeatherView PRIVATE $<$<CONFIG:Release>:/O2>)
 endif()
+

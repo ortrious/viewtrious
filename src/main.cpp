@@ -168,6 +168,22 @@ public:
     }
 
     void SetWindow(HWND window) { window_ = window; }
+    void LoadWatermark() {
+        HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(102), RT_RCDATA);
+        if (!resource) return;
+        const BYTE* data = static_cast<const BYTE*>(LockResource(LoadResource(nullptr, resource)));
+        const DWORD size = SizeofResource(nullptr, resource);
+        ComPtr<IWICStream> stream; ComPtr<IWICBitmapDecoder> decoder; ComPtr<IWICBitmapFrameDecode> frame; ComPtr<IWICFormatConverter> converter;
+        HRESULT hr = wicFactory_->CreateStream(&stream);
+        if (SUCCEEDED(hr)) hr = stream->InitializeFromMemory(const_cast<BYTE*>(data), size);
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder);
+        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+        if (SUCCEEDED(hr)) hr = frame->GetSize(&watermarkWidth_, &watermarkHeight_);
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateFormatConverter(&converter);
+        if (SUCCEEDED(hr)) hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+        if (SUCCEEDED(hr) && watermarkWidth_ && watermarkHeight_) watermarkSource_ = converter;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
 
     void Paint() {
         PAINTSTRUCT paint{};
@@ -176,6 +192,8 @@ public:
         if (renderTarget_) {
             renderTarget_->BeginDraw();
             renderTarget_->Clear(D2D1::ColorF(0.10f, 0.10f, 0.10f));
+            if (watermarkSource_ && !watermarkBitmap_) renderTarget_->CreateBitmapFromWicBitmap(watermarkSource_.Get(), nullptr, &watermarkBitmap_);
+            if (watermarkBitmap_) { const D2D1_SIZE_F target = renderTarget_->GetSize(); const float width = 420.0f; const float height = width * watermarkHeight_ / watermarkWidth_; renderTarget_->DrawBitmap(watermarkBitmap_.Get(), D2D1::RectF((target.width - width) / 2.0f, (target.height - height) / 2.0f, (target.width + width) / 2.0f, (target.height + height) / 2.0f), 0.5f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR); }
             if (source_) {
                 EnsureBitmap();
                 if (bitmap_) DrawImage();
@@ -468,7 +486,7 @@ private:
         DrawTextW(dc, error_.c_str(), -1, &text, DT_CENTER | DT_WORDBREAK);
     }
 
-    void DiscardRenderResources() { bitmap_.Reset(); renderTarget_.Reset(); }
+    void DiscardRenderResources() { bitmap_.Reset(); watermarkBitmap_.Reset(); renderTarget_.Reset(); }
 
     const StartupTimer& timer_;
     HWND window_ = nullptr;
@@ -477,8 +495,12 @@ private:
     ComPtr<IWICBitmapSource> source_;
     ComPtr<ID2D1HwndRenderTarget> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
+    ComPtr<IWICBitmapSource> watermarkSource_;
+    ComPtr<ID2D1Bitmap> watermarkBitmap_;
     UINT imageWidth_ = 0;
     UINT imageHeight_ = 0;
+    UINT watermarkWidth_ = 0;
+    UINT watermarkHeight_ = 0;
     std::wstring currentPath_;
     std::wstring error_;
     std::vector<fs::path> navigationFiles_;
@@ -502,6 +524,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     if (!viewer) return DefWindowProcW(window, message, wParam, lParam);
 
     switch (message) {
+    case WM_CREATE: PostMessageW(window, WM_APP + 2, 0, 0); return 0;
+    case WM_APP + 2: viewer->LoadWatermark(); return 0;
     case WM_PAINT: viewer->Paint(); return 0;
     case WM_SIZE: viewer->Resize(); return 0;
     case WM_DROPFILES: viewer->DropFile(reinterpret_cast<HDROP>(wParam)); return 0;
@@ -550,6 +574,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     windowClass.lpszClassName = kWindowClass;
     windowClass.lpfnWndProc = WindowProc;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    windowClass.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(101));
+    windowClass.hIconSm = LoadIconW(instance, MAKEINTRESOURCEW(101));
     windowClass.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassExW(&windowClass);
 
@@ -576,6 +602,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         nullptr, nullptr, instance, &viewer);
     if (!window) { CoUninitialize(); return 1; }
 
+    SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(windowClass.hIcon));
+    SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(windowClass.hIconSm));
     DragAcceptFiles(window, TRUE);
     ApplyTitleBarTheme(window);
     ShowWindow(window, hasSavedPlacement && savedPlacement.maximized ? SW_MAXIMIZE : showCommand);
@@ -589,3 +617,5 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     CoUninitialize();
     return static_cast<int>(message.wParam);
 }
+
+

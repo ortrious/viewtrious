@@ -130,10 +130,13 @@ struct FrameMetrics {
     int border;
     RECT titleBarContent;
     RECT hamburger;
+    RECT hamburgerSeparator;
     int resolutionLeft;
     int resolutionWidth;
+    RECT resolutionSeparator;
     int fileSizeLeft;
     int fileSizeWidth;
+    RECT fileSizeSeparator;
     int filenameLeft;
     RECT minimize;
     RECT maximize;
@@ -142,25 +145,33 @@ struct FrameMetrics {
 
 FrameMetrics GetFrameMetrics(HWND window) {
     const UINT dpi = GetDpiForWindow(window);
-    const int titleBarHeight = MulDiv(36, dpi, 96);
+    const int titleBarHeight = MulDiv(40, dpi, 96);
     const int border = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
     const int buttonWidth = MulDiv(46, dpi, 96);
-    const int hamburgerSize = MulDiv(28, dpi, 96);
-    const int leftPadding = MulDiv(8, dpi, 96);
+    const int hamburgerWidth = MulDiv(46, dpi, 96);
+    const int separatorWidth = MulDiv(1, dpi, 96);
+    const int separatorHeight = MulDiv(20, dpi, 96);
     const int metadataGap = MulDiv(12, dpi, 96);
+    const int filenameGap = MulDiv(18, dpi, 96);
     const int resolutionWidth = MulDiv(92, dpi, 96);
     const int fileSizeWidth = MulDiv(72, dpi, 96);
     RECT client{};
     GetClientRect(window, &client);
     const int buttonLeft = std::max(0L, client.right - buttonWidth * 3);
-    const int hamburgerTop = std::max(0, (titleBarHeight - hamburgerSize) / 2);
-    const int resolutionLeft = leftPadding + hamburgerSize + metadataGap;
+    const int separatorTop = std::max(0, (titleBarHeight - separatorHeight) / 2);
+    const int separatorOffset = (metadataGap - separatorWidth) / 2;
+    const int resolutionLeft = hamburgerWidth + metadataGap;
     const int fileSizeLeft = resolutionLeft + resolutionWidth + metadataGap;
-    const int filenameLeft = fileSizeLeft + fileSizeWidth + metadataGap;
+    const int filenameLeft = fileSizeLeft + fileSizeWidth + filenameGap;
     return { titleBarHeight, border,
         { 0, 0, buttonLeft, titleBarHeight },
-        { leftPadding, hamburgerTop, leftPadding + hamburgerSize, hamburgerTop + hamburgerSize },
-        resolutionLeft, resolutionWidth, fileSizeLeft, fileSizeWidth, filenameLeft,
+        { 0, 0, hamburgerWidth, titleBarHeight },
+        { hamburgerWidth + separatorOffset, separatorTop, hamburgerWidth + separatorOffset + separatorWidth, separatorTop + separatorHeight },
+        resolutionLeft, resolutionWidth,
+        { resolutionLeft + resolutionWidth + separatorOffset, separatorTop, resolutionLeft + resolutionWidth + separatorOffset + separatorWidth, separatorTop + separatorHeight },
+        fileSizeLeft, fileSizeWidth,
+        { fileSizeLeft + fileSizeWidth + separatorOffset, separatorTop, fileSizeLeft + fileSizeWidth + separatorOffset + separatorWidth, separatorTop + separatorHeight },
+        filenameLeft,
         { buttonLeft, 0, buttonLeft + buttonWidth, titleBarHeight },
         { buttonLeft + buttonWidth, 0, buttonLeft + buttonWidth * 2, titleBarHeight },
         { buttonLeft + buttonWidth * 2, 0, client.right, titleBarHeight } };
@@ -298,17 +309,17 @@ public:
             MONITORINFO monitor{ sizeof(monitor) };
             GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor);
             SetWindowLongPtrW(window_, GWL_STYLE, fullscreenStyle_ & ~WS_OVERLAPPEDWINDOW);
+            fullscreen_ = true;
             SetWindowPos(window_, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
                 monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top,
                 SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-            fullscreen_ = true;
             ApplyWindowCornerPreference(window_, false);
         } else {
             SetWindowLongPtrW(window_, GWL_STYLE, fullscreenStyle_);
+            fullscreen_ = false;
             SetWindowPos(window_, HWND_NOTOPMOST, fullscreenRect_.left, fullscreenRect_.top,
                 fullscreenRect_.right - fullscreenRect_.left, fullscreenRect_.bottom - fullscreenRect_.top,
                 SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-            fullscreen_ = false;
             ApplyWindowCornerPreference(window_, !IsZoomed(window_));
         }
     }
@@ -537,7 +548,7 @@ private:
         imageWidth_ = width;
         imageHeight_ = height;
         currentPath_ = path;
-        resolutionText_ = std::to_wstring(width) + L"×" + std::to_wstring(height);
+        resolutionText_ = std::to_wstring(width) + L"\u00D7" + std::to_wstring(height);
         fileSizeText_ = FormatFileSize(path);
         filenameText_ = fs::path(path).filename().wstring();
         error_.clear();
@@ -559,8 +570,6 @@ private:
             D2D1::HwndRenderTargetProperties(window_, D2D1::SizeU(
                 static_cast<UINT32>(std::max(1.0f, client.width)),
                 static_cast<UINT32>(std::max(1.0f, client.height)))), &renderTarget_);
-        renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.115f, 0.115f, 0.115f), D2D1::BrushProperties(1.0f), &checkerLightBrush_);
-        renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.085f, 0.085f, 0.085f), D2D1::BrushProperties(1.0f), &checkerDarkBrush_);
         timer_.Log(L"rendering/window initialization complete");
     }
 
@@ -596,18 +605,43 @@ private:
     }
 
 
-    void DrawCheckerboard(const D2D1_RECT_F& bounds) {
-        if (!checkerLightBrush_ || !checkerDarkBrush_) return;
-        const float tile = 12.0f * static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const int firstX = static_cast<int>(std::floor(bounds.left / tile));
-        const int firstY = static_cast<int>(std::floor(bounds.top / tile));
-        const int lastX = static_cast<int>(std::ceil(bounds.right / tile));
-        const int lastY = static_cast<int>(std::ceil(bounds.bottom / tile));
-        renderTarget_->PushAxisAlignedClip(bounds, D2D1_ANTIALIAS_MODE_ALIASED);
-        for (int y = firstY; y < lastY; ++y) for (int x = firstX; x < lastX; ++x) {
-            const D2D1_RECT_F tileRect = D2D1::RectF(x * tile, y * tile, (x + 1) * tile, (y + 1) * tile);
-            renderTarget_->FillRectangle(tileRect, ((x + y) & 1) ? checkerLightBrush_.Get() : checkerDarkBrush_.Get());
+    bool EnsureCheckerboardBrush() {
+        if (!renderTarget_) return false;
+        const UINT dpi = GetDpiForWindow(window_);
+        if (checkerboardBrush_ && checkerboardDpi_ == dpi) return true;
+
+        checkerboardBrush_.Reset();
+        checkerboardBitmap_.Reset();
+        checkerboardDpi_ = dpi;
+        const UINT tileSize = static_cast<UINT>(std::max(2, MulDiv(24, dpi, 96))) & ~1u;
+        const UINT squareSize = tileSize / 2;
+        std::vector<BYTE> pixels(static_cast<size_t>(tileSize) * tileSize * 4);
+        for (UINT y = 0; y < tileSize; ++y) for (UINT x = 0; x < tileSize; ++x) {
+            const bool light = ((x / squareSize) + (y / squareSize)) % 2 != 0;
+            const BYTE color = light ? 29 : 22;
+            const size_t offset = (static_cast<size_t>(y) * tileSize + x) * 4;
+            pixels[offset] = color;
+            pixels[offset + 1] = color;
+            pixels[offset + 2] = color;
+            pixels[offset + 3] = 255;
         }
+        const D2D1_BITMAP_PROPERTIES bitmapProperties = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+        if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(tileSize, tileSize), pixels.data(), tileSize * 4,
+                bitmapProperties, &checkerboardBitmap_))) return false;
+        return SUCCEEDED(renderTarget_->CreateBitmapBrush(checkerboardBitmap_.Get(),
+            D2D1::BitmapBrushProperties(D2D1_EXTEND_MODE_WRAP, D2D1_EXTEND_MODE_WRAP,
+                D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR), &checkerboardBrush_));
+    }
+
+    void DrawCheckerboard(const D2D1_RECT_F& bounds) {
+        if (!EnsureCheckerboardBrush()) return;
+        const D2D1_SIZE_F target = renderTarget_->GetSize();
+        const D2D1_RECT_F visible = D2D1::RectF(std::max(bounds.left, 0.0f), std::max(bounds.top, 0.0f),
+            std::min(bounds.right, target.width), std::min(bounds.bottom, target.height));
+        if (visible.right <= visible.left || visible.bottom <= visible.top) return;
+        renderTarget_->PushAxisAlignedClip(visible, D2D1_ANTIALIAS_MODE_ALIASED);
+        renderTarget_->FillRectangle(visible, checkerboardBrush_.Get());
         renderTarget_->PopAxisAlignedClip();
     }
     void DrawImage() {
@@ -632,7 +666,40 @@ private:
         return true;
     }
 
-    void DrawTitleText(const std::wstring& text, float left, float width, ID2D1Brush* brush, bool trim) {
+    bool HasSystemFontFamily(const wchar_t* familyName) const {
+        ComPtr<IDWriteFontCollection> fonts;
+        if (FAILED(dwriteFactory_->GetSystemFontCollection(&fonts))) return false;
+        UINT32 index = 0;
+        BOOL exists = FALSE;
+        return SUCCEEDED(fonts->FindFamilyName(familyName, &index, &exists)) && exists;
+    }
+
+    bool EnsureCaptionIconFormat() {
+        const UINT dpi = GetDpiForWindow(window_);
+        if (captionIconFormat_ && captionIconDpi_ == dpi) return true;
+        captionIconFormat_.Reset();
+        captionIconDpi_ = dpi;
+        const wchar_t* const familyName = HasSystemFontFamily(L"Segoe Fluent Icons")
+            ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets";
+        if (FAILED(dwriteFactory_->CreateTextFormat(familyName, nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f * static_cast<float>(dpi) / 96.0f,
+                L"", &captionIconFormat_))) return false;
+        captionIconFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        captionIconFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        captionIconFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        return true;
+    }
+
+    void DrawCaptionGlyph(wchar_t glyph, const RECT& bounds, ID2D1Brush* brush) {
+        if (!EnsureCaptionIconFormat()) return;
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(&glyph, 1, captionIconFormat_.Get(),
+                static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), &layout))) return;
+        renderTarget_->DrawTextLayout(D2D1::Point2F(static_cast<float>(bounds.left), static_cast<float>(bounds.top)),
+            layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    void DrawTitleText(const std::wstring& text, float left, float width, ID2D1Brush* brush, bool trim, bool center) {
         if (text.empty() || width <= 0.0f || !EnsureTitleTextFormat()) return;
         ComPtr<IDWriteTextLayout> layout;
         if (FAILED(dwriteFactory_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), titleTextFormat_.Get(),
@@ -647,7 +714,8 @@ private:
         DWRITE_TEXT_METRICS metrics{};
         layout->GetMetrics(&metrics);
         const float top = std::max(0.0f, (static_cast<float>(GetFrameMetrics(window_).titleBarHeight) - metrics.height) / 2.0f);
-        renderTarget_->DrawTextLayout(D2D1::Point2F(left, top), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        const float textLeft = center ? left + std::max(0.0f, (width - metrics.width) / 2.0f) : left;
+        renderTarget_->DrawTextLayout(D2D1::Point2F(textLeft, top), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
     void DrawTitleBar() {
@@ -669,6 +737,8 @@ private:
             : D2D1::ColorF(85.0f / 255.0f, 85.0f / 255.0f, 85.0f / 255.0f);
         const D2D1_COLOR_F filenameColor = dark ? D2D1::ColorF(240.0f / 255.0f, 240.0f / 255.0f, 240.0f / 255.0f)
             : D2D1::ColorF(35.0f / 255.0f, 35.0f / 255.0f, 35.0f / 255.0f);
+        const D2D1_COLOR_F separatorColor = dark ? D2D1::ColorF(69.0f / 255.0f, 73.0f / 255.0f, 80.0f / 255.0f)
+            : D2D1::ColorF(190.0f / 255.0f, 190.0f / 255.0f, 190.0f / 255.0f);
         ComPtr<ID2D1SolidColorBrush> stripBrush;
         ComPtr<ID2D1SolidColorBrush> hoverBrush;
         ComPtr<ID2D1SolidColorBrush> pressedBrush;
@@ -678,6 +748,7 @@ private:
         ComPtr<ID2D1SolidColorBrush> closeGlyphBrush;
         ComPtr<ID2D1SolidColorBrush> metadataBrush;
         ComPtr<ID2D1SolidColorBrush> filenameBrush;
+        ComPtr<ID2D1SolidColorBrush> separatorBrush;
         if (FAILED(renderTarget_->CreateSolidColorBrush(stripColor, &stripBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(hoverColor, &hoverBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(pressedColor, &pressedBrush)) ||
@@ -686,7 +757,8 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(glyphColor, &glyphBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &closeGlyphBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(metadataColor, &metadataBrush)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(filenameColor, &filenameBrush))) return;
+            FAILED(renderTarget_->CreateSolidColorBrush(filenameColor, &filenameBrush)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(separatorColor, &separatorBrush))) return;
 
         const D2D1_RECT_F top = D2D1::RectF(0.0f, 0.0f, renderTarget_->GetSize().width, static_cast<float>(frame.titleBarHeight));
         renderTarget_->FillRectangle(top, stripBrush.Get());
@@ -706,15 +778,17 @@ private:
         drawButton(CaptionButton::Close, frame.close);
         if (hamburgerPressed_) renderTarget_->FillRectangle(rect(frame.hamburger), pressedBrush.Get());
         else if (hamburgerHovered_) renderTarget_->FillRectangle(rect(frame.hamburger), hoverBrush.Get());
+        renderTarget_->FillRectangle(rect(frame.hamburgerSeparator), separatorBrush.Get());
+        renderTarget_->FillRectangle(rect(frame.resolutionSeparator), separatorBrush.Get());
+        renderTarget_->FillRectangle(rect(frame.fileSizeSeparator), separatorBrush.Get());
 
-        DrawTitleText(resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), metadataBrush.Get(), false);
-        DrawTitleText(fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), metadataBrush.Get(), false);
+        DrawTitleText(resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), metadataBrush.Get(), false, true);
+        DrawTitleText(fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), metadataBrush.Get(), false, true);
         const float filenameWidth = static_cast<float>(std::max(0L,
             frame.titleBarContent.right - frame.filenameLeft - MulDiv(8, GetDpiForWindow(window_), 96)));
-        DrawTitleText(filenameText_, static_cast<float>(frame.filenameLeft), filenameWidth, filenameBrush.Get(), true);
+        DrawTitleText(filenameText_, static_cast<float>(frame.filenameLeft), filenameWidth, filenameBrush.Get(), true, false);
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const float glyphSize = 12.0f * dpiScale;
         const float stroke = 1.0f;
         const auto pixelCenter = [](float value) { return std::floor(value) + 0.5f; };
         const auto center = [](const RECT& value) {
@@ -729,29 +803,12 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(pixelCenter(hamburgerCenter.x - hamburgerHalfWidth), y),
                 D2D1::Point2F(pixelCenter(hamburgerCenter.x + hamburgerHalfWidth), y), glyphBrush.Get(), stroke);
         }
-        const D2D1_POINT_2F minimizeCenter = center(frame.minimize);
-        const float minimizeY = pixelCenter(minimizeCenter.y + glyphSize / 3.0f);
-        renderTarget_->DrawLine(D2D1::Point2F(pixelCenter(minimizeCenter.x - glyphSize / 2.0f), minimizeY),
-            D2D1::Point2F(pixelCenter(minimizeCenter.x + glyphSize / 2.0f), minimizeY), glyphBrush.Get(), stroke);
-        const D2D1_RECT_F maximize = rect(frame.maximize);
-        const D2D1_RECT_F maximizeGlyph = D2D1::RectF(pixelCenter(maximize.left + (maximize.right - maximize.left - glyphSize) / 2.0f),
-            pixelCenter(maximize.top + (maximize.bottom - maximize.top - glyphSize) / 2.0f),
-            pixelCenter(maximize.left + (maximize.right - maximize.left + glyphSize) / 2.0f),
-            pixelCenter(maximize.top + (maximize.bottom - maximize.top + glyphSize) / 2.0f));
-        renderTarget_->DrawRectangle(maximizeGlyph, glyphBrush.Get(), stroke);
-        if (IsZoomed(window_)) {
-            const float offset = 3.0f * dpiScale;
-            renderTarget_->DrawRectangle(D2D1::RectF(maximizeGlyph.left - offset, maximizeGlyph.top + offset,
-                maximizeGlyph.right - offset, maximizeGlyph.bottom + offset), glyphBrush.Get(), stroke);
-        }
-        const D2D1_POINT_2F closeCenter = center(frame.close);
+        renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        DrawCaptionGlyph(L'\uE921', frame.minimize, glyphBrush.Get());
+        DrawCaptionGlyph(IsZoomed(window_) ? L'\uE923' : L'\uE922', frame.maximize, glyphBrush.Get());
         ID2D1Brush* closeGlyph = (hoveredCaptionButton_ == CaptionButton::Close || pressedCaptionButton_ == CaptionButton::Close)
             ? closeGlyphBrush.Get() : glyphBrush.Get();
-        renderTarget_->DrawLine(D2D1::Point2F(pixelCenter(closeCenter.x - glyphSize / 2.0f), pixelCenter(closeCenter.y - glyphSize / 2.0f)),
-            D2D1::Point2F(pixelCenter(closeCenter.x + glyphSize / 2.0f), pixelCenter(closeCenter.y + glyphSize / 2.0f)), closeGlyph, stroke);
-        renderTarget_->DrawLine(D2D1::Point2F(pixelCenter(closeCenter.x + glyphSize / 2.0f), pixelCenter(closeCenter.y - glyphSize / 2.0f)),
-            D2D1::Point2F(pixelCenter(closeCenter.x - glyphSize / 2.0f), pixelCenter(closeCenter.y + glyphSize / 2.0f)), closeGlyph, stroke);
-        renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        DrawCaptionGlyph(L'\uE8BB', frame.close, closeGlyph);
     }
 
     void DrawErrorText(HDC dc) const {
@@ -766,7 +823,13 @@ private:
         DrawTextW(dc, error_.c_str(), -1, &text, DT_CENTER | DT_WORDBREAK);
     }
 
-    void DiscardRenderResources() { bitmap_.Reset(); checkerLightBrush_.Reset(); checkerDarkBrush_.Reset(); renderTarget_.Reset(); }
+    void DiscardRenderResources() {
+        bitmap_.Reset();
+        checkerboardBrush_.Reset();
+        checkerboardBitmap_.Reset();
+        checkerboardDpi_ = 0;
+        renderTarget_.Reset();
+    }
 
     const StartupTimer& timer_;
     HWND window_ = nullptr;
@@ -776,10 +839,13 @@ private:
     ComPtr<IWICBitmapSource> source_;
     ComPtr<ID2D1HwndRenderTarget> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
-    ComPtr<ID2D1SolidColorBrush> checkerLightBrush_;
-    ComPtr<ID2D1SolidColorBrush> checkerDarkBrush_;
+    ComPtr<ID2D1Bitmap> checkerboardBitmap_;
+    ComPtr<ID2D1BitmapBrush> checkerboardBrush_;
+    UINT checkerboardDpi_ = 0;
     ComPtr<IDWriteTextFormat> titleTextFormat_;
     UINT titleTextDpi_ = 0;
+    ComPtr<IDWriteTextFormat> captionIconFormat_;
+    UINT captionIconDpi_ = 0;
     UINT imageWidth_ = 0;
     UINT imageHeight_ = 0;
     std::wstring currentPath_;
@@ -878,7 +944,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->ZoomAt(point, std::pow(kZoomStep, static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA));
         return 0;
     }
-    case WM_LBUTTONDBLCLK: viewer->ToggleFullscreen(); return 0;
+    case WM_LBUTTONDBLCLK: {
+        const FrameMetrics frame = GetFrameMetrics(window);
+        if (!PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) viewer->ToggleFullscreen();
+        return 0;
+    }
     case WM_LBUTTONDOWN: {
         const FrameMetrics frame = GetFrameMetrics(window);
         if (PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {

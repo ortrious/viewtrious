@@ -351,6 +351,7 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void SetHamburgerPressed(bool pressed) {
+        if (hamburgerPressed_ == pressed) return;
         hamburgerPressed_ = pressed;
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -364,12 +365,12 @@ public:
         dropdownPressed_ = DropdownItem::None;
         InvalidateRect(window_, nullptr, FALSE);
     }
-    void DismissDropdown() {
+    void DismissDropdown(bool invalidate = true) {
         if (!dropdownOpen_) return;
         dropdownOpen_ = false;
         dropdownHovered_ = DropdownItem::None;
         dropdownPressed_ = DropdownItem::None;
-        InvalidateRect(window_, nullptr, FALSE);
+        if (invalidate) InvalidateRect(window_, nullptr, FALSE);
     }
     DropdownItem DropdownItemAt(POINT point) const {
         if (!dropdownOpen_) return DropdownItem::None;
@@ -391,10 +392,15 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     DropdownItem PressedDropdownItem() const { return dropdownPressed_; }
-    void ClearDropdownPressed() { SetDropdownPressed(DropdownItem::None); }
+    void ClearDropdownPressed(bool invalidate = true) {
+        if (dropdownPressed_ == DropdownItem::None) return;
+        dropdownPressed_ = DropdownItem::None;
+        if (invalidate) InvalidateRect(window_, nullptr, FALSE);
+    }
     void InvokeDropdownItem(DropdownItem item) {
-        DismissDropdown();
-        if (item == DropdownItem::OpenFile) OpenFile();
+        const bool openingFile = item == DropdownItem::OpenFile;
+        DismissDropdown(!openingFile);
+        if (openingFile) OpenFile();
         else if (item == DropdownItem::Settings) ShowOverlay(OverlayKind::Settings);
         else if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
         else if (item == DropdownItem::About) ShowOverlay(OverlayKind::About);
@@ -410,14 +416,15 @@ public:
         dialog->SetFileTypes(ARRAYSIZE(filters), filters);
         dialog->SetFileTypeIndex(1);
         dialog->SetTitle(L"Open Image");
-        if (FAILED(dialog->Show(window_))) return;
+        const HRESULT show = dialog->Show(window_);
+        if (FAILED(show)) { InvalidateRect(window_, nullptr, FALSE); return; }
         ComPtr<IShellItem> item;
         PWSTR path = nullptr;
         if (SUCCEEDED(dialog->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
             LoadImage(path);
             CoTaskMemFree(path);
-            InvalidateRect(window_, nullptr, FALSE);
         }
+        InvalidateRect(window_, nullptr, FALSE);
     }
     bool HasImage() const { return source_ != nullptr; }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
@@ -476,6 +483,7 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void SetContextPressed(ContextAction action) {
+        if (contextPressed_ == action) return;
         contextPressed_ = action;
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -1645,10 +1653,10 @@ private:
         const int titleGap = MulDiv(14, dpi, 96);
         const int rowHeight = MulDiv(25, dpi, 96);
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
-            overlay_ == OverlayKind::Settings ? 560 : 760, dpi, 96);
+            overlay_ == OverlayKind::Settings ? 560 : 608, dpi, 96);
         const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : overlay_ == OverlayKind::Settings ? MulDiv(170, dpi, 96) : MulDiv(350, dpi, 96);
+            : overlay_ == OverlayKind::Settings ? MulDiv(170, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -1719,7 +1727,7 @@ private:
             renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(left, groupTop, left + width, groupTop + height), 1.0f,
                 D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         }
-        DrawOverlayText(error_.empty() ? L"Drop an image here or open a file" : error_.c_str(), 24.0f * scale,
+        DrawOverlayText(error_.empty() ? L"Drag and drop an image here or open a file" : error_.c_str(), 24.0f * scale,
             groupTop + 190.0f * scale, target.width - 48.0f * scale, 22.0f * scale, 13.0f,
             DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true, false, true);
         const RECT buttonBounds = GetEmptyOpenFileButtonBounds();
@@ -1779,11 +1787,16 @@ private:
             const D2D1_RECT_F checkbox = D2D1::RectF(left, rowTop + 5.0f * dpiScale, left + boxSize, rowTop + 5.0f * dpiScale + boxSize);
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(checkbox, 3.0f * dpiScale, 3.0f * dpiScale), borderBrush.Get(), 1.0f);
             if (includeHiddenImages_) {
-                ComPtr<ID2D1SolidColorBrush> accent;
-                if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,120.f/255,212.f/255), &accent))) {
+                ComPtr<ID2D1SolidColorBrush> accent, checkmark;
+                if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,120.f/255,212.f/255), &accent)) &&
+                    SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &checkmark))) {
                     renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(checkbox, 3.0f * dpiScale, 3.0f * dpiScale), accent.Get());
-                    DrawOverlayText(L"✓", checkbox.left, checkbox.top - 1.0f * dpiScale, boxSize, boxSize, 14.0f,
-                        DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+                    const float stroke = std::max(1.5f, 2.0f * dpiScale);
+                    const D2D1_POINT_2F start = D2D1::Point2F(checkbox.left + boxSize * 0.22f, checkbox.top + boxSize * 0.53f);
+                    const D2D1_POINT_2F middle = D2D1::Point2F(checkbox.left + boxSize * 0.43f, checkbox.top + boxSize * 0.74f);
+                    const D2D1_POINT_2F end = D2D1::Point2F(checkbox.left + boxSize * 0.78f, checkbox.top + boxSize * 0.30f);
+                    renderTarget_->DrawLine(start, middle, checkmark.Get(), stroke);
+                    renderTarget_->DrawLine(middle, end, checkmark.Get(), stroke);
                 }
             }
             DrawOverlayText(L"Include hidden images in folder navigation", left + boxSize + 12.0f * dpiScale, rowTop,
@@ -2294,7 +2307,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->PressedDropdownItem() != DropdownItem::None) {
             const DropdownItem pressed = viewer->PressedDropdownItem();
             const DropdownItem released = viewer->DropdownItemAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
-            viewer->ClearDropdownPressed();
+            const bool openingFile = pressed == DropdownItem::OpenFile && pressed == released;
+            viewer->ClearDropdownPressed(!openingFile);
             if (GetCapture() == window) ReleaseCapture();
             if (pressed == released) viewer->InvokeDropdownItem(pressed);
             return 0;

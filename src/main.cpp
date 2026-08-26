@@ -46,14 +46,14 @@ constexpr wchar_t kSettingsKey[] = L"Software\\Viewtrious";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
-enum class OverlayKind { None, KeyboardShortcuts, About };
-enum class DropdownItem { None, KeyboardShortcuts, About, Close };
+enum class OverlayKind { None, KeyboardShortcuts, About, Settings };
+enum class DropdownItem { None, OpenFile, Settings, KeyboardShortcuts, About, Close };
 enum class ContextAction { None, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, SetLockScreen, Delete };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
 constexpr ShortcutEntry kShortcutEntries[] = {
-    { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom" },
+    { L"Ctrl+O", L"Open file" }, { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom" },
     { L"+ / =", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
     { L"Left mouse drag", L"Pan" }, { L"Double-click image", L"Toggle fullscreen" }, { L"F11", L"Toggle fullscreen" },
     { L"Ctrl+C", L"Copy image" }, { L"Ctrl+P", L"Print" }, { L"Delete", L"Move image to Recycle Bin" },
@@ -123,6 +123,13 @@ bool PathsEqual(const fs::path& left, const fs::path& right) {
 bool ReadSetting(const wchar_t* name, DWORD& value) {
     DWORD size = sizeof(value);
     return RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, name, RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS;
+}
+
+void WriteSetting(const wchar_t* name, DWORD value) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
+    RegSetValueExW(key, name, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&value), sizeof(value));
+    RegCloseKey(key);
 }
 
 struct SavedPlacement {
@@ -292,8 +299,10 @@ public:
             error_ = L"DirectWrite could not be initialized.";
             return hr;
         }
+        DWORD includeHidden = 1;
+        ReadSetting(L"IncludeHiddenImages", includeHidden);
+        includeHiddenImages_ = includeHidden != 0;
         if (!path.empty()) return LoadImage(path);
-        error_ = L"Drop an image here, or launch Viewtrious with an image path.";
         return S_OK;
     }
 
@@ -367,13 +376,10 @@ public:
         const RECT bounds = GetDropdownBounds();
         if (!PtInRect(&bounds, point)) return DropdownItem::None;
         const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
-        const int firstRowTop = bounds.top + MulDiv(4, GetDpiForWindow(window_), 96);
-        const int firstRowBottom = firstRowTop + rowHeight;
-        const int secondRowTop = firstRowBottom + MulDiv(9, GetDpiForWindow(window_), 96);
-        if (point.y >= firstRowTop && point.y < firstRowBottom) return DropdownItem::KeyboardShortcuts;
-        if (point.y < secondRowTop) return DropdownItem::None;
-        if (point.y < secondRowTop + rowHeight) return DropdownItem::About;
-        return DropdownItem::Close;
+        const int top = bounds.top + MulDiv(4, GetDpiForWindow(window_), 96);
+        const int index = (point.y - top) / rowHeight;
+        if (point.y < top || index < 0 || index > 4) return DropdownItem::None;
+        return static_cast<DropdownItem>(index + 1);
     }
     void SetDropdownHover(DropdownItem item) {
         if (dropdownHovered_ == item) return;
@@ -388,9 +394,30 @@ public:
     void ClearDropdownPressed() { SetDropdownPressed(DropdownItem::None); }
     void InvokeDropdownItem(DropdownItem item) {
         DismissDropdown();
-        if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
+        if (item == DropdownItem::OpenFile) OpenFile();
+        else if (item == DropdownItem::Settings) ShowOverlay(OverlayKind::Settings);
+        else if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
         else if (item == DropdownItem::About) ShowOverlay(OverlayKind::About);
         else if (item == DropdownItem::Close) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
+    }
+    void OpenFile() {
+        ComPtr<IFileOpenDialog> dialog;
+        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
+        static const COMDLG_FILTERSPEC filters[] = {
+            { L"Image files", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif" },
+            { L"All files", L"*.*" },
+        };
+        dialog->SetFileTypes(ARRAYSIZE(filters), filters);
+        dialog->SetFileTypeIndex(1);
+        dialog->SetTitle(L"Open Image");
+        if (FAILED(dialog->Show(window_))) return;
+        ComPtr<IShellItem> item;
+        PWSTR path = nullptr;
+        if (SUCCEEDED(dialog->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+            LoadImage(path);
+            CoTaskMemFree(path);
+            InvalidateRect(window_, nullptr, FALSE);
+        }
     }
     bool HasImage() const { return source_ != nullptr; }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
@@ -526,6 +553,28 @@ public:
         const RECT bounds = GetOverlayBounds();
         return HasOverlay() && PtInRect(&bounds, point);
     }
+    bool SettingsCheckboxContains(POINT point) const {
+        if (overlay_ != OverlayKind::Settings) return false;
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int padding = MulDiv(24, dpi, 96);
+        const int rowTop = bounds.top + padding + MulDiv(42, dpi, 96);
+        const RECT row{ bounds.left + padding, rowTop, bounds.right - padding, rowTop + MulDiv(32, dpi, 96) };
+        return PtInRect(&row, point);
+    }
+    void ToggleIncludeHiddenImages() {
+        includeHiddenImages_ = !includeHiddenImages_;
+        WriteSetting(L"IncludeHiddenImages", includeHiddenImages_ ? 1 : 0);
+        navigationFiles_.clear();
+        navigationBuilt_ = false;
+        navigationBuildQueued_ = false;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool EmptyOpenFileButtonContains(POINT point) const {
+        if (HasImage() || HasOverlay() || dropdownOpen_ || contextMenuOpen_) return false;
+        const RECT bounds = GetEmptyOpenFileButtonBounds();
+        return PtInRect(&bounds, point);
+    }
     void ToggleFullscreen() {
         DismissContextMenu();
         if (!fullscreen_) DismissOverlay();
@@ -558,14 +607,13 @@ public:
             renderTarget_->Clear(kViewerBackground);            if (source_) {
                 EnsureBitmap();
                 if (bitmap_) DrawImage();
-            }
+            } else DrawEmptyState();
             DrawTitleBar();
             DrawDropdown();
             DrawContextMenu();
             DrawOpenWithSubmenu();
             DrawOverlay();
             DrawCopyFeedback();
-            if (!source_ && !error_.empty()) DrawErrorText();
             const HRESULT hr = renderTarget_->EndDraw();
             if (SUCCEEDED(hr) && bitmap_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
@@ -585,7 +633,7 @@ public:
     }
 
     SIZE SuggestedClientSize() const {
-        if (!source_) return { 900, 650 };
+        if (!source_) return { 800, 600 };
         constexpr double maxWidth = 1280.0;
         constexpr double maxHeight = 900.0;
         const double scale = std::min({ 1.0, maxWidth / imageWidth_, maxHeight / imageHeight_ });
@@ -614,7 +662,10 @@ public:
         fs::directory_iterator iterator(current.parent_path(), error);
         for (; !error && iterator != fs::directory_iterator(); iterator.increment(error)) {
             std::error_code typeError;
-            if (iterator->is_regular_file(typeError) && !typeError && IsSupportedExtension(iterator->path())) {
+            const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
+            const bool hidden = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_HIDDEN) != 0;
+            if (iterator->is_regular_file(typeError) && !typeError && IsSupportedExtension(iterator->path()) &&
+                (includeHiddenImages_ || !hidden)) {
                 navigationFiles_.push_back(iterator->path());
             }
         }
@@ -1347,7 +1398,7 @@ private:
         const FrameMetrics frame = GetFrameMetrics(window_);
         const LONG margin = MulDiv(4, dpi, 96);
         const LONG width = std::min<LONG>(MulDiv(236, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
-        const LONG height = MulDiv(131, dpi, 96);
+        const LONG height = MulDiv(198, dpi, 96);
         const LONG left = std::clamp<LONG>(frame.hamburger.left + margin, margin,
             std::max<LONG>(margin, client.right - width - margin));
         const LONG top = frame.hamburger.bottom + margin;
@@ -1593,13 +1644,11 @@ private:
         const int titleHeight = MulDiv(24, dpi, 96);
         const int titleGap = MulDiv(14, dpi, 96);
         const int rowHeight = MulDiv(25, dpi, 96);
-        const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 : 720, dpi, 96);
-        const int aboutLogoWidth = std::min(MulDiv(520, dpi, 96), desiredWidth - panelPadding * 2);
-        const int aboutLogoHeight = MulDiv(aboutLogoWidth, 941, 1672);
+        const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
+            overlay_ == OverlayKind::Settings ? 560 : 760, dpi, 96);
         const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : panelPadding + aboutLogoHeight + MulDiv(16, dpi, 96) + MulDiv(26, dpi, 96) + MulDiv(5, dpi, 96) +
-                MulDiv(20, dpi, 96) + MulDiv(20, dpi, 96) + MulDiv(18, dpi, 96) + panelPadding;
+            : overlay_ == OverlayKind::Settings ? MulDiv(170, dpi, 96) : MulDiv(350, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -1634,6 +1683,51 @@ private:
         UINT width = 0, height = 0;
         if (FAILED(DecodeImage((fs::path(modulePath).parent_path() / L"ViewtriousLogo.png").wstring(), source, width, height))) return false;
         return SUCCEEDED(renderTarget_->CreateBitmapFromWicBitmap(source.Get(), nullptr, &aboutLogo_));
+    }
+
+    RECT GetEmptyOpenFileButtonBounds() const {
+        RECT client{};
+        GetClientRect(window_, &client);
+        const UINT dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(132, dpi, 96);
+        const int height = MulDiv(38, dpi, 96);
+        const int groupTop = (fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight) +
+            std::max(0L, (client.bottom - (fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight) - MulDiv(300, dpi, 96)) / 2);
+        const int top = groupTop + MulDiv(245, dpi, 96);
+        const int left = (client.right - width) / 2;
+        return { left, top, left + width, top + height };
+    }
+
+    void DrawEmptyState() {
+        if (HasOverlay()) return;
+        const bool dark = UseDarkAppMode();
+        ComPtr<ID2D1SolidColorBrush> primary, secondary, button, buttonText;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(30.f/255,30.f/255,30.f/255), &primary)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(205.f/255,208.f/255,214.f/255) : D2D1::ColorF(78.f/255,78.f/255,78.f/255), &secondary)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,120.f/255,212.f/255), &button)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &buttonText))) return;
+        const UINT dpi = GetDpiForWindow(window_);
+        const float scale = static_cast<float>(dpi) / 96.0f;
+        const D2D1_SIZE_F target = renderTarget_->GetSize();
+        const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
+        const float groupTop = top + std::max(0.0f, (target.height - top - 300.0f * scale) / 2.0f);
+        if (EnsureAboutLogo()) {
+            const D2D1_SIZE_F logo = aboutLogo_->GetSize();
+            const float width = std::min(440.0f * scale, target.width - 48.0f * scale);
+            const float height = width * logo.height / logo.width;
+            const float left = (target.width - width) / 2.0f;
+            renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(left, groupTop, left + width, groupTop + height), 1.0f,
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+        DrawOverlayText(error_.empty() ? L"Drop an image here or open a file" : error_.c_str(), 24.0f * scale,
+            groupTop + 190.0f * scale, target.width - 48.0f * scale, 22.0f * scale, 13.0f,
+            DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true, false, true);
+        const RECT buttonBounds = GetEmptyOpenFileButtonBounds();
+        const D2D1_RECT_F buttonRect = D2D1::RectF(static_cast<float>(buttonBounds.left), static_cast<float>(buttonBounds.top),
+            static_cast<float>(buttonBounds.right), static_cast<float>(buttonBounds.bottom));
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(buttonRect, 5.0f * scale, 5.0f * scale), button.Get());
+        DrawOverlayText(L"Open File", buttonRect.left, buttonRect.top, buttonRect.right - buttonRect.left,
+            buttonRect.bottom - buttonRect.top, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
     }
 
     void DrawOverlay() {
@@ -1677,6 +1771,24 @@ private:
                     18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
                 y += 25.0f * dpiScale;
             }
+        } else if (overlay_ == OverlayKind::Settings) {
+            DrawOverlayText(L"Settings", left, static_cast<float>(bounds.top) + panelPadding,
+                contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            const float rowTop = static_cast<float>(bounds.top) + panelPadding + 42.0f * dpiScale;
+            const float boxSize = 18.0f * dpiScale;
+            const D2D1_RECT_F checkbox = D2D1::RectF(left, rowTop + 5.0f * dpiScale, left + boxSize, rowTop + 5.0f * dpiScale + boxSize);
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(checkbox, 3.0f * dpiScale, 3.0f * dpiScale), borderBrush.Get(), 1.0f);
+            if (includeHiddenImages_) {
+                ComPtr<ID2D1SolidColorBrush> accent;
+                if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,120.f/255,212.f/255), &accent))) {
+                    renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(checkbox, 3.0f * dpiScale, 3.0f * dpiScale), accent.Get());
+                    DrawOverlayText(L"✓", checkbox.left, checkbox.top - 1.0f * dpiScale, boxSize, boxSize, 14.0f,
+                        DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+                }
+            }
+            DrawOverlayText(L"Include hidden images in folder navigation", left + boxSize + 12.0f * dpiScale, rowTop,
+                contentWidth - boxSize - 12.0f * dpiScale, 28.0f * dpiScale, 13.0f, DWRITE_FONT_WEIGHT_NORMAL,
+                primaryBrush.Get(), true);
         } else {
             float logoBottom = static_cast<float>(bounds.top) + panelPadding;
             if (EnsureAboutLogo()) {
@@ -1688,13 +1800,13 @@ private:
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
                 logoBottom = logoTop + logoHeight;
             }
-            const float titleTop = logoBottom + 16.0f * dpiScale;
-            DrawOverlayText(L"Viewtrious", left, titleTop, contentWidth, 26.0f * dpiScale,
-                18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, true);
-            DrawOverlayText(L"Version " VIEWTRIOUS_VERSION, left, titleTop + 31.0f * dpiScale, contentWidth, 20.0f * dpiScale,
+            const float logoLeft = static_cast<float>(bounds.left) + 40.0f * dpiScale;
+            const float logoWidth = std::min(520.0f * dpiScale, contentWidth);
+            const float textTop = logoBottom + 16.0f * dpiScale;
+            DrawOverlayText(L"Version " VIEWTRIOUS_VERSION, logoLeft, textTop, logoWidth, 20.0f * dpiScale,
                 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
-            DrawOverlayText(L"Extremely lightweight image viewer", left, static_cast<float>(bounds.bottom) - panelPadding - 18.0f * dpiScale,
-                contentWidth, 18.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
+            DrawOverlayText(L"Extremely lightweight image viewer", logoLeft, textTop + 25.0f * dpiScale, logoWidth,
+                18.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         }
     }
 
@@ -1723,12 +1835,9 @@ private:
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), surfaceBrush.Get());
         const UINT dpi = GetDpiForWindow(window_);
         const int rowHeight = MulDiv(38, dpi, 96);
-        const int separatorGap = MulDiv(9, dpi, 96);
         const auto row = [&](int top) { return D2D1::RectF(static_cast<float>(bounds.left + 1), static_cast<float>(top),
             static_cast<float>(bounds.right - 1), static_cast<float>(top + rowHeight)); };
-        const int shortcutsTop = bounds.top + 4;
-        const int aboutTop = shortcutsTop + rowHeight + separatorGap;
-        const int closeTop = aboutTop + rowHeight;
+        const int firstTop = bounds.top + MulDiv(4, dpi, 96);
         const auto drawItem = [&](DropdownItem item, int top, const wchar_t* label) {
             if (dropdownPressed_ == item) renderTarget_->FillRectangle(row(top), pressedBrush.Get());
             else if (dropdownHovered_ == item) renderTarget_->FillRectangle(row(top), hoverBrush.Get());
@@ -1736,12 +1845,11 @@ private:
                 static_cast<float>(bounds.right - bounds.left - MulDiv(28, dpi, 96)), static_cast<float>(rowHeight),
                 13.0f, DWRITE_FONT_WEIGHT_NORMAL, textBrush.Get(), true);
         };
-        drawItem(DropdownItem::KeyboardShortcuts, shortcutsTop, L"Keyboard Shortcuts");
-        const float separatorY = static_cast<float>(shortcutsTop + rowHeight + separatorGap / 2);
-        renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(bounds.left + MulDiv(12, dpi, 96)), separatorY),
-            D2D1::Point2F(static_cast<float>(bounds.right - MulDiv(12, dpi, 96)), separatorY), borderBrush.Get(), 1.0f);
-        drawItem(DropdownItem::About, aboutTop, L"About");
-        drawItem(DropdownItem::Close, closeTop, L"Close");
+        drawItem(DropdownItem::OpenFile, firstTop, L"Open File...");
+        drawItem(DropdownItem::Settings, firstTop + rowHeight, L"Settings");
+        drawItem(DropdownItem::KeyboardShortcuts, firstTop + rowHeight * 2, L"Keyboard Shortcuts");
+        drawItem(DropdownItem::About, firstTop + rowHeight * 3, L"About");
+        drawItem(DropdownItem::Close, firstTop + rowHeight * 4, L"Close");
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 
@@ -1974,6 +2082,7 @@ private:
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
+    bool includeHiddenImages_ = true;
     bool fullscreen_ = false;
     CaptionButton hoveredCaptionButton_ = CaptionButton::None;
     CaptionButton pressedCaptionButton_ = CaptionButton::None;
@@ -2074,7 +2183,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const FrameMetrics frame = GetFrameMetrics(window);
-        if (!PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) viewer->ToggleFullscreen();
+        if (viewer->HasImage() && !PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) viewer->ToggleFullscreen();
         return 0;
     }
     case WM_LBUTTONDOWN: {
@@ -2119,6 +2228,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->HasOverlay()) {
+            if (viewer->SettingsCheckboxContains(point)) { viewer->ToggleIncludeHiddenImages(); return 0; }
             if (!viewer->OverlayContains(point)) viewer->DismissOverlay();
             return 0;
         }
@@ -2126,6 +2236,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
             viewer->SetHamburgerPressed(true);
             SetCapture(window);
+        } else if (viewer->EmptyOpenFileButtonContains(point)) {
+            viewer->OpenFile();
         } else {
             viewer->BeginPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         }
@@ -2224,6 +2336,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (wParam == VK_ESCAPE) viewer->DismissOverlay();
             return 0;
         }
+        if (GetKeyState(VK_CONTROL) < 0 && wParam == L'O') { viewer->OpenFile(); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'C') { viewer->InvokeContextAction(ContextAction::Copy); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'P') { viewer->InvokeContextAction(ContextAction::Print); return 0; }
         if (wParam == VK_DELETE) { viewer->InvokeContextAction(ContextAction::Delete); return 0; }
@@ -2277,8 +2390,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     } else {
         MONITORINFO monitor{ sizeof(monitor) };
         GetMonitorInfoW(MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY), &monitor);
-        const LONG width = bounds.right - bounds.left;
-        const LONG height = bounds.bottom - bounds.top;
+        const LONG width = std::min(bounds.right - bounds.left, monitor.rcWork.right - monitor.rcWork.left);
+        const LONG height = std::min(bounds.bottom - bounds.top, monitor.rcWork.bottom - monitor.rcWork.top);
         bounds.left = monitor.rcWork.left + ((monitor.rcWork.right - monitor.rcWork.left) - width) / 2;
         bounds.top = monitor.rcWork.top + ((monitor.rcWork.bottom - monitor.rcWork.top) - height) / 2;
         bounds.right = bounds.left + width;

@@ -47,9 +47,10 @@ constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, Welcome };
-enum class DropdownItem { None, OpenFile, Settings, KeyboardShortcuts, About, Close };
+enum class DropdownItem { None, OpenFile, Settings, KeyboardShortcuts, QuickTour, About, Close };
 enum class ContextAction { None, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, SetLockScreen, Delete };
-enum class ButtonKind { None, EmptyOpenFile, SettingsReset, ResetCancel, ResetConfirm, WelcomeSecondary, WelcomePrimary };
+enum class ButtonKind { None, EmptyOpenFile, SettingsReset, ResetCancel, ResetConfirm, WelcomeSecondary, WelcomePrimary, TutorialSkip, TutorialNext };
+enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
@@ -388,7 +389,7 @@ public:
         const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
         const int top = bounds.top + MulDiv(4, GetDpiForWindow(window_), 96);
         const int index = (point.y - top) / rowHeight;
-        if (point.y < top || index < 0 || index > 4) return DropdownItem::None;
+        if (point.y < top || index < 0 || index > 5) return DropdownItem::None;
         return static_cast<DropdownItem>(index + 1);
     }
     void SetDropdownHover(DropdownItem item) {
@@ -412,6 +413,7 @@ public:
         if (openingFile) OpenFile();
         else if (item == DropdownItem::Settings) ShowOverlay(OverlayKind::Settings);
         else if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
+        else if (item == DropdownItem::QuickTour) StartTutorial();
         else if (item == DropdownItem::About) ShowOverlay(OverlayKind::About);
         else if (item == DropdownItem::Close) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
     }
@@ -438,7 +440,7 @@ public:
     bool HasImage() const { return source_ != nullptr; }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
     void OpenContextMenu(POINT point) {
-        if (WelcomeOpen()) return;
+        if (WelcomeOpen() || TutorialActive()) return;
         if (!HasImage()) return;
         DismissDropdown();
         DismissOverlay();
@@ -481,6 +483,7 @@ public:
         return hit(ContextAction::Delete);
     }
     bool ContextActionEnabled(ContextAction action) const {
+        if (tutorialStep_ == TutorialStep::ContextMenu) return false;
         if (action == ContextAction::OpenWith || action == ContextAction::Copy || action == ContextAction::Print ||
             action == ContextAction::SetBackground || action == ContextAction::Delete)
             return true;
@@ -557,6 +560,26 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool HasOverlay() const { return overlay_ != OverlayKind::None; }
+    bool TutorialActive() const { return tutorialStep_ != TutorialStep::None; }
+    void StartTutorial() { SetTutorialStep(TutorialStep::OpenImages); }
+    void StopTutorial() {
+        tutorialStep_ = TutorialStep::None;
+        tutorialContextMenu_ = false;
+        DismissDropdown(false);
+        DismissContextMenu();
+        DismissOverlay();
+        ClearButtonPressed();
+        SetButtonHover(ButtonKind::None);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void AdvanceTutorial() {
+        if (tutorialStep_ == TutorialStep::OpenImages) SetTutorialStep(TutorialStep::ResizeWindow);
+        else if (tutorialStep_ == TutorialStep::ResizeWindow) SetTutorialStep(TutorialStep::MenuSettings);
+        else if (tutorialStep_ == TutorialStep::MenuSettings) SetTutorialStep(TutorialStep::ImageDetails);
+        else if (tutorialStep_ == TutorialStep::ImageDetails) SetTutorialStep(TutorialStep::ContextMenu);
+        else if (tutorialStep_ == TutorialStep::ContextMenu) SetTutorialStep(TutorialStep::Shortcuts);
+        else StopTutorial();
+    }
     void ShowOverlay(OverlayKind overlay) {
         DismissDropdown();
         DismissContextMenu();
@@ -631,6 +654,8 @@ public:
         return overlay_ == OverlayKind::Welcome && PtInRect(&button, point);
     }
     ButtonKind ButtonAt(POINT point) const {
+        if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
+        if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
         if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
         if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
@@ -656,16 +681,18 @@ public:
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
         else if (button == ButtonKind::ResetCancel) DismissOverlay();
         else if (button == ButtonKind::ResetConfirm) ResetToDefaults();
-        else if (button == ButtonKind::WelcomeSecondary) AdvanceWelcome();
+        else if (button == ButtonKind::WelcomeSecondary) AdvanceWelcome(false);
         else if (button == ButtonKind::WelcomePrimary) {
             if (onboardingStep_ == 1) {
                 const INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
                 if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
             }
-            AdvanceWelcome();
+            AdvanceWelcome(onboardingStep_ == 2);
         }
+        else if (button == ButtonKind::TutorialSkip) StopTutorial();
+        else if (button == ButtonKind::TutorialNext) AdvanceTutorial();
     }
-    void AdvanceWelcome() {
+    void AdvanceWelcome(bool startTour) {
         if (overlay_ != OverlayKind::Welcome) return;
         if (onboardingStep_ == 1) {
             onboardingStep_ = 2;
@@ -675,6 +702,7 @@ public:
         WriteSetting(L"OnboardingVersion", 1);
         onboardingRequired_ = false;
         DismissOverlay();
+        if (startTour) StartTutorial();
     }
     void ResetToDefaults() {
         resetInProgress_ = true;
@@ -738,6 +766,7 @@ public:
             DrawOpenWithSubmenu();
             DrawOverlay();
             DrawCopyFeedback();
+            DrawTutorial();
             const HRESULT hr = renderTarget_->EndDraw();
             if (SUCCEEDED(hr) && bitmap_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
@@ -766,7 +795,7 @@ public:
     }
 
     void DropFile(HDROP drop) {
-        if (WelcomeOpen()) { DragFinish(drop); return; }
+        if (WelcomeOpen() || TutorialActive()) { DragFinish(drop); return; }
         const UINT length = DragQueryFileW(drop, 0, nullptr, 0);
         if (length > 0) {
             std::wstring path(length + 1, L'\0');
@@ -964,9 +993,73 @@ private:
         const LONG separatorGap = MulDiv(9, dpi, 96);
         const LONG padding = MulDiv(kContextMenuPaddingDip, dpi, 96);
         const LONG height = padding * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
+        if (tutorialContextMenu_) {
+            const LONG canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
+            const LONG rightInset = MulDiv(24, dpi, 96);
+            const LONG left = std::max(margin, client.right - width - rightInset);
+            const LONG top = std::clamp<LONG>(canvasTop + MulDiv(24, dpi, 96), margin,
+                std::max<LONG>(margin, client.bottom - height - margin));
+            return { left, top, left + width, top + height };
+        }
         const LONG left = std::clamp<LONG>(contextMenuAnchor_.x, margin, std::max<LONG>(margin, client.right - width - margin));
         const LONG top = std::clamp<LONG>(contextMenuAnchor_.y, margin, std::max<LONG>(margin, client.bottom - height - margin));
         return { left, top, left + width, top + height };
+    }
+
+    int MeasureTutorialButtonWidth(const wchar_t* label) const {
+        const UINT dpi = GetDpiForWindow(window_);
+        const float scale = static_cast<float>(dpi) / 96.0f;
+        ComPtr<IDWriteTextFormat> format;
+        ComPtr<IDWriteTextLayout> layout;
+        if (SUCCEEDED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f * scale, L"", &format)) &&
+            SUCCEEDED(dwriteFactory_->CreateTextLayout(label, static_cast<UINT32>(wcslen(label)), format.Get(), 200.0f * scale, 36.0f * scale, &layout))) {
+            DWRITE_TEXT_METRICS metrics{};
+            if (SUCCEEDED(layout->GetMetrics(&metrics))) return static_cast<int>(std::ceil(metrics.width)) + MulDiv(32, dpi, 96);
+        }
+        return MulDiv(82, dpi, 96);
+    }
+
+    RECT GetTutorialButtonBounds(bool next) const {
+        RECT client{};
+        GetClientRect(window_, &client);
+        const UINT dpi = GetDpiForWindow(window_);
+        const int nextWidth = MeasureTutorialButtonWidth(tutorialStep_ == TutorialStep::Shortcuts ? L"Finish" : L"Next");
+        const int skipWidth = MeasureTutorialButtonWidth(L"Skip");
+        const int height = MulDiv(36, dpi, 96);
+        const int gap = MulDiv(10, dpi, 96);
+        const int right = client.right - MulDiv(24, dpi, 96);
+        const int top = client.bottom - MulDiv(22, dpi, 96) - height;
+        if (next) return { right - nextWidth, top, right, top + height };
+        return { right - nextWidth - gap - skipWidth, top, right - nextWidth - gap, top + height };
+    }
+
+    bool TutorialButtonContains(POINT point, bool next) const {
+        const RECT button = GetTutorialButtonBounds(next);
+        return TutorialActive() && PtInRect(&button, point);
+    }
+
+    void SetTutorialStep(TutorialStep step) {
+        DismissDropdown(false);
+        DismissContextMenu();
+        DismissOverlay();
+        tutorialContextMenu_ = false;
+        tutorialStep_ = step;
+        if (step == TutorialStep::MenuSettings) {
+            dropdownOpen_ = true;
+        } else if (step == TutorialStep::ContextMenu) {
+            RECT client{};
+            GetClientRect(window_, &client);
+            contextMenuAnchor_ = { std::max(0L, client.right - MulDiv(290, GetDpiForWindow(window_), 96)),
+                std::max(0L, client.bottom / 2 - MulDiv(110, GetDpiForWindow(window_), 96)) };
+            contextMenuOpen_ = true;
+            tutorialContextMenu_ = true;
+        } else if (step == TutorialStep::Shortcuts) {
+            overlay_ = OverlayKind::KeyboardShortcuts;
+        }
+        ClearButtonPressed();
+        SetButtonHover(ButtonKind::None);
+        InvalidateRect(window_, nullptr, FALSE);
     }
 
     void ShowActionError(const wchar_t* message) const { MessageBoxW(window_, message, kWindowTitle, MB_OK | MB_ICONWARNING); }
@@ -1536,7 +1629,7 @@ private:
         const FrameMetrics frame = GetFrameMetrics(window_);
         const LONG margin = MulDiv(4, dpi, 96);
         const LONG width = std::min<LONG>(MulDiv(236, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
-        const LONG height = MulDiv(198, dpi, 96);
+        const LONG height = MulDiv(236, dpi, 96);
         const LONG left = std::clamp<LONG>(frame.hamburger.left + margin, margin,
             std::max<LONG>(margin, client.right - width - margin));
         const LONG top = frame.hamburger.bottom + margin;
@@ -2091,8 +2184,9 @@ private:
         drawItem(DropdownItem::OpenFile, firstTop, L"Open File...");
         drawItem(DropdownItem::Settings, firstTop + rowHeight, L"Settings");
         drawItem(DropdownItem::KeyboardShortcuts, firstTop + rowHeight * 2, L"Keyboard Shortcuts");
-        drawItem(DropdownItem::About, firstTop + rowHeight * 3, L"About");
-        drawItem(DropdownItem::Close, firstTop + rowHeight * 4, L"Close");
+        drawItem(DropdownItem::QuickTour, firstTop + rowHeight * 3, L"Quick Tour");
+        drawItem(DropdownItem::About, firstTop + rowHeight * 4, L"About");
+        drawItem(DropdownItem::Close, firstTop + rowHeight * 5, L"Close");
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 
@@ -2150,6 +2244,154 @@ private:
         const float y=(float)(top+gap/2); renderTarget_->DrawLine(D2D1::Point2F((float)bounds.left+MulDiv(12,dpi,96),y),D2D1::Point2F((float)bounds.right-MulDiv(12,dpi,96),y),border.Get()); top+=gap;
         draw((int)openWithHandlers_.size(),L"Choose another app");
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu,7,7),border.Get());
+    }
+
+    void DrawHandwrittenText(const wchar_t* text, float x, float y, float width, float height, float size,
+        ID2D1Brush* brush, bool center = false, bool right = false) {
+        ComPtr<IDWriteTextFormat> format;
+        const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe Print", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size * dpiScale, L"", &format))) return;
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        if (center) format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        else if (right) format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), width, height, &layout))) return;
+        renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    void DrawTutorial() {
+        if (!TutorialActive()) return;
+        const UINT dpi = GetDpiForWindow(window_);
+        const float scale = static_cast<float>(dpi) / 96.0f;
+        const bool dark = UseDarkAppMode();
+        ComPtr<ID2D1SolidColorBrush> pencil, veil, accent, button, buttonHover, buttonPressed, buttonText;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(250.f / 255, 194.f / 255, 72.f / 255) : D2D1::ColorF(93.f / 255, 64.f / 255, 12.f / 255), &pencil)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, dark ? 0.08f : 0.04f), &veil)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &accent)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &button)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 139.f / 255, 244.f / 255), &buttonHover)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 94.f / 255, 168.f / 255), &buttonPressed)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &buttonText))) return;
+        RECT client{};
+        GetClientRect(window_, &client);
+        const float canvasTop = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
+        renderTarget_->FillRectangle(D2D1::RectF(0, canvasTop, static_cast<float>(client.right), static_cast<float>(client.bottom)), veil.Get());
+        const auto scribble = [&](const RECT& target) {
+            const float left = static_cast<float>(target.left) - 8.0f * scale, right = static_cast<float>(target.right) + 8.0f * scale;
+            const float top = static_cast<float>(target.top) - 7.0f * scale, bottom = static_cast<float>(target.bottom) + 7.0f * scale;
+            const D2D1_POINT_2F points[] = { { left, top + 6.0f * scale }, { left + (right-left)*0.25f, top }, { right - 3.0f*scale, top + 5.0f*scale },
+                { right, top + (bottom-top)*0.48f }, { right - 5.0f*scale, bottom }, { left + (right-left)*0.46f, bottom - 2.0f*scale },
+                { left, bottom - 5.0f*scale }, { left - 2.0f*scale, top + (bottom-top)*0.45f }, { left, top + 6.0f*scale } };
+            for (size_t i = 1; i < ARRAYSIZE(points); ++i) renderTarget_->DrawLine(points[i - 1], points[i], pencil.Get(), 2.0f * scale);
+        };
+        const auto arrow = [&](D2D1_POINT_2F from, D2D1_POINT_2F to, float thickness = 2.2f) {
+            const D2D1_POINT_2F bend = D2D1::Point2F((from.x + to.x) / 2.0f, from.y + (to.y - from.y) * 0.25f - 18.0f * scale);
+            renderTarget_->DrawLine(from, bend, pencil.Get(), thickness * scale);
+            renderTarget_->DrawLine(bend, to, pencil.Get(), thickness * scale);
+            const float dx = to.x - bend.x, dy = to.y - bend.y, length = std::max(1.0f, std::sqrt(dx * dx + dy * dy));
+            const float ux = dx / length, uy = dy / length, wing = 10.0f * scale;
+            renderTarget_->DrawLine(to, D2D1::Point2F(to.x - ux * wing - uy * wing * 0.55f, to.y - uy * wing + ux * wing * 0.55f), pencil.Get(), thickness * scale);
+            renderTarget_->DrawLine(to, D2D1::Point2F(to.x - ux * wing + uy * wing * 0.55f, to.y - uy * wing - ux * wing * 0.55f), pencil.Get(), thickness * scale);
+        };
+        const auto straightArrow = [&](D2D1_POINT_2F from, D2D1_POINT_2F to, float thickness = 2.0f) {
+            renderTarget_->DrawLine(from, to, pencil.Get(), thickness * scale);
+            const float dx = to.x - from.x, dy = to.y - from.y, length = std::max(1.0f, std::sqrt(dx * dx + dy * dy));
+            const float ux = dx / length, uy = dy / length, wing = 9.0f * scale;
+            renderTarget_->DrawLine(to, D2D1::Point2F(to.x - ux * wing - uy * wing * 0.55f, to.y - uy * wing + ux * wing * 0.55f), pencil.Get(), thickness * scale);
+            renderTarget_->DrawLine(to, D2D1::Point2F(to.x - ux * wing + uy * wing * 0.55f, to.y - uy * wing - ux * wing * 0.55f), pencil.Get(), thickness * scale);
+        };
+        const FrameMetrics frame = GetFrameMetrics(window_);
+        if (tutorialStep_ == TutorialStep::OpenImages) {
+            const RECT target = GetEmptyOpenFileButtonBounds();
+            const float annotationWidth = std::min(340.0f * scale, static_cast<float>(client.right) - 32.0f * scale);
+            const float annotationLeft = (static_cast<float>(target.left + target.right) - annotationWidth) / 2.0f;
+            const float headingTop = static_cast<float>(target.bottom) + 24.0f * scale;
+            DrawHandwrittenText(L"Open images", annotationLeft, headingTop, annotationWidth, 32.0f * scale, 24.0f, pencil.Get(), true);
+            DrawHandwrittenText(L"Use Open File or drag and drop", annotationLeft, headingTop + 31.0f * scale, annotationWidth, 24.0f * scale, 13.0f, pencil.Get(), true);
+            scribble(target);
+            const float arrowX = (target.left + target.right) / 2.0f;
+            const float arrowTipY = static_cast<float>(target.bottom) + 4.0f * scale;
+            renderTarget_->DrawLine(D2D1::Point2F(arrowX, headingTop - 3.0f * scale), D2D1::Point2F(arrowX, arrowTipY), pencil.Get(), 2.2f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(arrowX, arrowTipY), D2D1::Point2F(arrowX - 6.0f * scale, arrowTipY + 9.0f * scale), pencil.Get(), 2.2f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(arrowX, arrowTipY), D2D1::Point2F(arrowX + 6.0f * scale, arrowTipY + 9.0f * scale), pencil.Get(), 2.2f * scale);
+            const RECT skipBounds = GetTutorialButtonBounds(false), nextBounds = GetTutorialButtonBounds(true);
+            const RECT footer{ skipBounds.left - MulDiv(8, dpi, 96), skipBounds.top - MulDiv(8, dpi, 96),
+                nextBounds.right + MulDiv(8, dpi, 96), nextBounds.bottom + MulDiv(8, dpi, 96) };
+            const float circleX = (footer.left + footer.right) / 2.0f, circleY = (footer.top + footer.bottom) / 2.0f;
+            const float circleRadiusX = (footer.right - footer.left) / 2.0f + 8.0f * scale;
+            const float circleRadiusY = (footer.bottom - footer.top) / 2.0f + 10.0f * scale;
+            renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(circleX, circleY), circleRadiusX, circleRadiusY), pencil.Get(), 2.0f * scale);
+            const float arrowOffsets[] = { -0.66f, -0.22f, 0.22f, 0.66f };
+            const float arrowStarts[] = { -120.0f, -48.0f, 48.0f, 120.0f };
+            for (size_t index = 0; index < ARRAYSIZE(arrowOffsets); ++index) {
+                const float offset = arrowOffsets[index] * circleRadiusX;
+                const float tipX = circleX + offset;
+                const float tipY = circleY - circleRadiusY * std::sqrt(1.0f - arrowOffsets[index] * arrowOffsets[index]);
+                straightArrow(D2D1::Point2F(circleX + arrowStarts[index] * scale, tipY - 52.0f * scale),
+                    D2D1::Point2F(tipX, tipY), 1.8f);
+            }
+        } else if (tutorialStep_ == TutorialStep::ResizeWindow) {
+            const float noteWidth = std::min(310.0f * scale, static_cast<float>(client.right) - 36.0f * scale);
+            const float noteLeft = 20.0f * scale;
+            const float noteTop = static_cast<float>(client.bottom) - 136.0f * scale;
+            DrawHandwrittenText(L"Resize the window", noteLeft, noteTop, noteWidth, 34.0f * scale, 23.0f, pencil.Get());
+            DrawHandwrittenText(L"Drag the app corners to resize the app", noteLeft, noteTop + 33.0f * scale,
+                noteWidth, 26.0f * scale, 13.0f, pencil.Get());
+            arrow(D2D1::Point2F(noteLeft + noteWidth * 0.38f, noteTop + 66.0f * scale),
+                D2D1::Point2F(5.0f * scale, static_cast<float>(client.bottom) - 5.0f * scale), 2.5f);
+        } else if (tutorialStep_ == TutorialStep::MenuSettings) {
+            const float lineLeft = static_cast<float>(frame.hamburger.right) + 4.0f * scale;
+            const float headingLeft = lineLeft + 72.0f * scale;
+            const float headingTop = static_cast<float>(frame.hamburger.top) + 1.0f * scale;
+            const float lineY = static_cast<float>(frame.hamburger.top + frame.hamburger.bottom) / 2.0f;
+            renderTarget_->DrawLine(D2D1::Point2F(lineLeft, lineY), D2D1::Point2F(headingLeft - 8.0f * scale, lineY), pencil.Get(), 2.2f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(lineLeft, lineY), D2D1::Point2F(lineLeft + 11.0f * scale, lineY - 7.0f * scale), pencil.Get(), 2.2f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(lineLeft, lineY), D2D1::Point2F(lineLeft + 11.0f * scale, lineY + 7.0f * scale), pencil.Get(), 2.2f * scale);
+            DrawHandwrittenText(L"Menu & settings", headingLeft, headingTop,
+                std::max(120.0f * scale, static_cast<float>(client.right) - headingLeft - 20.0f * scale), 38.0f * scale, 22.0f, pencil.Get());
+            scribble(frame.hamburger);
+        } else if (tutorialStep_ == TutorialStep::ImageDetails) {
+            const RECT target{ frame.resolutionLeft, 0, frame.titleBarContent.right, frame.titleBarHeight };
+            const float headingTop = canvasTop + 52.0f * scale;
+            const float headingWidth = std::min(360.0f * scale, static_cast<float>(client.right) - 40.0f * scale);
+            const float arrowStartX = std::clamp((target.left + target.right) / 2.0f + 60.0f * scale, headingWidth / 2.0f + 20.0f * scale,
+                static_cast<float>(client.right) - headingWidth / 2.0f - 20.0f * scale);
+            const float headingLeft = arrowStartX - headingWidth / 2.0f;
+            arrow(D2D1::Point2F(arrowStartX, headingTop + 2.0f * scale),
+                D2D1::Point2F((target.left + target.right) / 2.0f, static_cast<float>(target.bottom) + 4.0f * scale));
+            DrawHandwrittenText(L"Image details appear here", headingLeft, headingTop,
+                headingWidth, 38.0f * scale, 22.0f, pencil.Get(), true);
+            scribble(target);
+        } else if (tutorialStep_ == TutorialStep::ContextMenu) {
+            const RECT target = GetContextMenuBounds();
+            const float annotationWidth = std::min(230.0f * scale, std::max(150.0f * scale, static_cast<float>(target.left) - 34.0f * scale));
+            const float headingLeft = std::max(16.0f * scale, static_cast<float>(target.left) - annotationWidth - 72.0f * scale);
+            const float headingTop = std::clamp(static_cast<float>(target.top) + 16.0f * scale, canvasTop + 12.0f * scale,
+                static_cast<float>(client.bottom) - 100.0f * scale);
+            DrawHandwrittenText(L"Right click menu", headingLeft, headingTop, annotationWidth, 38.0f * scale, 22.0f, pencil.Get(), false, true);
+            DrawHandwrittenText(L"Right-click an image to find these options.", headingLeft, headingTop + 37.0f * scale, annotationWidth, 28.0f * scale, 12.5f, pencil.Get(), false, true);
+            scribble(target);
+            arrow(D2D1::Point2F(headingLeft + annotationWidth * 0.62f, headingTop - 8.0f * scale),
+                D2D1::Point2F(static_cast<float>(target.left) - 4.0f * scale, static_cast<float>(target.top) + 10.0f * scale), 3.1f);
+        } else if (tutorialStep_ == TutorialStep::Shortcuts) {
+            const RECT target = GetOverlayBounds();
+            DrawHandwrittenText(L"Keyboard shortcuts", static_cast<float>(target.left), static_cast<float>(target.top) - 38.0f * scale,
+                static_cast<float>(target.right - target.left), 32.0f * scale, 21.0f, pencil.Get(), true);
+            scribble(target);
+            DrawHandwrittenText(L"Thanks for downloading, enjoy!", 0, static_cast<float>(target.bottom) + 10.0f * scale,
+                static_cast<float>(client.right), 34.0f * scale, 18.0f, pencil.Get(), true);
+        }
+        const RECT skipBounds = GetTutorialButtonBounds(false), nextBounds = GetTutorialButtonBounds(true);
+        const auto asRect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
+        const D2D1_RECT_F skip = asRect(skipBounds), next = asRect(nextBounds);
+        if (hoveredButton_ == ButtonKind::TutorialSkip || pressedButton_ == ButtonKind::TutorialSkip) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(skip, 5.0f * scale, 5.0f * scale), pressedButton_ == ButtonKind::TutorialSkip ? buttonPressed.Get() : buttonHover.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(skip, 5.0f * scale, 5.0f * scale), pencil.Get(), 1.0f * scale);
+        ID2D1Brush* nextBrush = pressedButton_ == ButtonKind::TutorialNext ? buttonPressed.Get() : hoveredButton_ == ButtonKind::TutorialNext ? buttonHover.Get() : button.Get();
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(next, 5.0f * scale, 5.0f * scale), nextBrush);
+        DrawOverlayText(L"Skip", skip.left, skip.top, skip.right - skip.left, skip.bottom - skip.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, pencil.Get(), true, false, true);
+        DrawOverlayText(tutorialStep_ == TutorialStep::Shortcuts ? L"Finish" : L"Next", next.left, next.top, next.right - next.left, next.bottom - next.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
     }
 
     void DrawCopyFeedback() {
@@ -2211,6 +2453,7 @@ private:
         ComPtr<ID2D1SolidColorBrush> glyphBrush;
         ComPtr<ID2D1SolidColorBrush> closeGlyphBrush;
         ComPtr<ID2D1SolidColorBrush> metadataBrush;
+        ComPtr<ID2D1SolidColorBrush> tutorialMetadataBrush;
         ComPtr<ID2D1SolidColorBrush> filenameBrush;
         ComPtr<ID2D1SolidColorBrush> separatorBrush;
         if (FAILED(renderTarget_->CreateSolidColorBrush(stripColor, &stripBrush)) ||
@@ -2223,6 +2466,8 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(metadataColor, &metadataBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(filenameColor, &filenameBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(separatorColor, &separatorBrush))) return;
+        if (tutorialStep_ == TutorialStep::ImageDetails &&
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(250.f / 255, 194.f / 255, 72.f / 255) : D2D1::ColorF(93.f / 255, 64.f / 255, 12.f / 255), &tutorialMetadataBrush))) return;
 
         const D2D1_RECT_F top = D2D1::RectF(0.0f, 0.0f, renderTarget_->GetSize().width, static_cast<float>(frame.titleBarHeight));
         renderTarget_->FillRectangle(top, stripBrush.Get());
@@ -2246,11 +2491,14 @@ private:
         renderTarget_->FillRectangle(rect(frame.resolutionSeparator), separatorBrush.Get());
         renderTarget_->FillRectangle(rect(frame.fileSizeSeparator), separatorBrush.Get());
 
-        DrawTitleText(resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), metadataBrush.Get(), false, true);
-        DrawTitleText(fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), metadataBrush.Get(), false, true);
+        const bool tutorialMetadata = tutorialStep_ == TutorialStep::ImageDetails;
+        ID2D1Brush* activeMetadataBrush = tutorialMetadata ? tutorialMetadataBrush.Get() : metadataBrush.Get();
+        DrawTitleText(tutorialMetadata ? L"1920 x 1080" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
+        DrawTitleText(tutorialMetadata ? L"1.2 MB" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);
         const float filenameWidth = static_cast<float>(std::max(0L,
             frame.titleBarContent.right - frame.filenameLeft - MulDiv(8, GetDpiForWindow(window_), 96)));
-        DrawTitleText(filenameText_, static_cast<float>(frame.filenameLeft), filenameWidth, filenameBrush.Get(), true, false);
+        DrawTitleText(tutorialMetadata ? L"viewtrious.png" : filenameText_, static_cast<float>(frame.filenameLeft), filenameWidth,
+            tutorialMetadata ? tutorialMetadataBrush.Get() : filenameBrush.Get(), true, false);
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float stroke = 1.0f;
@@ -2329,6 +2577,8 @@ private:
     bool includeHiddenImages_ = true;
     bool onboardingRequired_ = false;
     int onboardingStep_ = 1;
+    TutorialStep tutorialStep_ = TutorialStep::None;
+    bool tutorialContextMenu_ = false;
     bool fullscreen_ = false;
     CaptionButton hoveredCaptionButton_ = CaptionButton::None;
     CaptionButton pressedCaptionButton_ = CaptionButton::None;
@@ -2363,6 +2613,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->SetWindow(window);
     }
     if (!viewer) return DefWindowProcW(window, message, wParam, lParam);
+
+    if (message == WM_GETMINMAXINFO) {
+        auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
+        const UINT dpi = GetDpiForWindow(window);
+        info->ptMinTrackSize.x = MulDiv(640, dpi, 96);
+        info->ptMinTrackSize.y = MulDiv(480, dpi, 96);
+        return 0;
+    }
 
     if (!viewer->IsFullscreen() && message == WM_NCCALCSIZE) return 0;
     if (!viewer->IsFullscreen() && message == WM_NCHITTEST) {
@@ -2437,6 +2695,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_LBUTTONDOWN: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->TutorialActive()) {
+            const ButtonKind button = viewer->ButtonAt(point);
+            if (button == ButtonKind::TutorialSkip || button == ButtonKind::TutorialNext) {
+                viewer->SetButtonPressed(button);
+                SetCapture(window);
+            }
+            return 0;
+        }
         if (viewer->OpenWithSubmenuOpen()) {
             const int item = viewer->OpenWithItemAt(point);
             if (item >= 0) { viewer->InvokeOpenWithItem(item); return 0; }
@@ -2497,6 +2763,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_MOUSEMOVE: {
+        if (viewer->TutorialActive()) {
+            viewer->SetButtonHover(viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }));
+            return 0;
+        }
         if (viewer->ContextMenuOpen()) {
             const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             const ContextAction parent = viewer->ContextActionAt(point);
@@ -2583,11 +2853,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_CAPTURECHANGED:
         viewer->EndPan(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
-    case WM_RBUTTONUP: viewer->OpenContextMenu({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
+    case WM_RBUTTONUP: if (!viewer->TutorialActive()) viewer->OpenContextMenu({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
     case WM_TIMER: if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; } break;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case WM_KEYDOWN:
+        if (viewer->TutorialActive()) { if (wParam == VK_ESCAPE) viewer->StopTutorial(); return 0; }
         if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }
         if (viewer->ContextMenuOpen()) {
             if (wParam == VK_ESCAPE) viewer->DismissContextMenu();

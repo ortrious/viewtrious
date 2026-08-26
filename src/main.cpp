@@ -46,9 +46,10 @@ constexpr wchar_t kSettingsKey[] = L"Software\\Viewtrious";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
-enum class OverlayKind { None, KeyboardShortcuts, About, Settings };
+enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm };
 enum class DropdownItem { None, OpenFile, Settings, KeyboardShortcuts, About, Close };
 enum class ContextAction { None, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, SetLockScreen, Delete };
+enum class ButtonKind { None, EmptyOpenFile, SettingsReset, ResetCancel, ResetConfirm };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
@@ -471,7 +472,8 @@ public:
         return hit(ContextAction::Delete);
     }
     bool ContextActionEnabled(ContextAction action) const {
-        if (action == ContextAction::OpenWith || action == ContextAction::Copy || action == ContextAction::Print || action == ContextAction::Delete)
+        if (action == ContextAction::OpenWith || action == ContextAction::Copy || action == ContextAction::Print ||
+            action == ContextAction::SetBackground || action == ContextAction::Delete)
             return true;
         return (action == ContextAction::RotateLeft || action == ContextAction::RotateRight) &&
             (IsJpegPath(currentPath_) || IsPngPath(currentPath_));
@@ -496,6 +498,7 @@ public:
         else if (action == ContextAction::Print) PrintImage();
         else if (action == ContextAction::RotateLeft) RotateImage(false);
         else if (action == ContextAction::RotateRight) RotateImage(true);
+        else if (action == ContextAction::SetBackground) SetDesktopBackground();
         else if (action == ContextAction::Delete) DeleteImage();
     }
     bool OpenWithSubmenuOpen() const { return openWithSubmenuOpen_; }
@@ -577,6 +580,73 @@ public:
         navigationBuilt_ = false;
         navigationBuildQueued_ = false;
         InvalidateRect(window_, nullptr, FALSE);
+    }
+    RECT GetSettingsResetButtonBounds() const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int padding = MulDiv(24, dpi, 96);
+        const int top = bounds.top + padding + MulDiv(162, dpi, 96);
+        return { bounds.left + padding, top, bounds.left + padding + MulDiv(168, dpi, 96), top + MulDiv(36, dpi, 96) };
+    }
+    bool SettingsResetButtonContains(POINT point) const {
+        const RECT button = GetSettingsResetButtonBounds();
+        return overlay_ == OverlayKind::Settings && PtInRect(&button, point);
+    }
+    RECT GetResetConfirmationButtonBounds(bool reset) const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(90, dpi, 96), height = MulDiv(36, dpi, 96), gap = MulDiv(10, dpi, 96);
+        const int top = bounds.bottom - MulDiv(24, dpi, 96) - height;
+        const int resetLeft = bounds.right - MulDiv(24, dpi, 96) - width;
+        return reset ? RECT{ resetLeft, top, resetLeft + width, top + height } :
+            RECT{ resetLeft - gap - width, top, resetLeft - gap, top + height };
+    }
+    bool ResetConfirmationButtonContains(POINT point, bool reset) const {
+        const RECT button = GetResetConfirmationButtonBounds(reset);
+        return overlay_ == OverlayKind::ResetConfirm && PtInRect(&button, point);
+    }
+    ButtonKind ButtonAt(POINT point) const {
+        if (EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
+        if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
+        if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
+        if (ResetConfirmationButtonContains(point, true)) return ButtonKind::ResetConfirm;
+        return ButtonKind::None;
+    }
+    void SetButtonHover(ButtonKind button) {
+        if (hoveredButton_ == button) return;
+        hoveredButton_ = button;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void SetButtonPressed(ButtonKind button) {
+        if (pressedButton_ == button) return;
+        pressedButton_ = button;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    ButtonKind PressedButton() const { return pressedButton_; }
+    void ClearButtonPressed() { SetButtonPressed(ButtonKind::None); }
+    void InvokeButton(ButtonKind button) {
+        if (button == ButtonKind::EmptyOpenFile) OpenFile();
+        else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
+        else if (button == ButtonKind::ResetCancel) DismissOverlay();
+        else if (button == ButtonKind::ResetConfirm) ResetToDefaults();
+    }
+    void ResetToDefaults() {
+        resetInProgress_ = true;
+        RegDeleteTreeW(HKEY_CURRENT_USER, kSettingsKey);
+        includeHiddenImages_ = true;
+        wchar_t modulePath[MAX_PATH]{};
+        if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) { DestroyWindow(window_); return; }
+        std::wstring command = L"\"" + std::wstring(modulePath) + L"\"";
+        STARTUPINFOW startup{ sizeof(startup) };
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process)) {
+            resetInProgress_ = false;
+            ShowActionError(L"Viewtrious preferences were reset. Please close and reopen Viewtrious to continue.");
+            return;
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        DestroyWindow(window_);
     }
     bool EmptyOpenFileButtonContains(POINT point) const {
         if (HasImage() || HasOverlay() || dropdownOpen_ || contextMenuOpen_) return false;
@@ -787,6 +857,7 @@ public:
     }
 
     void SaveWindowPlacement() const {
+        if (resetInProgress_) return;
         WINDOWPLACEMENT placement{ sizeof(placement) };
         if (!GetWindowPlacement(window_, &placement)) return;
         const RECT& rect = placement.rcNormalPosition;
@@ -861,7 +932,8 @@ private:
         if (FAILED(SHOpenWithDialog(window_, &info))) ShowActionError(L"Windows could not open the Open With chooser for this image.");
     }
 
-    void StartCopyFeedback() {
+    void StartCopyFeedback(const wchar_t* text = L"Copied to Clipboard") {
+        feedbackText_ = text;
         copyFeedbackStart_ = GetTickCount64();
         copyFeedbackActive_ = true;
         SetTimer(window_, kCopyFeedbackTimer, 16, nullptr);
@@ -892,6 +964,17 @@ private:
         if (!SetClipboardData(CF_DIBV5, memory)) { CloseClipboard(); GlobalFree(memory); ShowActionError(L"Viewtrious could not publish the image to the clipboard."); return; }
         CloseClipboard();
         StartCopyFeedback();
+    }
+
+    void SetDesktopBackground() {
+        if (currentPath_.empty()) return;
+        ComPtr<IDesktopWallpaper> wallpaper;
+        const HRESULT hr = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wallpaper));
+        if (FAILED(hr) || FAILED(wallpaper->SetWallpaper(nullptr, currentPath_.c_str()))) {
+            ShowActionError(L"Windows could not set this image as the desktop background.");
+            return;
+        }
+        StartCopyFeedback(L"Desktop background updated");
     }
 
     void PrintImage() {
@@ -1653,10 +1736,10 @@ private:
         const int titleGap = MulDiv(14, dpi, 96);
         const int rowHeight = MulDiv(25, dpi, 96);
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
-            overlay_ == OverlayKind::Settings ? 560 : 608, dpi, 96);
+            overlay_ == OverlayKind::Settings ? 560 : overlay_ == OverlayKind::ResetConfirm ? 500 : 608, dpi, 96);
         const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : overlay_ == OverlayKind::Settings ? MulDiv(170, dpi, 96) : MulDiv(319, dpi, 96);
+            : overlay_ == OverlayKind::Settings ? MulDiv(244, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(210, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -1709,10 +1792,12 @@ private:
     void DrawEmptyState() {
         if (HasOverlay()) return;
         const bool dark = UseDarkAppMode();
-        ComPtr<ID2D1SolidColorBrush> primary, secondary, button, buttonText;
+        ComPtr<ID2D1SolidColorBrush> primary, secondary, button, buttonHover, buttonPressed, buttonText;
         if (FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(30.f/255,30.f/255,30.f/255), &primary)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(205.f/255,208.f/255,214.f/255) : D2D1::ColorF(78.f/255,78.f/255,78.f/255), &secondary)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,120.f/255,212.f/255), &button)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,139.f/255,244.f/255), &buttonHover)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,94.f/255,168.f/255), &buttonPressed)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &buttonText))) return;
         const UINT dpi = GetDpiForWindow(window_);
         const float scale = static_cast<float>(dpi) / 96.0f;
@@ -1733,7 +1818,9 @@ private:
         const RECT buttonBounds = GetEmptyOpenFileButtonBounds();
         const D2D1_RECT_F buttonRect = D2D1::RectF(static_cast<float>(buttonBounds.left), static_cast<float>(buttonBounds.top),
             static_cast<float>(buttonBounds.right), static_cast<float>(buttonBounds.bottom));
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(buttonRect, 5.0f * scale, 5.0f * scale), button.Get());
+        ID2D1Brush* buttonBrush = pressedButton_ == ButtonKind::EmptyOpenFile ? buttonPressed.Get() :
+            hoveredButton_ == ButtonKind::EmptyOpenFile ? buttonHover.Get() : button.Get();
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(buttonRect, 5.0f * scale, 5.0f * scale), buttonBrush);
         DrawOverlayText(L"Open File", buttonRect.left, buttonRect.top, buttonRect.right - buttonRect.left,
             buttonRect.bottom - buttonRect.top, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
     }
@@ -1802,6 +1889,50 @@ private:
             DrawOverlayText(L"Include hidden images in folder navigation", left + boxSize + 12.0f * dpiScale, rowTop,
                 contentWidth - boxSize - 12.0f * dpiScale, 28.0f * dpiScale, 13.0f, DWRITE_FONT_WEIGHT_NORMAL,
                 primaryBrush.Get(), true);
+            const float resetTop = static_cast<float>(bounds.top) + panelPadding + 90.0f * dpiScale;
+            DrawOverlayText(L"Reset", left, resetTop, contentWidth, 20.0f * dpiScale, 14.0f,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            DrawOverlayText(L"Reset Viewtrious to Defaults", left, resetTop + 24.0f * dpiScale, contentWidth, 18.0f * dpiScale,
+                13.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
+            DrawOverlayText(L"Removes Viewtrious preferences and app-owned data. Your images are never touched.", left,
+                resetTop + 43.0f * dpiScale, contentWidth, 18.0f * dpiScale, 11.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const RECT resetBounds = GetSettingsResetButtonBounds();
+            const D2D1_RECT_F resetButton = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top),
+                static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
+            ComPtr<ID2D1SolidColorBrush> buttonHover, buttonPressed;
+            if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f/255,64.f/255,74.f/255), &buttonHover)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f/255,80.f/255,92.f/255), &buttonPressed))) {
+                if (pressedButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), buttonPressed.Get());
+                else if (hoveredButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), buttonHover.Get());
+            }
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
+            DrawOverlayText(L"Reset Viewtrious", resetButton.left, resetButton.top, resetButton.right - resetButton.left,
+                resetButton.bottom - resetButton.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+        } else if (overlay_ == OverlayKind::ResetConfirm) {
+            DrawOverlayText(L"Reset Viewtrious to defaults?", left, static_cast<float>(bounds.top) + panelPadding,
+                contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            DrawOverlayText(L"This removes Viewtrious preferences, saved window placement, and Viewtrious-owned app data.", left,
+                static_cast<float>(bounds.top) + panelPadding + 39.0f * dpiScale, contentWidth, 20.0f * dpiScale,
+                12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            DrawOverlayText(L"Your images will not be touched.", left, static_cast<float>(bounds.top) + panelPadding + 60.0f * dpiScale,
+                contentWidth, 20.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const RECT cancelBounds = GetResetConfirmationButtonBounds(false), resetBounds = GetResetConfirmationButtonBounds(true);
+            const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));
+            const D2D1_RECT_F reset = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top), static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
+            ComPtr<ID2D1SolidColorBrush> destructive, destructiveHover, destructivePressed, neutralHover, neutralPressed;
+            if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(196.f/255,43.f/255,28.f/255), &destructive)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(220.f/255,58.f/255,40.f/255), &destructiveHover)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(153.f/255,27.f/255,20.f/255), &destructivePressed)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f/255,64.f/255,74.f/255), &neutralHover)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f/255,80.f/255,92.f/255), &neutralPressed))) {
+                ID2D1Brush* resetBrush = pressedButton_ == ButtonKind::ResetConfirm ? destructivePressed.Get() : hoveredButton_ == ButtonKind::ResetConfirm ? destructiveHover.Get() : destructive.Get();
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(reset, 5.0f * dpiScale, 5.0f * dpiScale), resetBrush);
+                if (pressedButton_ == ButtonKind::ResetCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralPressed.Get());
+                else if (hoveredButton_ == ButtonKind::ResetCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralHover.Get());
+            }
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
+            DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            DrawOverlayText(L"Reset", reset.left, reset.top, reset.right - reset.left, reset.bottom - reset.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else {
             float logoBottom = static_cast<float>(bounds.top) + panelPadding;
             if (EnsureAboutLogo()) {
@@ -1900,7 +2031,7 @@ private:
         };
         drawItem(ContextAction::RotateLeft, L"Rotate Left"); drawItem(ContextAction::RotateRight, L"Rotate Right"); separator();
         drawItem(ContextAction::OpenWith, L"Open With  >"); drawItem(ContextAction::Copy, L"Copy"); drawItem(ContextAction::Print, L"Print"); separator();
-        drawItem(ContextAction::SetBackground, L"Set as Background"); drawItem(ContextAction::SetLockScreen, L"Set as Lock Screen"); separator(); drawItem(ContextAction::Delete, L"Delete");
+        drawItem(ContextAction::SetBackground, L"Set as Desktop Background"); drawItem(ContextAction::SetLockScreen, L"Set as Lock Screen"); separator(); drawItem(ContextAction::Delete, L"Delete");
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 
@@ -1947,9 +2078,9 @@ private:
         renderTarget_->DrawRoundedRectangle(rear,outline.Get(),stroke+3.f*scale); renderTarget_->DrawRoundedRectangle(front,outline.Get(),stroke+3.f*scale);
         renderTarget_->DrawRoundedRectangle(rear,brush.Get(),stroke); renderTarget_->DrawRoundedRectangle(front,brush.Get(),stroke);
         const float textY=y+glyph+gap;
-        for (const POINT offsetPoint : { POINT{ -1, 0 }, POINT{ 1, 0 }, POINT{ 0, -1 }, POINT{ 0, 1 } }) DrawOverlayText(L"Copied to Clipboard",offsetPoint.x*scale,textY+offsetPoint.y*scale,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,textHalo.Get(),true,false,true);
-        for (const POINT offsetPoint : { POINT{ -1, 0 }, POINT{ 1, 0 }, POINT{ 0, -1 }, POINT{ 0, 1 }, POINT{ -1, -1 }, POINT{ 1, -1 }, POINT{ -1, 1 }, POINT{ 1, 1 } }) DrawOverlayText(L"Copied to Clipboard",offsetPoint.x*scale,textY+offsetPoint.y*scale,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,textOutline.Get(),true,false,true);
-        DrawOverlayText(L"Copied to Clipboard",0,textY,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,brush.Get(),true,false,true);
+        for (const POINT offsetPoint : { POINT{ -1, 0 }, POINT{ 1, 0 }, POINT{ 0, -1 }, POINT{ 0, 1 } }) DrawOverlayText(feedbackText_.c_str(),offsetPoint.x*scale,textY+offsetPoint.y*scale,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,textHalo.Get(),true,false,true);
+        for (const POINT offsetPoint : { POINT{ -1, 0 }, POINT{ 1, 0 }, POINT{ 0, -1 }, POINT{ 0, 1 }, POINT{ -1, -1 }, POINT{ 1, -1 }, POINT{ -1, 1 }, POINT{ 1, 1 } }) DrawOverlayText(feedbackText_.c_str(),offsetPoint.x*scale,textY+offsetPoint.y*scale,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,textOutline.Get(),true,false,true);
+        DrawOverlayText(feedbackText_.c_str(),0,textY,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,brush.Get(),true,false,true);
     }
 
     void DrawTitleBar() {
@@ -2086,6 +2217,7 @@ private:
     std::wstring filenameText_;
     std::wstring error_;
     std::wstring rotationDiagnosticDetail_;
+    std::wstring feedbackText_ = L"Copied to Clipboard";
     std::vector<fs::path> navigationFiles_;
     D2D1_POINT_2F pan_ = D2D1::Point2F();
     POINT lastDragPoint_{};
@@ -2115,6 +2247,9 @@ private:
     std::vector<OpenWithHandler> openWithHandlers_;
     bool copyFeedbackActive_ = false;
     ULONGLONG copyFeedbackStart_ = 0;
+    ButtonKind hoveredButton_ = ButtonKind::None;
+    ButtonKind pressedButton_ = ButtonKind::None;
+    bool resetInProgress_ = false;
     LONG_PTR fullscreenStyle_ = 0;
     RECT fullscreenRect_{};
 };
@@ -2241,16 +2376,20 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->HasOverlay()) {
+            const ButtonKind button = viewer->ButtonAt(point);
+            if (button != ButtonKind::None) { viewer->SetButtonPressed(button); SetCapture(window); return 0; }
             if (viewer->SettingsCheckboxContains(point)) { viewer->ToggleIncludeHiddenImages(); return 0; }
             if (!viewer->OverlayContains(point)) viewer->DismissOverlay();
             return 0;
         }
         const FrameMetrics frame = GetFrameMetrics(window);
-        if (PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
+        const ButtonKind button = viewer->ButtonAt(point);
+        if (button != ButtonKind::None) {
+            viewer->SetButtonPressed(button);
+            SetCapture(window);
+        } else if (PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
             viewer->SetHamburgerPressed(true);
             SetCapture(window);
-        } else if (viewer->EmptyOpenFileButtonContains(point)) {
-            viewer->OpenFile();
         } else {
             viewer->BeginPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         }
@@ -2283,19 +2422,30 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->HasOverlay()) {
+            viewer->SetButtonHover(viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }));
             viewer->SetHamburgerHover(false);
             return 0;
         }
         const FrameMetrics frame = GetFrameMetrics(window);
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        viewer->SetButtonHover(viewer->ButtonAt(point));
         viewer->SetHamburgerHover(!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point));
         TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE, window, 0 };
         TrackMouseEvent(&track);
-        if (!viewer->HamburgerPressed()) viewer->PanTo(point);
+        if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) viewer->PanTo(point);
         return 0;
     }
-    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
+    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
     case WM_LBUTTONUP: {
+        if (viewer->PressedButton() != ButtonKind::None) {
+            const ButtonKind pressed = viewer->PressedButton();
+            const ButtonKind released = viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            viewer->ClearButtonPressed();
+            if (GetCapture() == window) ReleaseCapture();
+            viewer->SetButtonHover(released);
+            if (pressed == released) viewer->InvokeButton(pressed);
+            return 0;
+        }
         if (viewer->PressedContextAction() != ContextAction::None) {
             const ContextAction pressed = viewer->PressedContextAction();
             const ContextAction released = viewer->ContextActionAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
@@ -2331,7 +2481,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->ClearCaptionButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: viewer->OpenContextMenu({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
     case WM_TIMER: if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; } break;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;

@@ -1,10 +1,10 @@
 #include <windows.h>
 
-#define IDI_FEATHERVIEW 101
-#define IDR_FEATHERVIEW_LOGO 102
+#define IDI_VIEWTRIOUS 101
+#define IDR_VIEWTRIOUS_LOGO 102
 
-IDI_FEATHERVIEW ICON "FeatherView.ico"
-IDR_FEATHERVIEW_LOGO RCDATA "FeatherViewLogo.png"
+IDI_VIEWTRIOUS ICON "Viewtrious.ico"
+IDR_VIEWTRIOUS_LOGO RCDATA "ViewtriousLogo.png"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION @PROJECT_VERSION_COMMAS@
@@ -23,12 +23,12 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName", "FeatherView"
-            VALUE "FileDescription", "FeatherView"
+            VALUE "CompanyName", "Viewtrious"
+            VALUE "FileDescription", "Viewtrious"
             VALUE "FileVersion", "@PROJECT_VERSION@"
-            VALUE "InternalName", "FeatherView"
-            VALUE "OriginalFilename", "FeatherView.exe"
-            VALUE "ProductName", "FeatherView"
+            VALUE "InternalName", "Viewtrious"
+            VALUE "OriginalFilename", "Viewtrious.exe"
+            VALUE "ProductName", "Viewtrious"
             VALUE "ProductVersion", "@PROJECT_VERSION@"
         END
     END

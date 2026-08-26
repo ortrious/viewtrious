@@ -33,8 +33,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr wchar_t kWindowClass[] = L"FeatherViewWindow";
-constexpr wchar_t kWindowTitle[] = L"FeatherView";
+constexpr wchar_t kWindowClass[] = L"ViewtriousWindow";
+constexpr wchar_t kWindowTitle[] = L"Viewtrious";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
 constexpr int kContextMenuRowCount = 8;
@@ -42,7 +42,7 @@ constexpr int kContextMenuSeparatorCount = 3;
 constexpr int kContextMenuPaddingDip = 8;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kZoomStep = 1.20f;
-constexpr wchar_t kSettingsKey[] = L"Software\\FeatherView";
+constexpr wchar_t kSettingsKey[] = L"Software\\Viewtrious";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
@@ -57,7 +57,7 @@ constexpr ShortcutEntry kShortcutEntries[] = {
     { L"+ / =", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
     { L"Left mouse drag", L"Pan" }, { L"Double-click image", L"Toggle fullscreen" }, { L"F11", L"Toggle fullscreen" },
     { L"Ctrl+C", L"Copy image" }, { L"Ctrl+P", L"Print" }, { L"Delete", L"Move image to Recycle Bin" },
-    { L"Esc", L"Exit fullscreen, or close FeatherView" },
+    { L"Esc", L"Exit fullscreen, or close Viewtrious" },
 };
 constexpr size_t kShortcutEntryCount = sizeof(kShortcutEntries) / sizeof(kShortcutEntries[0]);
 
@@ -72,7 +72,7 @@ public:
         const double elapsedMs = 1000.0 * static_cast<double>(now.QuadPart - start_.QuadPart) /
             static_cast<double>(frequency_.QuadPart);
         wchar_t message[160]{};
-        swprintf_s(message, L"FeatherView startup: %s: %.2f ms\n", label, elapsedMs);
+        swprintf_s(message, L"Viewtrious startup: %s: %.2f ms\n", label, elapsedMs);
         OutputDebugStringW(message);
     }
 
@@ -293,7 +293,7 @@ public:
             return hr;
         }
         if (!path.empty()) return LoadImage(path);
-        error_ = L"Drop an image here, or launch FeatherView with an image path.";
+        error_ = L"Drop an image here, or launch Viewtrious with an image path.";
         return S_OK;
     }
 
@@ -814,9 +814,9 @@ private:
         const UINT stride = imageWidth_ * 4;
         const size_t pixelBytes = static_cast<size_t>(stride) * imageHeight_;
         HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPV5HEADER) + pixelBytes);
-        if (!memory) { ShowActionError(L"FeatherView could not allocate clipboard memory."); return; }
+        if (!memory) { ShowActionError(L"Viewtrious could not allocate clipboard memory."); return; }
         auto* header = static_cast<BITMAPV5HEADER*>(GlobalLock(memory));
-        if (!header) { GlobalFree(memory); ShowActionError(L"FeatherView could not access clipboard memory."); return; }
+        if (!header) { GlobalFree(memory); ShowActionError(L"Viewtrious could not access clipboard memory."); return; }
         *header = {};
         header->bV5Size = sizeof(BITMAPV5HEADER);
         header->bV5Width = static_cast<LONG>(imageWidth_);
@@ -827,10 +827,10 @@ private:
         header->bV5BlueMask = 0x000000FF; header->bV5AlphaMask = 0xFF000000; header->bV5CSType = LCS_sRGB;
         const HRESULT copy = source_->CopyPixels(nullptr, stride, static_cast<UINT>(pixelBytes), reinterpret_cast<BYTE*>(header + 1));
         GlobalUnlock(memory);
-        if (FAILED(copy)) { GlobalFree(memory); ShowActionError(L"FeatherView could not copy this image to the clipboard."); return; }
+        if (FAILED(copy)) { GlobalFree(memory); ShowActionError(L"Viewtrious could not copy this image to the clipboard."); return; }
         if (!OpenClipboard(window_)) { GlobalFree(memory); ShowActionError(L"The clipboard is currently unavailable."); return; }
         EmptyClipboard();
-        if (!SetClipboardData(CF_DIBV5, memory)) { CloseClipboard(); GlobalFree(memory); ShowActionError(L"FeatherView could not publish the image to the clipboard."); return; }
+        if (!SetClipboardData(CF_DIBV5, memory)) { CloseClipboard(); GlobalFree(memory); ShowActionError(L"Viewtrious could not publish the image to the clipboard."); return; }
         CloseClipboard();
         StartCopyFeedback();
     }
@@ -880,7 +880,7 @@ private:
     void LogRotationStage(const wchar_t* stage, HRESULT hr, DWORD win32Error = ERROR_SUCCESS) const {
         if (SUCCEEDED(hr)) return;
         wchar_t text[320]{};
-        swprintf_s(text, L"FeatherView image rotation [%s]: HRESULT=0x%08X, Win32=%lu\n", stage,
+        swprintf_s(text, L"Viewtrious image rotation [%s]: HRESULT=0x%08X, Win32=%lu\n", stage,
             static_cast<unsigned int>(hr), win32Error);
         OutputDebugStringW(text);
     }
@@ -897,11 +897,11 @@ private:
         HANDLE probe = CreateFileW(currentPath_.c_str(), GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (probe == INVALID_HANDLE_VALUE) {
-            LogRotationStage(L"sharing probe after FeatherView WIC release: external incompatible handle", HRESULT_FROM_WIN32(GetLastError()), GetLastError());
+            LogRotationStage(L"sharing probe after Viewtrious WIC release: external incompatible handle", HRESULT_FROM_WIN32(GetLastError()), GetLastError());
             return;
         }
         CloseHandle(probe);
-        LogRotationStage(L"sharing probe after FeatherView WIC release: source is externally writable; Shell property-store-specific conflict", S_OK);
+        LogRotationStage(L"sharing probe after Viewtrious WIC release: source is externally writable; Shell property-store-specific conflict", S_OK);
     }
 
     HRESULT RotateJpeg(bool clockwise, const wchar_t*& failedStage, DWORD& failedWin32Error) {
@@ -1286,7 +1286,7 @@ private:
         if (FAILED(hr)) {
             if (IsJpegPath(currentPath_) || IsPngPath(currentPath_))
                 ShowRotationFailure(failedStage ? failedStage : L"unknown rotation stage", hr, failedWin32Error);
-            else ShowActionError(L"FeatherView could not safely rotate this image. The original file was not replaced.");
+            else ShowActionError(L"Viewtrious could not safely rotate this image. The original file was not replaced.");
             return;
         }
         const HRESULT reload = ReloadCurrentImage();
@@ -1299,7 +1299,7 @@ private:
         currentPath_.clear(); resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
-        error_ = L"Drop an image here, or launch FeatherView with an image path.";
+        error_ = L"Drop an image here, or launch Viewtrious with an image path.";
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -1362,7 +1362,7 @@ private:
             CommitImage(currentPath_, source, width, height, false);
             InvalidateRect(window_, nullptr, FALSE);
         } else {
-            ShowActionError(L"The image was changed, but FeatherView could not reload it.");
+            ShowActionError(L"The image was changed, but Viewtrious could not reload it.");
         }
         return hr;
     }
@@ -1632,7 +1632,7 @@ private:
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) return false;
         ComPtr<IWICBitmapSource> source;
         UINT width = 0, height = 0;
-        if (FAILED(DecodeImage((fs::path(modulePath).parent_path() / L"FeatherViewLogo.png").wstring(), source, width, height))) return false;
+        if (FAILED(DecodeImage((fs::path(modulePath).parent_path() / L"ViewtriousLogo.png").wstring(), source, width, height))) return false;
         return SUCCEEDED(renderTarget_->CreateBitmapFromWicBitmap(source.Get(), nullptr, &aboutLogo_));
     }
 
@@ -1689,9 +1689,9 @@ private:
                 logoBottom = logoTop + logoHeight;
             }
             const float titleTop = logoBottom + 16.0f * dpiScale;
-            DrawOverlayText(L"FeatherView", left, titleTop, contentWidth, 26.0f * dpiScale,
+            DrawOverlayText(L"Viewtrious", left, titleTop, contentWidth, 26.0f * dpiScale,
                 18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, true);
-            DrawOverlayText(L"Version " FEATHERVIEW_VERSION, left, titleTop + 31.0f * dpiScale, contentWidth, 20.0f * dpiScale,
+            DrawOverlayText(L"Version " VIEWTRIOUS_VERSION, left, titleTop + 31.0f * dpiScale, contentWidth, 20.0f * dpiScale,
                 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
             DrawOverlayText(L"Extremely lightweight image viewer", left, static_cast<float>(bounds.bottom) - panelPadding - 18.0f * dpiScale,
                 contentWidth, 18.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);

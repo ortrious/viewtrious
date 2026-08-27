@@ -37,7 +37,8 @@ constexpr wchar_t kWindowClass[] = L"ViewtriousWindow";
 constexpr wchar_t kWindowTitle[] = L"Viewtrious";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
-constexpr int kContextMenuRowCount = 9;
+constexpr int kLogoResourceId = 102;
+constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
 constexpr int kContextMenuPaddingDip = 8;
 constexpr float kMaximumZoom = 16.0f;
@@ -48,10 +49,10 @@ constexpr wchar_t kCapabilitiesPath[] = L"Software\\Viewtrious\\Capabilities";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
-enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, Welcome };
-enum class DropdownItem { None, OpenFile, Settings, KeyboardShortcuts, QuickTour, About, Close };
-enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, SetLockScreen, Delete };
-enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsReset, ResetCancel, ResetConfirm, WelcomeSecondary, WelcomePrimary, TutorialSkip, TutorialNext };
+enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, Welcome, Feedback };
+enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
+enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
+enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsReset, ResetCancel, ResetConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
@@ -64,6 +65,8 @@ constexpr ShortcutEntry kShortcutEntries[] = {
     { L"Esc", L"Exit fullscreen, or close Viewtrious" },
 };
 constexpr size_t kShortcutEntryCount = sizeof(kShortcutEntries) / sizeof(kShortcutEntries[0]);
+constexpr wchar_t kBugReportUrl[] = L"https://github.com/ortrious/Viewtrious/issues/new?template=bug_report.md";
+constexpr wchar_t kFeatureRequestUrl[] = L"https://github.com/ortrious/Viewtrious/issues/new?template=feature_request.md";
 
 #if defined(_DEBUG)
 class StartupTimer {
@@ -402,10 +405,23 @@ public:
         const RECT bounds = GetDropdownBounds();
         if (!PtInRect(&bounds, point)) return DropdownItem::None;
         const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
-        const int top = bounds.top + MulDiv(4, GetDpiForWindow(window_), 96);
-        const int index = (point.y - top) / rowHeight;
-        if (point.y < top || index < 0 || index > 5) return DropdownItem::None;
-        return static_cast<DropdownItem>(index + 1);
+        int top = bounds.top + MulDiv(4, GetDpiForWindow(window_), 96);
+        const int separatorGap = MulDiv(9, GetDpiForWindow(window_), 96);
+        const auto hit = [&](DropdownItem item) {
+            const bool contains = point.y >= top && point.y < top + rowHeight;
+            top += rowHeight;
+            return contains ? item : DropdownItem::None;
+        };
+        DropdownItem item = hit(DropdownItem::OpenFile); if (item != DropdownItem::None) return item;
+        item = hit(DropdownItem::Settings); if (item != DropdownItem::None) return item;
+        top += separatorGap;
+        item = hit(DropdownItem::QuickTour); if (item != DropdownItem::None) return item;
+        item = hit(DropdownItem::KeyboardShortcuts); if (item != DropdownItem::None) return item;
+        top += separatorGap;
+        item = hit(DropdownItem::About); if (item != DropdownItem::None) return item;
+        item = hit(DropdownItem::Feedback); if (item != DropdownItem::None) return item;
+        top += separatorGap;
+        return hit(DropdownItem::Close);
     }
     void SetDropdownHover(DropdownItem item) {
         if (dropdownHovered_ == item) return;
@@ -427,9 +443,10 @@ public:
         DismissDropdown(!openingFile);
         if (openingFile) OpenFile();
         else if (item == DropdownItem::Settings) ShowOverlay(OverlayKind::Settings);
-        else if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
         else if (item == DropdownItem::QuickTour) StartTutorial();
+        else if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
         else if (item == DropdownItem::About) ShowOverlay(OverlayKind::About);
+        else if (item == DropdownItem::Feedback) ShowOverlay(OverlayKind::Feedback);
         else if (item == DropdownItem::Close) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
     }
     void OpenFile() {
@@ -495,7 +512,6 @@ public:
         action = hit(ContextAction::Print); if (action != ContextAction::None) return action;
         top += separatorGap;
         action = hit(ContextAction::SetBackground); if (action != ContextAction::None) return action;
-        action = hit(ContextAction::SetLockScreen); if (action != ContextAction::None) return action;
         top += separatorGap;
         return hit(ContextAction::Delete);
     }
@@ -674,6 +690,17 @@ public:
         const RECT button = GetWelcomeButtonBounds(primary);
         return overlay_ == OverlayKind::Welcome && PtInRect(&button, point);
     }
+    RECT GetFeedbackActionBounds(bool feature) const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int padding = MulDiv(24, dpi, 96);
+        const int top = bounds.top + padding + MulDiv(feature ? 174 : 92, dpi, 96);
+        return { bounds.left + padding, top, bounds.right - padding, top + MulDiv(64, dpi, 96) };
+    }
+    bool FeedbackActionContains(POINT point, bool feature) const {
+        const RECT button = GetFeedbackActionBounds(feature);
+        return overlay_ == OverlayKind::Feedback && PtInRect(&button, point);
+    }
     bool CanvasNavigationButtonsVisible() const {
         return source_ && !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
     }
@@ -702,6 +729,8 @@ public:
         if (ResetConfirmationButtonContains(point, true)) return ButtonKind::ResetConfirm;
         if (WelcomeButtonContains(point, false)) return ButtonKind::WelcomeSecondary;
         if (WelcomeButtonContains(point, true)) return ButtonKind::WelcomePrimary;
+        if (FeedbackActionContains(point, false)) return ButtonKind::FeedbackBug;
+        if (FeedbackActionContains(point, true)) return ButtonKind::FeedbackFeature;
         return ButtonKind::None;
     }
     void SetButtonHover(ButtonKind button) {
@@ -734,6 +763,12 @@ public:
             if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
             if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
             CompleteWelcome(true);
+        }
+        else if (button == ButtonKind::FeedbackBug || button == ButtonKind::FeedbackFeature) {
+            DismissOverlay();
+            const wchar_t* url = button == ButtonKind::FeedbackBug ? kBugReportUrl : kFeatureRequestUrl;
+            if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", url, nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
+                ShowActionError(L"Viewtrious couldn't open the feedback page.");
         }
         else if (button == ButtonKind::TutorialSkip) StopTutorial();
         else if (button == ButtonKind::TutorialNext) AdvanceTutorial();
@@ -1851,7 +1886,7 @@ private:
         const FrameMetrics frame = GetFrameMetrics(window_);
         const LONG margin = MulDiv(4, dpi, 96);
         const LONG width = std::min<LONG>(MulDiv(236, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
-        const LONG height = MulDiv(236, dpi, 96);
+        const LONG height = MulDiv(301, dpi, 96);
         const LONG left = std::clamp<LONG>(frame.hamburger.left + margin, margin,
             std::max<LONG>(margin, client.right - width - margin));
         const LONG top = frame.hamburger.bottom + margin;
@@ -2172,11 +2207,11 @@ private:
         const int rowHeight = GetShortcutRowHeight();
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
             overlay_ == OverlayKind::Settings ? 560 : overlay_ == OverlayKind::ResetConfirm ? 500 :
-            overlay_ == OverlayKind::Welcome ? 640 : 608, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
         const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(340, dpi, 96) : MulDiv(319, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(340, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -2205,11 +2240,26 @@ private:
 
     bool EnsureAboutLogo() {
         if (aboutLogo_) return true;
-        wchar_t modulePath[MAX_PATH]{};
-        if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) return false;
+        const HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(kLogoResourceId), RT_RCDATA);
+        if (!resource) return false;
+        const DWORD size = SizeofResource(nullptr, resource);
+        const HGLOBAL loadedResource = LoadResource(nullptr, resource);
+        const void* bytes = loadedResource ? LockResource(loadedResource) : nullptr;
+        if (!bytes || size == 0) return false;
+        ComPtr<IWICStream> stream;
+        ComPtr<IWICBitmapDecoder> decoder;
+        ComPtr<IWICBitmapFrameDecode> frame;
+        ComPtr<IWICFormatConverter> converter;
         ComPtr<IWICBitmapSource> source;
-        UINT width = 0, height = 0;
-        if (FAILED(DecodeImage((fs::path(modulePath).parent_path() / L"ViewtriousLogo.png").wstring(), source, width, height))) return false;
+        HRESULT hr = wicFactory_->CreateStream(&stream);
+        if (SUCCEEDED(hr)) hr = stream->InitializeFromMemory(reinterpret_cast<BYTE*>(const_cast<void*>(bytes)), size);
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder);
+        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateFormatConverter(&converter);
+        if (SUCCEEDED(hr)) hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+        if (SUCCEEDED(hr)) source = converter;
+        if (FAILED(hr)) return false;
         return SUCCEEDED(renderTarget_->CreateBitmapFromWicBitmap(source.Get(), nullptr, &aboutLogo_));
     }
 
@@ -2419,6 +2469,24 @@ private:
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             DrawOverlayText(L"Reset", reset.left, reset.top, reset.right - reset.left, reset.bottom - reset.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+        } else if (overlay_ == OverlayKind::Feedback) {
+            DrawOverlayText(L"Feedback", left, static_cast<float>(bounds.top) + panelPadding, contentWidth, 34.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            DrawOverlayText(L"Help make Viewtrious better.", left, static_cast<float>(bounds.top) + panelPadding + 42.0f * dpiScale, contentWidth, 26.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            ComPtr<ID2D1SolidColorBrush> actionHover, actionPressed;
+            if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255), &actionHover)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f / 255, 80.f / 255, 92.f / 255), &actionPressed))) return;
+            const auto drawAction = [&](bool feature, const wchar_t* title, const wchar_t* detail) {
+                const ButtonKind button = feature ? ButtonKind::FeedbackFeature : ButtonKind::FeedbackBug;
+                const RECT buttonBounds = GetFeedbackActionBounds(feature);
+                const D2D1_RECT_F action = D2D1::RectF(static_cast<float>(buttonBounds.left), static_cast<float>(buttonBounds.top), static_cast<float>(buttonBounds.right), static_cast<float>(buttonBounds.bottom));
+                if (pressedButton_ == button) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(action, 5.0f * dpiScale, 5.0f * dpiScale), actionPressed.Get());
+                else if (hoveredButton_ == button) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(action, 5.0f * dpiScale, 5.0f * dpiScale), actionHover.Get());
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(action, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
+                DrawOverlayText(title, action.left + 16.0f * dpiScale, action.top + 6.0f * dpiScale, action.right - action.left - 32.0f * dpiScale, 27.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
+                DrawOverlayText(detail, action.left + 16.0f * dpiScale, action.top + 35.0f * dpiScale, action.right - action.left - 32.0f * dpiScale, 23.0f * dpiScale, 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), true);
+            };
+            drawAction(false, L"Report a bug", L"Something isn't working correctly.");
+            drawAction(true, L"Suggest a feature", L"Have an idea for Viewtrious?");
+            DrawOverlayText(L"Opens GitHub in your web browser.", left, static_cast<float>(bounds.bottom) - panelPadding - 20.0f * dpiScale, contentWidth, 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         } else {
             float logoBottom = static_cast<float>(bounds.top) + panelPadding;
             if (EnsureAboutLogo()) {
@@ -2475,12 +2543,23 @@ private:
                 static_cast<float>(bounds.right - bounds.left - MulDiv(28, dpi, 96)), static_cast<float>(rowHeight),
                 13.0f, DWRITE_FONT_WEIGHT_NORMAL, textBrush.Get(), true);
         };
-        drawItem(DropdownItem::OpenFile, firstTop, L"Open File...");
-        drawItem(DropdownItem::Settings, firstTop + rowHeight, L"Settings");
-        drawItem(DropdownItem::KeyboardShortcuts, firstTop + rowHeight * 2, L"Keyboard Shortcuts");
-        drawItem(DropdownItem::QuickTour, firstTop + rowHeight * 3, L"Quick Tour");
-        drawItem(DropdownItem::About, firstTop + rowHeight * 4, L"About");
-        drawItem(DropdownItem::Close, firstTop + rowHeight * 5, L"Close");
+        const int separatorGap = MulDiv(9, dpi, 96);
+        int top = firstTop;
+        const auto separator = [&] {
+            const float y = static_cast<float>(top + separatorGap / 2);
+            renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(bounds.left + MulDiv(12, dpi, 96)), y), D2D1::Point2F(static_cast<float>(bounds.right - MulDiv(12, dpi, 96)), y), borderBrush.Get());
+            top += separatorGap;
+        };
+        drawItem(DropdownItem::OpenFile, top, L"Open File..."); top += rowHeight;
+        drawItem(DropdownItem::Settings, top, L"Settings"); top += rowHeight;
+        separator();
+        drawItem(DropdownItem::QuickTour, top, L"Quick Tutorial"); top += rowHeight;
+        drawItem(DropdownItem::KeyboardShortcuts, top, L"Keyboard Shortcuts"); top += rowHeight;
+        separator();
+        drawItem(DropdownItem::About, top, L"About"); top += rowHeight;
+        drawItem(DropdownItem::Feedback, top, L"Feedback"); top += rowHeight;
+        separator();
+        drawItem(DropdownItem::Close, top, L"Close");
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 
@@ -2507,7 +2586,8 @@ private:
             const D2D1_RECT_F row = D2D1::RectF(static_cast<float>(bounds.left + 1), static_cast<float>(top), static_cast<float>(bounds.right - 1), static_cast<float>(top + rowHeight));
             if (enabled && contextPressed_ == action) renderTarget_->FillRectangle(row, pressedBrush.Get());
             else if (enabled && contextHovered_ == action) renderTarget_->FillRectangle(row, hoverBrush.Get());
-            DrawOverlayText(label, static_cast<float>(bounds.left + MulDiv(14, dpi, 96)), static_cast<float>(top), static_cast<float>(bounds.right - bounds.left - MulDiv(28, dpi, 96)),
+            const int rightPadding = action == ContextAction::OpenWith ? MulDiv(48, dpi, 96) : MulDiv(28, dpi, 96);
+            DrawOverlayText(label, static_cast<float>(bounds.left + MulDiv(14, dpi, 96)), static_cast<float>(top), static_cast<float>(bounds.right - bounds.left - rightPadding),
                 static_cast<float>(rowHeight), 13.0f, DWRITE_FONT_WEIGHT_NORMAL, enabled ? textBrush.Get() : disabledBrush.Get(), true);
             top += rowHeight;
         };
@@ -2518,8 +2598,12 @@ private:
         };
         drawItem(ContextAction::Fullscreen, fullscreen_ ? L"Exit Fullscreen" : L"Fullscreen"); separator();
         drawItem(ContextAction::RotateLeft, L"Rotate Left"); drawItem(ContextAction::RotateRight, L"Rotate Right"); separator();
-        drawItem(ContextAction::OpenWith, L"Open With  >"); drawItem(ContextAction::Copy, L"Copy"); drawItem(ContextAction::Print, L"Print"); separator();
-        drawItem(ContextAction::SetBackground, L"Set as Desktop Background"); drawItem(ContextAction::SetLockScreen, L"Set as Lock Screen"); separator(); drawItem(ContextAction::Delete, L"Delete");
+        const int openWithTop = top;
+        drawItem(ContextAction::OpenWith, L"Open With");
+        DrawOverlayText(L">", static_cast<float>(bounds.right - MulDiv(28, dpi, 96)), static_cast<float>(openWithTop), static_cast<float>(MulDiv(16, dpi, 96)),
+            static_cast<float>(rowHeight), 14.0f, DWRITE_FONT_WEIGHT_NORMAL, ContextActionEnabled(ContextAction::OpenWith) ? textBrush.Get() : disabledBrush.Get(), true, true);
+        drawItem(ContextAction::Copy, L"Copy"); drawItem(ContextAction::Print, L"Print"); separator();
+        drawItem(ContextAction::SetBackground, L"Set as Desktop Background"); separator(); drawItem(ContextAction::Delete, L"Delete");
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 

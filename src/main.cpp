@@ -798,10 +798,11 @@ public:
         const int secondaryWidth = MulDiv(92, dpi, 96);
         const int height = MulDiv(36, dpi, 96);
         const int gap = MulDiv(10, dpi, 96);
-        const int right = bounds.right - MulDiv(24, dpi, 96);
-        const int top = bounds.bottom - MulDiv(22, dpi, 96) - height;
-        if (primary) return { right - primaryWidth, top, right, top + height };
-        return { right - primaryWidth - gap - secondaryWidth, top, right - primaryWidth - gap, top + height };
+        const int groupWidth = secondaryWidth + gap + primaryWidth;
+        const int left = bounds.left + (bounds.right - bounds.left - groupWidth) / 2;
+        const int top = bounds.bottom - MulDiv(32, dpi, 96) - height;
+        if (primary) return { left + secondaryWidth + gap, top, left + groupWidth, top + height };
+        return { left, top, left + secondaryWidth, top + height };
     }
     bool WelcomeButtonContains(POINT point, bool primary) const {
         const RECT button = GetWelcomeButtonBounds(primary);
@@ -2463,7 +2464,7 @@ private:
         const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(500, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(340, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -2597,7 +2598,7 @@ private:
         if (overlay_ == OverlayKind::Welcome) {
             if (EnsureAboutLogo()) {
                 const D2D1_SIZE_F logoSource = aboutLogo_->GetSize();
-                const float logoWidth = std::min(240.0f * dpiScale, contentWidth);
+                const float logoWidth = std::min(216.0f * dpiScale, contentWidth);
                 const float logoHeight = logoWidth * logoSource.height / logoSource.width;
                 const float logoLeft = static_cast<float>(bounds.left) + (static_cast<float>(bounds.right - bounds.left) - logoWidth) / 2.0f;
                 const float logoTop = static_cast<float>(bounds.top) + 24.0f * dpiScale;
@@ -2608,9 +2609,6 @@ private:
             DrawOverlayText(L"Windows will open Default Apps so you can choose which image formats Viewtrious should open.", left,
                 static_cast<float>(bounds.top) + 170.0f * dpiScale, contentWidth, 44.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
-            DrawOverlayText(L"You can change this anytime in Windows Settings.", left,
-                static_cast<float>(bounds.top) + 220.0f * dpiScale, contentWidth, 20.0f * dpiScale,
-                14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
             const RECT secondaryBounds = GetWelcomeButtonBounds(false), primaryBounds = GetWelcomeButtonBounds(true);
             const D2D1_RECT_F secondaryButton = D2D1::RectF(static_cast<float>(secondaryBounds.left), static_cast<float>(secondaryBounds.top),
                 static_cast<float>(secondaryBounds.right), static_cast<float>(secondaryBounds.bottom));

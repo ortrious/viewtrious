@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "d2d1.lib")
@@ -36,32 +37,41 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"ViewtriousWindow";
 constexpr wchar_t kWindowTitle[] = L"Viewtrious";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
+constexpr UINT kPopulateFilmstripMessage = WM_APP + 2;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
 constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
+constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr int kLogoResourceId = 102;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
 constexpr int kContextMenuPaddingDip = 8;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kZoomStep = 1.20f;
+constexpr float kWheelZoomStep = 1.11f;
 constexpr wchar_t kSettingsKey[] = L"Software\\Viewtrious";
 constexpr wchar_t kRegisteredApplicationName[] = L"Viewtrious";
 constexpr wchar_t kCapabilitiesPath[] = L"Software\\Viewtrious\\Capabilities";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
-enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, Feedback };
+enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    FeedbackFeature, TutorialSkip, TutorialNext };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
+enum class FilmstripVisibilityState { Hidden, Revealing, Holding, Fading };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
+struct FilmstripThumbnail {
+    fs::path path;
+    ComPtr<IWICBitmapSource> source;
+    ComPtr<ID2D1Bitmap> bitmap;
+};
 constexpr ShortcutEntry kShortcutEntries[] = {
     { L"Ctrl+O", L"Open file" }, { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom in/out" },
     { L"+", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
@@ -392,7 +402,13 @@ public:
             fileSizeText_ = FormatFileSize(path);
             filenameText_ = fs::path(path).filename().wstring();
             navigationFiles_.clear();
+            thumbnailCache_.clear();
+            filmstripThumbnailAspects_.clear();
+            filmstripItemWidths_.clear();
+            filmstripItemOffsets_.clear();
+            filmstripScroll_ = 0.0f;
             navigationBuilt_ = false;
+            filmstripPopulateQueued_ = false;
             error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
         }
         return hr;
@@ -404,7 +420,7 @@ public:
         if (!onboardingRequired_) return;
         overlay_ = OverlayKind::Welcome;
     }
-    bool WelcomeOpen() const { return overlay_ == OverlayKind::Welcome; }
+    bool WelcomeOpen() const { return overlay_ == OverlayKind::Welcome || overlay_ == OverlayKind::DefaultAppsHelper; }
     bool IsFullscreen() const { return fullscreen_; }
     void SetCaptionButtonHover(CaptionButton button) {
         if (hoveredCaptionButton_ == button) return;
@@ -712,8 +728,14 @@ public:
         includeHiddenImages_ = !includeHiddenImages_;
         WriteSetting(L"IncludeHiddenImages", includeHiddenImages_ ? 1 : 0);
         navigationFiles_.clear();
+        thumbnailCache_.clear();
+        filmstripThumbnailAspects_.clear();
+        filmstripItemWidths_.clear();
+        filmstripItemOffsets_.clear();
+        filmstripScroll_ = 0.0f;
         navigationBuilt_ = false;
         navigationBuildQueued_ = false;
+        filmstripPopulateQueued_ = false;
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleRememberWindowPlacement() {
@@ -808,6 +830,20 @@ public:
         const RECT button = GetWelcomeButtonBounds(primary);
         return overlay_ == OverlayKind::Welcome && PtInRect(&button, point);
     }
+    RECT GetDefaultAppsHelperButtonBounds(bool open) const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int openWidth = MulDiv(166, dpi, 96), cancelWidth = MulDiv(92, dpi, 96);
+        const int height = MulDiv(36, dpi, 96), gap = MulDiv(10, dpi, 96);
+        const int groupWidth = cancelWidth + gap + openWidth;
+        const int left = bounds.left + (bounds.right - bounds.left - groupWidth) / 2;
+        const int top = bounds.bottom - MulDiv(24, dpi, 96) - height;
+        return open ? RECT{ left + cancelWidth + gap, top, left + groupWidth, top + height } : RECT{ left, top, left + cancelWidth, top + height };
+    }
+    bool DefaultAppsHelperButtonContains(POINT point, bool open) const {
+        const RECT button = GetDefaultAppsHelperButtonBounds(open);
+        return overlay_ == OverlayKind::DefaultAppsHelper && PtInRect(&button, point);
+    }
     RECT GetFeedbackActionBounds(bool feature) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
@@ -822,6 +858,239 @@ public:
     bool CanvasNavigationButtonsVisible() const {
         return source_ && navigationBuilt_ && navigationFiles_.size() > 1 &&
             !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
+    }
+    bool FilmstripEligible() const { return source_ && navigationBuilt_ && navigationFiles_.size() > 1 && !HasOverlay() && !TutorialActive(); }
+    bool FilmstripVisible() const { return FilmstripEligible() && filmstripOpacity_ > 0.001f; }
+    int FilmstripHeight() const {
+        if (!FilmstripEligible()) return 0;
+        RECT client{};
+        GetClientRect(window_, &client);
+        const UINT dpi = GetDpiForWindow(window_);
+        const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
+        return client.bottom - canvasTop < MulDiv(560, dpi, 96) ? MulDiv(96, dpi, 96) : MulDiv(112, dpi, 96);
+    }
+    int FilmstripThumbnailHeight() const { return std::min(MulDiv(92, GetDpiForWindow(window_), 96), FilmstripHeight() - MulDiv(20, GetDpiForWindow(window_), 96)); }
+    int FilmstripThumbnailMinimumWidth() const { return static_cast<int>(std::lround(FilmstripThumbnailHeight() * 2.0f / 3.0f)); }
+    int FilmstripThumbnailMaximumWidth() const { return static_cast<int>(std::lround(FilmstripThumbnailHeight() * 16.0f / 9.0f)); }
+    int FilmstripGap() const { return MulDiv(22, GetDpiForWindow(window_), 96); }
+    int FilmstripPadding() const { return MulDiv(14, GetDpiForWindow(window_), 96); }
+    RECT GetFilmstripBounds() const {
+        RECT client{};
+        GetClientRect(window_, &client);
+        const int height = FilmstripHeight();
+        if (height == 0) return {};
+        const int minimumWidth = MulDiv(180, GetDpiForWindow(window_), 96);
+        const int desiredMargin = MulDiv(150, GetDpiForWindow(window_), 96);
+        const int sideMargin = std::min(desiredMargin, std::max(MulDiv(16, GetDpiForWindow(window_), 96), (static_cast<int>(client.right) - minimumWidth) / 2));
+        const int width = std::max(minimumWidth, static_cast<int>(client.right) - sideMargin * 2);
+        const int left = (client.right - width) / 2;
+        const int bottomMargin = MulDiv(16, GetDpiForWindow(window_), 96);
+        return { left, client.bottom - bottomMargin - height, left + width, client.bottom - bottomMargin };
+    }
+    bool FilmstripContains(POINT point) const {
+        const RECT bounds = GetFilmstripBounds();
+        return FilmstripVisible() && bounds.right > bounds.left && PtInRect(&bounds, point);
+    }
+    float FilmstripThumbnailWidth(size_t index) const {
+        return index < filmstripItemWidths_.size() ? filmstripItemWidths_[index] : static_cast<float>(FilmstripThumbnailHeight());
+    }
+    float FilmstripMaximumScroll() const {
+        const RECT bounds = GetFilmstripBounds();
+        const float contentWidth = filmstripItemOffsets_.empty() ? 0.0f : filmstripItemOffsets_.back() - static_cast<float>(FilmstripGap()) + static_cast<float>(FilmstripPadding());
+        return std::max(0.0f, contentWidth - static_cast<float>(bounds.right - bounds.left));
+    }
+    size_t CurrentNavigationIndex() const {
+        const fs::path current(currentPath_);
+        const auto found = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&current](const fs::path& path) { return PathsEqual(path, current); });
+        return found == navigationFiles_.end() ? 0 : static_cast<size_t>(std::distance(navigationFiles_.begin(), found));
+    }
+    void RebuildFilmstripLayout() {
+        const size_t count = navigationFiles_.size();
+        filmstripThumbnailAspects_.resize(count, 1.0f);
+        filmstripItemWidths_.resize(count, static_cast<float>(FilmstripThumbnailHeight()));
+        filmstripItemOffsets_.resize(count + 1, static_cast<float>(FilmstripPadding()));
+        const float height = static_cast<float>(FilmstripThumbnailHeight());
+        const float minimum = static_cast<float>(FilmstripThumbnailMinimumWidth());
+        const float maximum = static_cast<float>(FilmstripThumbnailMaximumWidth());
+        const float gap = static_cast<float>(FilmstripGap());
+        float offset = static_cast<float>(FilmstripPadding());
+        for (size_t index = 0; index < count; ++index) {
+            filmstripItemOffsets_[index] = offset;
+            filmstripItemWidths_[index] = std::clamp(height * filmstripThumbnailAspects_[index], minimum, maximum);
+            offset += filmstripItemWidths_[index] + gap;
+        }
+        if (!filmstripItemOffsets_.empty()) filmstripItemOffsets_.back() = offset;
+        filmstripScroll_ = std::clamp(filmstripScroll_, 0.0f, FilmstripMaximumScroll());
+    }
+    std::pair<size_t, size_t> FilmstripVisibleRange() const {
+        if (navigationFiles_.empty() || filmstripItemOffsets_.empty()) return { 0, 0 };
+        const RECT bounds = GetFilmstripBounds();
+        const float visibleLeft = filmstripScroll_, visibleRight = visibleLeft + static_cast<float>(bounds.right - bounds.left);
+        const auto end = filmstripItemOffsets_.begin() + static_cast<ptrdiff_t>(navigationFiles_.size());
+        auto found = std::upper_bound(filmstripItemOffsets_.begin(), end, visibleLeft);
+        size_t first = found == filmstripItemOffsets_.begin() ? 0 : static_cast<size_t>(std::distance(filmstripItemOffsets_.begin(), found - 1));
+        while (first < navigationFiles_.size() && filmstripItemOffsets_[first] + FilmstripThumbnailWidth(first) < visibleLeft) ++first;
+        size_t last = first;
+        while (last < navigationFiles_.size() && filmstripItemOffsets_[last] <= visibleRight) ++last;
+        return { first, last };
+    }
+    void EnsureCurrentFilmstripVisible() {
+        if (!FilmstripEligible()) return;
+        const RECT bounds = GetFilmstripBounds();
+        const size_t current = CurrentNavigationIndex();
+        const float slotLeft = current < filmstripItemOffsets_.size() ? filmstripItemOffsets_[current] : static_cast<float>(FilmstripPadding());
+        const float slotRight = slotLeft + FilmstripThumbnailWidth(current);
+        const float visibleLeft = filmstripScroll_;
+        const float visibleRight = filmstripScroll_ + static_cast<float>(bounds.right - bounds.left);
+        if (slotLeft < visibleLeft) filmstripScroll_ = slotLeft;
+        else if (slotRight > visibleRight) filmstripScroll_ = slotRight - static_cast<float>(bounds.right - bounds.left);
+        filmstripScroll_ = std::clamp(filmstripScroll_, 0.0f, FilmstripMaximumScroll());
+    }
+    RECT GetFilmstripThumbnailBounds(size_t index) const {
+        const RECT strip = GetFilmstripBounds();
+        const float itemLeft = index < filmstripItemOffsets_.size() ? filmstripItemOffsets_[index] : static_cast<float>(FilmstripPadding());
+        const int left = strip.left + static_cast<int>(std::lround(itemLeft - filmstripScroll_));
+        const int height = FilmstripThumbnailHeight();
+        const int top = strip.top + (strip.bottom - strip.top - height) / 2;
+        return { left, top, left + static_cast<int>(std::lround(FilmstripThumbnailWidth(index))), top + height };
+    }
+    int FilmstripItemAt(POINT point) const {
+        if (!FilmstripContains(point)) return -1;
+        const auto [first, last] = FilmstripVisibleRange();
+        for (size_t index = first; index < last; ++index) {
+            const RECT bounds = GetFilmstripThumbnailBounds(index);
+            RECT hit = bounds;
+            InflateRect(&hit, MulDiv(5, GetDpiForWindow(window_), 96), MulDiv(4, GetDpiForWindow(window_), 96));
+            if (PtInRect(&hit, point)) return static_cast<int>(index);
+        }
+        return -1;
+    }
+    void ScrollFilmstrip(float delta) {
+        if (!FilmstripVisible()) return;
+        filmstripScroll_ = std::clamp(filmstripScroll_ + delta, 0.0f, FilmstripMaximumScroll());
+        StartFilmstripHold();
+        QueueFilmstripPopulate();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    RECT GetFilmstripRevealBounds() const {
+        RECT client{};
+        GetClientRect(window_, &client);
+        const UINT dpi = GetDpiForWindow(window_);
+        const int height = MulDiv(60, dpi, 96);
+        const int top = std::max(fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight, static_cast<int>(client.bottom) - height);
+        const RECT previous = GetCanvasNavigationZoneBounds(false);
+        const RECT next = GetCanvasNavigationZoneBounds(true);
+        return { previous.right, top, next.left, client.bottom };
+    }
+    bool FilmstripRevealContains(POINT point) const {
+        const RECT bounds = GetFilmstripRevealBounds();
+        return FilmstripEligible() && PtInRect(&bounds, point);
+    }
+    RECT GetFilmstripHintBounds() const {
+        const RECT strip = GetFilmstripBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(174, dpi, 96), height = MulDiv(28, dpi, 96), gap = MulDiv(7, dpi, 96);
+        const int left = strip.left + (strip.right - strip.left - width) / 2;
+        return { left, strip.top - gap - height, left + width, strip.top - gap };
+    }
+    bool FilmstripHintContains(POINT point) const {
+        const RECT bounds = GetFilmstripHintBounds();
+        return FilmstripVisible() && PtInRect(&bounds, point);
+    }
+    void StopFilmstripVisibilityTimer() { KillTimer(window_, kFilmstripVisibilityTimer); }
+    void StartFilmstripHold(UINT holdDurationMs = 2000) {
+        if (!FilmstripEligible()) return;
+        filmstripOpacity_ = 1.0f;
+        filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
+        filmstripHoldDurationMs_ = holdDurationMs;
+        filmstripVisibilityStart_ = GetTickCount64();
+        EnsureCurrentFilmstripVisible();
+        QueueFilmstripPopulate();
+        SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void StartFilmstripReveal() {
+        if (!FilmstripEligible()) return;
+        if (!animationsEnabled_) { StartFilmstripHold(); return; }
+        filmstripRevealStartOpacity_ = filmstripOpacity_;
+        filmstripVisibilityState_ = FilmstripVisibilityState::Revealing;
+        filmstripHoldDurationMs_ = 2000;
+        filmstripVisibilityStart_ = GetTickCount64();
+        EnsureCurrentFilmstripVisible();
+        QueueFilmstripPopulate();
+        SetTimer(window_, kFilmstripVisibilityTimer, 16, nullptr);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void BeginFilmstripFadeSequence() {
+        if (filmstripOpacity_ <= 0.001f) return;
+        if (filmstripVisibilityState_ == FilmstripVisibilityState::Revealing) return;
+        filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
+        filmstripHoldDurationMs_ = 2000;
+        filmstripVisibilityStart_ = GetTickCount64();
+        SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
+    }
+    void SetFilmstripPointerState(POINT point) {
+        const bool overPanel = FilmstripContains(point);
+        const bool overReveal = FilmstripRevealContains(point);
+        const bool overHint = FilmstripHintContains(point);
+        const bool wasHeld = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
+        filmstripPanelHovered_ = overPanel;
+        filmstripRevealHovered_ = overReveal;
+        filmstripHintHovered_ = overHint;
+        if ((overPanel || overReveal || overHint) && !wasHeld) StartFilmstripReveal();
+        else if (wasHeld) BeginFilmstripFadeSequence();
+    }
+    void UpdateFilmstripVisibility() {
+        if (!FilmstripEligible()) { filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); return; }
+        const bool held = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
+        const ULONGLONG elapsed = GetTickCount64() - filmstripVisibilityStart_;
+        float opacity = filmstripOpacity_;
+        if (filmstripVisibilityState_ == FilmstripVisibilityState::Revealing) {
+            opacity = animationsEnabled_ ? filmstripRevealStartOpacity_ + (1.0f - filmstripRevealStartOpacity_) * std::min(1.0f, static_cast<float>(elapsed) / 500.0f) : 1.0f;
+            if (!animationsEnabled_ || elapsed >= 500) {
+                filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
+                filmstripVisibilityStart_ = GetTickCount64();
+                if (held) StopFilmstripVisibilityTimer();
+            }
+        } else if (held) {
+            StopFilmstripVisibilityTimer();
+            return;
+        } else if (filmstripVisibilityState_ == FilmstripVisibilityState::Holding && elapsed >= filmstripHoldDurationMs_) {
+            if (!animationsEnabled_) opacity = 0.0f;
+            else {
+                filmstripVisibilityState_ = FilmstripVisibilityState::Fading;
+                filmstripVisibilityStart_ = GetTickCount64();
+            }
+        } else if (filmstripVisibilityState_ == FilmstripVisibilityState::Fading) {
+            opacity = animationsEnabled_ ? std::max(0.0f, 1.0f - static_cast<float>(elapsed) / 1000.0f) : 0.0f;
+        }
+        if (std::abs(opacity - filmstripOpacity_) > 0.001f) {
+            filmstripOpacity_ = opacity;
+            InvalidateRect(window_, nullptr, FALSE);
+        }
+        if (opacity <= 0.001f) { filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); }
+    }
+    void RevealFilmstripForNavigation() {
+        EnsureCurrentFilmstripVisible();
+        StartFilmstripHold();
+    }
+    void SelectFilmstripItem(int index) {
+        if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
+        const std::wstring path = navigationFiles_[index].wstring();
+        if (PathsEqual(fs::path(path), fs::path(currentPath_))) return;
+        ComPtr<IWICBitmapSource> source;
+        UINT width = 0, height = 0;
+        if (SUCCEEDED(DecodeImage(path, source, width, height))) {
+            CommitImage(path, source, width, height, false);
+            RevealFilmstripForNavigation();
+            InvalidateRect(window_, nullptr, FALSE);
+        }
+    }
+    void SetFilmstripHover(POINT point) {
+        const int index = FilmstripItemAt(point);
+        if (filmstripHoveredIndex_ == index) return;
+        filmstripHoveredIndex_ = index;
+        InvalidateRect(window_, nullptr, FALSE);
     }
     RECT GetCanvasNavigationZoneBounds(bool next) const {
         RECT client{};
@@ -864,6 +1133,8 @@ public:
         if (DeleteConfirmationButtonContains(point, true)) return ButtonKind::DeleteConfirm;
         if (WelcomeButtonContains(point, false)) return ButtonKind::WelcomeSecondary;
         if (WelcomeButtonContains(point, true)) return ButtonKind::WelcomePrimary;
+        if (DefaultAppsHelperButtonContains(point, false)) return ButtonKind::DefaultAppsHelperCancel;
+        if (DefaultAppsHelperButtonContains(point, true)) return ButtonKind::DefaultAppsHelperOpen;
         if (FeedbackActionContains(point, false)) return ButtonKind::FeedbackBug;
         if (FeedbackActionContains(point, true)) return ButtonKind::FeedbackFeature;
         return ButtonKind::None;
@@ -990,12 +1261,18 @@ public:
             DeleteImage();
         }
         else if (button == ButtonKind::WelcomeSecondary) CompleteWelcome(false);
-        else if (button == ButtonKind::WelcomePrimary) {
+        else if (button == ButtonKind::WelcomePrimary) ShowOverlay(OverlayKind::DefaultAppsHelper);
+        else if (button == ButtonKind::DefaultAppsHelperCancel) {
+            overlay_ = OverlayKind::Welcome;
+            InvalidateRect(window_, nullptr, FALSE);
+        }
+        else if (button == ButtonKind::DefaultAppsHelperOpen) {
+            overlay_ = OverlayKind::Welcome;
+            CompleteWelcome(true);
             INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
                 L"ms-settings:defaultapps?registeredAppUser=Viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
             if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
             if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
-            CompleteWelcome(true);
         }
         else if (button == ButtonKind::FeedbackBug || button == ButtonKind::FeedbackFeature) {
             DismissOverlay();
@@ -1081,7 +1358,7 @@ public:
             renderTarget_->BeginDraw();
             renderTarget_->Clear(kViewerBackground);            if (source_) {
                 EnsureBitmap();
-                if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
+                if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); }
             } else DrawEmptyState();
             DrawTitleBar();
             DrawDropdown();
@@ -1105,6 +1382,9 @@ public:
                 std::max(1L, client.bottom - client.top)));
         }
         if (!fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
+        RebuildFilmstripLayout();
+        EnsureCurrentFilmstripVisible();
+        QueueFilmstripPopulate();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -1159,8 +1439,16 @@ public:
             });
         }
         navigationBuilt_ = true;
+        RebuildFilmstripLayout();
+        EnsureCurrentFilmstripVisible();
+        if (filmstripInitialPresentationPending_) {
+            filmstripInitialPresentationPending_ = false;
+            StartFilmstripHold(3000);
+        } else QueueFilmstripPopulate();
         InvalidateRect(window_, nullptr, FALSE);
     }
+
+    void PopulateFilmstripThumbnailMessage() { PopulateFilmstripThumbnail(); }
 
     void Navigate(int direction) {
         if (!source_) return;
@@ -1183,6 +1471,7 @@ public:
             const std::wstring path = navigationFiles_[index].wstring();
             if (SUCCEEDED(DecodeImage(path, source, width, height))) {
                 CommitImage(path, source, width, height, false);
+                RevealFilmstripForNavigation();
                 InvalidateRect(window_, nullptr, FALSE);
                 return;
             }
@@ -1200,7 +1489,7 @@ public:
         }
         if (std::abs(newScale - oldScale) < 0.0001f) return;
 
-        const D2D1_SIZE_F target = ClientSize();
+        const D2D1_SIZE_F target = ImageCanvasSize();
         const D2D1_POINT_2F oldTopLeft = ImageTopLeft(oldScale, target);
         const float ratio = newScale / oldScale;
         pan_.x = static_cast<float>(cursor.x) - (static_cast<float>(cursor.x) - oldTopLeft.x) * ratio +
@@ -1231,7 +1520,7 @@ public:
     }
 
     void ZoomCentered(float factor) {
-        const D2D1_SIZE_F client = ClientSize();
+        const D2D1_SIZE_F client = ImageCanvasSize();
         ZoomAt({ static_cast<LONG>(client.width / 2.0f), static_cast<LONG>(client.height / 2.0f) }, factor);
     }
 
@@ -1244,7 +1533,7 @@ public:
 
     bool ImageContains(POINT point) const {
         if (!source_) return false;
-        const D2D1_SIZE_F target = ClientSize();
+        const D2D1_SIZE_F target = ImageCanvasSize();
         const float scale = CurrentScale();
         const D2D1_POINT_2F topLeft = ImageTopLeft(scale, target);
         return point.x >= topLeft.x && point.x < topLeft.x + imageWidth_ * scale &&
@@ -1276,10 +1565,10 @@ public:
         if (!presented_) {
             presented_ = true;
             timer_.Log(L"first successful image presentation");
-            if (!currentPath_.empty() && !navigationBuildQueued_) {
-                navigationBuildQueued_ = true;
-                PostMessageW(window_, kBuildNavigationMessage, 0, 0);
-            }
+        }
+        if (!currentPath_.empty() && !navigationBuilt_ && !navigationBuildQueued_) {
+            navigationBuildQueued_ = true;
+            PostMessageW(window_, kBuildNavigationMessage, 0, 0);
         }
     }
 
@@ -2078,7 +2367,7 @@ private:
     void ClearDeletedImage() {
         source_.Reset(); bitmap_.Reset(); imageWidth_ = imageHeight_ = 0;
         currentPath_.clear(); resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
-        navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
+        navigationFiles_.clear(); thumbnailCache_.clear(); filmstripThumbnailAspects_.clear(); filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
         error_ = L"Drop an image here, or launch Viewtrious with an image path.";
         InvalidateRect(window_, nullptr, FALSE);
@@ -2205,8 +2494,22 @@ private:
         EndPan();
         if (resetNavigation) {
             navigationFiles_.clear();
+            thumbnailCache_.clear();
+            filmstripThumbnailAspects_.clear();
+            filmstripItemWidths_.clear();
+            filmstripItemOffsets_.clear();
+            filmstripScroll_ = 0.0f;
+            filmstripOpacity_ = 0.0f;
+            filmstripPanelHovered_ = false;
+            filmstripRevealHovered_ = false;
+            filmstripHintHovered_ = false;
+            filmstripRevealStartOpacity_ = 0.0f;
+            filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
+            filmstripInitialPresentationPending_ = true;
+            StopFilmstripVisibilityTimer();
             navigationBuilt_ = false;
             navigationBuildQueued_ = false;
+            filmstripPopulateQueued_ = false;
         }
     }
 
@@ -2232,9 +2535,13 @@ private:
             static_cast<float>(std::max(1L, client.bottom - client.top)));
     }
 
+    D2D1_SIZE_F ImageCanvasSize() const {
+        return ClientSize();
+    }
+
     float BaseScale() const {
         if (!source_) return 1.0f;
-        const D2D1_SIZE_F target = ClientSize();
+        const D2D1_SIZE_F target = ImageCanvasSize();
         const float fitScale = std::min(target.width / static_cast<float>(imageWidth_),
             target.height / static_cast<float>(imageHeight_));
         return std::min(1.0f, fitScale);
@@ -2283,7 +2590,7 @@ private:
 
     void DrawCheckerboard(const D2D1_RECT_F& bounds) {
         if (!EnsureCheckerboardBrush()) return;
-        const D2D1_SIZE_F target = renderTarget_->GetSize();
+        const D2D1_SIZE_F target = ImageCanvasSize();
         const D2D1_RECT_F visible = D2D1::RectF(std::max(bounds.left, 0.0f), std::max(bounds.top, 0.0f),
             std::min(bounds.right, target.width), std::min(bounds.bottom, target.height));
         if (visible.right <= visible.left || visible.bottom <= visible.top) return;
@@ -2292,13 +2599,156 @@ private:
         renderTarget_->PopAxisAlignedClip();
     }
     void DrawImage() {
-        const D2D1_SIZE_F target = renderTarget_->GetSize();
+        const D2D1_SIZE_F target = ImageCanvasSize();
         const float scale = CurrentScale();
         const D2D1_POINT_2F topLeft = ImageTopLeft(scale, target);
         const D2D1_RECT_F destination = D2D1::RectF(topLeft.x, topLeft.y,
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
         DrawCheckerboard(destination);
         renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    }
+
+    HRESULT DecodeFilmstripThumbnail(const fs::path& path, ComPtr<IWICBitmapSource>& thumbnail) {
+        ComPtr<IWICBitmapDecoder> decoder;
+        HRESULT hr = wicFactory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+        ComPtr<IWICBitmapSource> input;
+        if (SUCCEEDED(hr)) {
+            hr = frame->GetThumbnail(&input);
+            if (FAILED(hr) || !input) { input = frame; hr = S_OK; }
+        }
+        UINT width = 0, height = 0;
+        if (SUCCEEDED(hr)) hr = input->GetSize(&width, &height);
+        if (FAILED(hr) || width == 0 || height == 0) return FAILED(hr) ? hr : E_FAIL;
+        ComPtr<IWICBitmapSource> oriented = input;
+        ComPtr<IWICBitmapFlipRotator> rotator;
+        const UINT orientation = ReadPhotoOrientation(frame.Get());
+        if (orientation != 1) {
+            hr = wicFactory_->CreateBitmapFlipRotator(&rotator);
+            if (SUCCEEDED(hr)) hr = rotator->Initialize(input.Get(), TransformForOrientation(orientation));
+            if (SUCCEEDED(hr)) oriented = rotator;
+        }
+        if (SUCCEEDED(hr)) hr = oriented->GetSize(&width, &height);
+        if (FAILED(hr) || width == 0 || height == 0) return FAILED(hr) ? hr : E_FAIL;
+        const float aspect = static_cast<float>(width) / static_cast<float>(height);
+        const float displayAspect = std::clamp(aspect, 2.0f / 3.0f, 16.0f / 9.0f);
+        const UINT cropWidth = aspect > displayAspect ? static_cast<UINT>(std::lround(static_cast<float>(height) * displayAspect)) : width;
+        const UINT cropHeight = aspect < displayAspect ? static_cast<UINT>(std::lround(static_cast<float>(width) / displayAspect)) : height;
+        ComPtr<IWICBitmapSource> cropped = oriented;
+        ComPtr<IWICBitmapClipper> clipper;
+        if (cropWidth != width || cropHeight != height) {
+            hr = wicFactory_->CreateBitmapClipper(&clipper);
+            const WICRect crop{ static_cast<INT>((width - cropWidth) / 2), static_cast<INT>((height - cropHeight) / 2), static_cast<INT>(cropWidth), static_cast<INT>(cropHeight) };
+            if (SUCCEEDED(hr)) hr = clipper->Initialize(oriented.Get(), &crop);
+            if (SUCCEEDED(hr)) cropped = clipper;
+        }
+        const UINT targetHeight = static_cast<UINT>(FilmstripThumbnailHeight());
+        const UINT targetWidth = std::max(1u, static_cast<UINT>(std::lround(static_cast<float>(targetHeight) * displayAspect)));
+        ComPtr<IWICBitmapScaler> scaler;
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateBitmapScaler(&scaler);
+        if (SUCCEEDED(hr)) hr = scaler->Initialize(cropped.Get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant);
+        ComPtr<IWICFormatConverter> converter;
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateFormatConverter(&converter);
+        if (SUCCEEDED(hr)) hr = converter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+        ComPtr<IWICBitmap> cached;
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateBitmapFromSource(converter.Get(), WICBitmapCacheOnLoad, &cached);
+        if (SUCCEEDED(hr)) thumbnail = cached;
+        return hr;
+    }
+
+    FilmstripThumbnail* FindFilmstripThumbnail(const fs::path& path) {
+        const auto found = std::find_if(thumbnailCache_.begin(), thumbnailCache_.end(), [&path](const FilmstripThumbnail& entry) { return PathsEqual(entry.path, path); });
+        return found == thumbnailCache_.end() ? nullptr : &*found;
+    }
+    void QueueFilmstripPopulate() {
+        if (!FilmstripVisible() || filmstripPopulateQueued_) return;
+        filmstripPopulateQueued_ = true;
+        PostMessageW(window_, kPopulateFilmstripMessage, 0, 0);
+    }
+    void PopulateFilmstripThumbnail() {
+        filmstripPopulateQueued_ = false;
+        if (!FilmstripVisible()) return;
+        const size_t current = CurrentNavigationIndex();
+        std::vector<size_t> candidates;
+        const auto [first, last] = FilmstripVisibleRange();
+        const auto appendCandidate = [&](size_t index) {
+            if (index >= navigationFiles_.size() || FindFilmstripThumbnail(navigationFiles_[index]) ||
+                std::find(candidates.begin(), candidates.end(), index) != candidates.end()) return;
+            candidates.push_back(index);
+        };
+        appendCandidate(current);
+        for (size_t distance = 1; current >= first + distance || current + distance < last; ++distance) {
+            if (current >= first + distance) appendCandidate(current - distance);
+            if (current + distance < last) appendCandidate(current + distance);
+        }
+        for (size_t distance = 1; distance <= 2; ++distance) {
+            if (first >= distance) appendCandidate(first - distance);
+            if (last + distance - 1 < navigationFiles_.size()) appendCandidate(last + distance - 1);
+        }
+        if (candidates.empty()) return;
+        FilmstripThumbnail entry;
+        const size_t index = candidates.front();
+        entry.path = navigationFiles_[index];
+        DecodeFilmstripThumbnail(entry.path, entry.source);
+        if (entry.source && index < filmstripThumbnailAspects_.size()) {
+            UINT width = 0, height = 0;
+            if (SUCCEEDED(entry.source->GetSize(&width, &height)) && height != 0) {
+                filmstripThumbnailAspects_[index] = static_cast<float>(width) / static_cast<float>(height);
+                RebuildFilmstripLayout();
+            }
+        }
+        if (thumbnailCache_.size() >= 48) thumbnailCache_.erase(thumbnailCache_.begin());
+        thumbnailCache_.push_back(std::move(entry));
+        QueueFilmstripPopulate();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void DrawFilmstrip() {
+        if (!FilmstripVisible()) return;
+        const RECT strip = GetFilmstripBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const float scale = static_cast<float>(dpi) / 96.0f;
+        const float opacity = filmstripOpacity_;
+        ComPtr<ID2D1SolidColorBrush> surface, border, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, hintBacking, hintBorder, hintText;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(15.f / 255, 17.f / 255, 21.f / 255, 0.78f * opacity), &surface)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(91.f / 255, 102.f / 255, 120.f / 255, 0.70f * opacity), &border)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 90.f / 255, 160.f / 255, 0.22f * opacity), &selectedBacking)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255, 0.25f * opacity), &selectedGlow)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 150.f / 255, 255.f / 255, opacity), &selectedOutline)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f * opacity), &hover)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(24.f / 255, 26.f / 255, 30.f / 255, opacity), &placeholder)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.50f * opacity), &hintBacking)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(91.f / 255, 102.f / 255, 120.f / 255, 0.25f * opacity), &hintBorder)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.50f * opacity), &hintText))) return;
+        const D2D1_RECT_F surfaceRect = D2D1::RectF(static_cast<float>(strip.left), static_cast<float>(strip.top), static_cast<float>(strip.right), static_cast<float>(strip.bottom));
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(surfaceRect, 12.0f * scale, 12.0f * scale), surface.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(surfaceRect, 12.0f * scale, 12.0f * scale), border.Get(), 1.0f * scale);
+        const RECT hintBounds = GetFilmstripHintBounds();
+        const D2D1_RECT_F hintRect = D2D1::RectF(static_cast<float>(hintBounds.left), static_cast<float>(hintBounds.top), static_cast<float>(hintBounds.right), static_cast<float>(hintBounds.bottom));
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(hintRect, 6.0f * scale, 6.0f * scale), hintBacking.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(hintRect, 6.0f * scale, 6.0f * scale), hintBorder.Get(), 1.0f * scale);
+        DrawOverlayText(L"\u2039   Scroll to browse   \u203A", hintRect.left, hintRect.top,
+            hintRect.right - hintRect.left, hintRect.bottom - hintRect.top, 13.0f, DWRITE_FONT_WEIGHT_NORMAL, hintText.Get(), true, false, true);
+        renderTarget_->PushAxisAlignedClip(surfaceRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        const size_t current = CurrentNavigationIndex();
+        const auto [first, last] = FilmstripVisibleRange();
+        for (size_t index = first; index < last; ++index) {
+            const RECT bounds = GetFilmstripThumbnailBounds(index);
+            const D2D1_RECT_F box = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
+            const D2D1_RECT_F selection = D2D1::RectF(box.left - 4.0f * scale, box.top - 4.0f * scale, box.right + 4.0f * scale, box.bottom + 4.0f * scale);
+            if (index == current) {
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(selection, 8.0f * scale, 8.0f * scale), selectedBacking.Get());
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(selection, 8.0f * scale, 8.0f * scale), selectedGlow.Get(), 4.0f * scale);
+            } else if (index == static_cast<size_t>(filmstripHoveredIndex_)) {
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), hover.Get(), 1.0f * scale);
+            }
+            FilmstripThumbnail* thumbnail = FindFilmstripThumbnail(navigationFiles_[index]);
+            if (thumbnail && thumbnail->source) {
+                if (!thumbnail->bitmap) renderTarget_->CreateBitmapFromWicBitmap(thumbnail->source.Get(), nullptr, &thumbnail->bitmap);
+                if (thumbnail->bitmap) {
+                    ComPtr<ID2D1RoundedRectangleGeometry> clip;
+                    if (SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), &clip))) {
+                        renderTarget_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clip.Get()), nullptr);
+                        renderTarget_->DrawBitmap(thumbnail->bitmap.Get(), box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                        renderTarget_->PopLayer();
+                    } else renderTarget_->DrawBitmap(thumbnail->bitmap.Get(), box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                }
+            } else renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), placeholder.Get());
+            if (index == current) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), selectedOutline.Get(), 2.0f * scale);
+        }
+        renderTarget_->PopAxisAlignedClip();
+        QueueFilmstripPopulate();
     }
 
     bool EnsureZoomHudFormat() {
@@ -2327,8 +2777,8 @@ private:
         const D2D1_RECT_F bounds = D2D1::RectF(target.width - margin - width, target.height - margin - height,
             target.width - margin, target.height - margin);
         ComPtr<ID2D1SolidColorBrush> backing, text;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.58f), &backing)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &text))) return;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f), &backing)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.50f), &text))) return;
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bounds, 6.0f * scale, 6.0f * scale), backing.Get());
         ComPtr<IDWriteTextLayout> layout;
         if (SUCCEEDED(dwriteFactory_->CreateTextLayout(label, static_cast<UINT32>(wcslen(label)), zoomHudFormat_.Get(), width, height, &layout)))
@@ -2460,11 +2910,11 @@ private:
         const int rowHeight = GetShortcutRowHeight();
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
             overlay_ == OverlayKind::Settings ? 680 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
-            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
         const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(500, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(344, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -2634,6 +3084,40 @@ private:
             DrawOverlayText(L"Not now", secondaryButton.left, secondaryButton.top,
                 secondaryButton.right - secondaryButton.left, secondaryButton.bottom - secondaryButton.top, 16.0f,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+        } else if (overlay_ == OverlayKind::DefaultAppsHelper) {
+            DrawOverlayText(L"Set up Viewtrious", left, static_cast<float>(bounds.top) + 28.0f * dpiScale,
+                contentWidth, 32.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            DrawOverlayText(L"Windows requires you to choose default file types in Settings.", left,
+                static_cast<float>(bounds.top) + 78.0f * dpiScale, contentWidth, 44.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+            DrawOverlayText(L"1. Choose Viewtrious for the image formats you want it to open.", left,
+                static_cast<float>(bounds.top) + 132.0f * dpiScale, contentWidth, 24.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
+            DrawOverlayText(L"2. Repeat for any other image formats you want associated with Viewtrious.", left,
+                static_cast<float>(bounds.top) + 166.0f * dpiScale, contentWidth, 44.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get(), false, false, false, true);
+            DrawOverlayText(L"3. Close Windows Settings when you're finished.", left,
+                static_cast<float>(bounds.top) + 220.0f * dpiScale, contentWidth, 24.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
+            const RECT cancelBounds = GetDefaultAppsHelperButtonBounds(false), openBounds = GetDefaultAppsHelperButtonBounds(true);
+            const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));
+            const D2D1_RECT_F open = D2D1::RectF(static_cast<float>(openBounds.left), static_cast<float>(openBounds.top), static_cast<float>(openBounds.right), static_cast<float>(openBounds.bottom));
+            ComPtr<ID2D1SolidColorBrush> accent, accentHover, accentPressed, neutralHover, neutralPressed, buttonText;
+            if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &accent)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 139.f / 255, 244.f / 255), &accentHover)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 94.f / 255, 168.f / 255), &accentPressed)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255), &neutralHover)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f / 255, 80.f / 255, 92.f / 255), &neutralPressed)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &buttonText))) {
+                ID2D1Brush* openBrush = pressedButton_ == ButtonKind::DefaultAppsHelperOpen ? accentPressed.Get() :
+                    hoveredButton_ == ButtonKind::DefaultAppsHelperOpen ? accentHover.Get() : accent.Get();
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(open, 5.0f * dpiScale, 5.0f * dpiScale), openBrush);
+                if (pressedButton_ == ButtonKind::DefaultAppsHelperCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralPressed.Get());
+                else if (hoveredButton_ == ButtonKind::DefaultAppsHelperCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralHover.Get());
+                DrawOverlayText(L"Open Windows Settings", open.left, open.top, open.right - open.left, open.bottom - open.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
+            }
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
+            DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::KeyboardShortcuts) {
             DrawOverlayText(L"Keyboard Shortcuts", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
@@ -3300,6 +3784,7 @@ private:
 
     void DiscardRenderResources() {
         bitmap_.Reset();
+        for (FilmstripThumbnail& thumbnail : thumbnailCache_) thumbnail.bitmap.Reset();
         aboutLogo_.Reset();
         checkerboardBrush_.Reset();
         checkerboardBitmap_.Reset();
@@ -3335,6 +3820,10 @@ private:
     std::wstring rotationDiagnosticDetail_;
     std::wstring feedbackText_ = L"Copied to Clipboard";
     std::vector<fs::path> navigationFiles_;
+    std::vector<FilmstripThumbnail> thumbnailCache_;
+    std::vector<float> filmstripThumbnailAspects_;
+    std::vector<float> filmstripItemWidths_;
+    std::vector<float> filmstripItemOffsets_;
     D2D1_POINT_2F pan_ = D2D1::Point2F();
     POINT lastDragPoint_{};
     float zoom_ = 1.0f;
@@ -3343,6 +3832,18 @@ private:
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
+    bool filmstripPopulateQueued_ = false;
+    bool filmstripInitialPresentationPending_ = false;
+    bool filmstripPanelHovered_ = false;
+    bool filmstripRevealHovered_ = false;
+    bool filmstripHintHovered_ = false;
+    float filmstripScroll_ = 0.0f;
+    float filmstripOpacity_ = 0.0f;
+    float filmstripRevealStartOpacity_ = 0.0f;
+    ULONGLONG filmstripVisibilityStart_ = 0;
+    UINT filmstripHoldDurationMs_ = 2000;
+    FilmstripVisibilityState filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
+    int filmstripHoveredIndex_ = -1;
     bool rememberWindowPlacement_ = true;
     bool includeHiddenImages_ = true;
     bool confirmBeforeDeleting_ = true;
@@ -3471,12 +3972,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(window, &point);
-        viewer->ZoomAt(point, std::pow(kZoomStep, static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA));
+        const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+        if (viewer->FilmstripContains(point)) viewer->ScrollFilmstrip(-wheelUnits * (viewer->FilmstripThumbnailHeight() + viewer->FilmstripGap()));
+        else viewer->ZoomAt(point, std::pow(kWheelZoomStep, wheelUnits));
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->FilmstripContains(point)) return 0;
         const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point);
         if (navigation != ButtonKind::None) {
             viewer->BeginCanvasNavigationClick(navigation, point);
@@ -3553,12 +4057,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (!viewer->OverlayContains(point) && !viewer->WelcomeOpen()) viewer->DismissOverlay();
             return 0;
         }
-        const FrameMetrics frame = GetFrameMetrics(window);
         const ButtonKind button = viewer->ButtonAt(point);
         if (button != ButtonKind::None) {
             viewer->SetButtonPressed(button);
             SetCapture(window);
-        } else if (const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point); navigation != ButtonKind::None) {
+            return 0;
+        }
+        if (viewer->FilmstripContains(point)) {
+            viewer->SelectFilmstripItem(viewer->FilmstripItemAt(point));
+            return 0;
+        }
+        const FrameMetrics frame = GetFrameMetrics(window);
+        if (const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point); navigation != ButtonKind::None) {
             viewer->BeginCanvasNavigationClick(navigation, point);
             SetCapture(window);
         } else if (PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
@@ -3607,6 +4117,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const FrameMetrics frame = GetFrameMetrics(window);
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         viewer->SetButtonHover(viewer->ButtonAt(point));
+        viewer->SetFilmstripPointerState(point);
+        if (viewer->FilmstripContains(point)) {
+            viewer->SetFilmstripHover(point);
+            viewer->SetCanvasNavigationHover(ButtonKind::None);
+            viewer->SetHamburgerHover(false);
+            return 0;
+        }
+        viewer->SetFilmstripHover({ -1, -1 });
         viewer->SetCanvasNavigationHover(viewer->CanvasNavigationZoneAt(point));
         viewer->SetHamburgerHover(!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point));
         TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE, window, 0 };
@@ -3618,7 +4136,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) viewer->PanTo(point);
         return 0;
     }
-    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
+    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
     case WM_LBUTTONUP: {
         if (viewer->CanvasNavigationPressed()) {
             const ButtonKind navigation = viewer->FinishCanvasNavigationClick({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
@@ -3672,14 +4190,20 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_CAPTURECHANGED:
         viewer->EndPan(); viewer->CancelCanvasNavigationClick(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
-    case WM_RBUTTONUP: if (!viewer->TutorialActive()) viewer->OpenContextMenu({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
+    case WM_RBUTTONUP: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (!viewer->TutorialActive() && !viewer->FilmstripContains(point)) viewer->OpenContextMenu(point);
+        return 0;
+    }
     case WM_TIMER:
         if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; }
         if (wParam == kCanvasNavigationFadeTimer) { viewer->UpdateCanvasNavigationFade(); return 0; }
+        if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }
         break;
     case WM_ACTIVATE: if (LOWORD(wParam) != WA_INACTIVE) viewer->ResumePendingTour(); break;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
+    case kPopulateFilmstripMessage: viewer->PopulateFilmstripThumbnailMessage(); return 0;
     case WM_KEYDOWN:
         if (viewer->TutorialActive()) { if (wParam == VK_ESCAPE) viewer->StopTutorial(); return 0; }
         if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }

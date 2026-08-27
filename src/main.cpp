@@ -500,7 +500,7 @@ public:
         return hit(ContextAction::Delete);
     }
     bool ContextActionEnabled(ContextAction action) const {
-        if (tutorialStep_ == TutorialStep::ContextMenu) return false;
+        if (tutorialStep_ == TutorialStep::ContextMenu && !HasImage()) return false;
         if (action == ContextAction::Fullscreen || action == ContextAction::OpenWith || action == ContextAction::Copy || action == ContextAction::Print ||
             action == ContextAction::SetBackground || action == ContextAction::Delete)
             return true;
@@ -579,7 +579,7 @@ public:
     }
     bool HasOverlay() const { return overlay_ != OverlayKind::None; }
     bool TutorialActive() const { return tutorialStep_ != TutorialStep::None; }
-    void StartTutorial() { SetTutorialStep(TutorialStep::OpenImages); }
+    void StartTutorial() { SetTutorialStep(HasImage() ? TutorialStep::MenuSettings : TutorialStep::OpenImages); }
     void ResumePendingTour() {
         if (tourPending_ && !TutorialActive() && !HasOverlay()) StartPendingTour();
     }
@@ -756,6 +756,7 @@ public:
     void ResetToDefaults() {
         resetInProgress_ = true;
         RegDeleteTreeW(HKEY_CURRENT_USER, kSettingsKey);
+        CleanupWallpaperStaging();
         includeHiddenImages_ = true;
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) { DestroyWindow(window_); return; }
@@ -951,10 +952,8 @@ public:
     void ZoomToActualPixels(POINT cursor) { SetScaleAt(cursor, 96.0f / RenderTargetDpi()); }
 
     void ToggleFitActualPixels(POINT cursor) {
-        const float actualScale = 96.0f / RenderTargetDpi();
-        const bool atActualPixels = !fitToWindow_ && std::abs(CurrentScale() - actualScale) < 0.0001f;
-        if (atActualPixels) FitToWindow();
-        else ZoomToActualPixels(cursor);
+        if (fitToWindow_) ZoomToActualPixels(cursor);
+        else FitToWindow();
     }
 
     void ZoomCentered(float factor) {
@@ -1206,45 +1205,178 @@ private:
         StartCopyFeedback();
     }
 
+    static std::wstring DescribeHresult(HRESULT hr) {
+        wchar_t value[96]{};
+        swprintf_s(value, L"0x%08X (%ld), code %u", static_cast<unsigned int>(hr), static_cast<long>(hr), HRESULT_CODE(hr));
+        LPWSTR message = nullptr;
+        const DWORD length = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+            nullptr, static_cast<DWORD>(hr), 0, reinterpret_cast<LPWSTR>(&message), 0, nullptr);
+        std::wstring result = value;
+        if (length && message) {
+            std::wstring description(message, length);
+            while (!description.empty() && (description.back() == L'\r' || description.back() == L'\n')) description.pop_back();
+            result += L" — " + description;
+        }
+        if (message) LocalFree(message);
+        return result;
+    }
+
+    static void AppendDiagnostic(std::wstring& diagnostics, const wchar_t* label, const std::wstring& value) {
+        diagnostics += label;
+        diagnostics += L": ";
+        diagnostics += value;
+        diagnostics += L"\r\n";
+    }
+
+    void CaptureStagedWallpaperState(const std::wstring& path, std::wstring& diagnostics) const {
+        AppendDiagnostic(diagnostics, L"Staged path", path);
+        AppendDiagnostic(diagnostics, L"Path character length", std::to_wstring(path.size()));
+        const DWORD attributes = GetFileAttributesW(path.c_str());
+        const bool exists = attributes != INVALID_FILE_ATTRIBUTES;
+        AppendDiagnostic(diagnostics, L"File exists", exists ? L"yes" : L"no");
+        wchar_t attributeText[32]{};
+        swprintf_s(attributeText, L"0x%08X", attributes);
+        AppendDiagnostic(diagnostics, L"File attributes", attributeText);
+        LARGE_INTEGER size{};
+        HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            AppendDiagnostic(diagnostics, L"File size query", DescribeHresult(HRESULT_FROM_WIN32(GetLastError())));
+        } else {
+            const BOOL sizeResult = GetFileSizeEx(file, &size);
+            CloseHandle(file);
+            AppendDiagnostic(diagnostics, L"File byte size", sizeResult ? std::to_wstring(size.QuadPart) : DescribeHresult(HRESULT_FROM_WIN32(GetLastError())));
+        }
+
+        ComPtr<IWICBitmapDecoder> decoder;
+        HRESULT validation = wicFactory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
+        AppendDiagnostic(diagnostics, L"WIC validation", DescribeHresult(validation));
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (SUCCEEDED(validation)) validation = decoder->GetFrame(0, &frame);
+        UINT width = 0, height = 0;
+        if (SUCCEEDED(validation)) validation = frame->GetSize(&width, &height);
+        if (SUCCEEDED(validation)) AppendDiagnostic(diagnostics, L"Decoded dimensions", std::to_wstring(width) + L" x " + std::to_wstring(height));
+        WICPixelFormatGUID format{};
+        if (SUCCEEDED(validation)) validation = frame->GetPixelFormat(&format);
+        if (SUCCEEDED(validation)) {
+            wchar_t formatText[64]{};
+            StringFromGUID2(format, formatText, ARRAYSIZE(formatText));
+            AppendDiagnostic(diagnostics, L"Decoded pixel format", formatText);
+        }
+        if (FAILED(validation)) AppendDiagnostic(diagnostics, L"WIC decode detail", DescribeHresult(validation));
+    }
+
+    void ShowWallpaperDiagnostic(const std::wstring& diagnostics) const {
+        MessageBoxW(window_, diagnostics.c_str(), L"Viewtrious Wallpaper Diagnostics", MB_OK | MB_ICONWARNING);
+    }
+
     void SetDesktopBackground() {
         if (currentPath_.empty()) return;
-        std::wstring wallpaperPath;
-        if (FAILED(ExportDesktopWallpaper(wallpaperPath))) {
-            ShowActionError(L"Viewtrious could not prepare this image for the Windows desktop background.");
-            return;
-        }
+        std::wstring diagnostics = L"Viewtrious wallpaper apply diagnostics\r\n\r\n";
+        APTTYPE apartmentType{};
+        APTTYPEQUALIFIER apartmentQualifier{};
+        const HRESULT apartmentResult = CoGetApartmentType(&apartmentType, &apartmentQualifier);
+        AppendDiagnostic(diagnostics, L"COM apartment query", DescribeHresult(apartmentResult));
+        if (SUCCEEDED(apartmentResult)) AppendDiagnostic(diagnostics, L"COM apartment type", std::to_wstring(static_cast<int>(apartmentType)));
+
         ComPtr<IDesktopWallpaper> wallpaper;
-        const HRESULT hr = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wallpaper));
-        if (FAILED(hr) || FAILED(wallpaper->SetWallpaper(nullptr, wallpaperPath.c_str()))) {
-            ShowActionError(L"Windows could not set this image as the desktop background.");
-            return;
+        const HRESULT createResult = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&wallpaper));
+        AppendDiagnostic(diagnostics, L"CoCreateInstance(IDesktopWallpaper)", DescribeHresult(createResult));
+        if (FAILED(createResult)) { ShowWallpaperDiagnostic(diagnostics); return; }
+
+        UINT monitorCount = 0;
+        const HRESULT countResult = wallpaper->GetMonitorDevicePathCount(&monitorCount);
+        AppendDiagnostic(diagnostics, L"GetMonitorDevicePathCount", DescribeHresult(countResult));
+        if (SUCCEEDED(countResult)) AppendDiagnostic(diagnostics, L"Monitor count", std::to_wstring(monitorCount));
+        DESKTOP_WALLPAPER_POSITION position{};
+        const HRESULT positionResult = wallpaper->GetPosition(&position);
+        AppendDiagnostic(diagnostics, L"GetPosition", DescribeHresult(positionResult));
+        if (SUCCEEDED(positionResult)) AppendDiagnostic(diagnostics, L"Current wallpaper position", std::to_wstring(static_cast<int>(position)));
+        LPWSTR currentWallpaper = nullptr;
+        const HRESULT currentResult = wallpaper->GetWallpaper(nullptr, &currentWallpaper);
+        AppendDiagnostic(diagnostics, L"GetWallpaper(nullptr)", DescribeHresult(currentResult));
+        if (currentWallpaper) { AppendDiagnostic(diagnostics, L"Current all-monitor wallpaper", currentWallpaper); CoTaskMemFree(currentWallpaper); }
+
+        for (UINT index = 0; SUCCEEDED(countResult) && index < monitorCount; ++index) {
+            LPWSTR monitorId = nullptr, monitorWallpaper = nullptr;
+            const HRESULT monitorResult = wallpaper->GetMonitorDevicePathAt(index, &monitorId);
+            AppendDiagnostic(diagnostics, (L"Monitor " + std::to_wstring(index) + L" device path").c_str(),
+                SUCCEEDED(monitorResult) && monitorId ? monitorId : DescribeHresult(monitorResult));
+            HRESULT monitorWallpaperResult = E_FAIL;
+            if (SUCCEEDED(monitorResult)) monitorWallpaperResult = wallpaper->GetWallpaper(monitorId, &monitorWallpaper);
+            AppendDiagnostic(diagnostics, (L"Monitor " + std::to_wstring(index) + L" GetWallpaper").c_str(), DescribeHresult(monitorWallpaperResult));
+            if (monitorWallpaper) { AppendDiagnostic(diagnostics, (L"Monitor " + std::to_wstring(index) + L" wallpaper").c_str(), monitorWallpaper); CoTaskMemFree(monitorWallpaper); }
+            if (monitorId) CoTaskMemFree(monitorId);
         }
+
+        const HRESULT directResult = wallpaper->SetWallpaper(nullptr, currentPath_.c_str());
+        AppendDiagnostic(diagnostics, L"SetWallpaper(nullptr, original path)", DescribeHresult(directResult));
+        if (SUCCEEDED(directResult)) { StartCopyFeedback(L"Desktop background updated"); return; }
+
+        std::wstring wallpaperPath;
+        const HRESULT stagingResult = ExportDesktopWallpaper(wallpaperPath);
+        AppendDiagnostic(diagnostics, L"Wallpaper staging fallback", DescribeHresult(stagingResult));
+        CaptureStagedWallpaperState(wallpaperPath, diagnostics);
+        if (FAILED(stagingResult)) { ShowWallpaperDiagnostic(diagnostics); return; }
+        const HRESULT fallbackResult = wallpaper->SetWallpaper(nullptr, wallpaperPath.c_str());
+        AppendDiagnostic(diagnostics, L"SetWallpaper(nullptr, staged fallback)", DescribeHresult(fallbackResult));
+        if (FAILED(fallbackResult)) { ShowWallpaperDiagnostic(diagnostics); return; }
         StartCopyFeedback(L"Desktop background updated");
+    }
+
+    HRESULT GetWallpaperStagingDirectory(fs::path& directory) const {
+        PWSTR localAppData = nullptr;
+        const HRESULT result = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData);
+        if (FAILED(result)) return result;
+        directory = fs::path(localAppData) / L"Viewtrious" / L"Wallpaper";
+        CoTaskMemFree(localAppData);
+        return S_OK;
+    }
+
+    void CleanupWallpaperStaging() {
+        fs::path directory;
+        if (FAILED(GetWallpaperStagingDirectory(directory))) return;
+        const fs::path wallpaperPath = directory / L"current.bmp";
+        ComPtr<IDesktopWallpaper> wallpaper;
+        HRESULT wallpaperResult = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wallpaper));
+        bool preserveActiveFile = FAILED(wallpaperResult);
+        UINT monitorCount = 0;
+        if (SUCCEEDED(wallpaperResult)) wallpaperResult = wallpaper->GetMonitorDevicePathCount(&monitorCount);
+        for (UINT index = 0; SUCCEEDED(wallpaperResult) && index < monitorCount; ++index) {
+            LPWSTR monitorId = nullptr, activePath = nullptr;
+            wallpaperResult = wallpaper->GetMonitorDevicePathAt(index, &monitorId);
+            if (SUCCEEDED(wallpaperResult)) wallpaperResult = wallpaper->GetWallpaper(monitorId, &activePath);
+            if (activePath && PathsEqual(wallpaperPath, fs::path(activePath))) preserveActiveFile = true;
+            if (monitorId) CoTaskMemFree(monitorId);
+            if (activePath) CoTaskMemFree(activePath);
+        }
+        if (FAILED(wallpaperResult)) preserveActiveFile = true;
+        if (preserveActiveFile) return;
+        std::error_code error;
+        fs::remove_all(directory, error);
     }
 
     HRESULT ExportDesktopWallpaper(std::wstring& wallpaperPath) {
         if (!source_) return E_FAIL;
-        PWSTR localAppData = nullptr;
-        const HRESULT folderResult = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData);
-        if (FAILED(folderResult)) return folderResult;
-        const fs::path directory = fs::path(localAppData) / L"Viewtrious";
-        CoTaskMemFree(localAppData);
+        fs::path directory;
+        HRESULT hr = GetWallpaperStagingDirectory(directory);
+        if (FAILED(hr)) return hr;
         std::error_code error;
         fs::create_directories(directory, error);
         if (error) return HRESULT_FROM_WIN32(static_cast<DWORD>(error.value()));
-        wallpaperPath = (directory / L"DesktopBackground.bmp").wstring();
-        HANDLE outputFile = CreateFileW(wallpaperPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (outputFile == INVALID_HANDLE_VALUE) return HRESULT_FROM_WIN32(GetLastError());
-        CloseHandle(outputFile);
+        wallpaperPath = (directory / L"current.bmp").wstring();
+        wchar_t temporaryPath[MAX_PATH]{};
+        if (!GetTempFileNameW(directory.c_str(), L"VTR", 0, temporaryPath)) return HRESULT_FROM_WIN32(GetLastError());
+        const std::wstring temporary = temporaryPath;
+        const auto discardTemporary = [&] { DeleteFileW(temporary.c_str()); };
 
         ComPtr<IWICFormatConverter> converter;
-        HRESULT hr = wicFactory_->CreateFormatConverter(&converter);
+        hr = wicFactory_->CreateFormatConverter(&converter);
         if (SUCCEEDED(hr)) hr = converter->Initialize(source_.Get(), GUID_WICPixelFormat32bppBGR,
             WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
         ComPtr<IWICStream> stream;
         if (SUCCEEDED(hr)) hr = wicFactory_->CreateStream(&stream);
-        if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(wallpaperPath.c_str(), GENERIC_WRITE);
+        if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(temporary.c_str(), GENERIC_WRITE);
         ComPtr<IWICBitmapEncoder> encoder;
         if (SUCCEEDED(hr)) hr = wicFactory_->CreateEncoder(GUID_ContainerFormatBmp, nullptr, &encoder);
         if (SUCCEEDED(hr)) hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
@@ -1259,6 +1391,22 @@ private:
         if (SUCCEEDED(hr)) hr = frame->WriteSource(converter.Get(), nullptr);
         if (SUCCEEDED(hr)) hr = frame->Commit();
         if (SUCCEEDED(hr)) hr = encoder->Commit();
+        frame.Reset(); encoder.Reset(); stream.Reset(); converter.Reset();
+        if (FAILED(hr)) { discardTemporary(); return hr; }
+
+        ComPtr<IWICBitmapDecoder> validationDecoder;
+        hr = wicFactory_->CreateDecoderFromFilename(temporary.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &validationDecoder);
+        ComPtr<IWICBitmapFrameDecode> validationFrame;
+        if (SUCCEEDED(hr)) hr = validationDecoder->GetFrame(0, &validationFrame);
+        UINT validatedWidth = 0, validatedHeight = 0;
+        if (SUCCEEDED(hr)) hr = validationFrame->GetSize(&validatedWidth, &validatedHeight);
+        if (SUCCEEDED(hr) && (validatedWidth != imageWidth_ || validatedHeight != imageHeight_)) hr = E_FAIL;
+        validationFrame.Reset(); validationDecoder.Reset();
+        if (FAILED(hr)) { discardTemporary(); return hr; }
+        if (!MoveFileExW(temporary.c_str(), wallpaperPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            discardTemporary();
+        }
         return hr;
     }
 
@@ -2714,7 +2862,7 @@ private:
         renderTarget_->FillRectangle(rect(frame.resolutionSeparator), separatorBrush.Get());
         renderTarget_->FillRectangle(rect(frame.fileSizeSeparator), separatorBrush.Get());
 
-        const bool tutorialMetadata = tutorialStep_ == TutorialStep::ImageDetails;
+        const bool tutorialMetadata = tutorialStep_ == TutorialStep::ImageDetails && !HasImage();
         ID2D1Brush* activeMetadataBrush = tutorialMetadata ? tutorialMetadataBrush.Get() : metadataBrush.Get();
         DrawTitleText(tutorialMetadata ? L"1920 x 1080" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
         DrawTitleText(tutorialMetadata ? L"1.2 MB" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);

@@ -318,6 +318,9 @@ public:
         includeHiddenImages_ = includeHidden != 0;
         DWORD onboardingVersion = 0;
         onboardingRequired_ = !ReadSetting(L"OnboardingVersion", onboardingVersion) || onboardingVersion < 1;
+        DWORD tourPending = 0;
+        ReadSetting(L"TourPending", tourPending);
+        tourPending_ = tourPending != 0;
         if (!path.empty()) return LoadImage(path);
         return S_OK;
     }
@@ -346,9 +349,9 @@ public:
 
     void SetWindow(HWND window) { window_ = window; }
     void ShowWelcomeIfNeeded() {
+        if (tourPending_) { StartPendingTour(); return; }
         if (!onboardingRequired_) return;
         overlay_ = OverlayKind::Welcome;
-        onboardingStep_ = 1;
     }
     bool WelcomeOpen() const { return overlay_ == OverlayKind::Welcome; }
     bool IsFullscreen() const { return fullscreen_; }
@@ -574,6 +577,9 @@ public:
     bool HasOverlay() const { return overlay_ != OverlayKind::None; }
     bool TutorialActive() const { return tutorialStep_ != TutorialStep::None; }
     void StartTutorial() { SetTutorialStep(TutorialStep::OpenImages); }
+    void ResumePendingTour() {
+        if (tourPending_ && !TutorialActive() && !HasOverlay()) StartPendingTour();
+    }
     void StopTutorial() {
         tutorialStep_ = TutorialStep::None;
         tutorialContextMenu_ = false;
@@ -629,7 +635,7 @@ public:
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(24, dpi, 96);
-        const int top = bounds.top + padding + MulDiv(162, dpi, 96);
+        const int top = bounds.top + padding + MulDiv(190, dpi, 96);
         return { bounds.left + padding, top, bounds.left + padding + MulDiv(168, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     bool SettingsResetButtonContains(POINT point) const {
@@ -652,8 +658,8 @@ public:
     RECT GetWelcomeButtonBounds(bool primary) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int primaryWidth = MulDiv(onboardingStep_ == 1 ? 132 : 96, dpi, 96);
-        const int secondaryWidth = MulDiv(onboardingStep_ == 1 ? 92 : 96, dpi, 96);
+        const int primaryWidth = MulDiv(132, dpi, 96);
+        const int secondaryWidth = MulDiv(92, dpi, 96);
         const int height = MulDiv(36, dpi, 96);
         const int gap = MulDiv(10, dpi, 96);
         const int right = bounds.right - MulDiv(24, dpi, 96);
@@ -687,36 +693,41 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     ButtonKind PressedButton() const { return pressedButton_; }
-    void ClearButtonPressed() { SetButtonPressed(ButtonKind::None); }
+    void ClearButtonPressed(bool invalidate = true) {
+        if (pressedButton_ == ButtonKind::None) return;
+        pressedButton_ = ButtonKind::None;
+        if (invalidate) InvalidateRect(window_, nullptr, FALSE);
+    }
     void InvokeButton(ButtonKind button) {
         if (button == ButtonKind::EmptyOpenFile) OpenFile();
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
         else if (button == ButtonKind::ResetCancel) DismissOverlay();
         else if (button == ButtonKind::ResetConfirm) ResetToDefaults();
-        else if (button == ButtonKind::WelcomeSecondary) AdvanceWelcome(false);
+        else if (button == ButtonKind::WelcomeSecondary) CompleteWelcome(false);
         else if (button == ButtonKind::WelcomePrimary) {
-            if (onboardingStep_ == 1) {
-                INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
-                    L"ms-settings:defaultapps?registeredAppUser=Viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
-                if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
-                if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
-            }
-            AdvanceWelcome(onboardingStep_ == 2);
+            INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
+                L"ms-settings:defaultapps?registeredAppUser=Viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
+            if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
+            if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
+            CompleteWelcome(true);
         }
         else if (button == ButtonKind::TutorialSkip) StopTutorial();
         else if (button == ButtonKind::TutorialNext) AdvanceTutorial();
     }
-    void AdvanceWelcome(bool startTour) {
+    void CompleteWelcome(bool waitForActivation) {
         if (overlay_ != OverlayKind::Welcome) return;
-        if (onboardingStep_ == 1) {
-            onboardingStep_ = 2;
-            InvalidateRect(window_, nullptr, FALSE);
-            return;
-        }
         WriteSetting(L"OnboardingVersion", 1);
+        WriteSetting(L"TourPending", 1);
         onboardingRequired_ = false;
+        tourPending_ = true;
         DismissOverlay();
-        if (startTour) StartTutorial();
+        if (!waitForActivation) StartPendingTour();
+    }
+    void StartPendingTour() {
+        if (!tourPending_) return;
+        tourPending_ = false;
+        WriteSetting(L"TourPending", 0);
+        StartTutorial();
     }
     void ResetToDefaults() {
         resetInProgress_ = true;
@@ -1144,13 +1155,58 @@ private:
 
     void SetDesktopBackground() {
         if (currentPath_.empty()) return;
+        std::wstring wallpaperPath;
+        if (FAILED(ExportDesktopWallpaper(wallpaperPath))) {
+            ShowActionError(L"Viewtrious could not prepare this image for the Windows desktop background.");
+            return;
+        }
         ComPtr<IDesktopWallpaper> wallpaper;
         const HRESULT hr = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wallpaper));
-        if (FAILED(hr) || FAILED(wallpaper->SetWallpaper(nullptr, currentPath_.c_str()))) {
+        if (FAILED(hr) || FAILED(wallpaper->SetWallpaper(nullptr, wallpaperPath.c_str()))) {
             ShowActionError(L"Windows could not set this image as the desktop background.");
             return;
         }
         StartCopyFeedback(L"Desktop background updated");
+    }
+
+    HRESULT ExportDesktopWallpaper(std::wstring& wallpaperPath) {
+        if (!source_) return E_FAIL;
+        PWSTR localAppData = nullptr;
+        const HRESULT folderResult = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData);
+        if (FAILED(folderResult)) return folderResult;
+        const fs::path directory = fs::path(localAppData) / L"Viewtrious";
+        CoTaskMemFree(localAppData);
+        std::error_code error;
+        fs::create_directories(directory, error);
+        if (error) return HRESULT_FROM_WIN32(static_cast<DWORD>(error.value()));
+        wallpaperPath = (directory / L"DesktopBackground.bmp").wstring();
+        HANDLE outputFile = CreateFileW(wallpaperPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (outputFile == INVALID_HANDLE_VALUE) return HRESULT_FROM_WIN32(GetLastError());
+        CloseHandle(outputFile);
+
+        ComPtr<IWICFormatConverter> converter;
+        HRESULT hr = wicFactory_->CreateFormatConverter(&converter);
+        if (SUCCEEDED(hr)) hr = converter->Initialize(source_.Get(), GUID_WICPixelFormat32bppBGR,
+            WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+        ComPtr<IWICStream> stream;
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateStream(&stream);
+        if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(wallpaperPath.c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encoder;
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateEncoder(GUID_ContainerFormatBmp, nullptr, &encoder);
+        if (SUCCEEDED(hr)) hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frame;
+        if (SUCCEEDED(hr)) hr = encoder->CreateNewFrame(&frame, nullptr);
+        if (SUCCEEDED(hr)) hr = frame->Initialize(nullptr);
+        UINT width = 0, height = 0;
+        if (SUCCEEDED(hr)) hr = converter->GetSize(&width, &height);
+        if (SUCCEEDED(hr)) hr = frame->SetSize(width, height);
+        WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGR;
+        if (SUCCEEDED(hr)) hr = frame->SetPixelFormat(&pixelFormat);
+        if (SUCCEEDED(hr)) hr = frame->WriteSource(converter.Get(), nullptr);
+        if (SUCCEEDED(hr)) hr = frame->Commit();
+        if (SUCCEEDED(hr)) hr = encoder->Commit();
+        return hr;
     }
 
     void PrintImage() {
@@ -1928,7 +1984,7 @@ private:
             overlay_ == OverlayKind::Welcome ? 640 : 608, dpi, 96);
         const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : overlay_ == OverlayKind::Settings ? MulDiv(244, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(210, dpi, 96) :
+            : overlay_ == OverlayKind::Settings ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) :
             overlay_ == OverlayKind::Welcome ? MulDiv(340, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
@@ -1942,12 +1998,12 @@ private:
 
     void DrawOverlayText(const wchar_t* text, float x, float y, float width, float height, float size,
         DWRITE_FONT_WEIGHT weight, ID2D1Brush* brush, bool verticallyCenter = false, bool rightAlign = false,
-        bool centerAlign = false) {
+        bool centerAlign = false, bool wrap = false) {
         ComPtr<IDWriteTextFormat> format;
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL, size * dpiScale, L"", &format))) return;
-        format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        format->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
         if (verticallyCenter) format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         if (rightAlign) format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
         else if (centerAlign) format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -2003,7 +2059,7 @@ private:
                 D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         }
         DrawOverlayText(error_.empty() ? L"Drag and drop an image here or open a file" : error_.c_str(), 24.0f * scale,
-            groupTop + 190.0f * scale, target.width - 48.0f * scale, 22.0f * scale, 13.0f,
+            groupTop + 190.0f * scale, target.width - 48.0f * scale, 24.0f * scale, 16.0f,
             DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true, false, true);
         const RECT buttonBounds = GetEmptyOpenFileButtonBounds();
         const D2D1_RECT_F buttonRect = D2D1::RectF(static_cast<float>(buttonBounds.left), static_cast<float>(buttonBounds.top),
@@ -2012,7 +2068,7 @@ private:
             hoveredButton_ == ButtonKind::EmptyOpenFile ? buttonHover.Get() : button.Get();
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(buttonRect, 5.0f * scale, 5.0f * scale), buttonBrush);
         DrawOverlayText(L"Open File", buttonRect.left, buttonRect.top, buttonRect.right - buttonRect.left,
-            buttonRect.bottom - buttonRect.top, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
+            buttonRect.bottom - buttonRect.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
     }
 
     void DrawOverlay() {
@@ -2046,12 +2102,9 @@ private:
         const float left = static_cast<float>(bounds.left) + panelPadding;
         const float contentWidth = static_cast<float>(bounds.right - bounds.left) - panelPadding * 2.0f;
         if (overlay_ == OverlayKind::Welcome) {
-            DrawOverlayText(onboardingStep_ == 1 ? L"Default image viewer" : L"Quick tour", left,
-                static_cast<float>(bounds.top) + panelPadding, contentWidth, 24.0f * dpiScale,
-                18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            DrawOverlayText(onboardingStep_ == 1 ? L"Step 1 of 2" : L"Step 2 of 2", left,
-                static_cast<float>(bounds.top) + panelPadding, contentWidth, 24.0f * dpiScale,
-                12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
+            DrawOverlayText(L"Default image viewer", left,
+                static_cast<float>(bounds.top) + panelPadding, contentWidth, 34.0f * dpiScale,
+                24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             if (EnsureAboutLogo()) {
                 const D2D1_SIZE_F logoSource = aboutLogo_->GetSize();
                 const float logoWidth = std::min(240.0f * dpiScale, contentWidth);
@@ -2060,22 +2113,17 @@ private:
                 const float logoTop = static_cast<float>(bounds.top) + panelPadding + 34.0f * dpiScale;
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
             }
-            const wchar_t* prompt = onboardingStep_ == 1
-                ? L"Make Viewtrious the default for JPG and PNG images?"
-                : L"Would you like a quick tour of Viewtrious?";
-            DrawOverlayText(prompt, left, static_cast<float>(bounds.top) + 151.0f * dpiScale,
-                contentWidth, 24.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
-            if (onboardingStep_ == 1) {
-                DrawOverlayText(L"Windows requires you to confirm the JPG and PNG defaults.", left,
-                    static_cast<float>(bounds.top) + 176.0f * dpiScale, contentWidth, 18.0f * dpiScale,
-                    11.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
-            }
+            DrawOverlayText(L"Make Viewtrious the default for JPG and PNG images?", left, static_cast<float>(bounds.top) + 151.0f * dpiScale,
+                contentWidth, 26.0f * dpiScale, 19.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
+            DrawOverlayText(L"Windows requires you to confirm the JPG and PNG defaults.", left,
+                static_cast<float>(bounds.top) + 180.0f * dpiScale, contentWidth, 22.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
             DrawOverlayText(L"You can revisit this setup by resetting Viewtrious in Settings.", left,
-                static_cast<float>(bounds.top) + 201.0f * dpiScale, contentWidth, 18.0f * dpiScale,
-                11.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
+                static_cast<float>(bounds.top) + 208.0f * dpiScale, contentWidth, 20.0f * dpiScale,
+                14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
             DrawOverlayText(L"Default app choices can be changed anytime in Windows Settings.", left,
-                static_cast<float>(bounds.top) + 220.0f * dpiScale, contentWidth, 18.0f * dpiScale,
-                11.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
+                static_cast<float>(bounds.top) + 229.0f * dpiScale, contentWidth, 20.0f * dpiScale,
+                14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
             const RECT secondaryBounds = GetWelcomeButtonBounds(false), primaryBounds = GetWelcomeButtonBounds(true);
             const D2D1_RECT_F secondaryButton = D2D1::RectF(static_cast<float>(secondaryBounds.left), static_cast<float>(secondaryBounds.top),
                 static_cast<float>(secondaryBounds.right), static_cast<float>(secondaryBounds.bottom));
@@ -2093,13 +2141,13 @@ private:
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(primaryButton, 5.0f * dpiScale, 5.0f * dpiScale), primaryButtonBrush);
                 if (pressedButton_ == ButtonKind::WelcomeSecondary) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(secondaryButton, 5.0f * dpiScale, 5.0f * dpiScale), neutralPressed.Get());
                 else if (hoveredButton_ == ButtonKind::WelcomeSecondary) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(secondaryButton, 5.0f * dpiScale, 5.0f * dpiScale), neutralHover.Get());
-                DrawOverlayText(onboardingStep_ == 1 ? L"Choose defaults" : L"Yes", primaryButton.left, primaryButton.top,
-                    primaryButton.right - primaryButton.left, primaryButton.bottom - primaryButton.top, 12.0f,
+                DrawOverlayText(L"Choose defaults", primaryButton.left, primaryButton.top,
+                    primaryButton.right - primaryButton.left, primaryButton.bottom - primaryButton.top, 16.0f,
                     DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(secondaryButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(onboardingStep_ == 1 ? L"Not now" : L"No thanks", secondaryButton.left, secondaryButton.top,
-                secondaryButton.right - secondaryButton.left, secondaryButton.bottom - secondaryButton.top, 12.0f,
+            DrawOverlayText(L"Not now", secondaryButton.left, secondaryButton.top,
+                secondaryButton.right - secondaryButton.left, secondaryButton.bottom - secondaryButton.top, 16.0f,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::KeyboardShortcuts) {
             DrawOverlayText(L"Keyboard Shortcuts", left, static_cast<float>(bounds.top) + panelPadding,
@@ -2115,7 +2163,7 @@ private:
             }
         } else if (overlay_ == OverlayKind::Settings) {
             DrawOverlayText(L"Settings", left, static_cast<float>(bounds.top) + panelPadding,
-                contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+                contentWidth, 36.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             const float rowTop = static_cast<float>(bounds.top) + panelPadding + 42.0f * dpiScale;
             const float boxSize = 18.0f * dpiScale;
             const D2D1_RECT_F checkbox = D2D1::RectF(left, rowTop + 5.0f * dpiScale, left + boxSize, rowTop + 5.0f * dpiScale + boxSize);
@@ -2134,15 +2182,15 @@ private:
                 }
             }
             DrawOverlayText(L"Include hidden images in folder navigation", left + boxSize + 12.0f * dpiScale, rowTop,
-                contentWidth - boxSize - 12.0f * dpiScale, 28.0f * dpiScale, 13.0f, DWRITE_FONT_WEIGHT_NORMAL,
+                contentWidth - boxSize - 12.0f * dpiScale, 30.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL,
                 primaryBrush.Get(), true);
-            const float resetTop = static_cast<float>(bounds.top) + panelPadding + 90.0f * dpiScale;
-            DrawOverlayText(L"Reset", left, resetTop, contentWidth, 20.0f * dpiScale, 14.0f,
+            const float resetTop = static_cast<float>(bounds.top) + panelPadding + 100.0f * dpiScale;
+            DrawOverlayText(L"Reset", left, resetTop, contentWidth, 24.0f * dpiScale, 20.0f,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            DrawOverlayText(L"Reset Viewtrious to Defaults", left, resetTop + 24.0f * dpiScale, contentWidth, 18.0f * dpiScale,
-                13.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
+            DrawOverlayText(L"Reset Viewtrious to Defaults", left, resetTop + 28.0f * dpiScale, contentWidth, 22.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
             DrawOverlayText(L"Removes Viewtrious preferences and app-owned data. Your images are never touched.", left,
-                resetTop + 43.0f * dpiScale, contentWidth, 18.0f * dpiScale, 11.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                resetTop + 52.0f * dpiScale, contentWidth, 36.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             const RECT resetBounds = GetSettingsResetButtonBounds();
             const D2D1_RECT_F resetButton = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top),
                 static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
@@ -2154,15 +2202,15 @@ private:
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"Reset Viewtrious", resetButton.left, resetButton.top, resetButton.right - resetButton.left,
-                resetButton.bottom - resetButton.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+                resetButton.bottom - resetButton.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::ResetConfirm) {
             DrawOverlayText(L"Reset Viewtrious to defaults?", left, static_cast<float>(bounds.top) + panelPadding,
-                contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+                contentWidth, 36.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             DrawOverlayText(L"This removes Viewtrious preferences, saved window placement, and Viewtrious-owned app data.", left,
-                static_cast<float>(bounds.top) + panelPadding + 39.0f * dpiScale, contentWidth, 20.0f * dpiScale,
-                12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            DrawOverlayText(L"Your images will not be touched.", left, static_cast<float>(bounds.top) + panelPadding + 60.0f * dpiScale,
-                contentWidth, 20.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                static_cast<float>(bounds.top) + panelPadding + 45.0f * dpiScale, contentWidth, 48.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+            DrawOverlayText(L"Your images will not be touched.", left, static_cast<float>(bounds.top) + panelPadding + 96.0f * dpiScale,
+                contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT cancelBounds = GetResetConfirmationButtonBounds(false), resetBounds = GetResetConfirmationButtonBounds(true);
             const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));
             const D2D1_RECT_F reset = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top), static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
@@ -2178,8 +2226,8 @@ private:
                 else if (hoveredButton_ == ButtonKind::ResetCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralHover.Get());
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
-            DrawOverlayText(L"Reset", reset.left, reset.top, reset.right - reset.left, reset.bottom - reset.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            DrawOverlayText(L"Reset", reset.left, reset.top, reset.right - reset.left, reset.bottom - reset.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else {
             float logoBottom = static_cast<float>(bounds.top) + panelPadding;
             if (EnsureAboutLogo()) {
@@ -2195,9 +2243,9 @@ private:
             const float logoWidth = std::min(520.0f * dpiScale, contentWidth);
             const float textTop = logoBottom + 16.0f * dpiScale;
             DrawOverlayText(L"Version " VIEWTRIOUS_VERSION, logoLeft, textTop, logoWidth, 20.0f * dpiScale,
-                12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
+                14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
             DrawOverlayText(L"Extremely lightweight image viewer", logoLeft, textTop + 25.0f * dpiScale, logoWidth,
-                18.0f * dpiScale, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
+                20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         }
     }
 
@@ -2364,7 +2412,8 @@ private:
             const float annotationLeft = (static_cast<float>(target.left + target.right) - annotationWidth) / 2.0f;
             const float headingTop = static_cast<float>(target.bottom) + 24.0f * scale;
             DrawHandwrittenText(L"Open images", annotationLeft, headingTop, annotationWidth, 32.0f * scale, 24.0f, pencil.Get(), true);
-            DrawHandwrittenText(L"Use Open File or drag and drop", annotationLeft, headingTop + 31.0f * scale, annotationWidth, 24.0f * scale, 13.0f, pencil.Get(), true);
+            DrawOverlayText(L"Use Open File or drag and drop", annotationLeft, headingTop + 31.0f * scale,
+                annotationWidth, 24.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, false, true);
             scribble(target);
             const float arrowX = (target.left + target.right) / 2.0f;
             const float arrowTipY = static_cast<float>(target.bottom) + 4.0f * scale;
@@ -2392,8 +2441,8 @@ private:
             const float noteLeft = 20.0f * scale;
             const float noteTop = static_cast<float>(client.bottom) - 136.0f * scale;
             DrawHandwrittenText(L"Resize the window", noteLeft, noteTop, noteWidth, 34.0f * scale, 23.0f, pencil.Get());
-            DrawHandwrittenText(L"Drag the app corners to resize the app", noteLeft, noteTop + 33.0f * scale,
-                noteWidth, 26.0f * scale, 13.0f, pencil.Get());
+            DrawOverlayText(L"Drag the app corners to resize the app", noteLeft, noteTop + 33.0f * scale,
+                noteWidth, 26.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true);
             arrow(D2D1::Point2F(noteLeft + noteWidth * 0.38f, noteTop + 66.0f * scale),
                 D2D1::Point2F(5.0f * scale, static_cast<float>(client.bottom) - 5.0f * scale), 2.5f);
         } else if (tutorialStep_ == TutorialStep::MenuSettings) {
@@ -2426,7 +2475,11 @@ private:
             const float headingTop = std::clamp(static_cast<float>(target.top) + 16.0f * scale, canvasTop + 12.0f * scale,
                 static_cast<float>(client.bottom) - 100.0f * scale);
             DrawHandwrittenText(L"Right click menu", headingLeft, headingTop, annotationWidth, 38.0f * scale, 22.0f, pencil.Get(), false, true);
-            DrawHandwrittenText(L"Right-click an image to find these options.", headingLeft, headingTop + 37.0f * scale, annotationWidth, 28.0f * scale, 12.5f, pencil.Get(), false, true);
+            const float noteGap = 18.0f * scale;
+            const float noteWidth = std::min(340.0f * scale, static_cast<float>(target.left) - noteGap - 16.0f * scale);
+            const float noteLeft = std::max(16.0f * scale, static_cast<float>(target.left) - noteGap - noteWidth);
+            DrawOverlayText(L"Right-click an image to find these options.", noteLeft, headingTop + 37.0f * scale,
+                noteWidth, 28.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, true);
             scribble(target);
             arrow(D2D1::Point2F(headingLeft + annotationWidth * 0.62f, headingTop - 8.0f * scale),
                 D2D1::Point2F(static_cast<float>(target.left) - 4.0f * scale, static_cast<float>(target.top) + 10.0f * scale), 3.1f);
@@ -2631,7 +2684,7 @@ private:
     bool navigationBuildQueued_ = false;
     bool includeHiddenImages_ = true;
     bool onboardingRequired_ = false;
-    int onboardingStep_ = 1;
+    bool tourPending_ = false;
     TutorialStep tutorialStep_ = TutorialStep::None;
     bool tutorialContextMenu_ = false;
     bool fullscreen_ = false;
@@ -2866,9 +2919,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->PressedButton() != ButtonKind::None) {
             const ButtonKind pressed = viewer->PressedButton();
             const ButtonKind released = viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
-            viewer->ClearButtonPressed();
+            const bool openingFile = pressed == ButtonKind::EmptyOpenFile && pressed == released;
+            viewer->ClearButtonPressed(!openingFile);
             if (GetCapture() == window) ReleaseCapture();
-            viewer->SetButtonHover(released);
+            if (!openingFile) viewer->SetButtonHover(released);
             if (pressed == released) viewer->InvokeButton(pressed);
             return 0;
         }
@@ -2910,6 +2964,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->EndPan(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: if (!viewer->TutorialActive()) viewer->OpenContextMenu({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
     case WM_TIMER: if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; } break;
+    case WM_ACTIVATE: if (LOWORD(wParam) != WA_INACTIVE) viewer->ResumePendingTour(); break;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case WM_KEYDOWN:

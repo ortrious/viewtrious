@@ -58,7 +58,7 @@ enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm,
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsRememberPlacement, SettingsIncludeHidden,
-    SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
+    SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
@@ -374,6 +374,12 @@ public:
         DWORD animations = 1;
         ReadSetting(L"AnimationsAndFadeEffects", animations);
         animationsEnabled_ = animations != 0;
+        DWORD reverseWheelZoom = 0;
+        ReadSetting(L"ReverseMouseWheelZoom", reverseWheelZoom);
+        reverseMouseWheelZoom_ = reverseWheelZoom != 0;
+        DWORD alwaysShowFilmstrip = 0;
+        ReadSetting(L"AlwaysShowFilmstrip", alwaysShowFilmstrip);
+        alwaysShowFilmstrip_ = alwaysShowFilmstrip != 0;
         DWORD theme = static_cast<DWORD>(ThemePreference::System);
         ReadSetting(L"Theme", theme);
         themePreference_ = theme <= static_cast<DWORD>(ThemePreference::Dark) ? static_cast<ThemePreference>(theme) : ThemePreference::System;
@@ -662,7 +668,11 @@ public:
     }
     bool HasOverlay() const { return overlay_ != OverlayKind::None; }
     bool TutorialActive() const { return tutorialStep_ != TutorialStep::None; }
-    void StartTutorial() { SetTutorialStep(HasImage() ? TutorialStep::MenuSettings : TutorialStep::OpenImages); }
+    void StartTutorial() {
+        if (TutorialActive()) return;
+        BeginTutorialPresentation();
+        SetTutorialStep(TutorialStep::OpenImages);
+    }
     void ResumePendingTour() {
         if (tourPending_ && !TutorialActive() && !HasOverlay()) StartPendingTour();
     }
@@ -674,7 +684,58 @@ public:
         DismissOverlay();
         ClearButtonPressed();
         SetButtonHover(ButtonKind::None);
+        RestoreTutorialPresentation();
         InvalidateRect(window_, nullptr, FALSE);
+    }
+    void BeginTutorialPresentation() {
+        tutorialPresentation_ = true;
+        tutorialPlacementSuppressed_ = true;
+        tutorialWasFullscreen_ = fullscreen_;
+        tutorialWasMaximized_ = IsZoomed(window_);
+        WINDOWPLACEMENT placement{ sizeof(placement) };
+        GetWindowPlacement(window_, &placement);
+        tutorialWindowRect_ = tutorialWasFullscreen_ ? fullscreenRect_ : placement.rcNormalPosition;
+        tutorialZoom_ = zoom_;
+        tutorialPan_ = pan_;
+        tutorialFitToWindow_ = fitToWindow_;
+        tutorialFilmstripScroll_ = filmstripScroll_;
+        tutorialFilmstripOpacity_ = filmstripOpacity_;
+        tutorialFilmstripState_ = filmstripVisibilityState_;
+        tutorialFilmstripHoldDurationMs_ = filmstripHoldDurationMs_;
+        StopFilmstripVisibilityTimer();
+        copyFeedbackActive_ = false;
+        KillTimer(window_, kCopyFeedbackTimer);
+        if (fullscreen_) ToggleFullscreen();
+        if (IsZoomed(window_)) ShowWindow(window_, SW_RESTORE);
+        RECT current{};
+        GetWindowRect(window_, &current);
+        MONITORINFO monitor{ sizeof(monitor) };
+        GetMonitorInfoW(MonitorFromRect(&current, MONITOR_DEFAULTTONEAREST), &monitor);
+        const int width = 800, height = 600;
+        const int maxLeft = std::max(monitor.rcWork.left, monitor.rcWork.right - width);
+        const int maxTop = std::max(monitor.rcWork.top, monitor.rcWork.bottom - height);
+        const int left = std::clamp(static_cast<int>(current.left), static_cast<int>(monitor.rcWork.left), maxLeft);
+        const int top = std::clamp(static_cast<int>(current.top), static_cast<int>(monitor.rcWork.top), maxTop);
+        SetWindowPos(window_, nullptr, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    void RestoreTutorialPresentation() {
+        if (!tutorialPresentation_) return;
+        tutorialPresentation_ = false;
+        zoom_ = tutorialZoom_;
+        pan_ = tutorialPan_;
+        fitToWindow_ = tutorialFitToWindow_;
+        filmstripScroll_ = tutorialFilmstripScroll_;
+        filmstripOpacity_ = tutorialFilmstripOpacity_;
+        filmstripVisibilityState_ = tutorialFilmstripState_;
+        filmstripHoldDurationMs_ = tutorialFilmstripHoldDurationMs_;
+        SetWindowPos(window_, nullptr, tutorialWindowRect_.left, tutorialWindowRect_.top,
+            tutorialWindowRect_.right - tutorialWindowRect_.left, tutorialWindowRect_.bottom - tutorialWindowRect_.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+        if (tutorialWasMaximized_) ShowWindow(window_, SW_MAXIMIZE);
+        if (tutorialWasFullscreen_) ToggleFullscreen();
+        tutorialPlacementSuppressed_ = false;
+        if (alwaysShowFilmstrip_) StartFilmstripHold(UINT_MAX);
+        else if (filmstripOpacity_ > 0.001f && FilmstripEligible()) BeginFilmstripFadeSequence();
     }
     void AdvanceTutorial() {
         if (tutorialStep_ == TutorialStep::OpenImages) SetTutorialStep(TutorialStep::ResizeWindow);
@@ -695,6 +756,7 @@ public:
     void DismissOverlay() {
         if (!HasOverlay()) return;
         overlay_ = OverlayKind::None;
+        if (alwaysShowFilmstrip_ && FilmstripEligible()) StartFilmstripHold(UINT_MAX);
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool OverlayContains(POINT point) const {
@@ -703,14 +765,14 @@ public:
     }
     bool SettingsUsesCompactLayout() const {
         const RECT bounds = GetOverlayBounds();
-        return bounds.bottom - bounds.top < MulDiv(500, GetDpiForWindow(window_), 96);
+        return bounds.bottom - bounds.top < MulDiv(560, GetDpiForWindow(window_), 96);
     }
     RECT GetSettingsOptionBounds(int option) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        static constexpr int kCompactRowTopDips[] = { 70, 96, 122, 174, 200 };
-        static constexpr int kRegularRowTopDips[] = { 90, 116, 142, 209, 235 };
+        static constexpr int kCompactRowTopDips[] = { 70, 96, 122, 174, 200, 226, 252 };
+        static constexpr int kRegularRowTopDips[] = { 90, 116, 142, 209, 235, 261, 287 };
         const int* rowTops = SettingsUsesCompactLayout() ? kCompactRowTopDips : kRegularRowTopDips;
         const int top = bounds.top + MulDiv(rowTops[option], dpi, 96);
         return { bounds.left + padding, top, bounds.right - padding, top + MulDiv(25, dpi, 96) };
@@ -721,7 +783,7 @@ public:
         const int padding = MulDiv(18, dpi, 96), width = MulDiv(76, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int index = static_cast<int>(preference);
         const int left = bounds.left + padding + index * (width + gap);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 278 : 334, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 328 : 386, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     void ToggleIncludeHiddenImages() {
@@ -759,6 +821,18 @@ public:
         UpdateCanvasNavigationOpacity();
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void ToggleReverseMouseWheelZoom() {
+        reverseMouseWheelZoom_ = !reverseMouseWheelZoom_;
+        WriteSetting(L"ReverseMouseWheelZoom", reverseMouseWheelZoom_ ? 1 : 0);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ToggleAlwaysShowFilmstrip() {
+        alwaysShowFilmstrip_ = !alwaysShowFilmstrip_;
+        WriteSetting(L"AlwaysShowFilmstrip", alwaysShowFilmstrip_ ? 1 : 0);
+        if (alwaysShowFilmstrip_) StartFilmstripHold(UINT_MAX);
+        else BeginFilmstripFadeSequence();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void SetThemePreference(ThemePreference preference) {
         themePreference_ = preference;
         WriteSetting(L"Theme", static_cast<DWORD>(preference));
@@ -769,8 +843,8 @@ public:
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 374 : 450, dpi, 96);
-        return { bounds.left + padding, top, bounds.left + padding + MulDiv(248, dpi, 96), top + MulDiv(36, dpi, 96) };
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 438 : 498, dpi, 96);
+        return { bounds.left + padding, top, bounds.left + padding + MulDiv(100, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     bool SettingsResetButtonContains(POINT point) const {
         const RECT button = GetSettingsResetButtonBounds();
@@ -859,7 +933,7 @@ public:
         return source_ && navigationBuilt_ && navigationFiles_.size() > 1 &&
             !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
     }
-    bool FilmstripEligible() const { return source_ && navigationBuilt_ && navigationFiles_.size() > 1 && !HasOverlay() && !TutorialActive(); }
+    bool FilmstripEligible() const { return source_ && navigationBuilt_ && navigationFiles_.size() > 1 && !HasOverlay() && !TutorialActive() && !tutorialPresentation_; }
     bool FilmstripVisible() const { return FilmstripEligible() && filmstripOpacity_ > 0.001f; }
     int FilmstripHeight() const {
         if (!FilmstripEligible()) return 0;
@@ -1006,7 +1080,8 @@ public:
         filmstripVisibilityStart_ = GetTickCount64();
         EnsureCurrentFilmstripVisible();
         QueueFilmstripPopulate();
-        SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
+        if (alwaysShowFilmstrip_) StopFilmstripVisibilityTimer();
+        else SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void StartFilmstripReveal() {
@@ -1042,6 +1117,7 @@ public:
     }
     void UpdateFilmstripVisibility() {
         if (!FilmstripEligible()) { filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); return; }
+        if (alwaysShowFilmstrip_) { filmstripOpacity_ = 1.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Holding; StopFilmstripVisibilityTimer(); return; }
         const bool held = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
         const ULONGLONG elapsed = GetTickCount64() - filmstripVisibilityStart_;
         float opacity = filmstripOpacity_;
@@ -1121,6 +1197,8 @@ public:
             if (contains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
             if (contains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsShowZoomHud;
             if (contains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAnimations;
+            if (contains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReverseWheelZoom;
+            if (contains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsAlwaysShowFilmstrip;
             if (contains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
             if (contains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
             if (contains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -1244,6 +1322,8 @@ public:
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
         else if (button == ButtonKind::SettingsShowZoomHud) ToggleShowZoomPercentage();
         else if (button == ButtonKind::SettingsAnimations) ToggleAnimationsAndFadeEffects();
+        else if (button == ButtonKind::SettingsReverseWheelZoom) ToggleReverseMouseWheelZoom();
+        else if (button == ButtonKind::SettingsAlwaysShowFilmstrip) ToggleAlwaysShowFilmstrip();
         else if (button == ButtonKind::SettingsThemeSystem) SetThemePreference(ThemePreference::System);
         else if (button == ButtonKind::SettingsThemeLight) SetThemePreference(ThemePreference::Light);
         else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
@@ -1307,6 +1387,8 @@ public:
         confirmBeforeDeleting_ = true;
         showZoomPercentage_ = true;
         animationsEnabled_ = true;
+        reverseMouseWheelZoom_ = false;
+        alwaysShowFilmstrip_ = false;
         themePreference_ = ThemePreference::System;
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) { DestroyWindow(window_); return; }
@@ -1323,7 +1405,7 @@ public:
         DestroyWindow(window_);
     }
     bool EmptyOpenFileButtonContains(POINT point) const {
-        if (HasImage() || HasOverlay() || dropdownOpen_ || contextMenuOpen_) return false;
+        if ((HasImage() && !tutorialPresentation_) || HasOverlay() || dropdownOpen_ || contextMenuOpen_) return false;
         const RECT bounds = GetEmptyOpenFileButtonBounds();
         return PtInRect(&bounds, point);
     }
@@ -1356,7 +1438,7 @@ public:
         EnsureRenderTarget();
         if (renderTarget_) {
             renderTarget_->BeginDraw();
-            renderTarget_->Clear(kViewerBackground);            if (source_) {
+            renderTarget_->Clear(kViewerBackground);            if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); }
             } else DrawEmptyState();
@@ -1365,10 +1447,10 @@ public:
             DrawContextMenu();
             DrawOpenWithSubmenu();
             DrawOverlay();
-            DrawCopyFeedback();
+            if (!tutorialPresentation_) DrawCopyFeedback();
             DrawTutorial();
             const HRESULT hr = renderTarget_->EndDraw();
-            if (SUCCEEDED(hr) && bitmap_) MarkFirstPresentation();
+            if (SUCCEEDED(hr) && bitmap_ && !tutorialPresentation_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
         }
         EndPaint(window_, &paint);
@@ -1381,7 +1463,7 @@ public:
             renderTarget_->Resize(D2D1::SizeU(std::max(1L, client.right - client.left),
                 std::max(1L, client.bottom - client.top)));
         }
-        if (!fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
+        if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
         RebuildFilmstripLayout();
         EnsureCurrentFilmstripVisible();
         QueueFilmstripPopulate();
@@ -1502,6 +1584,7 @@ public:
     }
 
     void ZoomAt(POINT cursor, float factor) { SetScaleAt(cursor, CurrentScale() * factor); }
+    float WheelZoomFactor(float wheelUnits) const { return std::pow(kWheelZoomStep, reverseMouseWheelZoom_ ? -wheelUnits : wheelUnits); }
 
     float RenderTargetDpi() const {
         if (!renderTarget_) return 96.0f;
@@ -1573,7 +1656,7 @@ public:
     }
 
     void SaveWindowPlacement() const {
-        if (resetInProgress_ || !rememberWindowPlacement_ || IsLikelySnappedWindow(window_)) return;
+        if (resetInProgress_ || tutorialPlacementSuppressed_ || !rememberWindowPlacement_ || IsLikelySnappedWindow(window_)) return;
         WINDOWPLACEMENT placement{ sizeof(placement) };
         if (!GetWindowPlacement(window_, &placement)) return;
         const RECT& rect = placement.rcNormalPosition;
@@ -2913,7 +2996,7 @@ private:
             overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
         const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : overlay_ == OverlayKind::Settings ? MulDiv(500, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
+            : overlay_ == OverlayKind::Settings ? MulDiv(570, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
             overlay_ == OverlayKind::Welcome ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(344, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
@@ -3166,11 +3249,11 @@ private:
             const bool compactSettings = SettingsUsesCompactLayout();
             const float generalTop = compactSettings ? 50.0f : 66.0f;
             const float viewerTop = compactSettings ? 154.0f : 185.0f;
-            const float appearanceTop = compactSettings ? 232.0f : 278.0f;
-            const float themeLabelTop = compactSettings ? 252.0f : 304.0f;
-            const float separatorTop = compactSettings ? 318.0f : 386.0f;
-            const float resetTitleTop = compactSettings ? 330.0f : 400.0f;
-            const float resetDescriptionTop = compactSettings ? 350.0f : 422.0f;
+            const float appearanceTop = compactSettings ? 285.0f : 330.0f;
+            const float themeLabelTop = compactSettings ? 305.0f : 356.0f;
+            const float separatorTop = compactSettings ? 370.0f : 430.0f;
+            const float resetTitleTop = compactSettings ? 384.0f : 444.0f;
+            const float resetDescriptionTop = compactSettings ? 406.0f : 466.0f;
             group(L"GENERAL", generalTop);
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"Remember window position and size", rememberWindowPlacement_);
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"Include hidden images in folder navigation", includeHiddenImages_);
@@ -3178,6 +3261,8 @@ private:
             group(L"VIEWER", viewerTop);
             drawToggle(3, ButtonKind::SettingsShowZoomHud, L"Show zoom percentage", showZoomPercentage_);
             drawToggle(4, ButtonKind::SettingsAnimations, L"Animations and fade effects", animationsEnabled_);
+            drawToggle(5, ButtonKind::SettingsReverseWheelZoom, L"Reverse mouse wheel zoom direction", reverseMouseWheelZoom_);
+            drawToggle(6, ButtonKind::SettingsAlwaysShowFilmstrip, L"Always show filmstrip", alwaysShowFilmstrip_);
             group(L"APPEARANCE", appearanceTop);
             DrawOverlayText(L"Theme", settingsLeft, static_cast<float>(bounds.top) + themeLabelTop * dpiScale, settingsWidth,
                 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
@@ -3209,7 +3294,7 @@ private:
                 else if (hoveredButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), buttonHover.Get());
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"Reset Viewtrious to Defaults", resetButton.left, resetButton.top, resetButton.right - resetButton.left,
+            DrawOverlayText(L"Reset", resetButton.left, resetButton.top, resetButton.right - resetButton.left,
                 resetButton.bottom - resetButton.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::ResetConfirm) {
             DrawOverlayText(L"Reset Viewtrious to defaults?", left, static_cast<float>(bounds.top) + panelPadding,
@@ -3742,13 +3827,14 @@ private:
         renderTarget_->FillRectangle(rect(frame.resolutionSeparator), separatorBrush.Get());
         renderTarget_->FillRectangle(rect(frame.fileSizeSeparator), separatorBrush.Get());
 
-        const bool tutorialMetadata = tutorialStep_ == TutorialStep::ImageDetails && !HasImage();
+        const bool tutorialMetadata = tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails;
+        const bool hideTutorialMetadata = tutorialPresentation_ && !tutorialMetadata;
         ID2D1Brush* activeMetadataBrush = tutorialMetadata ? tutorialMetadataBrush.Get() : metadataBrush.Get();
-        DrawTitleText(tutorialMetadata ? L"1920 x 1080" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
-        DrawTitleText(tutorialMetadata ? L"1.2 MB" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);
+        DrawTitleText(tutorialMetadata ? L"1920 x 1080" : hideTutorialMetadata ? L"" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
+        DrawTitleText(tutorialMetadata ? L"1.2 MB" : hideTutorialMetadata ? L"" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);
         const float filenameWidth = static_cast<float>(std::max(0L,
             frame.titleBarContent.right - frame.filenameLeft - MulDiv(8, GetDpiForWindow(window_), 96)));
-        DrawTitleText(tutorialMetadata ? L"viewtrious.png" : filenameText_, static_cast<float>(frame.filenameLeft), filenameWidth,
+        DrawTitleText(tutorialMetadata ? L"viewtrious.png" : hideTutorialMetadata ? L"" : filenameText_, static_cast<float>(frame.filenameLeft), filenameWidth,
             tutorialMetadata ? tutorialMetadataBrush.Get() : filenameBrush.Get(), true, false);
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
@@ -3850,11 +3936,25 @@ private:
     bool deleteWarningSuppressOnConfirm_ = false;
     bool showZoomPercentage_ = true;
     bool animationsEnabled_ = true;
+    bool reverseMouseWheelZoom_ = false;
+    bool alwaysShowFilmstrip_ = false;
     ThemePreference themePreference_ = ThemePreference::System;
     bool onboardingRequired_ = false;
     bool tourPending_ = false;
     TutorialStep tutorialStep_ = TutorialStep::None;
     bool tutorialContextMenu_ = false;
+    bool tutorialPresentation_ = false;
+    bool tutorialPlacementSuppressed_ = false;
+    bool tutorialWasFullscreen_ = false;
+    bool tutorialWasMaximized_ = false;
+    RECT tutorialWindowRect_{};
+    float tutorialZoom_ = 1.0f;
+    D2D1_POINT_2F tutorialPan_ = D2D1::Point2F();
+    bool tutorialFitToWindow_ = true;
+    float tutorialFilmstripScroll_ = 0.0f;
+    float tutorialFilmstripOpacity_ = 0.0f;
+    FilmstripVisibilityState tutorialFilmstripState_ = FilmstripVisibilityState::Hidden;
+    UINT tutorialFilmstripHoldDurationMs_ = 2000;
     bool fullscreen_ = false;
     CaptionButton hoveredCaptionButton_ = CaptionButton::None;
     CaptionButton pressedCaptionButton_ = CaptionButton::None;
@@ -3974,7 +4074,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         ScreenToClient(window, &point);
         const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
         if (viewer->FilmstripContains(point)) viewer->ScrollFilmstrip(-wheelUnits * (viewer->FilmstripThumbnailHeight() + viewer->FilmstripGap()));
-        else viewer->ZoomAt(point, std::pow(kWheelZoomStep, wheelUnits));
+        else viewer->ZoomAt(point, viewer->WheelZoomFactor(wheelUnits));
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
@@ -4227,8 +4327,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == VK_F11) { viewer->ToggleFullscreen(); return 0; }
         if (wParam == VK_RIGHT) { viewer->Navigate(1); return 0; }
         if (wParam == VK_LEFT) { viewer->Navigate(-1); return 0; }
-        if (wParam == VK_OEM_PLUS || wParam == VK_ADD || wParam == L'=') { viewer->ZoomCentered(kZoomStep); return 0; }
-        if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) { viewer->ZoomCentered(1.0f / kZoomStep); return 0; }
+        if (wParam == VK_OEM_PLUS || wParam == VK_ADD || wParam == L'=') { viewer->ZoomCentered(kWheelZoomStep); return 0; }
+        if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) { viewer->ZoomCentered(1.0f / kWheelZoomStep); return 0; }
         if (wParam == L'0' || wParam == VK_NUMPAD0) { viewer->FitToWindow(); return 0; }
         break;
     case WM_DESTROY: viewer->SaveWindowPlacement(); PostQuitMessage(0); return 0;

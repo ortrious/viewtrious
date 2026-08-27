@@ -59,7 +59,7 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
@@ -116,7 +116,9 @@ bool IsSupportedExtension(const fs::path& path) {
     return extension == L".jpg" || extension == L".jpeg" || extension == L".png" ||
         extension == L".bmp" || extension == L".gif" || extension == L".tif" ||
         extension == L".tiff" || extension == L".ico" || extension == L".webp" ||
-        extension == L".heic" || extension == L".heif" || extension == L".avif";
+        extension == L".heic" || extension == L".heif" || extension == L".avif" ||
+        extension == L".dng" || extension == L".cr2" || extension == L".cr3" ||
+        extension == L".nef" || extension == L".arw" || extension == L".raf";
 }
 
 std::wstring LowercaseExtension(const std::wstring& path) {
@@ -523,7 +525,7 @@ public:
         ComPtr<IFileOpenDialog> dialog;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
         static const COMDLG_FILTERSPEC filters[] = {
-            { L"Image files", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif" },
+            { L"Supported images", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf" },
             { L"All files", L"*.*" },
         };
         dialog->SetFileTypes(ARRAYSIZE(filters), filters);
@@ -711,7 +713,10 @@ public:
         GetWindowRect(window_, &current);
         MONITORINFO monitor{ sizeof(monitor) };
         GetMonitorInfoW(MonitorFromRect(&current, MONITOR_DEFAULTTONEAREST), &monitor);
-        const int width = 800, height = 600;
+        RECT tutorialBounds{ 0, 0, 800, 600 };
+        AdjustWindowRectEx(&tutorialBounds, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        const int width = tutorialBounds.right - tutorialBounds.left;
+        const int height = tutorialBounds.bottom - tutorialBounds.top;
         const int maxLeft = std::max(monitor.rcWork.left, monitor.rcWork.right - width);
         const int maxTop = std::max(monitor.rcWork.top, monitor.rcWork.bottom - height);
         const int left = std::clamp(static_cast<int>(current.left), static_cast<int>(monitor.rcWork.left), maxLeft);
@@ -843,8 +848,19 @@ public:
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 438 : 498, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 550 : 616, dpi, 96);
         return { bounds.left + padding, top, bounds.left + padding + MulDiv(100, dpi, 96), top + MulDiv(36, dpi, 96) };
+    }
+    RECT GetSettingsDefaultAppsButtonBounds() const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int padding = MulDiv(18, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 434 : 496, dpi, 96);
+        return { bounds.left + padding, top, bounds.left + padding + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
+    }
+    bool SettingsDefaultAppsButtonContains(POINT point) const {
+        const RECT button = GetSettingsDefaultAppsButtonBounds();
+        return overlay_ == OverlayKind::Settings && PtInRect(&button, point);
     }
     bool SettingsResetButtonContains(POINT point) const {
         const RECT button = GetSettingsResetButtonBounds();
@@ -1202,6 +1218,7 @@ public:
             if (contains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
             if (contains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
             if (contains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
+            if (SettingsDefaultAppsButtonContains(point)) return ButtonKind::SettingsDefaultApps;
         }
         if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
         if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
@@ -1327,6 +1344,7 @@ public:
         else if (button == ButtonKind::SettingsThemeSystem) SetThemePreference(ThemePreference::System);
         else if (button == ButtonKind::SettingsThemeLight) SetThemePreference(ThemePreference::Light);
         else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
+        else if (button == ButtonKind::SettingsDefaultApps) OpenRegisteredDefaultApps();
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
         else if (button == ButtonKind::ResetCancel) DismissOverlay();
         else if (button == ButtonKind::ResetConfirm) ResetToDefaults();
@@ -1349,10 +1367,7 @@ public:
         else if (button == ButtonKind::DefaultAppsHelperOpen) {
             overlay_ = OverlayKind::Welcome;
             CompleteWelcome(true);
-            INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
-                L"ms-settings:defaultapps?registeredAppUser=Viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
-            if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
-            if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
+            OpenRegisteredDefaultApps();
         }
         else if (button == ButtonKind::FeedbackBug || button == ButtonKind::FeedbackFeature) {
             DismissOverlay();
@@ -1686,6 +1701,7 @@ private:
             { L".bmp", L"Viewtrious.bmp", L"Viewtrious BMP Image" },
             { L".heic", L"Viewtrious.heic", L"Viewtrious HEIC Image" },
             { L".heif", L"Viewtrious.heif", L"Viewtrious HEIF Image" },
+            { L".dng", L"Viewtrious.dng", L"Viewtrious DNG Image" },
         };
         for (const Association& association : associations) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
@@ -1697,6 +1713,13 @@ private:
         WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
         WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"Viewtrious image viewer");
         WriteRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
+    }
+
+    void OpenRegisteredDefaultApps() {
+        INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
+            L"ms-settings:defaultapps?registeredAppUser=Viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
+        if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
+        if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
     }
 
     void ToggleOpenWithSubmenu() {
@@ -2996,7 +3019,7 @@ private:
             overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
         const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : overlay_ == OverlayKind::Settings ? MulDiv(570, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
+            : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
             overlay_ == OverlayKind::Welcome ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(344, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
@@ -3252,8 +3275,11 @@ private:
             const float appearanceTop = compactSettings ? 285.0f : 330.0f;
             const float themeLabelTop = compactSettings ? 305.0f : 356.0f;
             const float separatorTop = compactSettings ? 370.0f : 430.0f;
-            const float resetTitleTop = compactSettings ? 384.0f : 444.0f;
-            const float resetDescriptionTop = compactSettings ? 406.0f : 466.0f;
+            const float defaultTypesTitleTop = compactSettings ? 384.0f : 444.0f;
+            const float defaultTypesDescriptionTop = compactSettings ? 406.0f : 466.0f;
+            const float resetSeparatorTop = compactSettings ? 484.0f : 550.0f;
+            const float resetTitleTop = compactSettings ? 500.0f : 566.0f;
+            const float resetDescriptionTop = compactSettings ? 522.0f : 588.0f;
             group(L"GENERAL", generalTop);
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"Remember window position and size", rememberWindowPlacement_);
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"Include hidden images in folder navigation", includeHiddenImages_);
@@ -3280,6 +3306,25 @@ private:
             drawTheme(ThemePreference::Dark, ButtonKind::SettingsThemeDark, L"Dark");
             const float separatorY = static_cast<float>(bounds.top) + separatorTop * dpiScale;
             renderTarget_->DrawLine(D2D1::Point2F(settingsLeft, separatorY), D2D1::Point2F(settingsLeft + settingsWidth, separatorY), borderBrush.Get(), 1.0f);
+            group(L"DEFAULT FILE TYPES", defaultTypesTitleTop);
+            DrawOverlayText(L"Choose which image types open with Viewtrious.", settingsLeft,
+                static_cast<float>(bounds.top) + defaultTypesDescriptionTop * dpiScale, settingsWidth, 20.0f * dpiScale,
+                15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const RECT defaultAppsBounds = GetSettingsDefaultAppsButtonBounds();
+            const D2D1_RECT_F defaultAppsButton = D2D1::RectF(static_cast<float>(defaultAppsBounds.left), static_cast<float>(defaultAppsBounds.top),
+                static_cast<float>(defaultAppsBounds.right), static_cast<float>(defaultAppsBounds.bottom));
+            ComPtr<ID2D1SolidColorBrush> defaultAppsHover, defaultAppsPressed;
+            if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f/255,64.f/255,74.f/255), &defaultAppsHover)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f/255,80.f/255,92.f/255), &defaultAppsPressed))) {
+                if (pressedButton_ == ButtonKind::SettingsDefaultApps) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), defaultAppsPressed.Get());
+                else if (hoveredButton_ == ButtonKind::SettingsDefaultApps) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), defaultAppsHover.Get());
+            }
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
+            DrawOverlayText(L"Change file type defaults", defaultAppsButton.left, defaultAppsButton.top,
+                defaultAppsButton.right - defaultAppsButton.left, defaultAppsButton.bottom - defaultAppsButton.top,
+                16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            const float resetSeparatorY = static_cast<float>(bounds.top) + resetSeparatorTop * dpiScale;
+            renderTarget_->DrawLine(D2D1::Point2F(settingsLeft, resetSeparatorY), D2D1::Point2F(settingsLeft + settingsWidth, resetSeparatorY), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"Reset Viewtrious to Defaults", settingsLeft, static_cast<float>(bounds.top) + resetTitleTop * dpiScale,
                 settingsWidth, 20.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             DrawOverlayText(L"Removes preferences and app-owned data. Your images are never touched.", settingsLeft,

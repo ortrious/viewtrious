@@ -37,6 +37,7 @@ constexpr wchar_t kWindowClass[] = L"ViewtriousWindow";
 constexpr wchar_t kWindowTitle[] = L"Viewtrious";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
+constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
 constexpr int kLogoResourceId = 102;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
@@ -702,28 +703,31 @@ public:
         return overlay_ == OverlayKind::Feedback && PtInRect(&button, point);
     }
     bool CanvasNavigationButtonsVisible() const {
-        return source_ && !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
+        return source_ && navigationBuilt_ && navigationFiles_.size() > 1 &&
+            !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
     }
-    RECT GetCanvasNavigationButtonBounds(bool next) const {
+    RECT GetCanvasNavigationZoneBounds(bool next) const {
         RECT client{};
         GetClientRect(window_, &client);
         const UINT dpi = GetDpiForWindow(window_);
-        const int width = MulDiv(44, dpi, 96), height = MulDiv(80, dpi, 96), inset = MulDiv(16, dpi, 96);
         const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
-        const int top = canvasTop + std::max(0L, (client.bottom - canvasTop - height) / 2);
-        const int left = next ? client.right - inset - width : inset;
-        return { left, top, left + width, top + height };
+        const int desiredWidth = MulDiv(112, dpi, 96);
+        const int minimumCenterWidth = MulDiv(160, dpi, 96);
+        const int zoneWidth = std::min(desiredWidth, static_cast<int>(std::max(0L, (client.right - minimumCenterWidth) / 2)));
+        return next ? RECT{ client.right - zoneWidth, canvasTop, client.right, client.bottom } :
+            RECT{ 0, canvasTop, zoneWidth, client.bottom };
     }
-    bool CanvasNavigationButtonContains(POINT point, bool next) const {
-        const RECT bounds = GetCanvasNavigationButtonBounds(next);
-        return CanvasNavigationButtonsVisible() && PtInRect(&bounds, point);
+    ButtonKind CanvasNavigationZoneAt(POINT point) const {
+        if (!CanvasNavigationButtonsVisible()) return ButtonKind::None;
+        const RECT previous = GetCanvasNavigationZoneBounds(false);
+        if (PtInRect(&previous, point)) return ButtonKind::CanvasPrevious;
+        const RECT next = GetCanvasNavigationZoneBounds(true);
+        return PtInRect(&next, point) ? ButtonKind::CanvasNext : ButtonKind::None;
     }
     ButtonKind ButtonAt(POINT point) const {
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
-        if (CanvasNavigationButtonContains(point, false)) return ButtonKind::CanvasPrevious;
-        if (CanvasNavigationButtonContains(point, true)) return ButtonKind::CanvasNext;
         if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
         if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
         if (ResetConfirmationButtonContains(point, true)) return ButtonKind::ResetConfirm;
@@ -737,6 +741,78 @@ public:
         if (hoveredButton_ == button) return;
         hoveredButton_ = button;
         InvalidateRect(window_, nullptr, FALSE);
+    }
+    void AdvanceCanvasNavigationFade() {
+        if (!canvasNavigationFadeActive_) return;
+        const ULONGLONG elapsed = GetTickCount64() - canvasNavigationFadeStart_;
+        const auto advance = [elapsed](float& value, float start, float target) {
+            const float duration = target > start ? 100.0f : 180.0f;
+            const float progress = std::min(1.0f, static_cast<float>(elapsed) / duration);
+            value = start + (target - start) * progress;
+            return progress < 1.0f;
+        };
+        const bool previousActive = advance(canvasPreviousOpacity_, canvasPreviousFadeStartOpacity_, canvasPreviousTargetOpacity_);
+        const bool nextActive = advance(canvasNextOpacity_, canvasNextFadeStartOpacity_, canvasNextTargetOpacity_);
+        canvasNavigationFadeActive_ = previousActive || nextActive;
+        if (!canvasNavigationFadeActive_) KillTimer(window_, kCanvasNavigationFadeTimer);
+    }
+    void UpdateCanvasNavigationOpacity() {
+        AdvanceCanvasNavigationFade();
+        const auto targetFor = [this](ButtonKind button) {
+            if (canvasNavigationPressed_ == button) return 0.86f;
+            if (canvasNavigationHovered_ == button) return 0.60f;
+            return 0.08f;
+        };
+        const float previousTarget = targetFor(ButtonKind::CanvasPrevious);
+        const float nextTarget = targetFor(ButtonKind::CanvasNext);
+        if (std::abs(previousTarget - canvasPreviousOpacity_) < 0.001f && std::abs(nextTarget - canvasNextOpacity_) < 0.001f) return;
+        canvasPreviousFadeStartOpacity_ = canvasPreviousOpacity_;
+        canvasNextFadeStartOpacity_ = canvasNextOpacity_;
+        canvasPreviousTargetOpacity_ = previousTarget;
+        canvasNextTargetOpacity_ = nextTarget;
+        canvasNavigationFadeStart_ = GetTickCount64();
+        canvasNavigationFadeActive_ = true;
+        SetTimer(window_, kCanvasNavigationFadeTimer, 16, nullptr);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void UpdateCanvasNavigationFade() {
+        AdvanceCanvasNavigationFade();
+        if (canvasNavigationFadeActive_) InvalidateRect(window_, nullptr, FALSE);
+    }
+    void SetCanvasNavigationHover(ButtonKind button) {
+        if (button != ButtonKind::CanvasPrevious && button != ButtonKind::CanvasNext) button = ButtonKind::None;
+        if (canvasNavigationHovered_ == button) return;
+        canvasNavigationHovered_ = button;
+        UpdateCanvasNavigationOpacity();
+    }
+    void BeginCanvasNavigationClick(ButtonKind button, POINT point) {
+        canvasNavigationPressed_ = button;
+        canvasNavigationPressPoint_ = point;
+        UpdateCanvasNavigationOpacity();
+    }
+    bool CanvasNavigationPressed() const { return canvasNavigationPressed_ != ButtonKind::None; }
+    bool ContinueCanvasNavigationClick(POINT point) {
+        if (!CanvasNavigationPressed()) return false;
+        const int dragX = GetSystemMetrics(SM_CXDRAG);
+        const int dragY = GetSystemMetrics(SM_CYDRAG);
+        if (std::abs(point.x - canvasNavigationPressPoint_.x) <= dragX && std::abs(point.y - canvasNavigationPressPoint_.y) <= dragY) return false;
+        BeginPan(canvasNavigationPressPoint_);
+        if (!dragging_) return false;
+        canvasNavigationPressed_ = ButtonKind::None;
+        UpdateCanvasNavigationOpacity();
+        PanTo(point);
+        return true;
+    }
+    ButtonKind FinishCanvasNavigationClick(POINT point) {
+        const ButtonKind pressed = canvasNavigationPressed_;
+        canvasNavigationPressed_ = ButtonKind::None;
+        UpdateCanvasNavigationOpacity();
+        return pressed != ButtonKind::None && pressed == CanvasNavigationZoneAt(point) ? pressed : ButtonKind::None;
+    }
+    void CancelCanvasNavigationClick() {
+        if (!CanvasNavigationPressed()) return;
+        canvasNavigationPressed_ = ButtonKind::None;
+        UpdateCanvasNavigationOpacity();
     }
     void SetButtonPressed(ButtonKind button) {
         if (pressedButton_ == button) return;
@@ -921,6 +997,7 @@ public:
             });
         }
         navigationBuilt_ = true;
+        InvalidateRect(window_, nullptr, FALSE);
     }
 
     void Navigate(int direction) {
@@ -2097,27 +2174,20 @@ private:
         if (!CanvasNavigationButtonsVisible()) return;
         const UINT dpi = GetDpiForWindow(window_);
         const float scale = static_cast<float>(dpi) / 96.0f;
-        ComPtr<ID2D1SolidColorBrush> idle, hover, pressed, chevron;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.26f), &idle)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.48f), &hover)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.66f), &pressed)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.82f), &chevron))) return;
-        const auto draw = [&](bool next, ButtonKind button) {
-            const RECT bounds = GetCanvasNavigationButtonBounds(next);
-            const D2D1_RECT_F rect = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top),
-                static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
-            ID2D1Brush* background = pressedButton_ == button ? pressed.Get() : hoveredButton_ == button ? hover.Get() : idle.Get();
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, 7.0f * scale, 7.0f * scale), background);
-            const float centerX = (rect.left + rect.right) / 2.0f;
-            const float centerY = (rect.top + rect.bottom) / 2.0f;
-            const float offset = 7.0f * scale, height = 14.0f * scale;
+        const auto draw = [&](bool next, float opacity) {
+            const RECT bounds = GetCanvasNavigationZoneBounds(next);
+            ComPtr<ID2D1SolidColorBrush> chevron;
+            if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, opacity), &chevron))) return;
+            const float centerX = (static_cast<float>(bounds.left) + static_cast<float>(bounds.right)) / 2.0f;
+            const float centerY = (static_cast<float>(bounds.top) + static_cast<float>(bounds.bottom)) / 2.0f;
+            const float offset = 8.0f * scale, height = 16.0f * scale;
             const float startX = centerX + (next ? -offset : offset);
             const float tipX = centerX + (next ? offset : -offset);
             renderTarget_->DrawLine(D2D1::Point2F(startX, centerY - height), D2D1::Point2F(tipX, centerY), chevron.Get(), 2.4f * scale);
             renderTarget_->DrawLine(D2D1::Point2F(tipX, centerY), D2D1::Point2F(startX, centerY + height), chevron.Get(), 2.4f * scale);
         };
-        draw(false, ButtonKind::CanvasPrevious);
-        draw(true, ButtonKind::CanvasNext);
+        draw(false, canvasPreviousOpacity_);
+        draw(true, canvasNextOpacity_);
     }
 
     bool EnsureTitleTextFormat() {
@@ -3052,6 +3122,17 @@ private:
     bool copyFeedbackActive_ = false;
     bool feedbackIsWallpaper_ = false;
     ULONGLONG copyFeedbackStart_ = 0;
+    ButtonKind canvasNavigationHovered_ = ButtonKind::None;
+    ButtonKind canvasNavigationPressed_ = ButtonKind::None;
+    POINT canvasNavigationPressPoint_{};
+    float canvasPreviousOpacity_ = 0.08f;
+    float canvasNextOpacity_ = 0.08f;
+    float canvasPreviousFadeStartOpacity_ = 0.08f;
+    float canvasNextFadeStartOpacity_ = 0.08f;
+    float canvasPreviousTargetOpacity_ = 0.08f;
+    float canvasNextTargetOpacity_ = 0.08f;
+    ULONGLONG canvasNavigationFadeStart_ = 0;
+    bool canvasNavigationFadeActive_ = false;
     ButtonKind hoveredButton_ = ButtonKind::None;
     ButtonKind pressedButton_ = ButtonKind::None;
     bool resetInProgress_ = false;
@@ -3144,6 +3225,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point);
+        if (navigation != ButtonKind::None) {
+            viewer->BeginCanvasNavigationClick(navigation, point);
+            SetCapture(window);
+            return 0;
+        }
         const ButtonKind button = viewer->ButtonAt(point);
         if (button != ButtonKind::None) {
             viewer->SetButtonPressed(button);
@@ -3220,6 +3307,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (button != ButtonKind::None) {
             viewer->SetButtonPressed(button);
             SetCapture(window);
+        } else if (const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point); navigation != ButtonKind::None) {
+            viewer->BeginCanvasNavigationClick(navigation, point);
+            SetCapture(window);
         } else if (PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
             viewer->SetHamburgerPressed(true);
             SetCapture(window);
@@ -3266,14 +3356,25 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const FrameMetrics frame = GetFrameMetrics(window);
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         viewer->SetButtonHover(viewer->ButtonAt(point));
+        viewer->SetCanvasNavigationHover(viewer->CanvasNavigationZoneAt(point));
         viewer->SetHamburgerHover(!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point));
         TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE, window, 0 };
         TrackMouseEvent(&track);
+        if (viewer->CanvasNavigationPressed()) {
+            viewer->ContinueCanvasNavigationClick(point);
+            return 0;
+        }
         if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) viewer->PanTo(point);
         return 0;
     }
-    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
+    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
     case WM_LBUTTONUP: {
+        if (viewer->CanvasNavigationPressed()) {
+            const ButtonKind navigation = viewer->FinishCanvasNavigationClick({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            if (GetCapture() == window) ReleaseCapture();
+            if (navigation != ButtonKind::None) viewer->InvokeButton(navigation);
+            return 0;
+        }
         if (viewer->PressedButton() != ButtonKind::None) {
             const ButtonKind pressed = viewer->PressedButton();
             const ButtonKind released = viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
@@ -3319,9 +3420,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->CancelCanvasNavigationClick(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: if (!viewer->TutorialActive()) viewer->OpenContextMenu({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); return 0;
-    case WM_TIMER: if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; } break;
+    case WM_TIMER:
+        if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; }
+        if (wParam == kCanvasNavigationFadeTimer) { viewer->UpdateCanvasNavigationFade(); return 0; }
+        break;
     case WM_ACTIVATE: if (LOWORD(wParam) != WA_INACTIVE) viewer->ResumePendingTour(); break;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;

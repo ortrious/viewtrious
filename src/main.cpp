@@ -2165,6 +2165,24 @@ private:
             layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
+    void DrawMenuGlyph(wchar_t glyph, float left, float top, float width, float height, ID2D1Brush* brush, bool mirror = false) {
+        const wchar_t* const familyName = HasSystemFontFamily(L"Segoe Fluent Icons") ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets";
+        ComPtr<IDWriteTextFormat> format;
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        if (FAILED(dwriteFactory_->CreateTextFormat(familyName, nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, 16.0f * scale, L"", &format))) return;
+        format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        ComPtr<IDWriteTextLayout> layout;
+        if (SUCCEEDED(dwriteFactory_->CreateTextLayout(&glyph, 1, format.Get(), width, height, &layout))) {
+            D2D1_MATRIX_3X2_F transform{};
+            renderTarget_->GetTransform(&transform);
+            if (mirror) renderTarget_->SetTransform(D2D1::Matrix3x2F::Scale(-1.0f, 1.0f, D2D1::Point2F(left + width / 2.0f, top + height / 2.0f)) * transform);
+            renderTarget_->DrawTextLayout(D2D1::Point2F(left, top), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            if (mirror) renderTarget_->SetTransform(transform);
+        }
+    }
+
     void DrawTitleText(const std::wstring& text, float left, float width, ID2D1Brush* brush, bool trim, bool center) {
         if (text.empty() || width <= 0.0f || !EnsureTitleTextFormat()) return;
         ComPtr<IDWriteTextLayout> layout;
@@ -2536,11 +2554,13 @@ private:
         const auto row = [&](int top) { return D2D1::RectF(static_cast<float>(bounds.left + 1), static_cast<float>(top),
             static_cast<float>(bounds.right - 1), static_cast<float>(top + rowHeight)); };
         const int firstTop = bounds.top + MulDiv(4, dpi, 96);
-        const auto drawItem = [&](DropdownItem item, int top, const wchar_t* label) {
+        const int iconLeft = bounds.left + MulDiv(14, dpi, 96), iconWidth = MulDiv(18, dpi, 96), labelLeft = iconLeft + MulDiv(28, dpi, 96);
+        const auto drawItem = [&](DropdownItem item, int top, const wchar_t* label, wchar_t glyph) {
             if (dropdownPressed_ == item) renderTarget_->FillRectangle(row(top), pressedBrush.Get());
             else if (dropdownHovered_ == item) renderTarget_->FillRectangle(row(top), hoverBrush.Get());
-            DrawOverlayText(label, static_cast<float>(bounds.left + MulDiv(14, dpi, 96)), static_cast<float>(top),
-                static_cast<float>(bounds.right - bounds.left - MulDiv(28, dpi, 96)), static_cast<float>(rowHeight),
+            DrawMenuGlyph(glyph, static_cast<float>(iconLeft), static_cast<float>(top), static_cast<float>(iconWidth), static_cast<float>(rowHeight), textBrush.Get());
+            DrawOverlayText(label, static_cast<float>(labelLeft), static_cast<float>(top),
+                static_cast<float>(bounds.right - labelLeft - MulDiv(14, dpi, 96)), static_cast<float>(rowHeight),
                 13.0f, DWRITE_FONT_WEIGHT_NORMAL, textBrush.Get(), true);
         };
         const int separatorGap = MulDiv(9, dpi, 96);
@@ -2550,16 +2570,16 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(bounds.left + MulDiv(12, dpi, 96)), y), D2D1::Point2F(static_cast<float>(bounds.right - MulDiv(12, dpi, 96)), y), borderBrush.Get());
             top += separatorGap;
         };
-        drawItem(DropdownItem::OpenFile, top, L"Open File..."); top += rowHeight;
-        drawItem(DropdownItem::Settings, top, L"Settings"); top += rowHeight;
+        drawItem(DropdownItem::OpenFile, top, L"Open File...", L'\uE8B7'); top += rowHeight;
+        drawItem(DropdownItem::Settings, top, L"Settings", L'\uE713'); top += rowHeight;
         separator();
-        drawItem(DropdownItem::QuickTour, top, L"Quick Tutorial"); top += rowHeight;
-        drawItem(DropdownItem::KeyboardShortcuts, top, L"Keyboard Shortcuts"); top += rowHeight;
+        drawItem(DropdownItem::QuickTour, top, L"Quick Tutorial", L'\uE897'); top += rowHeight;
+        drawItem(DropdownItem::KeyboardShortcuts, top, L"Keyboard Shortcuts", L'\uE765'); top += rowHeight;
         separator();
-        drawItem(DropdownItem::About, top, L"About"); top += rowHeight;
-        drawItem(DropdownItem::Feedback, top, L"Feedback"); top += rowHeight;
+        drawItem(DropdownItem::About, top, L"About", L'\uE946'); top += rowHeight;
+        drawItem(DropdownItem::Feedback, top, L"Feedback", L'\uE939'); top += rowHeight;
         separator();
-        drawItem(DropdownItem::Close, top, L"Close");
+        drawItem(DropdownItem::Close, top, L"Close", L'\uE8BB');
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 
@@ -2581,14 +2601,17 @@ private:
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), surfaceBrush.Get());
         const UINT dpi = GetDpiForWindow(window_); const int rowHeight = MulDiv(38, dpi, 96); const int gap = MulDiv(9, dpi, 96);
         int top = bounds.top + MulDiv(kContextMenuPaddingDip, dpi, 96);
-        const auto drawItem = [&](ContextAction action, const wchar_t* label) {
+        const int iconLeft = bounds.left + MulDiv(14, dpi, 96), iconWidth = MulDiv(18, dpi, 96), labelLeft = iconLeft + MulDiv(28, dpi, 96);
+        const auto drawItem = [&](ContextAction action, const wchar_t* label, wchar_t glyph) {
             const bool enabled = ContextActionEnabled(action);
             const D2D1_RECT_F row = D2D1::RectF(static_cast<float>(bounds.left + 1), static_cast<float>(top), static_cast<float>(bounds.right - 1), static_cast<float>(top + rowHeight));
             if (enabled && contextPressed_ == action) renderTarget_->FillRectangle(row, pressedBrush.Get());
             else if (enabled && contextHovered_ == action) renderTarget_->FillRectangle(row, hoverBrush.Get());
-            const int rightPadding = action == ContextAction::OpenWith ? MulDiv(48, dpi, 96) : MulDiv(28, dpi, 96);
-            DrawOverlayText(label, static_cast<float>(bounds.left + MulDiv(14, dpi, 96)), static_cast<float>(top), static_cast<float>(bounds.right - bounds.left - rightPadding),
-                static_cast<float>(rowHeight), 13.0f, DWRITE_FONT_WEIGHT_NORMAL, enabled ? textBrush.Get() : disabledBrush.Get(), true);
+            const int rightPadding = action == ContextAction::OpenWith ? MulDiv(48, dpi, 96) : MulDiv(14, dpi, 96);
+            ID2D1Brush* itemBrush = enabled ? textBrush.Get() : disabledBrush.Get();
+            DrawMenuGlyph(glyph, static_cast<float>(iconLeft), static_cast<float>(top), static_cast<float>(iconWidth), static_cast<float>(rowHeight), itemBrush, action == ContextAction::RotateLeft);
+            DrawOverlayText(label, static_cast<float>(labelLeft), static_cast<float>(top), static_cast<float>(bounds.right - labelLeft - rightPadding),
+                static_cast<float>(rowHeight), 13.0f, DWRITE_FONT_WEIGHT_NORMAL, itemBrush, true);
             top += rowHeight;
         };
         const auto separator = [&] {
@@ -2596,14 +2619,14 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(bounds.left + MulDiv(12, dpi, 96)), y), D2D1::Point2F(static_cast<float>(bounds.right - MulDiv(12, dpi, 96)), y), borderBrush.Get());
             top += gap;
         };
-        drawItem(ContextAction::Fullscreen, fullscreen_ ? L"Exit Fullscreen" : L"Fullscreen"); separator();
-        drawItem(ContextAction::RotateLeft, L"Rotate Left"); drawItem(ContextAction::RotateRight, L"Rotate Right"); separator();
+        drawItem(ContextAction::Fullscreen, fullscreen_ ? L"Exit Fullscreen" : L"Fullscreen", fullscreen_ ? L'\uE73F' : L'\uE740'); separator();
+        drawItem(ContextAction::RotateLeft, L"Rotate Left", L'\uE7AD'); drawItem(ContextAction::RotateRight, L"Rotate Right", L'\uE7AD'); separator();
         const int openWithTop = top;
-        drawItem(ContextAction::OpenWith, L"Open With");
+        drawItem(ContextAction::OpenWith, L"Open With", L'\uE8A7');
         DrawOverlayText(L">", static_cast<float>(bounds.right - MulDiv(28, dpi, 96)), static_cast<float>(openWithTop), static_cast<float>(MulDiv(16, dpi, 96)),
             static_cast<float>(rowHeight), 14.0f, DWRITE_FONT_WEIGHT_NORMAL, ContextActionEnabled(ContextAction::OpenWith) ? textBrush.Get() : disabledBrush.Get(), true, true);
-        drawItem(ContextAction::Copy, L"Copy"); drawItem(ContextAction::Print, L"Print"); separator();
-        drawItem(ContextAction::SetBackground, L"Set as Desktop Background"); separator(); drawItem(ContextAction::Delete, L"Delete");
+        drawItem(ContextAction::Copy, L"Copy", L'\uE8C8'); drawItem(ContextAction::Print, L"Print", L'\uE749'); separator();
+        drawItem(ContextAction::SetBackground, L"Set as Desktop Background", L'\uE7F4'); separator(); drawItem(ContextAction::Delete, L"Delete", L'\uE74D');
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 

@@ -1171,8 +1171,9 @@ private:
         if (FAILED(SHOpenWithDialog(window_, &info))) ShowActionError(L"Windows could not open the Open With chooser for this image.");
     }
 
-    void StartCopyFeedback(const wchar_t* text = L"Copied to Clipboard") {
+    void StartCopyFeedback(const wchar_t* text = L"Copied to Clipboard", bool wallpaper = false) {
         feedbackText_ = text;
+        feedbackIsWallpaper_ = wallpaper;
         copyFeedbackStart_ = GetTickCount64();
         copyFeedbackActive_ = true;
         SetTimer(window_, kCopyFeedbackTimer, 16, nullptr);
@@ -1205,9 +1206,9 @@ private:
         StartCopyFeedback();
     }
 
-    static std::wstring DescribeHresult(HRESULT hr) {
-        wchar_t value[96]{};
-        swprintf_s(value, L"0x%08X (%ld), code %u", static_cast<unsigned int>(hr), static_cast<long>(hr), HRESULT_CODE(hr));
+    static std::wstring DescribeWallpaperFailure(HRESULT hr) {
+        wchar_t value[16]{};
+        swprintf_s(value, L"0x%08X", static_cast<unsigned int>(hr));
         LPWSTR message = nullptr;
         const DWORD length = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
             nullptr, static_cast<DWORD>(hr), 0, reinterpret_cast<LPWSTR>(&message), 0, nullptr);
@@ -1221,107 +1222,35 @@ private:
         return result;
     }
 
-    static void AppendDiagnostic(std::wstring& diagnostics, const wchar_t* label, const std::wstring& value) {
-        diagnostics += label;
-        diagnostics += L": ";
-        diagnostics += value;
-        diagnostics += L"\r\n";
+    void ShowWallpaperFailure(const wchar_t* stage, HRESULT hr) const {
+        const std::wstring message = std::wstring(stage) + L"\n\n" + DescribeWallpaperFailure(hr);
+        MessageBoxW(window_, message.c_str(), L"Viewtrious", MB_OK | MB_ICONWARNING);
     }
 
-    void CaptureStagedWallpaperState(const std::wstring& path, std::wstring& diagnostics) const {
-        AppendDiagnostic(diagnostics, L"Staged path", path);
-        AppendDiagnostic(diagnostics, L"Path character length", std::to_wstring(path.size()));
-        const DWORD attributes = GetFileAttributesW(path.c_str());
-        const bool exists = attributes != INVALID_FILE_ATTRIBUTES;
-        AppendDiagnostic(diagnostics, L"File exists", exists ? L"yes" : L"no");
-        wchar_t attributeText[32]{};
-        swprintf_s(attributeText, L"0x%08X", attributes);
-        AppendDiagnostic(diagnostics, L"File attributes", attributeText);
-        LARGE_INTEGER size{};
-        HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file == INVALID_HANDLE_VALUE) {
-            AppendDiagnostic(diagnostics, L"File size query", DescribeHresult(HRESULT_FROM_WIN32(GetLastError())));
-        } else {
-            const BOOL sizeResult = GetFileSizeEx(file, &size);
-            CloseHandle(file);
-            AppendDiagnostic(diagnostics, L"File byte size", sizeResult ? std::to_wstring(size.QuadPart) : DescribeHresult(HRESULT_FROM_WIN32(GetLastError())));
-        }
-
-        ComPtr<IWICBitmapDecoder> decoder;
-        HRESULT validation = wicFactory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
-        AppendDiagnostic(diagnostics, L"WIC validation", DescribeHresult(validation));
-        ComPtr<IWICBitmapFrameDecode> frame;
-        if (SUCCEEDED(validation)) validation = decoder->GetFrame(0, &frame);
-        UINT width = 0, height = 0;
-        if (SUCCEEDED(validation)) validation = frame->GetSize(&width, &height);
-        if (SUCCEEDED(validation)) AppendDiagnostic(diagnostics, L"Decoded dimensions", std::to_wstring(width) + L" x " + std::to_wstring(height));
-        WICPixelFormatGUID format{};
-        if (SUCCEEDED(validation)) validation = frame->GetPixelFormat(&format);
-        if (SUCCEEDED(validation)) {
-            wchar_t formatText[64]{};
-            StringFromGUID2(format, formatText, ARRAYSIZE(formatText));
-            AppendDiagnostic(diagnostics, L"Decoded pixel format", formatText);
-        }
-        if (FAILED(validation)) AppendDiagnostic(diagnostics, L"WIC decode detail", DescribeHresult(validation));
-    }
-
-    void ShowWallpaperDiagnostic(const std::wstring& diagnostics) const {
-        MessageBoxW(window_, diagnostics.c_str(), L"Viewtrious Wallpaper Diagnostics", MB_OK | MB_ICONWARNING);
+    static bool SourcePathRejectedByWallpaper(HRESULT hr) {
+        return hr == E_INVALIDARG || hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) ||
+            hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_INVALID_DATA) ||
+            hr == HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     }
 
     void SetDesktopBackground() {
         if (currentPath_.empty()) return;
-        std::wstring diagnostics = L"Viewtrious wallpaper apply diagnostics\r\n\r\n";
-        APTTYPE apartmentType{};
-        APTTYPEQUALIFIER apartmentQualifier{};
-        const HRESULT apartmentResult = CoGetApartmentType(&apartmentType, &apartmentQualifier);
-        AppendDiagnostic(diagnostics, L"COM apartment query", DescribeHresult(apartmentResult));
-        if (SUCCEEDED(apartmentResult)) AppendDiagnostic(diagnostics, L"COM apartment type", std::to_wstring(static_cast<int>(apartmentType)));
-
         ComPtr<IDesktopWallpaper> wallpaper;
         const HRESULT createResult = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&wallpaper));
-        AppendDiagnostic(diagnostics, L"CoCreateInstance(IDesktopWallpaper)", DescribeHresult(createResult));
-        if (FAILED(createResult)) { ShowWallpaperDiagnostic(diagnostics); return; }
-
-        UINT monitorCount = 0;
-        const HRESULT countResult = wallpaper->GetMonitorDevicePathCount(&monitorCount);
-        AppendDiagnostic(diagnostics, L"GetMonitorDevicePathCount", DescribeHresult(countResult));
-        if (SUCCEEDED(countResult)) AppendDiagnostic(diagnostics, L"Monitor count", std::to_wstring(monitorCount));
-        DESKTOP_WALLPAPER_POSITION position{};
-        const HRESULT positionResult = wallpaper->GetPosition(&position);
-        AppendDiagnostic(diagnostics, L"GetPosition", DescribeHresult(positionResult));
-        if (SUCCEEDED(positionResult)) AppendDiagnostic(diagnostics, L"Current wallpaper position", std::to_wstring(static_cast<int>(position)));
-        LPWSTR currentWallpaper = nullptr;
-        const HRESULT currentResult = wallpaper->GetWallpaper(nullptr, &currentWallpaper);
-        AppendDiagnostic(diagnostics, L"GetWallpaper(nullptr)", DescribeHresult(currentResult));
-        if (currentWallpaper) { AppendDiagnostic(diagnostics, L"Current all-monitor wallpaper", currentWallpaper); CoTaskMemFree(currentWallpaper); }
-
-        for (UINT index = 0; SUCCEEDED(countResult) && index < monitorCount; ++index) {
-            LPWSTR monitorId = nullptr, monitorWallpaper = nullptr;
-            const HRESULT monitorResult = wallpaper->GetMonitorDevicePathAt(index, &monitorId);
-            AppendDiagnostic(diagnostics, (L"Monitor " + std::to_wstring(index) + L" device path").c_str(),
-                SUCCEEDED(monitorResult) && monitorId ? monitorId : DescribeHresult(monitorResult));
-            HRESULT monitorWallpaperResult = E_FAIL;
-            if (SUCCEEDED(monitorResult)) monitorWallpaperResult = wallpaper->GetWallpaper(monitorId, &monitorWallpaper);
-            AppendDiagnostic(diagnostics, (L"Monitor " + std::to_wstring(index) + L" GetWallpaper").c_str(), DescribeHresult(monitorWallpaperResult));
-            if (monitorWallpaper) { AppendDiagnostic(diagnostics, (L"Monitor " + std::to_wstring(index) + L" wallpaper").c_str(), monitorWallpaper); CoTaskMemFree(monitorWallpaper); }
-            if (monitorId) CoTaskMemFree(monitorId);
-        }
-
+        if (FAILED(createResult)) { ShowWallpaperFailure(L"Windows could not create the desktop wallpaper service.", createResult); return; }
         const HRESULT directResult = wallpaper->SetWallpaper(nullptr, currentPath_.c_str());
-        AppendDiagnostic(diagnostics, L"SetWallpaper(nullptr, original path)", DescribeHresult(directResult));
-        if (SUCCEEDED(directResult)) { StartCopyFeedback(L"Desktop background updated"); return; }
+        if (SUCCEEDED(directResult)) { StartCopyFeedback(L"Desktop background updated", true); return; }
+        if (!SourcePathRejectedByWallpaper(directResult)) {
+            ShowWallpaperFailure(L"Windows could not apply this image as the desktop background.", directResult);
+            return;
+        }
 
         std::wstring wallpaperPath;
         const HRESULT stagingResult = ExportDesktopWallpaper(wallpaperPath);
-        AppendDiagnostic(diagnostics, L"Wallpaper staging fallback", DescribeHresult(stagingResult));
-        CaptureStagedWallpaperState(wallpaperPath, diagnostics);
-        if (FAILED(stagingResult)) { ShowWallpaperDiagnostic(diagnostics); return; }
+        if (FAILED(stagingResult)) { ShowWallpaperFailure(L"Viewtrious could not create a compatible desktop background.", stagingResult); return; }
         const HRESULT fallbackResult = wallpaper->SetWallpaper(nullptr, wallpaperPath.c_str());
-        AppendDiagnostic(diagnostics, L"SetWallpaper(nullptr, staged fallback)", DescribeHresult(fallbackResult));
-        if (FAILED(fallbackResult)) { ShowWallpaperDiagnostic(diagnostics); return; }
-        StartCopyFeedback(L"Desktop background updated");
+        if (FAILED(fallbackResult)) { ShowWallpaperFailure(L"Windows could not apply the compatible desktop background.", fallbackResult); return; }
+        StartCopyFeedback(L"Desktop background updated", true);
     }
 
     HRESULT GetWallpaperStagingDirectory(fs::path& directory) const {
@@ -1338,7 +1267,7 @@ private:
         if (FAILED(GetWallpaperStagingDirectory(directory))) return;
         const fs::path wallpaperPath = directory / L"current.bmp";
         ComPtr<IDesktopWallpaper> wallpaper;
-        HRESULT wallpaperResult = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wallpaper));
+        HRESULT wallpaperResult = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&wallpaper));
         bool preserveActiveFile = FAILED(wallpaperResult);
         UINT monitorCount = 0;
         if (SUCCEEDED(wallpaperResult)) wallpaperResult = wallpaper->GetMonitorDevicePathCount(&monitorCount);
@@ -2316,7 +2245,7 @@ private:
             const D2D1_SIZE_F logo = aboutLogo_->GetSize();
             const float width = std::min(440.0f * scale, target.width - 48.0f * scale);
             const float height = width * logo.height / logo.width;
-            const float left = (target.width - width) / 2.0f;
+            const float left = (target.width - width) / 2.0f - 16.0f * scale;
             renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(left, groupTop, left + width, groupTop + height), 1.0f,
                 D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         }
@@ -2786,9 +2715,53 @@ private:
         const float totalHeight = glyph + gap + textHeight;
         const float x = (size.width - glyph) / 2.0f;
         const float y = top + (size.height - top - totalHeight) / 2.0f;
-        const D2D1_ROUNDED_RECT rear=D2D1::RoundedRect(D2D1::RectF(x,y,x+glyph-offset,y+glyph-offset),18.f*scale,18.f*scale), front=D2D1::RoundedRect(D2D1::RectF(x+offset,y+offset,x+glyph,y+glyph),18.f*scale,18.f*scale);
-        renderTarget_->DrawRoundedRectangle(rear,outline.Get(),stroke+3.f*scale); renderTarget_->DrawRoundedRectangle(front,outline.Get(),stroke+3.f*scale);
-        renderTarget_->DrawRoundedRectangle(rear,brush.Get(),stroke); renderTarget_->DrawRoundedRectangle(front,brush.Get(),stroke);
+        if (feedbackIsWallpaper_) {
+            D2D1_STROKE_STYLE_PROPERTIES properties = D2D1::StrokeStyleProperties();
+            properties.startCap = D2D1_CAP_STYLE_ROUND;
+            properties.endCap = D2D1_CAP_STYLE_ROUND;
+            properties.dashCap = D2D1_CAP_STYLE_ROUND;
+            properties.lineJoin = D2D1_LINE_JOIN_ROUND;
+            ComPtr<ID2D1StrokeStyle> roundedStroke;
+            if (FAILED(d2dFactory_->CreateStrokeStyle(properties, nullptr, 0, &roundedStroke))) return;
+            const float screenLeft = x + 12.0f * scale, screenTop = y + 24.0f * scale;
+            const float screenRight = x + glyph - 12.0f * scale, screenBottom = y + 140.0f * scale;
+            const D2D1_ROUNDED_RECT screen = D2D1::RoundedRect(D2D1::RectF(screenLeft, screenTop, screenRight, screenBottom), 14.0f * scale, 14.0f * scale);
+            const D2D1_ELLIPSE sun = D2D1::Ellipse(D2D1::Point2F(screenLeft + 43.0f * scale, screenTop + 38.0f * scale), 9.0f * scale, 9.0f * scale);
+            const D2D1_POINT_2F ridgeLeft = D2D1::Point2F(screenLeft + 31.0f * scale, screenBottom - 30.0f * scale);
+            const D2D1_POINT_2F ridgePeak = D2D1::Point2F(x + glyph / 2.0f - 6.0f * scale, screenBottom - 53.0f * scale);
+            const D2D1_POINT_2F ridgeRight = D2D1::Point2F(screenRight - 29.0f * scale, screenBottom - 32.0f * scale);
+            ComPtr<ID2D1PathGeometry> ridge;
+            ComPtr<ID2D1GeometrySink> ridgeSink;
+            if (FAILED(d2dFactory_->CreatePathGeometry(&ridge)) || FAILED(ridge->Open(&ridgeSink))) return;
+            ridgeSink->BeginFigure(ridgeLeft, D2D1_FIGURE_BEGIN_HOLLOW);
+            ridgeSink->AddLine(ridgePeak);
+            ridgeSink->AddLine(ridgeRight);
+            ridgeSink->EndFigure(D2D1_FIGURE_END_OPEN);
+            if (FAILED(ridgeSink->Close())) return;
+            ComPtr<ID2D1SolidColorBrush> iconBrush, iconOutline;
+            ComPtr<ID2D1Layer> iconLayer;
+            if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &iconBrush)) ||
+                FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f), &iconOutline)) ||
+                FAILED(renderTarget_->CreateLayer(nullptr, &iconLayer))) return;
+            D2D1_LAYER_PARAMETERS layer = D2D1::LayerParameters();
+            layer.opacity = opacity;
+            renderTarget_->PushLayer(layer, iconLayer.Get());
+            renderTarget_->DrawRoundedRectangle(screen, iconOutline.Get(), stroke + 3.0f * scale, roundedStroke.Get());
+            renderTarget_->DrawRoundedRectangle(screen, iconBrush.Get(), stroke, roundedStroke.Get());
+            renderTarget_->DrawEllipse(sun, iconOutline.Get(), stroke + 3.0f * scale, roundedStroke.Get());
+            renderTarget_->DrawEllipse(sun, iconBrush.Get(), stroke, roundedStroke.Get());
+            renderTarget_->DrawGeometry(ridge.Get(), iconOutline.Get(), stroke + 3.0f * scale, roundedStroke.Get());
+            renderTarget_->DrawGeometry(ridge.Get(), iconBrush.Get(), stroke, roundedStroke.Get());
+            const float center = x + glyph / 2.0f;
+            renderTarget_->DrawLine(D2D1::Point2F(center, screenBottom), D2D1::Point2F(center, y + 170.0f * scale), iconBrush.Get(), stroke, roundedStroke.Get());
+            renderTarget_->DrawLine(D2D1::Point2F(x + 58.0f * scale, y + 176.0f * scale), D2D1::Point2F(x + glyph - 58.0f * scale, y + 176.0f * scale), iconBrush.Get(), stroke, roundedStroke.Get());
+            renderTarget_->PopLayer();
+        } else {
+            const D2D1_ROUNDED_RECT rear = D2D1::RoundedRect(D2D1::RectF(x, y, x + glyph - offset, y + glyph - offset), 18.0f * scale, 18.0f * scale);
+            const D2D1_ROUNDED_RECT front = D2D1::RoundedRect(D2D1::RectF(x + offset, y + offset, x + glyph, y + glyph), 18.0f * scale, 18.0f * scale);
+            renderTarget_->DrawRoundedRectangle(rear, outline.Get(), stroke + 3.0f * scale); renderTarget_->DrawRoundedRectangle(front, outline.Get(), stroke + 3.0f * scale);
+            renderTarget_->DrawRoundedRectangle(rear, brush.Get(), stroke); renderTarget_->DrawRoundedRectangle(front, brush.Get(), stroke);
+        }
         const float textY=y+glyph+gap;
         for (const POINT offsetPoint : { POINT{ -1, 0 }, POINT{ 1, 0 }, POINT{ 0, -1 }, POINT{ 0, 1 } }) DrawOverlayText(feedbackText_.c_str(),offsetPoint.x*scale,textY+offsetPoint.y*scale,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,textHalo.Get(),true,false,true);
         for (const POINT offsetPoint : { POINT{ -1, 0 }, POINT{ 1, 0 }, POINT{ 0, -1 }, POINT{ 0, 1 }, POINT{ -1, -1 }, POINT{ 1, -1 }, POINT{ -1, 1 }, POINT{ 1, 1 } }) DrawOverlayText(feedbackText_.c_str(),offsetPoint.x*scale,textY+offsetPoint.y*scale,size.width,textHeight,28.f,DWRITE_FONT_WEIGHT_SEMI_BOLD,textOutline.Get(),true,false,true);
@@ -2970,6 +2943,7 @@ private:
     std::wstring openWithExtension_;
     std::vector<OpenWithHandler> openWithHandlers_;
     bool copyFeedbackActive_ = false;
+    bool feedbackIsWallpaper_ = false;
     ULONGLONG copyFeedbackStart_ = 0;
     ButtonKind hoveredButton_ = ButtonKind::None;
     ButtonKind pressedButton_ = ButtonKind::None;
@@ -3063,6 +3037,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        const ButtonKind button = viewer->ButtonAt(point);
+        if (button != ButtonKind::None) {
+            viewer->SetButtonPressed(button);
+            SetCapture(window);
+            return 0;
+        }
+        const FrameMetrics frame = GetFrameMetrics(window);
+        if (!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point)) {
+            viewer->SetHamburgerPressed(true);
+            SetCapture(window);
+            return 0;
+        }
         if (viewer->HasImage() && viewer->ImageContains(point)) viewer->ToggleFitActualPixels(point);
         return 0;
     }

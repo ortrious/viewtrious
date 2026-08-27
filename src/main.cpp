@@ -37,8 +37,8 @@ constexpr wchar_t kWindowClass[] = L"ViewtriousWindow";
 constexpr wchar_t kWindowTitle[] = L"Viewtrious";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
-constexpr int kContextMenuRowCount = 8;
-constexpr int kContextMenuSeparatorCount = 3;
+constexpr int kContextMenuRowCount = 9;
+constexpr int kContextMenuSeparatorCount = 4;
 constexpr int kContextMenuPaddingDip = 8;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kZoomStep = 1.20f;
@@ -50,8 +50,8 @@ const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.
 
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, Welcome };
 enum class DropdownItem { None, OpenFile, Settings, KeyboardShortcuts, QuickTour, About, Close };
-enum class ContextAction { None, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, SetLockScreen, Delete };
-enum class ButtonKind { None, EmptyOpenFile, SettingsReset, ResetCancel, ResetConfirm, WelcomeSecondary, WelcomePrimary, TutorialSkip, TutorialNext };
+enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, SetLockScreen, Delete };
+enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsReset, ResetCancel, ResetConfirm, WelcomeSecondary, WelcomePrimary, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
@@ -59,7 +59,7 @@ struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
 constexpr ShortcutEntry kShortcutEntries[] = {
     { L"Ctrl+O", L"Open file" }, { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom in/out" },
     { L"+", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
-    { L"Left mouse drag", L"Pan" }, { L"Right mouse click", L"Open right-click menu" }, { L"Double-click image", L"Toggle fullscreen" }, { L"F11", L"Toggle fullscreen" },
+    { L"Left mouse drag", L"Pan" }, { L"Right mouse click", L"Open right-click menu" }, { L"Double-click image", L"Toggle Fit / 100%" }, { L"F11", L"Toggle fullscreen" },
     { L"Ctrl+C", L"Copy image" }, { L"Ctrl+P", L"Print" }, { L"Delete", L"Move image to Recycle Bin" },
     { L"Esc", L"Exit fullscreen, or close Viewtrious" },
 };
@@ -485,7 +485,9 @@ public:
             top += rowHeight;
             return contains ? action : ContextAction::None;
         };
-        ContextAction action = hit(ContextAction::RotateLeft); if (action != ContextAction::None) return action;
+        ContextAction action = hit(ContextAction::Fullscreen); if (action != ContextAction::None) return action;
+        top += separatorGap;
+        action = hit(ContextAction::RotateLeft); if (action != ContextAction::None) return action;
         action = hit(ContextAction::RotateRight); if (action != ContextAction::None) return action;
         top += separatorGap;
         action = hit(ContextAction::OpenWith); if (action != ContextAction::None) return action;
@@ -499,7 +501,7 @@ public:
     }
     bool ContextActionEnabled(ContextAction action) const {
         if (tutorialStep_ == TutorialStep::ContextMenu) return false;
-        if (action == ContextAction::OpenWith || action == ContextAction::Copy || action == ContextAction::Print ||
+        if (action == ContextAction::Fullscreen || action == ContextAction::OpenWith || action == ContextAction::Copy || action == ContextAction::Print ||
             action == ContextAction::SetBackground || action == ContextAction::Delete)
             return true;
         return (action == ContextAction::RotateLeft || action == ContextAction::RotateRight) &&
@@ -521,7 +523,8 @@ public:
     void InvokeContextAction(ContextAction action) {
         if (action == ContextAction::OpenWith) { ToggleOpenWithSubmenu(); return; }
         DismissContextMenu();
-        if (action == ContextAction::Copy) CopyImage();
+        if (action == ContextAction::Fullscreen) ToggleFullscreen();
+        else if (action == ContextAction::Copy) CopyImage();
         else if (action == ContextAction::Print) PrintImage();
         else if (action == ContextAction::RotateLeft) RotateImage(false);
         else if (action == ContextAction::RotateRight) RotateImage(true);
@@ -537,7 +540,7 @@ public:
         const UINT dpi = GetDpiForWindow(window_);
         const LONG row = MulDiv(38, dpi, 96);
         const LONG gap = MulDiv(9, dpi, 96);
-        const LONG top = parent.top + MulDiv(kContextMenuPaddingDip, dpi, 96) + row * 2 + gap;
+        const LONG top = parent.top + MulDiv(kContextMenuPaddingDip, dpi, 96) + row * 3 + gap * 2;
         const LONG bottom = top + row;
         const LONG left = std::min(parent.right, child.right);
         const LONG right = std::max(parent.left, child.left);
@@ -671,10 +674,29 @@ public:
         const RECT button = GetWelcomeButtonBounds(primary);
         return overlay_ == OverlayKind::Welcome && PtInRect(&button, point);
     }
+    bool CanvasNavigationButtonsVisible() const {
+        return source_ && !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
+    }
+    RECT GetCanvasNavigationButtonBounds(bool next) const {
+        RECT client{};
+        GetClientRect(window_, &client);
+        const UINT dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(44, dpi, 96), height = MulDiv(80, dpi, 96), inset = MulDiv(16, dpi, 96);
+        const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
+        const int top = canvasTop + std::max(0L, (client.bottom - canvasTop - height) / 2);
+        const int left = next ? client.right - inset - width : inset;
+        return { left, top, left + width, top + height };
+    }
+    bool CanvasNavigationButtonContains(POINT point, bool next) const {
+        const RECT bounds = GetCanvasNavigationButtonBounds(next);
+        return CanvasNavigationButtonsVisible() && PtInRect(&bounds, point);
+    }
     ButtonKind ButtonAt(POINT point) const {
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
+        if (CanvasNavigationButtonContains(point, false)) return ButtonKind::CanvasPrevious;
+        if (CanvasNavigationButtonContains(point, true)) return ButtonKind::CanvasNext;
         if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
         if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
         if (ResetConfirmationButtonContains(point, true)) return ButtonKind::ResetConfirm;
@@ -700,6 +722,8 @@ public:
     }
     void InvokeButton(ButtonKind button) {
         if (button == ButtonKind::EmptyOpenFile) OpenFile();
+        else if (button == ButtonKind::CanvasPrevious) Navigate(-1);
+        else if (button == ButtonKind::CanvasNext) Navigate(1);
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
         else if (button == ButtonKind::ResetCancel) DismissOverlay();
         else if (button == ButtonKind::ResetConfirm) ResetToDefaults();
@@ -783,7 +807,7 @@ public:
             renderTarget_->BeginDraw();
             renderTarget_->Clear(kViewerBackground);            if (source_) {
                 EnsureBitmap();
-                if (bitmap_) DrawImage();
+                if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
             } else DrawEmptyState();
             DrawTitleBar();
             DrawDropdown();
@@ -890,11 +914,11 @@ public:
         }
     }
 
-    void ZoomAt(POINT cursor, float factor) {
+    void SetScaleAt(POINT cursor, float requestedScale) {
         if (!source_) return;
         const float oldScale = CurrentScale();
         const float baseScale = BaseScale();
-        const float newScale = std::clamp(oldScale * factor, baseScale, kMaximumZoom);
+        const float newScale = std::clamp(requestedScale, baseScale, kMaximumZoom);
         if (newScale <= baseScale + 0.0001f) {
             FitToWindow();
             return;
@@ -913,6 +937,26 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
 
+    void ZoomAt(POINT cursor, float factor) { SetScaleAt(cursor, CurrentScale() * factor); }
+
+    float RenderTargetDpi() const {
+        if (!renderTarget_) return 96.0f;
+        FLOAT dpiX = 96.0f, dpiY = 96.0f;
+        renderTarget_->GetDpi(&dpiX, &dpiY);
+        return dpiX;
+    }
+
+    float PhysicalPixelScale() const { return CurrentScale() * RenderTargetDpi() / 96.0f; }
+
+    void ZoomToActualPixels(POINT cursor) { SetScaleAt(cursor, 96.0f / RenderTargetDpi()); }
+
+    void ToggleFitActualPixels(POINT cursor) {
+        const float actualScale = 96.0f / RenderTargetDpi();
+        const bool atActualPixels = !fitToWindow_ && std::abs(CurrentScale() - actualScale) < 0.0001f;
+        if (atActualPixels) FitToWindow();
+        else ZoomToActualPixels(cursor);
+    }
+
     void ZoomCentered(float factor) {
         const D2D1_SIZE_F client = ClientSize();
         ZoomAt({ static_cast<LONG>(client.width / 2.0f), static_cast<LONG>(client.height / 2.0f) }, factor);
@@ -923,6 +967,15 @@ public:
         fitToWindow_ = true;
         pan_ = D2D1::Point2F();
         InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    bool ImageContains(POINT point) const {
+        if (!source_) return false;
+        const D2D1_SIZE_F target = ClientSize();
+        const float scale = CurrentScale();
+        const D2D1_POINT_2F topLeft = ImageTopLeft(scale, target);
+        return point.x >= topLeft.x && point.x < topLeft.x + imageWidth_ * scale &&
+            point.y >= topLeft.y && point.y < topLeft.y + imageHeight_ * scale;
     }
 
     void BeginPan(POINT point) {
@@ -1026,7 +1079,7 @@ private:
         const LONG width = std::min<LONG>(MulDiv(250, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
         const LONG height = margin * 2 + row * (static_cast<LONG>(openWithHandlers_.size()) + 1) + gap;
         const LONG rightX = parent.right + margin; const LONG left = rightX + width <= client.right - margin ? rightX : std::max<LONG>(margin, parent.left - margin - width);
-        const LONG top = std::clamp<LONG>(parent.top + MulDiv(kContextMenuPaddingDip, dpi, 96) + row * 2 + gap, margin, std::max<LONG>(margin, client.bottom - height - margin));
+        const LONG top = std::clamp<LONG>(parent.top + MulDiv(kContextMenuPaddingDip, dpi, 96) + row * 3 + gap * 2, margin, std::max<LONG>(margin, client.bottom - height - margin));
         return { left, top, left + width, top + height };
     }
 
@@ -1894,6 +1947,67 @@ private:
         renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
+    bool EnsureZoomHudFormat() {
+        const UINT dpi = GetDpiForWindow(window_);
+        if (zoomHudFormat_ && zoomHudDpi_ == dpi) return true;
+        zoomHudFormat_.Reset();
+        zoomHudDpi_ = 0;
+        const float scale = static_cast<float>(dpi) / 96.0f;
+        if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 15.0f * scale, L"", &zoomHudFormat_))) return false;
+        zoomHudFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        zoomHudFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        zoomHudDpi_ = dpi;
+        return true;
+    }
+
+    void DrawZoomHud() {
+        if (!source_ || !EnsureZoomHudFormat()) return;
+        wchar_t label[16]{};
+        const float percent = PhysicalPixelScale() * 100.0f;
+        if (percent < 10.0f) swprintf_s(label, L"%.1f%%", percent);
+        else swprintf_s(label, L"%.0f%%", percent);
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const D2D1_SIZE_F target = renderTarget_->GetSize();
+        const float width = 72.0f * scale, height = 30.0f * scale, margin = 14.0f * scale;
+        const D2D1_RECT_F bounds = D2D1::RectF(target.width - margin - width, target.height - margin - height,
+            target.width - margin, target.height - margin);
+        ComPtr<ID2D1SolidColorBrush> backing, text;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.58f), &backing)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &text))) return;
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bounds, 6.0f * scale, 6.0f * scale), backing.Get());
+        ComPtr<IDWriteTextLayout> layout;
+        if (SUCCEEDED(dwriteFactory_->CreateTextLayout(label, static_cast<UINT32>(wcslen(label)), zoomHudFormat_.Get(), width, height, &layout)))
+            renderTarget_->DrawTextLayout(D2D1::Point2F(bounds.left, bounds.top), layout.Get(), text.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    void DrawCanvasNavigationButtons() {
+        if (!CanvasNavigationButtonsVisible()) return;
+        const UINT dpi = GetDpiForWindow(window_);
+        const float scale = static_cast<float>(dpi) / 96.0f;
+        ComPtr<ID2D1SolidColorBrush> idle, hover, pressed, chevron;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.26f), &idle)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.48f), &hover)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.66f), &pressed)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.82f), &chevron))) return;
+        const auto draw = [&](bool next, ButtonKind button) {
+            const RECT bounds = GetCanvasNavigationButtonBounds(next);
+            const D2D1_RECT_F rect = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top),
+                static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
+            ID2D1Brush* background = pressedButton_ == button ? pressed.Get() : hoveredButton_ == button ? hover.Get() : idle.Get();
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, 7.0f * scale, 7.0f * scale), background);
+            const float centerX = (rect.left + rect.right) / 2.0f;
+            const float centerY = (rect.top + rect.bottom) / 2.0f;
+            const float offset = 7.0f * scale, height = 14.0f * scale;
+            const float startX = centerX + (next ? -offset : offset);
+            const float tipX = centerX + (next ? offset : -offset);
+            renderTarget_->DrawLine(D2D1::Point2F(startX, centerY - height), D2D1::Point2F(tipX, centerY), chevron.Get(), 2.4f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(tipX, centerY), D2D1::Point2F(startX, centerY + height), chevron.Get(), 2.4f * scale);
+        };
+        draw(false, ButtonKind::CanvasPrevious);
+        draw(true, ButtonKind::CanvasNext);
+    }
+
     bool EnsureTitleTextFormat() {
         const UINT dpi = GetDpiForWindow(window_);
         if (titleTextFormat_ && titleTextDpi_ == dpi) return true;
@@ -2325,6 +2439,7 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(bounds.left + MulDiv(12, dpi, 96)), y), D2D1::Point2F(static_cast<float>(bounds.right - MulDiv(12, dpi, 96)), y), borderBrush.Get());
             top += gap;
         };
+        drawItem(ContextAction::Fullscreen, fullscreen_ ? L"Exit Fullscreen" : L"Fullscreen"); separator();
         drawItem(ContextAction::RotateLeft, L"Rotate Left"); drawItem(ContextAction::RotateRight, L"Rotate Right"); separator();
         drawItem(ContextAction::OpenWith, L"Open With  >"); drawItem(ContextAction::Copy, L"Copy"); drawItem(ContextAction::Print, L"Print"); separator();
         drawItem(ContextAction::SetBackground, L"Set as Desktop Background"); drawItem(ContextAction::SetLockScreen, L"Set as Lock Screen"); separator(); drawItem(ContextAction::Delete, L"Delete");
@@ -2664,6 +2779,8 @@ private:
     UINT titleTextDpi_ = 0;
     ComPtr<IDWriteTextFormat> captionIconFormat_;
     UINT captionIconDpi_ = 0;
+    ComPtr<IDWriteTextFormat> zoomHudFormat_;
+    UINT zoomHudDpi_ = 0;
     UINT imageWidth_ = 0;
     UINT imageHeight_ = 0;
     std::wstring currentPath_;
@@ -2797,8 +2914,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
-        const FrameMetrics frame = GetFrameMetrics(window);
-        if (viewer->HasImage() && !PtInRect(&frame.hamburger, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) viewer->ToggleFullscreen();
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->HasImage() && viewer->ImageContains(point)) viewer->ToggleFitActualPixels(point);
         return 0;
     }
     case WM_LBUTTONDOWN: {

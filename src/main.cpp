@@ -50,11 +50,15 @@ constexpr wchar_t kCapabilitiesPath[] = L"Software\\Viewtrious\\Capabilities";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
-enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, Welcome, Feedback };
+enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, Feedback };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
-enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsReset, ResetCancel, ResetConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug, FeedbackFeature, TutorialSkip, TutorialNext };
+enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsRememberPlacement, SettingsIncludeHidden,
+    SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
+    SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
+enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
@@ -154,7 +158,14 @@ struct SavedPlacement {
     bool maximized = false;
 };
 
+bool RememberWindowPlacementEnabled() {
+    DWORD rememberPlacement = 1;
+    ReadSetting(L"RememberWindowPlacement", rememberPlacement);
+    return rememberPlacement != 0;
+}
+
 bool LoadPlacement(SavedPlacement& placement) {
+    if (!RememberWindowPlacementEnabled()) return false;
     DWORD left = 0, top = 0, width = 0, height = 0, maximized = 0;
     if (!ReadSetting(L"WindowLeft", left) || !ReadSetting(L"WindowTop", top) ||
         !ReadSetting(L"WindowWidth", width) || !ReadSetting(L"WindowHeight", height) ||
@@ -183,7 +194,28 @@ void MakePlacementVisible(RECT& rect) {
     rect.bottom = rect.top + height;
 }
 
+bool IsLikelySnappedWindow(HWND window) {
+    if (IsZoomed(window)) return false;
+    RECT rect{};
+    if (!GetWindowRect(window, &rect)) return false;
+    MONITORINFO monitor{ sizeof(monitor) };
+    if (!GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) return false;
+    const RECT& work = monitor.rcWork;
+    constexpr int tolerance = 2;
+    const bool spansHeight = std::abs(rect.top - work.top) <= tolerance && std::abs(rect.bottom - work.bottom) <= tolerance;
+    const LONG width = rect.right - rect.left;
+    const LONG workWidth = work.right - work.left;
+    const bool snappedWidth = std::abs(width * 2 - workWidth) <= tolerance * 2 ||
+        std::abs(width * 3 - workWidth) <= tolerance * 3 || std::abs(width * 3 - workWidth * 2) <= tolerance * 3;
+    return spansHeight && snappedWidth && (std::abs(rect.left - work.left) <= tolerance || std::abs(rect.right - work.right) <= tolerance ||
+        std::abs((rect.left + rect.right) - (work.left + work.right)) <= tolerance * 2);
+}
+
 bool UseDarkAppMode() {
+    DWORD preference = static_cast<DWORD>(ThemePreference::System);
+    ReadSetting(L"Theme", preference);
+    if (preference == static_cast<DWORD>(ThemePreference::Light)) return false;
+    if (preference == static_cast<DWORD>(ThemePreference::Dark)) return true;
     DWORD appsUseLightTheme = 1;
     DWORD size = sizeof(appsUseLightTheme);
     RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
@@ -317,9 +349,24 @@ public:
             return hr;
         }
         RegisterDefaultAppCapabilities();
+        DWORD rememberPlacement = 1;
+        ReadSetting(L"RememberWindowPlacement", rememberPlacement);
+        rememberWindowPlacement_ = rememberPlacement != 0;
         DWORD includeHidden = 1;
         ReadSetting(L"IncludeHiddenImages", includeHidden);
         includeHiddenImages_ = includeHidden != 0;
+        DWORD confirmDelete = 1;
+        ReadSetting(L"ConfirmBeforeDeleting", confirmDelete);
+        confirmBeforeDeleting_ = confirmDelete != 0;
+        DWORD showZoomHud = 1;
+        ReadSetting(L"ShowZoomPercentage", showZoomHud);
+        showZoomPercentage_ = showZoomHud != 0;
+        DWORD animations = 1;
+        ReadSetting(L"AnimationsAndFadeEffects", animations);
+        animationsEnabled_ = animations != 0;
+        DWORD theme = static_cast<DWORD>(ThemePreference::System);
+        ReadSetting(L"Theme", theme);
+        themePreference_ = theme <= static_cast<DWORD>(ThemePreference::Dark) ? static_cast<ThemePreference>(theme) : ThemePreference::System;
         DWORD onboardingVersion = 0;
         onboardingRequired_ = !ReadSetting(L"OnboardingVersion", onboardingVersion) || onboardingVersion < 1;
         DWORD tourPending = 0;
@@ -546,7 +593,10 @@ public:
         else if (action == ContextAction::RotateLeft) RotateImage(false);
         else if (action == ContextAction::RotateRight) RotateImage(true);
         else if (action == ContextAction::SetBackground) SetDesktopBackground();
-        else if (action == ContextAction::Delete) DeleteImage();
+        else if (action == ContextAction::Delete) {
+            if (confirmBeforeDeleting_) ShowOverlay(OverlayKind::DeleteConfirm);
+            else DeleteImage();
+        }
     }
     bool OpenWithSubmenuOpen() const { return openWithSubmenuOpen_; }
     void DismissOpenWithSubmenu() { openWithSubmenuOpen_ = false; openWithHovered_ = -1; InvalidateRect(window_, nullptr, FALSE); }
@@ -621,6 +671,7 @@ public:
     void ShowOverlay(OverlayKind overlay) {
         DismissDropdown();
         DismissContextMenu();
+        if (overlay == OverlayKind::DeleteConfirm) deleteWarningSuppressOnConfirm_ = false;
         overlay_ = overlay;
         EndPan();
         InvalidateRect(window_, nullptr, FALSE);
@@ -634,14 +685,28 @@ public:
         const RECT bounds = GetOverlayBounds();
         return HasOverlay() && PtInRect(&bounds, point);
     }
-    bool SettingsCheckboxContains(POINT point) const {
-        if (overlay_ != OverlayKind::Settings) return false;
+    bool SettingsUsesCompactLayout() const {
+        const RECT bounds = GetOverlayBounds();
+        return bounds.bottom - bounds.top < MulDiv(500, GetDpiForWindow(window_), 96);
+    }
+    RECT GetSettingsOptionBounds(int option) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int padding = MulDiv(24, dpi, 96);
-        const int rowTop = bounds.top + padding + MulDiv(42, dpi, 96);
-        const RECT row{ bounds.left + padding, rowTop, bounds.right - padding, rowTop + MulDiv(32, dpi, 96) };
-        return PtInRect(&row, point);
+        const int padding = MulDiv(18, dpi, 96);
+        static constexpr int kCompactRowTopDips[] = { 70, 96, 122, 174, 200 };
+        static constexpr int kRegularRowTopDips[] = { 90, 116, 142, 209, 235 };
+        const int* rowTops = SettingsUsesCompactLayout() ? kCompactRowTopDips : kRegularRowTopDips;
+        const int top = bounds.top + MulDiv(rowTops[option], dpi, 96);
+        return { bounds.left + padding, top, bounds.right - padding, top + MulDiv(25, dpi, 96) };
+    }
+    RECT GetSettingsThemeBounds(ThemePreference preference) const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int padding = MulDiv(18, dpi, 96), width = MulDiv(76, dpi, 96), gap = MulDiv(8, dpi, 96);
+        const int index = static_cast<int>(preference);
+        const int left = bounds.left + padding + index * (width + gap);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 278 : 334, dpi, 96);
+        return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     void ToggleIncludeHiddenImages() {
         includeHiddenImages_ = !includeHiddenImages_;
@@ -651,12 +716,39 @@ public:
         navigationBuildQueued_ = false;
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void ToggleRememberWindowPlacement() {
+        rememberWindowPlacement_ = !rememberWindowPlacement_;
+        WriteSetting(L"RememberWindowPlacement", rememberWindowPlacement_ ? 1 : 0);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ToggleConfirmBeforeDeleting() {
+        confirmBeforeDeleting_ = !confirmBeforeDeleting_;
+        WriteSetting(L"ConfirmBeforeDeleting", confirmBeforeDeleting_ ? 1 : 0);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ToggleShowZoomPercentage() {
+        showZoomPercentage_ = !showZoomPercentage_;
+        WriteSetting(L"ShowZoomPercentage", showZoomPercentage_ ? 1 : 0);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ToggleAnimationsAndFadeEffects() {
+        animationsEnabled_ = !animationsEnabled_;
+        WriteSetting(L"AnimationsAndFadeEffects", animationsEnabled_ ? 1 : 0);
+        UpdateCanvasNavigationOpacity();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void SetThemePreference(ThemePreference preference) {
+        themePreference_ = preference;
+        WriteSetting(L"Theme", static_cast<DWORD>(preference));
+        ApplyTitleBarTheme(window_);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     RECT GetSettingsResetButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int padding = MulDiv(24, dpi, 96);
-        const int top = bounds.top + padding + MulDiv(190, dpi, 96);
-        return { bounds.left + padding, top, bounds.left + padding + MulDiv(168, dpi, 96), top + MulDiv(36, dpi, 96) };
+        const int padding = MulDiv(18, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 374 : 450, dpi, 96);
+        return { bounds.left + padding, top, bounds.left + padding + MulDiv(248, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     bool SettingsResetButtonContains(POINT point) const {
         const RECT button = GetSettingsResetButtonBounds();
@@ -674,6 +766,30 @@ public:
     bool ResetConfirmationButtonContains(POINT point, bool reset) const {
         const RECT button = GetResetConfirmationButtonBounds(reset);
         return overlay_ == OverlayKind::ResetConfirm && PtInRect(&button, point);
+    }
+    RECT GetDeleteConfirmationButtonBounds(bool confirm) const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(96, dpi, 96), height = MulDiv(36, dpi, 96), gap = MulDiv(10, dpi, 96);
+        const int top = bounds.bottom - MulDiv(22, dpi, 96) - height;
+        const int confirmLeft = bounds.right - MulDiv(24, dpi, 96) - width;
+        return confirm ? RECT{ confirmLeft, top, confirmLeft + width, top + height } :
+            RECT{ confirmLeft - gap - width, top, confirmLeft - gap, top + height };
+    }
+    bool DeleteConfirmationButtonContains(POINT point, bool confirm) const {
+        const RECT button = GetDeleteConfirmationButtonBounds(confirm);
+        return overlay_ == OverlayKind::DeleteConfirm && PtInRect(&button, point);
+    }
+    RECT GetDeleteWarningCheckboxBounds() const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int padding = MulDiv(24, dpi, 96);
+        const int top = bounds.top + MulDiv(150, dpi, 96);
+        return { bounds.left + padding, top, bounds.right - padding, top + MulDiv(32, dpi, 96) };
+    }
+    bool DeleteWarningCheckboxContains(POINT point) const {
+        const RECT checkbox = GetDeleteWarningCheckboxBounds();
+        return overlay_ == OverlayKind::DeleteConfirm && PtInRect(&checkbox, point);
     }
     RECT GetWelcomeButtonBounds(bool primary) const {
         const RECT bounds = GetOverlayBounds();
@@ -725,12 +841,26 @@ public:
         return PtInRect(&next, point) ? ButtonKind::CanvasNext : ButtonKind::None;
     }
     ButtonKind ButtonAt(POINT point) const {
+        const auto contains = [&point](RECT bounds) { return PtInRect(&bounds, point) != FALSE; };
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
+        if (overlay_ == OverlayKind::Settings) {
+            if (contains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
+            if (contains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
+            if (contains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
+            if (contains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsShowZoomHud;
+            if (contains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAnimations;
+            if (contains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
+            if (contains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
+            if (contains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
+        }
         if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
         if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
         if (ResetConfirmationButtonContains(point, true)) return ButtonKind::ResetConfirm;
+        if (DeleteWarningCheckboxContains(point)) return ButtonKind::DeleteWarningSuppress;
+        if (DeleteConfirmationButtonContains(point, false)) return ButtonKind::DeleteCancel;
+        if (DeleteConfirmationButtonContains(point, true)) return ButtonKind::DeleteConfirm;
         if (WelcomeButtonContains(point, false)) return ButtonKind::WelcomeSecondary;
         if (WelcomeButtonContains(point, true)) return ButtonKind::WelcomePrimary;
         if (FeedbackActionContains(point, false)) return ButtonKind::FeedbackBug;
@@ -765,6 +895,14 @@ public:
         };
         const float previousTarget = targetFor(ButtonKind::CanvasPrevious);
         const float nextTarget = targetFor(ButtonKind::CanvasNext);
+        if (!animationsEnabled_) {
+            KillTimer(window_, kCanvasNavigationFadeTimer);
+            canvasNavigationFadeActive_ = false;
+            canvasPreviousOpacity_ = canvasPreviousTargetOpacity_ = previousTarget;
+            canvasNextOpacity_ = canvasNextTargetOpacity_ = nextTarget;
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
         if (std::abs(previousTarget - canvasPreviousOpacity_) < 0.001f && std::abs(nextTarget - canvasNextOpacity_) < 0.001f) return;
         canvasPreviousFadeStartOpacity_ = canvasPreviousOpacity_;
         canvasNextFadeStartOpacity_ = canvasNextOpacity_;
@@ -829,9 +967,27 @@ public:
         if (button == ButtonKind::EmptyOpenFile) OpenFile();
         else if (button == ButtonKind::CanvasPrevious) Navigate(-1);
         else if (button == ButtonKind::CanvasNext) Navigate(1);
+        else if (button == ButtonKind::SettingsRememberPlacement) ToggleRememberWindowPlacement();
+        else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
+        else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
+        else if (button == ButtonKind::SettingsShowZoomHud) ToggleShowZoomPercentage();
+        else if (button == ButtonKind::SettingsAnimations) ToggleAnimationsAndFadeEffects();
+        else if (button == ButtonKind::SettingsThemeSystem) SetThemePreference(ThemePreference::System);
+        else if (button == ButtonKind::SettingsThemeLight) SetThemePreference(ThemePreference::Light);
+        else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
         else if (button == ButtonKind::ResetCancel) DismissOverlay();
         else if (button == ButtonKind::ResetConfirm) ResetToDefaults();
+        else if (button == ButtonKind::DeleteWarningSuppress) { deleteWarningSuppressOnConfirm_ = !deleteWarningSuppressOnConfirm_; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::DeleteCancel) DismissOverlay();
+        else if (button == ButtonKind::DeleteConfirm) {
+            if (deleteWarningSuppressOnConfirm_) {
+                confirmBeforeDeleting_ = false;
+                WriteSetting(L"ConfirmBeforeDeleting", 0);
+            }
+            DismissOverlay();
+            DeleteImage();
+        }
         else if (button == ButtonKind::WelcomeSecondary) CompleteWelcome(false);
         else if (button == ButtonKind::WelcomePrimary) {
             INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
@@ -868,7 +1024,12 @@ public:
         resetInProgress_ = true;
         RegDeleteTreeW(HKEY_CURRENT_USER, kSettingsKey);
         CleanupWallpaperStaging();
+        rememberWindowPlacement_ = true;
         includeHiddenImages_ = true;
+        confirmBeforeDeleting_ = true;
+        showZoomPercentage_ = true;
+        animationsEnabled_ = true;
+        themePreference_ = ThemePreference::System;
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) { DestroyWindow(window_); return; }
         std::wstring command = L"\"" + std::wstring(modulePath) + L"\"";
@@ -1122,7 +1283,7 @@ public:
     }
 
     void SaveWindowPlacement() const {
-        if (resetInProgress_) return;
+        if (resetInProgress_ || !rememberWindowPlacement_ || IsLikelySnappedWindow(window_)) return;
         WINDOWPLACEMENT placement{ sizeof(placement) };
         if (!GetWindowPlacement(window_, &placement)) return;
         const RECT& rect = placement.rcNormalPosition;
@@ -1149,6 +1310,9 @@ private:
             { L".jpg", L"Viewtrious.jpg", L"Viewtrious JPG Image" },
             { L".jpeg", L"Viewtrious.jpeg", L"Viewtrious JPEG Image" },
             { L".png", L"Viewtrious.png", L"Viewtrious PNG Image" },
+            { L".bmp", L"Viewtrious.bmp", L"Viewtrious BMP Image" },
+            { L".heic", L"Viewtrious.heic", L"Viewtrious HEIC Image" },
+            { L".heif", L"Viewtrious.heif", L"Viewtrious HEIF Image" },
         };
         for (const Association& association : associations) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
@@ -1288,7 +1452,7 @@ private:
         feedbackIsWallpaper_ = wallpaper;
         copyFeedbackStart_ = GetTickCount64();
         copyFeedbackActive_ = true;
-        SetTimer(window_, kCopyFeedbackTimer, 16, nullptr);
+        SetTimer(window_, kCopyFeedbackTimer, animationsEnabled_ ? 16 : 100, nullptr);
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -2151,7 +2315,7 @@ private:
     }
 
     void DrawZoomHud() {
-        if (!source_ || !EnsureZoomHudFormat()) return;
+        if (!source_ || !showZoomPercentage_ || !EnsureZoomHudFormat()) return;
         wchar_t label[16]{};
         const float percent = PhysicalPixelScale() * 100.0f;
         if (percent < 10.0f) swprintf_s(label, L"%.1f%%", percent);
@@ -2294,11 +2458,11 @@ private:
         const int titleGap = MulDiv(14, dpi, 96);
         const int rowHeight = GetShortcutRowHeight();
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
-            overlay_ == OverlayKind::Settings ? 560 : overlay_ == OverlayKind::ResetConfirm ? 500 :
+            overlay_ == OverlayKind::Settings ? 680 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
             overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
         const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : overlay_ == OverlayKind::Settings ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) :
+            : overlay_ == OverlayKind::Settings ? MulDiv(500, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
             overlay_ == OverlayKind::Welcome ? MulDiv(340, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
@@ -2431,27 +2595,21 @@ private:
         const float left = static_cast<float>(bounds.left) + panelPadding;
         const float contentWidth = static_cast<float>(bounds.right - bounds.left) - panelPadding * 2.0f;
         if (overlay_ == OverlayKind::Welcome) {
-            DrawOverlayText(L"Default image viewer", left,
-                static_cast<float>(bounds.top) + panelPadding, contentWidth, 34.0f * dpiScale,
-                24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             if (EnsureAboutLogo()) {
                 const D2D1_SIZE_F logoSource = aboutLogo_->GetSize();
                 const float logoWidth = std::min(240.0f * dpiScale, contentWidth);
                 const float logoHeight = logoWidth * logoSource.height / logoSource.width;
                 const float logoLeft = static_cast<float>(bounds.left) + (static_cast<float>(bounds.right - bounds.left) - logoWidth) / 2.0f;
-                const float logoTop = static_cast<float>(bounds.top) + panelPadding + 34.0f * dpiScale;
+                const float logoTop = static_cast<float>(bounds.top) + 24.0f * dpiScale;
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
             }
-            DrawOverlayText(L"Make Viewtrious the default for JPG and PNG images?", left, static_cast<float>(bounds.top) + 151.0f * dpiScale,
+            DrawOverlayText(L"Make Viewtrious the default for common image formats?", left, static_cast<float>(bounds.top) + 136.0f * dpiScale,
                 contentWidth, 26.0f * dpiScale, 19.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
-            DrawOverlayText(L"Windows requires you to confirm the JPG and PNG defaults.", left,
-                static_cast<float>(bounds.top) + 180.0f * dpiScale, contentWidth, 22.0f * dpiScale,
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
-            DrawOverlayText(L"You can revisit this setup by resetting Viewtrious in Settings.", left,
-                static_cast<float>(bounds.top) + 208.0f * dpiScale, contentWidth, 20.0f * dpiScale,
-                14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
-            DrawOverlayText(L"Default app choices can be changed anytime in Windows Settings.", left,
-                static_cast<float>(bounds.top) + 229.0f * dpiScale, contentWidth, 20.0f * dpiScale,
+            DrawOverlayText(L"Windows will open Default Apps so you can choose which image formats Viewtrious should open.", left,
+                static_cast<float>(bounds.top) + 170.0f * dpiScale, contentWidth, 44.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
+            DrawOverlayText(L"You can change this anytime in Windows Settings.", left,
+                static_cast<float>(bounds.top) + 220.0f * dpiScale, contentWidth, 20.0f * dpiScale,
                 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
             const RECT secondaryBounds = GetWelcomeButtonBounds(false), primaryBounds = GetWelcomeButtonBounds(true);
             const D2D1_RECT_F secondaryButton = D2D1::RectF(static_cast<float>(secondaryBounds.left), static_cast<float>(secondaryBounds.top),
@@ -2491,16 +2649,27 @@ private:
                 y += shortcutRowHeight;
             }
         } else if (overlay_ == OverlayKind::Settings) {
-            DrawOverlayText(L"Settings", left, static_cast<float>(bounds.top) + panelPadding,
-                contentWidth, 36.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            const float rowTop = static_cast<float>(bounds.top) + panelPadding + 42.0f * dpiScale;
-            const float boxSize = 18.0f * dpiScale;
-            const D2D1_RECT_F checkbox = D2D1::RectF(left, rowTop + 5.0f * dpiScale, left + boxSize, rowTop + 5.0f * dpiScale + boxSize);
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(checkbox, 3.0f * dpiScale, 3.0f * dpiScale), borderBrush.Get(), 1.0f);
-            if (includeHiddenImages_) {
-                ComPtr<ID2D1SolidColorBrush> accent, checkmark;
-                if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,120.f/255,212.f/255), &accent)) &&
-                    SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &checkmark))) {
+            const float settingsLeft = static_cast<float>(bounds.left) + 18.0f * dpiScale;
+            const float settingsWidth = static_cast<float>(bounds.right - bounds.left) - 36.0f * dpiScale;
+            DrawOverlayText(L"Settings", settingsLeft, static_cast<float>(bounds.top) + 18.0f * dpiScale,
+                settingsWidth, 32.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            const auto group = [&](const wchar_t* label, float top) {
+                DrawOverlayText(label, settingsLeft, static_cast<float>(bounds.top) + top * dpiScale, settingsWidth,
+                    18.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, secondaryBrush.Get());
+            };
+            ComPtr<ID2D1SolidColorBrush> accent, checkmark, rowHover, segmentIdle, segmentHover;
+            if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &accent)) ||
+                FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &checkmark)) ||
+                FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &rowHover)) ||
+                FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(50.f / 255, 54.f / 255, 63.f / 255) : D2D1::ColorF(238.f / 255, 238.f / 255, 238.f / 255), &segmentIdle)) ||
+                FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(65.f / 255, 69.f / 255, 80.f / 255) : D2D1::ColorF(220.f / 255, 220.f / 255, 220.f / 255), &segmentHover))) return;
+            const auto drawToggle = [&](int index, ButtonKind button, const wchar_t* label, bool checked) {
+                const RECT rowBounds = GetSettingsOptionBounds(index);
+                const D2D1_RECT_F row = D2D1::RectF(static_cast<float>(rowBounds.left), static_cast<float>(rowBounds.top), static_cast<float>(rowBounds.right), static_cast<float>(rowBounds.bottom));
+                if (hoveredButton_ == button || pressedButton_ == button) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(row, 4.0f * dpiScale, 4.0f * dpiScale), rowHover.Get());
+                const float boxSize = 18.0f * dpiScale;
+                const D2D1_RECT_F checkbox = D2D1::RectF(row.left, row.top + (row.bottom - row.top - boxSize) / 2.0f, row.left + boxSize, row.top + (row.bottom - row.top - boxSize) / 2.0f + boxSize);
+                if (checked) {
                     renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(checkbox, 3.0f * dpiScale, 3.0f * dpiScale), accent.Get());
                     const float stroke = std::max(1.5f, 2.0f * dpiScale);
                     const D2D1_POINT_2F start = D2D1::Point2F(checkbox.left + boxSize * 0.22f, checkbox.top + boxSize * 0.53f);
@@ -2508,18 +2677,46 @@ private:
                     const D2D1_POINT_2F end = D2D1::Point2F(checkbox.left + boxSize * 0.78f, checkbox.top + boxSize * 0.30f);
                     renderTarget_->DrawLine(start, middle, checkmark.Get(), stroke);
                     renderTarget_->DrawLine(middle, end, checkmark.Get(), stroke);
-                }
-            }
-            DrawOverlayText(L"Include hidden images in folder navigation", left + boxSize + 12.0f * dpiScale, rowTop,
-                contentWidth - boxSize - 12.0f * dpiScale, 30.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL,
-                primaryBrush.Get(), true);
-            const float resetTop = static_cast<float>(bounds.top) + panelPadding + 100.0f * dpiScale;
-            DrawOverlayText(L"Reset", left, resetTop, contentWidth, 24.0f * dpiScale, 20.0f,
-                DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            DrawOverlayText(L"Reset Viewtrious to Defaults", left, resetTop + 28.0f * dpiScale, contentWidth, 22.0f * dpiScale,
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
-            DrawOverlayText(L"Removes Viewtrious preferences and app-owned data. Your images are never touched.", left,
-                resetTop + 52.0f * dpiScale, contentWidth, 36.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+                } else renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(checkbox, 3.0f * dpiScale, 3.0f * dpiScale), borderBrush.Get(), 1.0f);
+                DrawOverlayText(label, checkbox.right + 12.0f * dpiScale, row.top, row.right - checkbox.right - 12.0f * dpiScale,
+                    row.bottom - row.top, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get(), true);
+            };
+            const bool compactSettings = SettingsUsesCompactLayout();
+            const float generalTop = compactSettings ? 50.0f : 66.0f;
+            const float viewerTop = compactSettings ? 154.0f : 185.0f;
+            const float appearanceTop = compactSettings ? 232.0f : 278.0f;
+            const float themeLabelTop = compactSettings ? 252.0f : 304.0f;
+            const float separatorTop = compactSettings ? 318.0f : 386.0f;
+            const float resetTitleTop = compactSettings ? 330.0f : 400.0f;
+            const float resetDescriptionTop = compactSettings ? 350.0f : 422.0f;
+            group(L"GENERAL", generalTop);
+            drawToggle(0, ButtonKind::SettingsRememberPlacement, L"Remember window position and size", rememberWindowPlacement_);
+            drawToggle(1, ButtonKind::SettingsIncludeHidden, L"Include hidden images in folder navigation", includeHiddenImages_);
+            drawToggle(2, ButtonKind::SettingsConfirmDelete, L"Confirm before deleting images", confirmBeforeDeleting_);
+            group(L"VIEWER", viewerTop);
+            drawToggle(3, ButtonKind::SettingsShowZoomHud, L"Show zoom percentage", showZoomPercentage_);
+            drawToggle(4, ButtonKind::SettingsAnimations, L"Animations and fade effects", animationsEnabled_);
+            group(L"APPEARANCE", appearanceTop);
+            DrawOverlayText(L"Theme", settingsLeft, static_cast<float>(bounds.top) + themeLabelTop * dpiScale, settingsWidth,
+                22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
+            const auto drawTheme = [&](ThemePreference preference, ButtonKind button, const wchar_t* label) {
+                const RECT segmentBounds = GetSettingsThemeBounds(preference);
+                const D2D1_RECT_F segment = D2D1::RectF(static_cast<float>(segmentBounds.left), static_cast<float>(segmentBounds.top), static_cast<float>(segmentBounds.right), static_cast<float>(segmentBounds.bottom));
+                ID2D1Brush* fill = themePreference_ == preference ? accent.Get() : (hoveredButton_ == button || pressedButton_ == button ? segmentHover.Get() : segmentIdle.Get());
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(segment, 4.0f * dpiScale, 4.0f * dpiScale), fill);
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(segment, 4.0f * dpiScale, 4.0f * dpiScale), themePreference_ == preference ? accent.Get() : borderBrush.Get(), 1.0f);
+                DrawOverlayText(label, segment.left, segment.top, segment.right - segment.left, segment.bottom - segment.top,
+                    14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, themePreference_ == preference ? checkmark.Get() : primaryBrush.Get(), true, false, true);
+            };
+            drawTheme(ThemePreference::System, ButtonKind::SettingsThemeSystem, L"System");
+            drawTheme(ThemePreference::Light, ButtonKind::SettingsThemeLight, L"Light");
+            drawTheme(ThemePreference::Dark, ButtonKind::SettingsThemeDark, L"Dark");
+            const float separatorY = static_cast<float>(bounds.top) + separatorTop * dpiScale;
+            renderTarget_->DrawLine(D2D1::Point2F(settingsLeft, separatorY), D2D1::Point2F(settingsLeft + settingsWidth, separatorY), borderBrush.Get(), 1.0f);
+            DrawOverlayText(L"Reset Viewtrious to Defaults", settingsLeft, static_cast<float>(bounds.top) + resetTitleTop * dpiScale,
+                settingsWidth, 20.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            DrawOverlayText(L"Removes preferences and app-owned data. Your images are never touched.", settingsLeft,
+                static_cast<float>(bounds.top) + resetDescriptionTop * dpiScale, settingsWidth, 20.0f * dpiScale, 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT resetBounds = GetSettingsResetButtonBounds();
             const D2D1_RECT_F resetButton = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top),
                 static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
@@ -2530,7 +2727,7 @@ private:
                 else if (hoveredButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), buttonHover.Get());
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"Reset Viewtrious", resetButton.left, resetButton.top, resetButton.right - resetButton.left,
+            DrawOverlayText(L"Reset Viewtrious to Defaults", resetButton.left, resetButton.top, resetButton.right - resetButton.left,
                 resetButton.bottom - resetButton.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::ResetConfirm) {
             DrawOverlayText(L"Reset Viewtrious to defaults?", left, static_cast<float>(bounds.top) + panelPadding,
@@ -2543,12 +2740,13 @@ private:
             const RECT cancelBounds = GetResetConfirmationButtonBounds(false), resetBounds = GetResetConfirmationButtonBounds(true);
             const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));
             const D2D1_RECT_F reset = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top), static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
-            ComPtr<ID2D1SolidColorBrush> destructive, destructiveHover, destructivePressed, neutralHover, neutralPressed;
+            ComPtr<ID2D1SolidColorBrush> destructive, destructiveHover, destructivePressed, neutralHover, neutralPressed, buttonText;
             if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(196.f/255,43.f/255,28.f/255), &destructive)) &&
                 SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(220.f/255,58.f/255,40.f/255), &destructiveHover)) &&
                 SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(153.f/255,27.f/255,20.f/255), &destructivePressed)) &&
                 SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f/255,64.f/255,74.f/255), &neutralHover)) &&
-                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f/255,80.f/255,92.f/255), &neutralPressed))) {
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f/255,80.f/255,92.f/255), &neutralPressed)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &buttonText))) {
                 ID2D1Brush* resetBrush = pressedButton_ == ButtonKind::ResetConfirm ? destructivePressed.Get() : hoveredButton_ == ButtonKind::ResetConfirm ? destructiveHover.Get() : destructive.Get();
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(reset, 5.0f * dpiScale, 5.0f * dpiScale), resetBrush);
                 if (pressedButton_ == ButtonKind::ResetCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralPressed.Get());
@@ -2557,6 +2755,56 @@ private:
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             DrawOverlayText(L"Reset", reset.left, reset.top, reset.right - reset.left, reset.bottom - reset.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+        } else if (overlay_ == OverlayKind::DeleteConfirm) {
+            DrawOverlayText(L"Move this image to the Recycle Bin?", left, static_cast<float>(bounds.top) + panelPadding,
+                contentWidth, 36.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            const std::wstring filename = fs::path(currentPath_).filename().wstring();
+            if (!filename.empty()) DrawOverlayText(filename.c_str(), left, static_cast<float>(bounds.top) + panelPadding + 52.0f * dpiScale,
+                contentWidth, 28.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, false, true);
+            DrawOverlayText(L"The file will be moved to the Windows Recycle Bin.", left, static_cast<float>(bounds.top) + panelPadding + 94.0f * dpiScale,
+                contentWidth, 22.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const RECT warningBounds = GetDeleteWarningCheckboxBounds();
+            const D2D1_RECT_F warningRow = D2D1::RectF(static_cast<float>(warningBounds.left), static_cast<float>(warningBounds.top), static_cast<float>(warningBounds.right), static_cast<float>(warningBounds.bottom));
+            const float warningBoxSize = 18.0f * dpiScale;
+            const D2D1_RECT_F warningBox = D2D1::RectF(warningRow.left, warningRow.top + (warningRow.bottom - warningRow.top - warningBoxSize) / 2.0f,
+                warningRow.left + warningBoxSize, warningRow.top + (warningRow.bottom - warningRow.top - warningBoxSize) / 2.0f + warningBoxSize);
+            const RECT cancelBounds = GetDeleteConfirmationButtonBounds(false), deleteBounds = GetDeleteConfirmationButtonBounds(true);
+            const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));
+            const D2D1_RECT_F remove = D2D1::RectF(static_cast<float>(deleteBounds.left), static_cast<float>(deleteBounds.top), static_cast<float>(deleteBounds.right), static_cast<float>(deleteBounds.bottom));
+            ComPtr<ID2D1SolidColorBrush> destructive, destructiveHover, destructivePressed, neutralHover, neutralPressed, buttonText;
+            if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(196.f/255,43.f/255,28.f/255), &destructive)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(220.f/255,58.f/255,40.f/255), &destructiveHover)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(153.f/255,27.f/255,20.f/255), &destructivePressed)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f/255,64.f/255,74.f/255), &neutralHover)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f/255,80.f/255,92.f/255), &neutralPressed)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &buttonText))) {
+                ID2D1Brush* deleteBrush = pressedButton_ == ButtonKind::DeleteConfirm ? destructivePressed.Get() : hoveredButton_ == ButtonKind::DeleteConfirm ? destructiveHover.Get() : destructive.Get();
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(remove, 5.0f * dpiScale, 5.0f * dpiScale), deleteBrush);
+                if (pressedButton_ == ButtonKind::DeleteCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralPressed.Get());
+                else if (hoveredButton_ == ButtonKind::DeleteCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralHover.Get());
+            }
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
+            ComPtr<ID2D1SolidColorBrush> checkboxAccent, checkboxMark, checkboxHover;
+            if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &checkboxAccent)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &checkboxMark)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &checkboxHover))) {
+                if (hoveredButton_ == ButtonKind::DeleteWarningSuppress || pressedButton_ == ButtonKind::DeleteWarningSuppress)
+                    renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(warningRow, 4.0f * dpiScale, 4.0f * dpiScale), checkboxHover.Get());
+                if (deleteWarningSuppressOnConfirm_) {
+                    renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(warningBox, 3.0f * dpiScale, 3.0f * dpiScale), checkboxAccent.Get());
+                    const float stroke = std::max(1.5f, 2.0f * dpiScale);
+                    const D2D1_POINT_2F start = D2D1::Point2F(warningBox.left + warningBoxSize * 0.22f, warningBox.top + warningBoxSize * 0.53f);
+                    const D2D1_POINT_2F middle = D2D1::Point2F(warningBox.left + warningBoxSize * 0.43f, warningBox.top + warningBoxSize * 0.74f);
+                    const D2D1_POINT_2F end = D2D1::Point2F(warningBox.left + warningBoxSize * 0.78f, warningBox.top + warningBoxSize * 0.30f);
+                    renderTarget_->DrawLine(start, middle, checkboxMark.Get(), stroke);
+                    renderTarget_->DrawLine(middle, end, checkboxMark.Get(), stroke);
+                } else renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(warningBox, 3.0f * dpiScale, 3.0f * dpiScale), borderBrush.Get(), 1.0f);
+            }
+            DrawOverlayText(L"Don't show this warning again", warningBox.right + 12.0f * dpiScale, warningRow.top,
+                warningRow.right - warningBox.right - 12.0f * dpiScale, warningRow.bottom - warningRow.top,
+                15.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get(), true);
+            DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            DrawOverlayText(L"Delete", remove.left, remove.top, remove.right - remove.left, remove.bottom - remove.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::Feedback) {
             DrawOverlayText(L"Feedback", left, static_cast<float>(bounds.top) + panelPadding, contentWidth, 34.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             DrawOverlayText(L"Help make Viewtrious better.", left, static_cast<float>(bounds.top) + panelPadding + 42.0f * dpiScale, contentWidth, 26.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
@@ -2875,7 +3123,7 @@ private:
         if (!copyFeedbackActive_) return;
         const ULONGLONG elapsed = GetTickCount64() - copyFeedbackStart_;
         if (elapsed >= 1000) return;
-        const float opacity = 0.75f * (1.0f - static_cast<float>(elapsed) / 1000.0f);
+        const float opacity = animationsEnabled_ ? 0.75f * (1.0f - static_cast<float>(elapsed) / 1000.0f) : 0.75f;
         ComPtr<ID2D1SolidColorBrush> brush, outline, textHalo, textOutline;
         const D2D1_COLOR_F color = D2D1::ColorF(D2D1::ColorF::White, opacity);
         if (FAILED(renderTarget_->CreateSolidColorBrush(color, &brush)) ||
@@ -3097,7 +3345,13 @@ private:
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
+    bool rememberWindowPlacement_ = true;
     bool includeHiddenImages_ = true;
+    bool confirmBeforeDeleting_ = true;
+    bool deleteWarningSuppressOnConfirm_ = false;
+    bool showZoomPercentage_ = true;
+    bool animationsEnabled_ = true;
+    ThemePreference themePreference_ = ThemePreference::System;
     bool onboardingRequired_ = false;
     bool tourPending_ = false;
     TutorialStep tutorialStep_ = TutorialStep::None;
@@ -3298,7 +3552,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->HasOverlay()) {
             const ButtonKind button = viewer->ButtonAt(point);
             if (button != ButtonKind::None) { viewer->SetButtonPressed(button); SetCapture(window); return 0; }
-            if (viewer->SettingsCheckboxContains(point)) { viewer->ToggleIncludeHiddenImages(); return 0; }
             if (!viewer->OverlayContains(point) && !viewer->WelcomeOpen()) viewer->DismissOverlay();
             return 0;
         }
@@ -3487,7 +3740,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     windowClass.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassExW(&windowClass);
 
-    const SIZE client = viewer.SuggestedClientSize();
+    const SIZE client = RememberWindowPlacementEnabled() ? viewer.SuggestedClientSize() : SIZE{ 800, 600 };
     RECT bounds{ 0, 0, client.cx, client.cy };
     AdjustWindowRectEx(&bounds, WS_OVERLAPPEDWINDOW, FALSE, 0);
     SavedPlacement savedPlacement{};

@@ -1,2 +1,23 @@
 /build/
 /out/
+
+# Local CMake settings
+CMakeUserPresets.json
+
+# Visual Studio / IDE state
+.vs/
+*.user
+*.suo
+
+# Editor / OS junk
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+*~

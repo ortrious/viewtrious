@@ -56,6 +56,7 @@ constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
 constexpr UINT_PTR kNavigationDecodeDebounceTimer = 5;
 constexpr UINT_PTR kShellRotationCheckTimer = 6;
+constexpr UINT_PTR kLanczosSettleTimer = 7;
 constexpr ULONGLONG kShellRotationSettleMs = 350;
 constexpr int kLogoResourceId = 102;
 constexpr int kContextMenuRowCount = 8;
@@ -115,12 +116,15 @@ struct LanczosRequest {
     std::shared_ptr<std::vector<BYTE>> sourcePixels;
     UINT sourceWidth = 0, sourceHeight = 0, targetWidth = 0, targetHeight = 0;
     uint64_t generation = 0;
+    viewtrious::LanczosMapping mapping{};
+    D2D1_RECT_F destination{};
 };
 struct LanczosResult {
     std::shared_ptr<std::vector<BYTE>> pixels;
     UINT width = 0, height = 0;
     uint64_t generation = 0;
     bool succeeded = false;
+    D2D1_RECT_F destination{};
 };
 constexpr ShortcutEntry kShortcutEntries[] = {
     { L"Ctrl+O", L"Open file" }, { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom in/out" },
@@ -1599,7 +1603,7 @@ public:
         QueueFilmstripPopulate();
         if (lanczosSelected_ && !LanczosVariantMatchesCurrent()) {
             InvalidateLanczosVariant(true);
-            RequestLanczosVariant();
+            QueueLanczosRefinement();
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -1752,7 +1756,7 @@ public:
         zoom_ = newScale;
         if (lanczosSelected_) {
             InvalidateLanczosVariant(true);
-            RequestLanczosVariant();
+            QueueLanczosRefinement();
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -1788,7 +1792,7 @@ public:
         pan_ = D2D1::Point2F();
         if (lanczosSelected_ && std::abs(CurrentScale() - oldScale) >= 0.0001f) {
             InvalidateLanczosVariant(true);
-            RequestLanczosVariant();
+            QueueLanczosRefinement();
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -1814,6 +1818,10 @@ public:
         pan_.x += static_cast<float>(point.x - lastDragPoint_.x);
         pan_.y += static_cast<float>(point.y - lastDragPoint_.y);
         lastDragPoint_ = point;
+        if (lanczosSelected_) {
+            InvalidateLanczosVariant(true);
+            QueueLanczosRefinement();
+        }
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -1871,6 +1879,7 @@ public:
         if (thumbnailDecodeThread_.joinable()) thumbnailDecodeThread_.join();
     }
     void NavigationDecodeTimer() { StartPendingFullDecode(); }
+    void LanczosRefinementTimer() { RequestLanczosVariant(); }
     void ShellRotationTimer() { UpdateShellRotation(); }
     void FullDecodeCompleteMessage(FullDecodeResult* result) { HandleFullDecodeResult(result); }
     void LanczosCompleteMessage(LanczosResult* result) { HandleLanczosResult(result); }
@@ -2959,21 +2968,65 @@ private:
     void ToggleLanczosComparison() {
         if (!source_) return;
         lanczosSelected_ = !lanczosSelected_;
-        if (lanczosSelected_ && !LanczosVariantMatchesCurrent()) RequestLanczosVariant();
+        if (lanczosSelected_ && !LanczosVariantMatchesCurrent()) QueueLanczosRefinement(1);
         InvalidateRect(window_, nullptr, FALSE);
     }
 
-    void RequestLanczosVariant() {
-        if (!source_ || !lanczosSelected_) return;
-        const auto [targetWidth, targetHeight] = LanczosTargetSize();
-        if (!targetWidth || !targetHeight || targetWidth > UINT_MAX / 4 || targetHeight > UINT_MAX / (targetWidth * 4)) return;
+    void QueueLanczosRefinement(UINT delayMs = 120) {
+        if (lanczosSelected_ && source_) SetTimer(window_, kLanczosSettleTimer, delayMs, nullptr);
+    }
+
+    bool BuildLanczosRequest(LanczosRequest& request) {
+        if (!source_ || !lanczosSelected_) return false;
+        const float dpiScale = RenderTargetDpi() / 96.0f;
+        const float physicalScale = PhysicalPixelScale();
+        const D2D1_SIZE_F canvas = ImageCanvasSize();
+        const D2D1_POINT_2F imageTopLeft = ImageTopLeft(CurrentScale(), canvas);
+        const UINT fullWidth = std::max(1u, static_cast<UINT>(std::lround(imageWidth_ * physicalScale)));
+        const UINT fullHeight = std::max(1u, static_cast<UINT>(std::lround(imageHeight_ * physicalScale)));
+        const int visibleLeft = std::clamp(static_cast<int>(std::floor(-imageTopLeft.x * dpiScale)), 0, static_cast<int>(fullWidth));
+        const int visibleTop = std::clamp(static_cast<int>(std::floor(-imageTopLeft.y * dpiScale)), 0, static_cast<int>(fullHeight));
+        const int visibleRight = std::clamp(static_cast<int>(std::ceil(canvas.width * dpiScale - imageTopLeft.x * dpiScale)), 0, static_cast<int>(fullWidth));
+        const int visibleBottom = std::clamp(static_cast<int>(std::ceil(canvas.height * dpiScale - imageTopLeft.y * dpiScale)), 0, static_cast<int>(fullHeight));
+        if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) return false;
+        const uint64_t fullArea = static_cast<uint64_t>(fullWidth) * fullHeight;
+        const uint64_t canvasArea = static_cast<uint64_t>(std::max(1.0f, canvas.width * dpiScale)) *
+            static_cast<uint64_t>(std::max(1.0f, canvas.height * dpiScale));
+        const bool wholeImage = fullArea <= canvasArea + canvasArea / 2;
+        constexpr int kOverscanPixels = 96;
+        const int outputLeft = wholeImage ? 0 : std::max(0, visibleLeft - kOverscanPixels);
+        const int outputTop = wholeImage ? 0 : std::max(0, visibleTop - kOverscanPixels);
+        const int outputRight = wholeImage ? static_cast<int>(fullWidth) : std::min(static_cast<int>(fullWidth), visibleRight + kOverscanPixels);
+        const int outputBottom = wholeImage ? static_cast<int>(fullHeight) : std::min(static_cast<int>(fullHeight), visibleBottom + kOverscanPixels);
+        const float sourcePerDestination = 1.0f / physicalScale;
+        const float support = 3.0f * std::max(1.0f, sourcePerDestination) + 1.0f;
+        const int sourceLeft = wholeImage ? 0 : std::max(0, static_cast<int>(std::floor((outputLeft + 0.5f) * sourcePerDestination - 0.5f - support)));
+        const int sourceTop = wholeImage ? 0 : std::max(0, static_cast<int>(std::floor((outputTop + 0.5f) * sourcePerDestination - 0.5f - support)));
+        const int sourceRight = wholeImage ? static_cast<int>(imageWidth_) : std::min(static_cast<int>(imageWidth_), static_cast<int>(std::ceil((outputRight - 0.5f) * sourcePerDestination - 0.5f + support + 1.0f)));
+        const int sourceBottom = wholeImage ? static_cast<int>(imageHeight_) : std::min(static_cast<int>(imageHeight_), static_cast<int>(std::ceil((outputBottom - 0.5f) * sourcePerDestination - 0.5f + support + 1.0f)));
+        if (sourceRight <= sourceLeft || sourceBottom <= sourceTop) return false;
         auto pixels = displayedPixels_;
         if (!pixels) {
             const size_t bytes = static_cast<size_t>(imageWidth_) * imageHeight_ * 4;
             pixels = std::make_shared<std::vector<BYTE>>(bytes);
-            if (FAILED(source_->CopyPixels(nullptr, imageWidth_ * 4, static_cast<UINT>(bytes), pixels->data()))) return;
+            if (FAILED(source_->CopyPixels(nullptr, imageWidth_ * 4, static_cast<UINT>(bytes), pixels->data()))) return false;
         }
-        LanczosRequest request{ pixels, imageWidth_, imageHeight_, targetWidth, targetHeight, lanczosGeneration_ };
+        auto cropped = std::make_shared<std::vector<BYTE>>(static_cast<size_t>(sourceRight - sourceLeft) * (sourceBottom - sourceTop) * 4);
+        for (int row = sourceTop; row < sourceBottom; ++row) std::memcpy(cropped->data() + static_cast<size_t>(row - sourceTop) * (sourceRight - sourceLeft) * 4,
+            pixels->data() + (static_cast<size_t>(row) * imageWidth_ + sourceLeft) * 4, static_cast<size_t>(sourceRight - sourceLeft) * 4);
+        request.sourcePixels = std::move(cropped);
+        request.sourceWidth = static_cast<UINT>(sourceRight - sourceLeft); request.sourceHeight = static_cast<UINT>(sourceBottom - sourceTop);
+        request.targetWidth = static_cast<UINT>(outputRight - outputLeft); request.targetHeight = static_cast<UINT>(outputBottom - outputTop);
+        request.generation = lanczosGeneration_;
+        request.mapping = { static_cast<float>(sourceLeft), static_cast<float>(sourceTop), static_cast<float>(outputLeft), static_cast<float>(outputTop), sourcePerDestination, sourcePerDestination };
+        request.destination = D2D1::RectF(imageTopLeft.x + outputLeft / dpiScale, imageTopLeft.y + outputTop / dpiScale,
+            imageTopLeft.x + outputRight / dpiScale, imageTopLeft.y + outputBottom / dpiScale);
+        return true;
+    }
+
+    void RequestLanczosVariant() {
+        LanczosRequest request{};
+        if (!BuildLanczosRequest(request)) return;
         if (lanczosRendering_) {
             pendingLanczosRequest_ = std::move(request);
             return;
@@ -2989,8 +3042,9 @@ private:
             result->generation = request.generation;
             result->width = request.targetWidth;
             result->height = request.targetHeight;
+            result->destination = request.destination;
             viewtrious::Lanczos3Scaler scaler;
-            if (scaler.Initialize(request.sourceWidth, request.sourceHeight, request.targetWidth, request.targetHeight)) {
+            if (scaler.Initialize(request.sourceWidth, request.sourceHeight, request.targetWidth, request.targetHeight, request.mapping)) {
                 result->pixels = std::make_shared<std::vector<BYTE>>();
                 result->succeeded = scaler.Scale(request.sourcePixels->data(), request.sourceWidth * 4, *result->pixels);
             }
@@ -3006,6 +3060,8 @@ private:
             lanczosPixels_ = std::move(result->pixels);
             lanczosWidth_ = result->width;
             lanczosHeight_ = result->height;
+            lanczosDestination_ = result->destination;
+            lanczosViewGeneration_ = result->generation;
             lanczosBitmap_.Reset();
         }
         delete result;
@@ -3245,13 +3301,12 @@ private:
     }
 
     bool LanczosVariantMatchesCurrent() const {
-        if (!lanczosPixels_ || !source_) return false;
-        const auto [width, height] = LanczosTargetSize();
-        return lanczosWidth_ == width && lanczosHeight_ == height;
+        return lanczosPixels_ && source_ && lanczosViewGeneration_ == lanczosGeneration_;
     }
 
     void InvalidateLanczosVariant(bool keepSelection) {
         ++lanczosGeneration_;
+        KillTimer(window_, kLanczosSettleTimer);
         lanczosPixels_.reset();
         lanczosBitmap_.Reset();
         lanczosWidth_ = lanczosHeight_ = 0;
@@ -3362,7 +3417,7 @@ private:
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
         DrawCheckerboard(destination);
         if (lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
-            renderTarget_->DrawBitmap(lanczosBitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            renderTarget_->DrawBitmap(lanczosBitmap_.Get(), lanczosDestination_, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         else renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
@@ -4618,6 +4673,7 @@ private:
     UINT imageHeight_ = 0;
     UINT lanczosWidth_ = 0;
     UINT lanczosHeight_ = 0;
+    D2D1_RECT_F lanczosDestination_{};
     std::wstring currentPath_;
     std::wstring displayedPath_;
     FileIdentity currentFileIdentity_{};
@@ -4648,6 +4704,7 @@ private:
     int fullDecodeWorkersInFlight_ = 0;
     bool imageDecodePending_ = false;
     uint64_t lanczosGeneration_ = 0;
+    uint64_t lanczosViewGeneration_ = 0;
     bool lanczosSelected_ = false;
     bool lanczosRendering_ = false;
     std::optional<LanczosRequest> pendingLanczosRequest_;
@@ -5059,6 +5116,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kDirectoryChangeDebounceTimer) { KillTimer(window, kDirectoryChangeDebounceTimer); viewer->RefreshNavigationFromFileSystem(); return 0; }
         if (wParam == kNavigationDecodeDebounceTimer) { viewer->NavigationDecodeTimer(); return 0; }
         if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
+        if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {

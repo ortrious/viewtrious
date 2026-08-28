@@ -34,14 +34,15 @@ struct Lanczos3Scaler::CoefficientTable {
 
 struct Lanczos3Scaler::Row { uint32_t sourceY = UINT32_MAX; std::vector<int32_t> values; };
 
-Lanczos3Scaler::CoefficientTable Lanczos3Scaler::BuildCoefficientTable(uint32_t sourceLength, uint32_t destinationLength) {
+Lanczos3Scaler::CoefficientTable Lanczos3Scaler::BuildCoefficientTable(uint32_t sourceLength, uint32_t destinationLength,
+    float sourceOffset, float destinationOffset, float sourcePixelsPerDestination) {
     Lanczos3Scaler::CoefficientTable table;
     table.entries.reserve(destinationLength);
-    const float scale = static_cast<float>(sourceLength) / destinationLength;
+    const float scale = sourcePixelsPerDestination > 0.0f ? sourcePixelsPerDestination : static_cast<float>(sourceLength) / destinationLength;
     const float filterScale = std::max(1.0f, scale);
     const float radius = kLanczosRadius * filterScale;
     for (uint32_t destination = 0; destination < destinationLength; ++destination) {
-        const float center = (static_cast<float>(destination) + 0.5f) * scale - 0.5f;
+        const float center = (destinationOffset + static_cast<float>(destination) + 0.5f) * scale - 0.5f - sourceOffset;
         const int start = std::max(0, static_cast<int>(std::ceil(center - radius)));
         const int end = std::min(static_cast<int>(sourceLength) - 1, static_cast<int>(std::floor(center + radius)));
         Lanczos3Scaler::CoefficientTable::Entry entry;
@@ -71,13 +72,16 @@ Lanczos3Scaler::CoefficientTable Lanczos3Scaler::BuildCoefficientTable(uint32_t 
     return table;
 }
 
-bool Lanczos3Scaler::Initialize(uint32_t sourceWidth, uint32_t sourceHeight, uint32_t destinationWidth, uint32_t destinationHeight) {
+bool Lanczos3Scaler::Initialize(uint32_t sourceWidth, uint32_t sourceHeight, uint32_t destinationWidth, uint32_t destinationHeight,
+    const LanczosMapping& mapping) {
     if (!sourceWidth || !sourceHeight || !destinationWidth || !destinationHeight) return false;
     sourceWidth_ = sourceWidth; sourceHeight_ = sourceHeight;
     destinationWidth_ = destinationWidth; destinationHeight_ = destinationHeight;
     delete horizontal_; delete vertical_; delete rowCache_;
-    horizontal_ = new CoefficientTable(BuildCoefficientTable(sourceWidth, destinationWidth));
-    vertical_ = new CoefficientTable(BuildCoefficientTable(sourceHeight, destinationHeight));
+    horizontal_ = new CoefficientTable(BuildCoefficientTable(sourceWidth, destinationWidth, mapping.sourceOffsetX,
+        mapping.destinationOffsetX, mapping.sourcePixelsPerDestinationX));
+    vertical_ = new CoefficientTable(BuildCoefficientTable(sourceHeight, destinationHeight, mapping.sourceOffsetY,
+        mapping.destinationOffsetY, mapping.sourcePixelsPerDestinationY));
     rowCache_ = new std::vector<Row>(vertical_->maxTaps);
     for (Row& row : *rowCache_) row.values.resize(static_cast<size_t>(destinationWidth_) * 4);
     nextRow_ = 0;

@@ -20,6 +20,8 @@
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -42,10 +44,14 @@ constexpr wchar_t kWindowTitle[] = L"Viewtrious";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
 constexpr UINT kPopulateFilmstripMessage = WM_APP + 2;
 constexpr UINT kDirectoryChangedMessage = WM_APP + 3;
+constexpr UINT kFullDecodeCompleteMessage = WM_APP + 4;
+constexpr UINT kThumbnailDecodeCompleteMessage = WM_APP + 5;
+constexpr UINT kDecodeWorkerFinishedMessage = WM_APP + 6;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
 constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
+constexpr UINT_PTR kNavigationDecodeDebounceTimer = 5;
 constexpr int kLogoResourceId = 102;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
@@ -77,6 +83,30 @@ struct FilmstripThumbnail {
     ComPtr<IWICBitmapSource> source;
     ComPtr<ID2D1Bitmap> bitmap;
 };
+struct PixelBuffer {
+    UINT width = 0;
+    UINT height = 0;
+    UINT stride = 0;
+    std::shared_ptr<std::vector<BYTE>> pixels;
+};
+struct DecodeRequest {
+    std::wstring path;
+    uint64_t requestGeneration = 0;
+    uint64_t folderGeneration = 0;
+};
+struct FullDecodeResult : PixelBuffer {
+    DecodeRequest request;
+    HRESULT result = E_FAIL;
+    std::thread::id workerId{};
+    bool deliveredSynchronously = false;
+};
+struct ThumbnailDecodeResult : PixelBuffer {
+    fs::path path;
+    uint64_t folderGeneration = 0;
+    size_t index = 0;
+    HRESULT result = E_FAIL;
+};
+struct DecodeWorkerFinished { std::thread::id workerId{}; };
 constexpr ShortcutEntry kShortcutEntries[] = {
     { L"Ctrl+O", L"Open file" }, { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom in/out" },
     { L"+", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
@@ -423,6 +453,10 @@ public:
     }
 
     HRESULT LoadImage(const std::wstring& path) {
+        ++decodeRequestGeneration_;
+        pendingFullDecode_.reset();
+        imageDecodePending_ = false;
+        KillTimer(window_, kNavigationDecodeDebounceTimer);
         ComPtr<IWICBitmapSource> source;
         UINT width = 0;
         UINT height = 0;
@@ -435,6 +469,7 @@ public:
             bitmap_.Reset();
             imageWidth_ = imageHeight_ = 0;
             currentPath_ = path;
+            displayedPath_.clear();
             resolutionText_.clear();
             fileSizeText_ = FormatFileSize(path);
             filenameText_ = fs::path(path).filename().wstring();
@@ -618,11 +653,12 @@ public:
     }
     bool ContextActionEnabled(ContextAction action) const {
         if (tutorialStep_ == TutorialStep::ContextMenu && !HasImage()) return false;
-        if (action == ContextAction::Fullscreen || action == ContextAction::OpenWith || action == ContextAction::Copy || action == ContextAction::Print ||
+        if (action == ContextAction::Copy || action == ContextAction::Print) return HasImage() && DisplayedImageMatchesTarget();
+        if (action == ContextAction::Fullscreen || action == ContextAction::OpenWith ||
             action == ContextAction::SetBackground || action == ContextAction::Delete)
             return true;
         return (action == ContextAction::RotateLeft || action == ContextAction::RotateRight) &&
-            (IsJpegPath(currentPath_) || IsPngPath(currentPath_));
+            DisplayedImageMatchesTarget() && (IsJpegPath(currentPath_) || IsPngPath(currentPath_));
     }
     void SetContextHover(ContextAction action) {
         if (!ContextActionEnabled(action)) action = ContextAction::None;
@@ -1046,7 +1082,7 @@ public:
         const auto found = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&current](const fs::path& path) { return PathsEqual(path, current); });
         return found == navigationFiles_.end() ? 0 : static_cast<size_t>(std::distance(navigationFiles_.begin(), found));
     }
-    void RebuildFilmstripLayout() {
+    void RebuildFilmstripLayout(bool clampScroll = true) {
         const size_t count = navigationFiles_.size();
         filmstripThumbnailAspects_.resize(count, 1.0f);
         filmstripItemWidths_.resize(count, static_cast<float>(FilmstripThumbnailHeight()));
@@ -1062,7 +1098,7 @@ public:
             offset += filmstripItemWidths_[index] + gap;
         }
         if (!filmstripItemOffsets_.empty()) filmstripItemOffsets_.back() = offset;
-        filmstripScroll_ = std::clamp(filmstripScroll_, 0.0f, FilmstripMaximumScroll());
+        if (clampScroll) filmstripScroll_ = std::clamp(filmstripScroll_, 0.0f, FilmstripMaximumScroll());
     }
     std::pair<size_t, size_t> FilmstripVisibleRange() const {
         if (navigationFiles_.empty() || filmstripItemOffsets_.empty()) return { 0, 0 };
@@ -1110,6 +1146,7 @@ public:
     void ScrollFilmstrip(float delta) {
         if (!FilmstripVisible()) return;
         filmstripScroll_ = std::clamp(filmstripScroll_ + delta, 0.0f, FilmstripMaximumScroll());
+        filmstripNavigationDirection_ = delta >= 0.0f ? 1 : -1;
         StartFilmstripHold();
         QueueFilmstripPopulate();
         InvalidateRect(window_, nullptr, FALSE);
@@ -1140,7 +1177,7 @@ public:
         return FilmstripVisible() && PtInRect(&bounds, point);
     }
     void StopFilmstripVisibilityTimer() { KillTimer(window_, kFilmstripVisibilityTimer); }
-    void StartFilmstripHold(UINT holdDurationMs = 2000) {
+    void StartFilmstripHold(UINT holdDurationMs = 2000, bool invalidate = true) {
         if (!FilmstripEligible()) return;
         filmstripOpacity_ = 1.0f;
         filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
@@ -1149,7 +1186,7 @@ public:
         QueueFilmstripPopulate();
         if (alwaysShowFilmstrip_) StopFilmstripVisibilityTimer();
         else SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
-        InvalidateRect(window_, nullptr, FALSE);
+        if (invalidate) InvalidateRect(window_, nullptr, FALSE);
     }
     void StartFilmstripReveal() {
         if (!FilmstripEligible()) return;
@@ -1212,21 +1249,17 @@ public:
         }
         if (opacity <= 0.001f) { filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); }
     }
-    void RevealFilmstripForNavigation() {
+    void RevealFilmstripForNavigation(bool invalidate = true) {
         EnsureCurrentFilmstripVisible();
-        StartFilmstripHold();
+        StartFilmstripHold(2000, invalidate);
     }
     void SelectFilmstripItem(int index) {
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
         const std::wstring path = navigationFiles_[index].wstring();
         if (PathsEqual(fs::path(path), fs::path(currentPath_))) return;
-        ComPtr<IWICBitmapSource> source;
-        UINT width = 0, height = 0;
-        if (SUCCEEDED(DecodeImage(path, source, width, height))) {
-            CommitImage(path, source, width, height, false);
-            RevealFilmstripForNavigation();
-            InvalidateRect(window_, nullptr, FALSE);
-        }
+        const size_t current = CurrentNavigationIndex();
+        if (NavigateFastRasterSynchronously(path, index >= static_cast<int>(current) ? 1 : -1)) return;
+        SelectNavigationTarget(path, index >= static_cast<int>(current) ? 1 : -1, true);
     }
     void SetFilmstripHover(POINT point) {
         const int index = FilmstripItemAt(point);
@@ -1613,12 +1646,18 @@ public:
         const bool changed = scannedFiles.size() != navigationFiles_.size() || !std::equal(scannedFiles.begin(), scannedFiles.end(), navigationFiles_.begin(),
             [](const fs::path& left, const fs::path& right) { return PathsEqual(left, right); });
         if (changed) {
+            ++navigationFolderGeneration_;
             navigationFiles_ = std::move(scannedFiles);
             thumbnailCache_.clear();
             filmstripThumbnailAspects_.clear();
             filmstripItemWidths_.clear();
             filmstripItemOffsets_.clear();
             filmstripScroll_ = 0.0f;
+        }
+        if ((changed || currentRenamed) && imageDecodePending_) {
+            ++decodeRequestGeneration_;
+            pendingFullDecode_ = DecodeRequest{ currentPath_, decodeRequestGeneration_, navigationFolderGeneration_ };
+            QueueLatestFullDecode();
         }
         navigationBuilt_ = true;
         if (!changed && !filmstripItemOffsets_.empty()) {
@@ -1641,8 +1680,8 @@ public:
 
     void PopulateFilmstripThumbnailMessage() { PopulateFilmstripThumbnail(); }
 
-    void Navigate(int direction) {
-        if (!source_) return;
+    void Navigate(int direction, bool immediatePaint = true) {
+        if (currentPath_.empty()) return;
         BuildNavigation(true);
         if (navigationFiles_.size() < 2) return;
 
@@ -1652,21 +1691,11 @@ public:
         const ptrdiff_t count = static_cast<ptrdiff_t>(navigationFiles_.size());
         const bool currentMissing = currentIt == navigationFiles_.end();
         const ptrdiff_t start = currentMissing ? (direction > 0 ? -1 : 0) : std::distance(navigationFiles_.begin(), currentIt);
-        const ptrdiff_t attempts = currentMissing ? count : count - 1;
-        for (ptrdiff_t attempt = 1; attempt <= attempts; ++attempt) {
-            ptrdiff_t index = (start + direction * attempt) % count;
-            if (index < 0) index += count;
-            ComPtr<IWICBitmapSource> source;
-            UINT width = 0;
-            UINT height = 0;
-            const std::wstring path = navigationFiles_[index].wstring();
-            if (SUCCEEDED(DecodeImage(path, source, width, height))) {
-                CommitImage(path, source, width, height, false);
-                RevealFilmstripForNavigation();
-                InvalidateRect(window_, nullptr, FALSE);
-                return;
-            }
-        }
+        ptrdiff_t index = (start + direction) % count;
+        if (index < 0) index += count;
+        const std::wstring path = navigationFiles_[index].wstring();
+        if (NavigateFastRasterSynchronously(path, direction)) return;
+        SelectNavigationTarget(path, direction, immediatePaint);
     }
 
     void SetScaleAt(POINT cursor, float requestedScale) {
@@ -1782,7 +1811,33 @@ public:
         RegCloseKey(key);
     }
 
-    void Shutdown() { StopDirectoryWatcher(); }
+    void Shutdown() {
+        StopDirectoryWatcher();
+        decodeShuttingDown_ = true;
+        KillTimer(window_, kNavigationDecodeDebounceTimer);
+        ++decodeRequestGeneration_;
+        pendingFullDecode_.reset();
+        for (std::thread& thread : fullDecodeThreads_) if (thread.joinable()) thread.join();
+        fullDecodeThreads_.clear();
+        if (thumbnailDecodeThread_.joinable()) thumbnailDecodeThread_.join();
+    }
+    void NavigationDecodeTimer() { StartPendingFullDecode(); }
+    void FullDecodeCompleteMessage(FullDecodeResult* result) { HandleFullDecodeResult(result); }
+    void DecodeWorkerFinishedMessage(DecodeWorkerFinished* finished) { HandleDecodeWorkerFinished(finished); }
+    void DrainQueuedFullDecodeResults() {
+        MSG message{};
+        bool drained = false;
+        while (PeekMessageW(&message, window_, kDecodeWorkerFinishedMessage, kDecodeWorkerFinishedMessage, PM_REMOVE)) {
+            HandleDecodeWorkerFinished(reinterpret_cast<DecodeWorkerFinished*>(message.lParam));
+            drained = true;
+        }
+        while (PeekMessageW(&message, window_, kFullDecodeCompleteMessage, kFullDecodeCompleteMessage, PM_REMOVE)) {
+            HandleFullDecodeResult(reinterpret_cast<FullDecodeResult*>(message.lParam));
+            drained = true;
+        }
+        if (drained) UpdateWindow(window_);
+    }
+    void ThumbnailDecodeCompleteMessage(ThumbnailDecodeResult* result) { HandleThumbnailDecodeResult(result); }
     void QueueDirectoryRefreshFromWatcher() { QueueDirectoryRefresh(); }
 
 private:
@@ -2643,8 +2698,13 @@ private:
 
     void ClearDeletedImage() {
         StopDirectoryWatcher();
+        ++decodeRequestGeneration_;
+        ++navigationFolderGeneration_;
+        pendingFullDecode_.reset(); imageDecodePending_ = false;
+        KillTimer(window_, kNavigationDecodeDebounceTimer);
         source_.Reset(); bitmap_.Reset(); imageWidth_ = imageHeight_ = 0;
-        currentPath_.clear(); currentFileIdentity_ = {}; resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
+        displayedPixels_.reset();
+        currentPath_.clear(); displayedPath_.clear(); currentFileIdentity_ = {}; resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
         navigationFiles_.clear(); thumbnailCache_.clear(); filmstripThumbnailAspects_.clear(); filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
         error_ = L"Drop an image here, or launch Viewtrious with an image path.";
@@ -2755,13 +2815,192 @@ private:
         return hr;
     }
 
+    HRESULT DecodeImagePixels(const std::wstring& path, PixelBuffer& decoded) const {
+        ComPtr<IWICImagingFactory> factory;
+        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+        ComPtr<IWICBitmapDecoder> decoder;
+        if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+        UINT width = 0, height = 0;
+        if (SUCCEEDED(hr)) hr = frame->GetSize(&width, &height);
+        if (FAILED(hr) || width == 0 || height == 0) return FAILED(hr) ? hr : E_FAIL;
+        ComPtr<IWICFormatConverter> converter;
+        if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
+        if (SUCCEEDED(hr)) hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+        ComPtr<IWICBitmapSource> transformed = converter;
+        const UINT orientation = ReadPhotoOrientation(frame.Get());
+        if (SUCCEEDED(hr) && orientation != 1) {
+            ComPtr<IWICBitmapFlipRotator> rotator;
+            hr = factory->CreateBitmapFlipRotator(&rotator);
+            if (SUCCEEDED(hr)) hr = rotator->Initialize(converter.Get(), TransformForOrientation(orientation));
+            if (SUCCEEDED(hr)) transformed = rotator;
+            if (orientation >= 5 && orientation <= 8) std::swap(width, height);
+        }
+        if (FAILED(hr)) return hr;
+        if (width > UINT_MAX / 4 || height > UINT_MAX / (width * 4)) return E_OUTOFMEMORY;
+        const UINT stride = width * 4;
+        const size_t bytes = static_cast<size_t>(stride) * height;
+        auto pixels = std::make_shared<std::vector<BYTE>>(bytes);
+        hr = transformed->CopyPixels(nullptr, stride, static_cast<UINT>(bytes), pixels->data());
+        if (SUCCEEDED(hr)) { decoded.width = width; decoded.height = height; decoded.stride = stride; decoded.pixels = std::move(pixels); }
+        return hr;
+    }
+
+    bool IsFastNavigationPath(const std::wstring& path) const {
+        std::wstring extension = fs::path(path).extension().wstring();
+        std::transform(extension.begin(), extension.end(), extension.begin(), towlower);
+        return extension == L".jpg" || extension == L".jpeg" || extension == L".png" || extension == L".bmp";
+    }
+
+    bool NavigateFastRasterSynchronously(const std::wstring& path, int direction) {
+        if (!IsFastNavigationPath(path)) return false;
+
+        // This is the accepted pre-0.4.4 path: present each inexpensive raster image
+        // before the next queued navigation repeat is allowed to advance the target.
+        ++decodeRequestGeneration_;
+        pendingFullDecode_.reset();
+        imageDecodePending_ = false;
+        KillTimer(window_, kNavigationDecodeDebounceTimer);
+
+        ComPtr<IWICBitmapSource> source;
+        UINT width = 0;
+        UINT height = 0;
+        if (FAILED(DecodeImage(path, source, width, height))) return false;
+
+        filmstripNavigationDirection_ = direction >= 0 ? 1 : -1;
+        CommitImage(path, source, width, height, false);
+        RevealFilmstripForNavigation();
+        InvalidateRect(window_, nullptr, FALSE);
+        UpdateWindow(window_);
+        return true;
+    }
+
+    void QueueLatestFullDecode() {
+        KillTimer(window_, kNavigationDecodeDebounceTimer);
+        if (pendingFullDecode_ && IsFastNavigationPath(pendingFullDecode_->path) && fullDecodeWorkersInFlight_ < 2) {
+            StartPendingFullDecode();
+        } else {
+            SetTimer(window_, kNavigationDecodeDebounceTimer, 60, nullptr);
+        }
+    }
+
+    void PresentNavigationUpdate(bool immediate) {
+        const FrameMetrics frame = GetFrameMetrics(window_);
+        RECT client{};
+        GetClientRect(window_, &client);
+        RECT title{ 0, 0, client.right, frame.titleBarHeight };
+        RECT strip = GetFilmstripBounds();
+        RedrawWindow(window_, &title, nullptr, RDW_INVALIDATE);
+        if (strip.right > strip.left && strip.bottom > strip.top) RedrawWindow(window_, &strip, nullptr, RDW_INVALIDATE);
+        if (immediate) UpdateWindow(window_);
+    }
+
+    void SelectNavigationTarget(const std::wstring& path, int direction = 0, bool immediatePaint = true) {
+        if (path.empty()) return;
+        currentPath_ = path;
+        currentFileIdentity_ = ReadFileIdentity(fs::path(path));
+        filenameText_ = fs::path(path).filename().wstring();
+        fileSizeText_ = FormatFileSize(path);
+        resolutionText_.clear();
+        error_.clear();
+        imageDecodePending_ = true;
+        if (direction != 0) filmstripNavigationDirection_ = direction > 0 ? 1 : -1;
+        ++decodeRequestGeneration_;
+        pendingFullDecode_ = DecodeRequest{ path, decodeRequestGeneration_, navigationFolderGeneration_ };
+        QueueLatestFullDecode();
+        RevealFilmstripForNavigation(false);
+        PresentNavigationUpdate(immediatePaint);
+    }
+
+    void StartPendingFullDecode() {
+        KillTimer(window_, kNavigationDecodeDebounceTimer);
+        if (!pendingFullDecode_ || fullDecodeWorkersInFlight_ >= 2) return;
+        DecodeRequest request = *pendingFullDecode_;
+        pendingFullDecode_.reset();
+        ++fullDecodeWorkersInFlight_;
+        fullDecodeThreads_.emplace_back([this, request] {
+            const HRESULT apartment = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            auto* result = new FullDecodeResult{};
+            result->request = request;
+            result->workerId = std::this_thread::get_id();
+            result->result = DecodeImagePixels(request.path, *result);
+            if (SUCCEEDED(apartment)) CoUninitialize();
+            if (request.requestGeneration != decodeRequestGeneration_.load(std::memory_order_acquire)) {
+                auto* finished = new DecodeWorkerFinished{ result->workerId };
+                delete result;
+                if (!PostMessageW(window_, kDecodeWorkerFinishedMessage, 0, reinterpret_cast<LPARAM>(finished))) delete finished;
+                return;
+            }
+            if (IsFastNavigationPath(request.path) && !decodeShuttingDown_.load(std::memory_order_acquire)) {
+                result->deliveredSynchronously = true;
+                DWORD_PTR ignored = 0;
+                if (SendMessageTimeoutW(window_, kFullDecodeCompleteMessage, 0, reinterpret_cast<LPARAM>(result),
+                        SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &ignored)) {
+                    delete result;
+                    auto* finished = new DecodeWorkerFinished{ std::this_thread::get_id() };
+                    if (!PostMessageW(window_, kDecodeWorkerFinishedMessage, 0, reinterpret_cast<LPARAM>(finished))) delete finished;
+                    return;
+                }
+                result->deliveredSynchronously = false;
+            }
+            if (!PostMessageW(window_, kFullDecodeCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
+        });
+    }
+
+    void CompleteFullDecodeWorker(const std::thread::id& workerId) {
+        const auto worker = std::find_if(fullDecodeThreads_.begin(), fullDecodeThreads_.end(), [&](const std::thread& thread) { return thread.get_id() == workerId; });
+        if (worker != fullDecodeThreads_.end()) { worker->join(); fullDecodeThreads_.erase(worker); }
+        fullDecodeWorkersInFlight_ = std::max(0, fullDecodeWorkersInFlight_ - 1);
+    }
+
+    void HandleDecodeWorkerFinished(DecodeWorkerFinished* finished) {
+        if (!finished) return;
+        CompleteFullDecodeWorker(finished->workerId);
+        delete finished;
+        StartPendingFullDecode();
+        QueueFilmstripPopulate();
+    }
+
+    void HandleFullDecodeResult(FullDecodeResult* result) {
+        if (!result) return;
+        if (!result->deliveredSynchronously) CompleteFullDecodeWorker(result->workerId);
+        const bool current = result->request.requestGeneration == decodeRequestGeneration_ &&
+            result->request.folderGeneration == navigationFolderGeneration_ && PathsEqual(fs::path(result->request.path), fs::path(currentPath_));
+        if (current) {
+            imageDecodePending_ = false;
+            if (SUCCEEDED(result->result) && result->pixels) {
+                ComPtr<IWICBitmap> bitmap;
+                const HRESULT hr = wicFactory_->CreateBitmapFromMemory(result->width, result->height, GUID_WICPixelFormat32bppPBGRA,
+                    result->stride, static_cast<UINT>(result->pixels->size()), result->pixels->data(), &bitmap);
+                if (SUCCEEDED(hr)) {
+                    CommitImage(result->request.path, bitmap, result->width, result->height, false);
+                    displayedPixels_ = result->pixels;
+                } else error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
+            } else {
+                source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); displayedPath_.clear(); imageWidth_ = imageHeight_ = 0;
+                error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
+            }
+            InvalidateRect(window_, nullptr, FALSE);
+            if (result->deliveredSynchronously) UpdateWindow(window_);
+        }
+        if (!result->deliveredSynchronously) {
+            delete result;
+            StartPendingFullDecode();
+            QueueFilmstripPopulate();
+        }
+    }
+
     void CommitImage(const std::wstring& path, const ComPtr<IWICBitmapSource>& source, UINT width, UINT height,
         bool resetNavigation) {
+        displayedPixels_.reset();
         source_ = source;
         bitmap_.Reset();
         imageWidth_ = width;
         imageHeight_ = height;
         currentPath_ = path;
+        displayedPath_ = path;
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         resolutionText_ = std::to_wstring(width) + L"\u00D7" + std::to_wstring(height);
         fileSizeText_ = FormatFileSize(path);
@@ -2838,6 +3077,10 @@ private:
         return source_.Get() != nullptr;
     }
 
+    bool DisplayedImageMatchesTarget() const {
+        return source_ && !imageDecodePending_ && !displayedPath_.empty() && PathsEqual(fs::path(displayedPath_), fs::path(currentPath_));
+    }
+
 
     bool EnsureCheckerboardBrush() {
         if (!renderTarget_) return false;
@@ -2888,14 +3131,19 @@ private:
         renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
-    HRESULT DecodeFilmstripThumbnail(const fs::path& path, ComPtr<IWICBitmapSource>& thumbnail) {
+    HRESULT DecodeFilmstripThumbnailPixels(const fs::path& path, UINT targetHeight, PixelBuffer& thumbnail) const {
+        ComPtr<IWICImagingFactory> factory;
+        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
         ComPtr<IWICBitmapDecoder> decoder;
-        HRESULT hr = wicFactory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+        if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
         ComPtr<IWICBitmapFrameDecode> frame;
         if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
         ComPtr<IWICBitmapSource> input;
         if (SUCCEEDED(hr)) {
             hr = frame->GetThumbnail(&input);
+            if (FAILED(hr) || !input) hr = decoder->GetPreview(&input);
+            // A scaler on the frame is the last resort; it keeps the requested output small and
+            // lets codecs use their own reduced-resolution decode path where one is available.
             if (FAILED(hr) || !input) { input = frame; hr = S_OK; }
         }
         UINT width = 0, height = 0;
@@ -2905,7 +3153,7 @@ private:
         ComPtr<IWICBitmapFlipRotator> rotator;
         const UINT orientation = ReadPhotoOrientation(frame.Get());
         if (orientation != 1) {
-            hr = wicFactory_->CreateBitmapFlipRotator(&rotator);
+            hr = factory->CreateBitmapFlipRotator(&rotator);
             if (SUCCEEDED(hr)) hr = rotator->Initialize(input.Get(), TransformForOrientation(orientation));
             if (SUCCEEDED(hr)) oriented = rotator;
         }
@@ -2918,22 +3166,22 @@ private:
         ComPtr<IWICBitmapSource> cropped = oriented;
         ComPtr<IWICBitmapClipper> clipper;
         if (cropWidth != width || cropHeight != height) {
-            hr = wicFactory_->CreateBitmapClipper(&clipper);
+            hr = factory->CreateBitmapClipper(&clipper);
             const WICRect crop{ static_cast<INT>((width - cropWidth) / 2), static_cast<INT>((height - cropHeight) / 2), static_cast<INT>(cropWidth), static_cast<INT>(cropHeight) };
             if (SUCCEEDED(hr)) hr = clipper->Initialize(oriented.Get(), &crop);
             if (SUCCEEDED(hr)) cropped = clipper;
         }
-        const UINT targetHeight = static_cast<UINT>(FilmstripThumbnailHeight());
         const UINT targetWidth = std::max(1u, static_cast<UINT>(std::lround(static_cast<float>(targetHeight) * displayAspect)));
         ComPtr<IWICBitmapScaler> scaler;
-        if (SUCCEEDED(hr)) hr = wicFactory_->CreateBitmapScaler(&scaler);
+        if (SUCCEEDED(hr)) hr = factory->CreateBitmapScaler(&scaler);
         if (SUCCEEDED(hr)) hr = scaler->Initialize(cropped.Get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant);
         ComPtr<IWICFormatConverter> converter;
-        if (SUCCEEDED(hr)) hr = wicFactory_->CreateFormatConverter(&converter);
+        if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
         if (SUCCEEDED(hr)) hr = converter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-        ComPtr<IWICBitmap> cached;
-        if (SUCCEEDED(hr)) hr = wicFactory_->CreateBitmapFromSource(converter.Get(), WICBitmapCacheOnLoad, &cached);
-        if (SUCCEEDED(hr)) thumbnail = cached;
+        const UINT stride = targetWidth * 4;
+        auto pixels = std::make_shared<std::vector<BYTE>>(static_cast<size_t>(stride) * targetHeight);
+        if (SUCCEEDED(hr)) hr = converter->CopyPixels(nullptr, stride, static_cast<UINT>(pixels->size()), pixels->data());
+        if (SUCCEEDED(hr)) { thumbnail.width = targetWidth; thumbnail.height = targetHeight; thumbnail.stride = stride; thumbnail.pixels = std::move(pixels); }
         return hr;
     }
 
@@ -2948,7 +3196,7 @@ private:
     }
     void PopulateFilmstripThumbnail() {
         filmstripPopulateQueued_ = false;
-        if (!FilmstripVisible()) return;
+        if (!FilmstripVisible() || thumbnailDecodeInFlight_) return;
         const size_t current = CurrentNavigationIndex();
         std::vector<size_t> candidates;
         const auto [first, last] = FilmstripVisibleRange();
@@ -2958,28 +3206,55 @@ private:
             candidates.push_back(index);
         };
         appendCandidate(current);
-        for (size_t distance = 1; current >= first + distance || current + distance < last; ++distance) {
-            if (current >= first + distance) appendCandidate(current - distance);
-            if (current + distance < last) appendCandidate(current + distance);
-        }
-        for (size_t distance = 1; distance <= 2; ++distance) {
-            if (first >= distance) appendCandidate(first - distance);
-            if (last + distance - 1 < navigationFiles_.size()) appendCandidate(last + distance - 1);
+        if (filmstripNavigationDirection_ >= 0) {
+            for (size_t index = first; index < last; ++index) appendCandidate(index);
+            for (size_t distance = 0; distance < 10; ++distance) appendCandidate(last + distance);
+            for (size_t distance = 1; distance <= 3; ++distance) {
+                if (first >= distance) appendCandidate(first - distance);
+            }
+        } else {
+            for (size_t index = last; index > first; --index) appendCandidate(index - 1);
+            for (size_t distance = 1; distance <= 10; ++distance) {
+                if (first >= distance) appendCandidate(first - distance);
+            }
+            for (size_t distance = 0; distance < 3; ++distance) appendCandidate(last + distance);
         }
         if (candidates.empty()) return;
-        FilmstripThumbnail entry;
         const size_t index = candidates.front();
-        entry.path = navigationFiles_[index];
-        DecodeFilmstripThumbnail(entry.path, entry.source);
-        if (entry.source && index < filmstripThumbnailAspects_.size()) {
-            UINT width = 0, height = 0;
-            if (SUCCEEDED(entry.source->GetSize(&width, &height)) && height != 0) {
-                filmstripThumbnailAspects_[index] = static_cast<float>(width) / static_cast<float>(height);
-                RebuildFilmstripLayout();
+        const fs::path path = navigationFiles_[index];
+        const UINT height = static_cast<UINT>(FilmstripThumbnailHeight());
+        thumbnailDecodeInFlight_ = true;
+        thumbnailDecodeThread_ = std::thread([this, path, index, height, generation = navigationFolderGeneration_] {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+            const HRESULT apartment = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            auto* result = new ThumbnailDecodeResult{};
+            result->path = path; result->index = index; result->folderGeneration = generation;
+            result->result = DecodeFilmstripThumbnailPixels(path, height, *result);
+            if (SUCCEEDED(apartment)) CoUninitialize();
+            if (!PostMessageW(window_, kThumbnailDecodeCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
+        });
+    }
+
+    void HandleThumbnailDecodeResult(ThumbnailDecodeResult* result) {
+        if (!result) return;
+        if (thumbnailDecodeThread_.joinable()) thumbnailDecodeThread_.join();
+        thumbnailDecodeInFlight_ = false;
+        if (result->folderGeneration == navigationFolderGeneration_ && result->index < navigationFiles_.size() &&
+            PathsEqual(navigationFiles_[result->index], result->path) && SUCCEEDED(result->result) && result->pixels) {
+            ComPtr<IWICBitmap> bitmap;
+            if (SUCCEEDED(wicFactory_->CreateBitmapFromMemory(result->width, result->height, GUID_WICPixelFormat32bppPBGRA,
+                    result->stride, static_cast<UINT>(result->pixels->size()), result->pixels->data(), &bitmap))) {
+                // Keep the tiny backing buffer in the cache source via a copy. It is only thumbnail-sized.
+                ComPtr<IWICBitmap> cached;
+                if (SUCCEEDED(wicFactory_->CreateBitmapFromSource(bitmap.Get(), WICBitmapCacheOnLoad, &cached))) {
+                    if (thumbnailCache_.size() >= 48) thumbnailCache_.erase(thumbnailCache_.begin());
+                    thumbnailCache_.push_back({ result->path, cached, nullptr });
+                    filmstripThumbnailAspects_[result->index] = static_cast<float>(result->width) / static_cast<float>(result->height);
+                    RebuildFilmstripLayout(false);
+                }
             }
         }
-        if (thumbnailCache_.size() >= 48) thumbnailCache_.erase(thumbnailCache_.begin());
-        thumbnailCache_.push_back(std::move(entry));
+        delete result;
         QueueFilmstripPopulate();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -4098,6 +4373,7 @@ private:
     ComPtr<ID2D1Factory> d2dFactory_;
     ComPtr<IDWriteFactory> dwriteFactory_;
     ComPtr<IWICBitmapSource> source_;
+    std::shared_ptr<std::vector<BYTE>> displayedPixels_;
     ComPtr<ID2D1HwndRenderTarget> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
     ComPtr<ID2D1Bitmap> aboutLogo_;
@@ -4113,6 +4389,7 @@ private:
     UINT imageWidth_ = 0;
     UINT imageHeight_ = 0;
     std::wstring currentPath_;
+    std::wstring displayedPath_;
     FileIdentity currentFileIdentity_{};
     std::wstring resolutionText_;
     std::wstring fileSizeText_;
@@ -4133,6 +4410,15 @@ private:
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
+    std::atomic<uint64_t> decodeRequestGeneration_{ 0 };
+    std::atomic<bool> decodeShuttingDown_{ false };
+    uint64_t navigationFolderGeneration_ = 0;
+    std::optional<DecodeRequest> pendingFullDecode_;
+    std::vector<std::thread> fullDecodeThreads_;
+    int fullDecodeWorkersInFlight_ = 0;
+    bool imageDecodePending_ = false;
+    std::thread thumbnailDecodeThread_;
+    bool thumbnailDecodeInFlight_ = false;
     HANDLE directoryWatcherHandle_ = INVALID_HANDLE_VALUE;
     std::wstring directoryWatcherFolder_;
     std::thread directoryWatcherThread_;
@@ -4145,6 +4431,7 @@ private:
     float filmstripScroll_ = 0.0f;
     float filmstripOpacity_ = 0.0f;
     float filmstripRevealStartOpacity_ = 0.0f;
+    int filmstripNavigationDirection_ = 1;
     ULONGLONG filmstripVisibilityStart_ = 0;
     UINT filmstripHoldDurationMs_ = 2000;
     FilmstripVisibilityState filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
@@ -4525,6 +4812,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kCanvasNavigationFadeTimer) { viewer->UpdateCanvasNavigationFade(); return 0; }
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }
         if (wParam == kDirectoryChangeDebounceTimer) { KillTimer(window, kDirectoryChangeDebounceTimer); viewer->RefreshNavigationFromFileSystem(); return 0; }
+        if (wParam == kNavigationDecodeDebounceTimer) { viewer->NavigationDecodeTimer(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {
@@ -4536,6 +4824,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case kPopulateFilmstripMessage: viewer->PopulateFilmstripThumbnailMessage(); return 0;
     case kDirectoryChangedMessage: viewer->QueueDirectoryRefreshFromWatcher(); return 0;
+    case kFullDecodeCompleteMessage: viewer->FullDecodeCompleteMessage(reinterpret_cast<FullDecodeResult*>(lParam)); return 0;
+    case kDecodeWorkerFinishedMessage: viewer->DecodeWorkerFinishedMessage(reinterpret_cast<DecodeWorkerFinished*>(lParam)); return 0;
+    case kThumbnailDecodeCompleteMessage: viewer->ThumbnailDecodeCompleteMessage(reinterpret_cast<ThumbnailDecodeResult*>(lParam)); return 0;
     case WM_KEYDOWN:
         if (viewer->TutorialActive()) { if (wParam == VK_ESCAPE) viewer->StopTutorial(); return 0; }
         if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }
@@ -4557,8 +4848,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == VK_DELETE) { viewer->InvokeContextAction(ContextAction::Delete); return 0; }
         if (wParam == VK_ESCAPE) { if (viewer->IsFullscreen()) viewer->ToggleFullscreen(); else DestroyWindow(window); return 0; }
         if (wParam == VK_F11) { viewer->ToggleFullscreen(); return 0; }
-        if (wParam == VK_RIGHT) { viewer->Navigate(1); return 0; }
-        if (wParam == VK_LEFT) { viewer->Navigate(-1); return 0; }
+        if (wParam == VK_RIGHT || wParam == VK_LEFT) {
+            const bool autoRepeat = (static_cast<DWORD_PTR>(lParam) & (DWORD_PTR{ 1 } << 30)) != 0;
+            viewer->DrainQueuedFullDecodeResults();
+            viewer->Navigate(wParam == VK_RIGHT ? 1 : -1, autoRepeat);
+            return 0;
+        }
         if (wParam == VK_OEM_PLUS || wParam == VK_ADD || wParam == L'=') { viewer->ZoomCentered(kWheelZoomStep); return 0; }
         if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) { viewer->ZoomCentered(1.0f / kWheelZoomStep); return 0; }
         if (wParam == L'0' || wParam == VK_NUMPAD0) { viewer->FitToWindow(); return 0; }

@@ -75,10 +75,11 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext, CanvasLanczosComparison };
+    SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
+enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
 enum class FilmstripVisibilityState { Hidden, Revealing, Holding, Fading };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
@@ -467,6 +468,10 @@ public:
         DWORD theme = static_cast<DWORD>(ThemePreference::System);
         ReadSetting(L"Theme", theme);
         themePreference_ = theme <= static_cast<DWORD>(ThemePreference::Dark) ? static_cast<ThemePreference>(theme) : ThemePreference::System;
+        DWORD imageScaling = static_cast<DWORD>(ImageScaling::Quality);
+        ReadSetting(L"ImageScaling", imageScaling);
+        imageScaling_ = imageScaling == static_cast<DWORD>(ImageScaling::Performance) ? ImageScaling::Performance : ImageScaling::Quality;
+        lanczosSelected_ = imageScaling_ == ImageScaling::Quality;
         DWORD onboardingVersion = 0;
         onboardingRequired_ = !ReadSetting(L"OnboardingVersion", onboardingVersion) || onboardingVersion < 1;
         DWORD tourPending = 0;
@@ -872,7 +877,7 @@ public:
         if (overlay_ != OverlayKind::Settings) return 0.0f;
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const float contentBottom = static_cast<float>(MulDiv(SettingsUsesCompactLayout() ? 605 : 679, dpi, 96));
+        const float contentBottom = static_cast<float>(MulDiv(SettingsUsesCompactLayout() ? 655 : 745, dpi, 96));
         const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
         return std::max(0.0f, contentBottom - viewportBottom);
     }
@@ -902,6 +907,14 @@ public:
         const int index = static_cast<int>(preference);
         const int left = bounds.left + padding + index * (width + gap);
         const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 367 : 411, dpi, 96);
+        return { left, top, left + width, top + MulDiv(28, dpi, 96) };
+    }
+    RECT GetSettingsScalingBounds(ImageScaling scaling) const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int padding = MulDiv(18, dpi, 96), width = MulDiv(112, dpi, 96), gap = MulDiv(8, dpi, 96);
+        const int left = bounds.left + padding + static_cast<int>(scaling) * (width + gap);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 428 : 477, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     void ToggleIncludeHiddenImages() {
@@ -957,18 +970,27 @@ public:
         ApplyTitleBarTheme(window_);
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void SetImageScaling(ImageScaling scaling) {
+        if (imageScaling_ == scaling) return;
+        imageScaling_ = scaling;
+        WriteSetting(L"ImageScaling", static_cast<DWORD>(scaling));
+        lanczosSelected_ = imageScaling_ == ImageScaling::Quality;
+        InvalidateLanczosVariant(true);
+        if (imageScaling_ == ImageScaling::Quality) QueueLanczosRefinement();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     RECT GetSettingsResetButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 569 : 643, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 619 : 709, dpi, 96);
         return { bounds.left + padding, top, bounds.left + padding + MulDiv(100, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     RECT GetSettingsDefaultAppsButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 464 : 523, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 514 : 589, dpi, 96);
         return { bounds.left + padding, top, bounds.left + padding + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     bool SettingsDefaultAppsButtonContains(POINT point) const {
@@ -1317,7 +1339,6 @@ public:
     }
     ButtonKind ButtonAt(POINT point) const {
         const auto contains = [&point](RECT bounds) { return PtInRect(&bounds, point) != FALSE; };
-        if (LanczosComparisonControlVisible() && contains(GetLanczosComparisonBounds())) return ButtonKind::CanvasLanczosComparison;
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
@@ -1335,6 +1356,8 @@ public:
             if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
             if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
             if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
+            if (settingsContains(GetSettingsScalingBounds(ImageScaling::Performance))) return ButtonKind::SettingsScalingPerformance;
+            if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
             if (SettingsDefaultAppsButtonContains(point)) return ButtonKind::SettingsDefaultApps;
         }
         if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
@@ -1451,7 +1474,6 @@ public:
         if (button == ButtonKind::EmptyOpenFile) OpenFile();
         else if (button == ButtonKind::CanvasPrevious) Navigate(-1);
         else if (button == ButtonKind::CanvasNext) Navigate(1);
-        else if (button == ButtonKind::CanvasLanczosComparison) ToggleLanczosComparison();
         else if (button == ButtonKind::SettingsRememberPlacement) ToggleRememberWindowPlacement();
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
@@ -1462,6 +1484,8 @@ public:
         else if (button == ButtonKind::SettingsThemeSystem) SetThemePreference(ThemePreference::System);
         else if (button == ButtonKind::SettingsThemeLight) SetThemePreference(ThemePreference::Light);
         else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
+        else if (button == ButtonKind::SettingsScalingPerformance) SetImageScaling(ImageScaling::Performance);
+        else if (button == ButtonKind::SettingsScalingQuality) SetImageScaling(ImageScaling::Quality);
         else if (button == ButtonKind::SettingsDefaultApps) OpenRegisteredDefaultApps();
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
         else if (button == ButtonKind::ResetCancel) DismissOverlay();
@@ -1574,7 +1598,7 @@ public:
             renderTarget_->Clear(kViewerBackground);
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
-                if (bitmap_) { DrawImage(); DrawLanczosComparisonControl(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); }
+                if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); }
             } else DrawEmptyState();
             DrawTitleBar();
             DrawDropdown();
@@ -2965,13 +2989,6 @@ private:
         return hr;
     }
 
-    void ToggleLanczosComparison() {
-        if (!source_) return;
-        lanczosSelected_ = !lanczosSelected_;
-        if (lanczosSelected_ && !LanczosVariantMatchesCurrent()) QueueLanczosRefinement(1);
-        InvalidateRect(window_, nullptr, FALSE);
-    }
-
     void QueueLanczosRefinement(UINT delayMs = 120) {
         if (lanczosSelected_ && source_) SetTimer(window_, kLanczosSettleTimer, delayMs, nullptr);
     }
@@ -3237,6 +3254,7 @@ private:
         pan_ = D2D1::Point2F();
         EndPan();
         StartDirectoryWatcher(fs::path(path).parent_path());
+        if (lanczosSelected_) QueueLanczosRefinement();
         if (resetNavigation) {
             navigationFiles_.clear();
             thumbnailCache_.clear();
@@ -3305,13 +3323,13 @@ private:
     }
 
     void InvalidateLanczosVariant(bool keepSelection) {
+        (void)keepSelection;
         ++lanczosGeneration_;
         KillTimer(window_, kLanczosSettleTimer);
         lanczosPixels_.reset();
         lanczosBitmap_.Reset();
         lanczosWidth_ = lanczosHeight_ = 0;
         pendingLanczosRequest_.reset();
-        if (!keepSelection) lanczosSelected_ = false;
     }
 
     bool EnsureLanczosBitmap() {
@@ -3321,39 +3339,6 @@ private:
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
         return SUCCEEDED(renderTarget_->CreateBitmap(D2D1::SizeU(lanczosWidth_, lanczosHeight_), lanczosPixels_->data(),
             lanczosWidth_ * 4, properties, &lanczosBitmap_));
-    }
-
-    RECT GetLanczosComparisonBounds() const {
-        RECT client{};
-        GetClientRect(window_, &client);
-        const UINT dpi = GetDpiForWindow(window_);
-        const int width = MulDiv(92, dpi, 96), height = MulDiv(32, dpi, 96), margin = MulDiv(16, dpi, 96);
-        const int left = GetCanvasNavigationZoneBounds(false).right + margin;
-        return { left, client.bottom - margin - height, left + width, client.bottom - margin };
-    }
-
-    bool LanczosComparisonControlVisible() const {
-        return source_ && !TutorialActive() && !HasOverlay() && !dropdownOpen_ && !contextMenuOpen_;
-    }
-
-    void DrawLanczosComparisonControl() {
-        if (!LanczosComparisonControlVisible()) return;
-        const RECT bounds = GetLanczosComparisonBounds();
-        const bool hovered = hoveredButton_ == ButtonKind::CanvasLanczosComparison;
-        const bool pressed = pressedButton_ == ButtonKind::CanvasLanczosComparison;
-        ComPtr<ID2D1SolidColorBrush> background, border, text;
-        const bool dark = UseDarkAppMode();
-        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 0.11f : 0.92f, dark ? 0.11f : 0.92f, dark ? 0.12f : 0.94f,
-                pressed ? 0.96f : hovered ? 0.90f : 0.82f), &background)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f / 255.0f, 120.0f / 255.0f, 212.0f / 255.0f), &border)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(30.f / 255, 30.f / 255, 30.f / 255), &text))) return;
-        const D2D1_RECT_F rect = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, 5.0f, 5.0f), background.Get());
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect, 5.0f, 5.0f), border.Get(), 1.0f);
-        DrawOverlayText(lanczosSelected_ ? L"Lanczos3" : L"Bilinear", rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-            12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
-        if (lanczosSelected_ && lanczosRendering_) DrawOverlayText(L"Rendering Lanczos3...", rect.right + 8.0f, rect.top,
-            static_cast<float>(MulDiv(156, GetDpiForWindow(window_), 96)), rect.bottom - rect.top, 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true);
     }
 
     D2D1_POINT_2F ImageTopLeft(float scale, const D2D1_SIZE_F& target) const {
@@ -3758,12 +3743,12 @@ private:
             overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : overlay_ == OverlayKind::Settings ? MulDiv(703, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
+            : overlay_ == OverlayKind::Settings ? MulDiv(779, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
             overlay_ == OverlayKind::Welcome ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(344, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
-        if (overlay_ == OverlayKind::Settings && availableHeight < desiredHeight) desiredHeight = MulDiv(629, dpi, 96);
+        if (overlay_ == OverlayKind::Settings && availableHeight < desiredHeight) desiredHeight = MulDiv(679, dpi, 96);
         const int width = std::min(desiredWidth, availableWidth);
         const int height = std::min(desiredHeight, availableHeight);
         const int left = (client.right - width) / 2;
@@ -4008,10 +3993,11 @@ private:
             const float viewerTop = compactSettings ? 180.0f : 201.0f;
             const float appearanceTop = compactSettings ? 324.0f : 362.0f;
             const float themeLabelTop = compactSettings ? 344.0f : 388.0f;
-            const float defaultTypesTitleTop = compactSettings ? 414.0f : 473.0f;
-            const float defaultTypesDescriptionTop = compactSettings ? 436.0f : 495.0f;
-            const float resetTitleTop = compactSettings ? 519.0f : 593.0f;
-            const float resetDescriptionTop = compactSettings ? 541.0f : 615.0f;
+            const float scalingLabelTop = compactSettings ? 405.0f : 454.0f;
+            const float defaultTypesTitleTop = compactSettings ? 464.0f : 539.0f;
+            const float defaultTypesDescriptionTop = compactSettings ? 486.0f : 561.0f;
+            const float resetTitleTop = compactSettings ? 569.0f : 659.0f;
+            const float resetDescriptionTop = compactSettings ? 591.0f : 681.0f;
             const D2D1_RECT_F settingsViewport = D2D1::RectF(static_cast<float>(bounds.left),
                 static_cast<float>(bounds.top) + 60.0f * dpiScale, static_cast<float>(bounds.right),
                 static_cast<float>(bounds.bottom) - 18.0f * dpiScale);
@@ -4041,6 +4027,20 @@ private:
             drawTheme(ThemePreference::System, ButtonKind::SettingsThemeSystem, L"System");
             drawTheme(ThemePreference::Light, ButtonKind::SettingsThemeLight, L"Light");
             drawTheme(ThemePreference::Dark, ButtonKind::SettingsThemeDark, L"Dark");
+            DrawOverlayText(L"Image scaling", settingsLeft, static_cast<float>(bounds.top) + scalingLabelTop * dpiScale, settingsWidth,
+                22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const auto drawScaling = [&](ImageScaling scaling, ButtonKind button, const wchar_t* label) {
+                const RECT segmentBounds = GetSettingsScalingBounds(scaling);
+                const D2D1_RECT_F segment = D2D1::RectF(static_cast<float>(segmentBounds.left), static_cast<float>(segmentBounds.top), static_cast<float>(segmentBounds.right), static_cast<float>(segmentBounds.bottom));
+                const bool selected = imageScaling_ == scaling;
+                ID2D1Brush* fill = selected ? accent.Get() : (hoveredButton_ == button || pressedButton_ == button ? segmentHover.Get() : segmentIdle.Get());
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(segment, 4.0f * dpiScale, 4.0f * dpiScale), fill);
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(segment, 4.0f * dpiScale, 4.0f * dpiScale), selected ? accent.Get() : borderBrush.Get(), 1.0f);
+                DrawOverlayText(label, segment.left, segment.top, segment.right - segment.left, segment.bottom - segment.top,
+                    14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, selected ? checkmark.Get() : primaryBrush.Get(), true, false, true);
+            };
+            drawScaling(ImageScaling::Performance, ButtonKind::SettingsScalingPerformance, L"Performance");
+            drawScaling(ImageScaling::Quality, ButtonKind::SettingsScalingQuality, L"Quality");
             group(L"DEFAULT FILE TYPES", defaultTypesTitleTop);
             DrawOverlayText(L"Choose which image types open with Viewtrious.", settingsLeft,
                 static_cast<float>(bounds.top) + defaultTypesDescriptionTop * dpiScale, settingsWidth, 20.0f * dpiScale,
@@ -4737,6 +4737,7 @@ private:
     bool reverseMouseWheelZoom_ = false;
     bool alwaysShowFilmstrip_ = false;
     ThemePreference themePreference_ = ThemePreference::System;
+    ImageScaling imageScaling_ = ImageScaling::Quality;
     float settingsScroll_ = 0.0f;
     bool onboardingRequired_ = false;
     bool tourPending_ = false;

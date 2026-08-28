@@ -57,7 +57,8 @@ constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
 constexpr UINT_PTR kNavigationDecodeDebounceTimer = 5;
 constexpr UINT_PTR kShellRotationCheckTimer = 6;
 constexpr UINT_PTR kLanczosSettleTimer = 7;
-constexpr ULONGLONG kShellRotationSettleMs = 350;
+constexpr UINT kShellRotationCheckIntervalMs = 100;
+constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr int kLogoResourceId = 102;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
@@ -877,7 +878,7 @@ public:
         if (overlay_ != OverlayKind::Settings) return 0.0f;
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const float contentBottom = static_cast<float>(MulDiv(SettingsUsesCompactLayout() ? 655 : 745, dpi, 96));
+        const float contentBottom = static_cast<float>(MulDiv(SettingsUsesCompactLayout() ? 691 : 752, dpi, 96));
         const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
         return std::max(0.0f, contentBottom - viewportBottom);
     }
@@ -906,7 +907,7 @@ public:
         const int padding = MulDiv(18, dpi, 96), width = MulDiv(76, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int index = static_cast<int>(preference);
         const int left = bounds.left + padding + index * (width + gap);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 367 : 411, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 440 : 486, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     RECT GetSettingsScalingBounds(ImageScaling scaling) const {
@@ -914,7 +915,7 @@ public:
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96), width = MulDiv(112, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int left = bounds.left + padding + static_cast<int>(scaling) * (width + gap);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 428 : 477, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 347 : 377, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     void ToggleIncludeHiddenImages() {
@@ -983,14 +984,14 @@ public:
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 619 : 709, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 655 : 716, dpi, 96);
         return { bounds.left + padding, top, bounds.left + padding + MulDiv(100, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     RECT GetSettingsDefaultAppsButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 514 : 589, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 550 : 596, dpi, 96);
         return { bounds.left + padding, top, bounds.left + padding + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     bool SettingsDefaultAppsButtonContains(POINT point) const {
@@ -1303,7 +1304,7 @@ public:
     }
     void RevealFilmstripForNavigation(bool invalidate = true) {
         EnsureCurrentFilmstripVisible();
-        StartFilmstripHold(2000, invalidate);
+        StartFilmstripHold(1000, invalidate);
     }
     void SelectFilmstripItem(int index) {
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
@@ -1600,6 +1601,7 @@ public:
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); }
             } else DrawEmptyState();
+            if (!tutorialPresentation_) DrawRevisionLabel();
             DrawTitleBar();
             DrawDropdown();
             DrawContextMenu();
@@ -1625,7 +1627,8 @@ public:
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
         RebuildFilmstripLayout();
         QueueFilmstripPopulate();
-        if (lanczosSelected_ && !LanczosVariantMatchesCurrent()) {
+        ClampPan();
+        if (lanczosSelected_ && source_) {
             InvalidateLanczosVariant(true);
             QueueLanczosRefinement();
         }
@@ -1729,7 +1732,7 @@ public:
         if (!navigationWasBuilt) EnsureCurrentFilmstripVisible();
         if (filmstripInitialPresentationPending_) {
             filmstripInitialPresentationPending_ = false;
-            StartFilmstripHold(3000);
+            StartFilmstripHold(1000);
         } else QueueFilmstripPopulate();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -1778,6 +1781,7 @@ public:
             imageHeight_ * newScale / 2.0f - target.height / 2.0f;
         fitToWindow_ = false;
         zoom_ = newScale;
+        ClampPan();
         if (lanczosSelected_) {
             InvalidateLanczosVariant(true);
             QueueLanczosRefinement();
@@ -1842,6 +1846,7 @@ public:
         pan_.x += static_cast<float>(point.x - lastDragPoint_.x);
         pan_.y += static_cast<float>(point.y - lastDragPoint_.y);
         lastDragPoint_ = point;
+        ClampPan();
         if (lanczosSelected_) {
             InvalidateLanczosVariant(true);
             QueueLanczosRefinement();
@@ -2473,10 +2478,11 @@ private:
         RebuildFilmstripLayout(false);
         shellRotationPath_ = currentPath_;
         shellRotationStarted_ = GetTickCount64();
-        shellRotationReadySince_ = 0;
         shellRotationInitialStateValid_ = ReadShellRotationFileState(shellRotationPath_, shellRotationInitialState_);
         shellRotationPending_ = true;
-        SetTimer(window_, kShellRotationCheckTimer, 100, nullptr);
+        shellRotationStableChecks_ = 0;
+        shellRotationLastStateValid_ = false;
+        SetTimer(window_, kShellRotationCheckTimer, kShellRotationCheckIntervalMs, nullptr);
     }
 
     void CompleteShellRotationRefresh() {
@@ -2501,13 +2507,18 @@ private:
             CompareFileTime(&state.ftLastWriteTime, &shellRotationInitialState_.ftLastWriteTime) != 0 ||
             state.nFileSizeHigh != shellRotationInitialState_.nFileSizeHigh || state.nFileSizeLow != shellRotationInitialState_.nFileSizeLow);
         if (changed && IsShellRotationFileReady(shellRotationPath_)) {
-            const ULONGLONG now = GetTickCount64();
-            if (shellRotationReadySince_ == 0) shellRotationReadySince_ = now;
-            if (now - shellRotationReadySince_ >= kShellRotationSettleMs) { CompleteShellRotationRefresh(); return; }
+            const bool stable = shellRotationLastStateValid_ &&
+                CompareFileTime(&state.ftLastWriteTime, &shellRotationLastState_.ftLastWriteTime) == 0 &&
+                state.nFileSizeHigh == shellRotationLastState_.nFileSizeHigh && state.nFileSizeLow == shellRotationLastState_.nFileSizeLow;
+            shellRotationLastState_ = state;
+            shellRotationLastStateValid_ = true;
+            shellRotationStableChecks_ = stable ? shellRotationStableChecks_ + 1 : 0;
+            if (shellRotationStableChecks_ >= 2) { CompleteShellRotationRefresh(); return; }
         } else {
-            shellRotationReadySince_ = 0;
+            shellRotationStableChecks_ = 0;
+            shellRotationLastStateValid_ = false;
         }
-        if (GetTickCount64() - shellRotationStarted_ >= 10000) {
+        if (GetTickCount64() - shellRotationStarted_ >= kShellRotationTimeoutMs) {
             KillTimer(window_, kShellRotationCheckTimer);
             shellRotationPending_ = false;
             shellRotationContextMenu_.Reset();
@@ -3346,6 +3357,20 @@ private:
             (target.height - imageHeight_ * scale) / 2.0f + pan_.y);
     }
 
+    void ClampPan() {
+        if (!source_) return;
+        const D2D1_SIZE_F canvas = ImageCanvasSize();
+        const float scale = CurrentScale();
+        const float width = imageWidth_ * scale, height = imageHeight_ * scale;
+        const float dipScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const float visibleX = std::min(width, 100.0f * dipScale);
+        const float visibleY = std::min(height, 100.0f * dipScale);
+        const float centeredX = (canvas.width - width) / 2.0f;
+        const float centeredY = (canvas.height - height) / 2.0f;
+        pan_.x = std::clamp(pan_.x, visibleX - centeredX - width, canvas.width - visibleX - centeredX);
+        pan_.y = std::clamp(pan_.y, visibleY - centeredY - height, canvas.height - visibleY - centeredY);
+    }
+
     bool CanPan() const {
         return source_.Get() != nullptr;
     }
@@ -3613,6 +3638,20 @@ private:
         ComPtr<IDWriteTextLayout> layout;
         if (SUCCEEDED(dwriteFactory_->CreateTextLayout(label, static_cast<UINT32>(wcslen(label)), zoomHudFormat_.Get(), width, height, &layout)))
             renderTarget_->DrawTextLayout(D2D1::Point2F(bounds.left, bounds.top), layout.Get(), text.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    void DrawRevisionLabel() {
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const D2D1_SIZE_F target = renderTarget_->GetSize();
+        const float margin = 14.0f * scale, width = 78.0f * scale, height = 24.0f * scale;
+        const D2D1_RECT_F bounds = D2D1::RectF(margin, target.height - margin - height, margin + width,
+            target.height - margin);
+        ComPtr<ID2D1SolidColorBrush> backing, text;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f), &backing)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f), &text))) return;
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bounds, 5.0f * scale, 5.0f * scale), backing.Get());
+        DrawOverlayText(L"v" VIEWTRIOUS_VERSION, bounds.left, bounds.top, width, height, 11.5f,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
     }
 
     void DrawCanvasNavigationButtons() {
@@ -3962,7 +4001,7 @@ private:
                 settingsWidth, 32.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             const auto group = [&](const wchar_t* label, float top) {
                 DrawOverlayText(label, settingsLeft, static_cast<float>(bounds.top) + top * dpiScale, settingsWidth,
-                    18.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+                    20.0f * dpiScale, 15.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             };
             ComPtr<ID2D1SolidColorBrush> accent, checkmark, rowHover, segmentIdle, segmentHover;
             if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &accent)) ||
@@ -3991,13 +4030,13 @@ private:
             const bool compactSettings = SettingsUsesCompactLayout();
             const float generalTop = compactSettings ? 64.0f : 66.0f;
             const float viewerTop = compactSettings ? 180.0f : 201.0f;
-            const float appearanceTop = compactSettings ? 324.0f : 362.0f;
-            const float themeLabelTop = compactSettings ? 344.0f : 388.0f;
-            const float scalingLabelTop = compactSettings ? 405.0f : 454.0f;
-            const float defaultTypesTitleTop = compactSettings ? 464.0f : 539.0f;
-            const float defaultTypesDescriptionTop = compactSettings ? 486.0f : 561.0f;
-            const float resetTitleTop = compactSettings ? 569.0f : 659.0f;
-            const float resetDescriptionTop = compactSettings ? 591.0f : 681.0f;
+            const float scalingLabelTop = compactSettings ? 324.0f : 354.0f;
+            const float appearanceTop = compactSettings ? 397.0f : 437.0f;
+            const float themeLabelTop = compactSettings ? 417.0f : 463.0f;
+            const float defaultTypesTitleTop = compactSettings ? 500.0f : 546.0f;
+            const float defaultTypesDescriptionTop = compactSettings ? 522.0f : 568.0f;
+            const float resetTitleTop = compactSettings ? 605.0f : 666.0f;
+            const float resetDescriptionTop = compactSettings ? 627.0f : 688.0f;
             const D2D1_RECT_F settingsViewport = D2D1::RectF(static_cast<float>(bounds.left),
                 static_cast<float>(bounds.top) + 60.0f * dpiScale, static_cast<float>(bounds.right),
                 static_cast<float>(bounds.bottom) - 18.0f * dpiScale);
@@ -4775,8 +4814,10 @@ private:
     std::wstring shellRotationPath_;
     WIN32_FILE_ATTRIBUTE_DATA shellRotationInitialState_{};
     bool shellRotationInitialStateValid_ = false;
+    WIN32_FILE_ATTRIBUTE_DATA shellRotationLastState_{};
+    bool shellRotationLastStateValid_ = false;
+    UINT shellRotationStableChecks_ = 0;
     ULONGLONG shellRotationStarted_ = 0;
-    ULONGLONG shellRotationReadySince_ = 0;
     ComPtr<IContextMenu> shellRotationContextMenu_;
     bool openWithSubmenuOpen_ = false;
     int openWithHovered_ = -1;

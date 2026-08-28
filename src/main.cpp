@@ -13,6 +13,8 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include "lanczos_resampler.h"
+
 #include <algorithm>
 #include <atomic>
 #include <array>
@@ -47,6 +49,7 @@ constexpr UINT kDirectoryChangedMessage = WM_APP + 3;
 constexpr UINT kFullDecodeCompleteMessage = WM_APP + 4;
 constexpr UINT kThumbnailDecodeCompleteMessage = WM_APP + 5;
 constexpr UINT kDecodeWorkerFinishedMessage = WM_APP + 6;
+constexpr UINT kLanczosCompleteMessage = WM_APP + 7;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
 constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
@@ -72,7 +75,7 @@ enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, 
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext, CanvasLanczosComparison };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class FilmstripVisibilityState { Hidden, Revealing, Holding, Fading };
@@ -108,6 +111,17 @@ struct ThumbnailDecodeResult : PixelBuffer {
     HRESULT result = E_FAIL;
 };
 struct DecodeWorkerFinished { std::thread::id workerId{}; };
+struct LanczosRequest {
+    std::shared_ptr<std::vector<BYTE>> sourcePixels;
+    UINT sourceWidth = 0, sourceHeight = 0, targetWidth = 0, targetHeight = 0;
+    uint64_t generation = 0;
+};
+struct LanczosResult {
+    std::shared_ptr<std::vector<BYTE>> pixels;
+    UINT width = 0, height = 0;
+    uint64_t generation = 0;
+    bool succeeded = false;
+};
 constexpr ShortcutEntry kShortcutEntries[] = {
     { L"Ctrl+O", L"Open file" }, { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom in/out" },
     { L"+", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
@@ -1299,6 +1313,7 @@ public:
     }
     ButtonKind ButtonAt(POINT point) const {
         const auto contains = [&point](RECT bounds) { return PtInRect(&bounds, point) != FALSE; };
+        if (LanczosComparisonControlVisible() && contains(GetLanczosComparisonBounds())) return ButtonKind::CanvasLanczosComparison;
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
@@ -1432,6 +1447,7 @@ public:
         if (button == ButtonKind::EmptyOpenFile) OpenFile();
         else if (button == ButtonKind::CanvasPrevious) Navigate(-1);
         else if (button == ButtonKind::CanvasNext) Navigate(1);
+        else if (button == ButtonKind::CanvasLanczosComparison) ToggleLanczosComparison();
         else if (button == ButtonKind::SettingsRememberPlacement) ToggleRememberWindowPlacement();
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
@@ -1554,7 +1570,7 @@ public:
             renderTarget_->Clear(kViewerBackground);
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
-                if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); }
+                if (bitmap_) { DrawImage(); DrawLanczosComparisonControl(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); }
             } else DrawEmptyState();
             DrawTitleBar();
             DrawDropdown();
@@ -1581,6 +1597,10 @@ public:
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
         RebuildFilmstripLayout();
         QueueFilmstripPopulate();
+        if (lanczosSelected_ && !LanczosVariantMatchesCurrent()) {
+            InvalidateLanczosVariant(true);
+            RequestLanczosVariant();
+        }
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -1730,6 +1750,10 @@ public:
             imageHeight_ * newScale / 2.0f - target.height / 2.0f;
         fitToWindow_ = false;
         zoom_ = newScale;
+        if (lanczosSelected_) {
+            InvalidateLanczosVariant(true);
+            RequestLanczosVariant();
+        }
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -1759,8 +1783,13 @@ public:
 
     void FitToWindow() {
         if (!source_) return;
+        const float oldScale = CurrentScale();
         fitToWindow_ = true;
         pan_ = D2D1::Point2F();
+        if (lanczosSelected_ && std::abs(CurrentScale() - oldScale) >= 0.0001f) {
+            InvalidateLanczosVariant(true);
+            RequestLanczosVariant();
+        }
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -1833,11 +1862,18 @@ public:
         pendingFullDecode_.reset();
         for (std::thread& thread : fullDecodeThreads_) if (thread.joinable()) thread.join();
         fullDecodeThreads_.clear();
+        ++lanczosGeneration_;
+        pendingLanczosRequest_.reset();
+        if (lanczosThread_.joinable()) lanczosThread_.join();
+        MSG lanczosMessage{};
+        while (PeekMessageW(&lanczosMessage, window_, kLanczosCompleteMessage, kLanczosCompleteMessage, PM_REMOVE))
+            delete reinterpret_cast<LanczosResult*>(lanczosMessage.lParam);
         if (thumbnailDecodeThread_.joinable()) thumbnailDecodeThread_.join();
     }
     void NavigationDecodeTimer() { StartPendingFullDecode(); }
     void ShellRotationTimer() { UpdateShellRotation(); }
     void FullDecodeCompleteMessage(FullDecodeResult* result) { HandleFullDecodeResult(result); }
+    void LanczosCompleteMessage(LanczosResult* result) { HandleLanczosResult(result); }
     void DecodeWorkerFinishedMessage(DecodeWorkerFinished* finished) { HandleDecodeWorkerFinished(finished); }
     void DrainQueuedFullDecodeResults() {
         MSG message{};
@@ -2920,6 +2956,67 @@ private:
         return hr;
     }
 
+    void ToggleLanczosComparison() {
+        if (!source_) return;
+        lanczosSelected_ = !lanczosSelected_;
+        if (lanczosSelected_ && !LanczosVariantMatchesCurrent()) RequestLanczosVariant();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void RequestLanczosVariant() {
+        if (!source_ || !lanczosSelected_) return;
+        const auto [targetWidth, targetHeight] = LanczosTargetSize();
+        if (!targetWidth || !targetHeight || targetWidth > UINT_MAX / 4 || targetHeight > UINT_MAX / (targetWidth * 4)) return;
+        auto pixels = displayedPixels_;
+        if (!pixels) {
+            const size_t bytes = static_cast<size_t>(imageWidth_) * imageHeight_ * 4;
+            pixels = std::make_shared<std::vector<BYTE>>(bytes);
+            if (FAILED(source_->CopyPixels(nullptr, imageWidth_ * 4, static_cast<UINT>(bytes), pixels->data()))) return;
+        }
+        LanczosRequest request{ pixels, imageWidth_, imageHeight_, targetWidth, targetHeight, lanczosGeneration_ };
+        if (lanczosRendering_) {
+            pendingLanczosRequest_ = std::move(request);
+            return;
+        }
+        StartLanczosRequest(std::move(request));
+    }
+
+    void StartLanczosRequest(LanczosRequest request) {
+        if (lanczosThread_.joinable()) lanczosThread_.join();
+        lanczosRendering_ = true;
+        lanczosThread_ = std::thread([window = window_, request = std::move(request)]() mutable {
+            auto* result = new LanczosResult{};
+            result->generation = request.generation;
+            result->width = request.targetWidth;
+            result->height = request.targetHeight;
+            viewtrious::Lanczos3Scaler scaler;
+            if (scaler.Initialize(request.sourceWidth, request.sourceHeight, request.targetWidth, request.targetHeight)) {
+                result->pixels = std::make_shared<std::vector<BYTE>>();
+                result->succeeded = scaler.Scale(request.sourcePixels->data(), request.sourceWidth * 4, *result->pixels);
+            }
+            if (!PostMessageW(window, kLanczosCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
+        });
+    }
+
+    void HandleLanczosResult(LanczosResult* result) {
+        if (!result) return;
+        if (lanczosThread_.joinable()) lanczosThread_.join();
+        lanczosRendering_ = false;
+        if (result->generation == lanczosGeneration_ && result->succeeded && result->pixels) {
+            lanczosPixels_ = std::move(result->pixels);
+            lanczosWidth_ = result->width;
+            lanczosHeight_ = result->height;
+            lanczosBitmap_.Reset();
+        }
+        delete result;
+        if (pendingLanczosRequest_) {
+            LanczosRequest request = std::move(*pendingLanczosRequest_);
+            pendingLanczosRequest_.reset();
+            if (request.generation == lanczosGeneration_ && lanczosSelected_) StartLanczosRequest(std::move(request));
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
     bool IsFastNavigationPath(const std::wstring& path) const {
         std::wstring extension = fs::path(path).extension().wstring();
         std::transform(extension.begin(), extension.end(), extension.begin(), towlower);
@@ -3066,6 +3163,7 @@ private:
 
     void CommitImage(const std::wstring& path, const ComPtr<IWICBitmapSource>& source, UINT width, UINT height,
         bool resetNavigation) {
+        InvalidateLanczosVariant(false);
         displayedPixels_.reset();
         source_ = source;
         bitmap_.Reset();
@@ -3140,6 +3238,69 @@ private:
 
     float CurrentScale() const { return fitToWindow_ ? BaseScale() : std::max(zoom_, BaseScale()); }
 
+    std::pair<UINT, UINT> LanczosTargetSize() const {
+        const float physicalScale = PhysicalPixelScale();
+        return { std::max(1u, static_cast<UINT>(std::lround(imageWidth_ * physicalScale))),
+            std::max(1u, static_cast<UINT>(std::lround(imageHeight_ * physicalScale))) };
+    }
+
+    bool LanczosVariantMatchesCurrent() const {
+        if (!lanczosPixels_ || !source_) return false;
+        const auto [width, height] = LanczosTargetSize();
+        return lanczosWidth_ == width && lanczosHeight_ == height;
+    }
+
+    void InvalidateLanczosVariant(bool keepSelection) {
+        ++lanczosGeneration_;
+        lanczosPixels_.reset();
+        lanczosBitmap_.Reset();
+        lanczosWidth_ = lanczosHeight_ = 0;
+        pendingLanczosRequest_.reset();
+        if (!keepSelection) lanczosSelected_ = false;
+    }
+
+    bool EnsureLanczosBitmap() {
+        if (lanczosBitmap_ || !lanczosPixels_ || !renderTarget_) return lanczosBitmap_ != nullptr;
+        const float dpi = RenderTargetDpi();
+        const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
+        return SUCCEEDED(renderTarget_->CreateBitmap(D2D1::SizeU(lanczosWidth_, lanczosHeight_), lanczosPixels_->data(),
+            lanczosWidth_ * 4, properties, &lanczosBitmap_));
+    }
+
+    RECT GetLanczosComparisonBounds() const {
+        RECT client{};
+        GetClientRect(window_, &client);
+        const UINT dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(92, dpi, 96), height = MulDiv(32, dpi, 96), margin = MulDiv(16, dpi, 96);
+        const int left = GetCanvasNavigationZoneBounds(false).right + margin;
+        return { left, client.bottom - margin - height, left + width, client.bottom - margin };
+    }
+
+    bool LanczosComparisonControlVisible() const {
+        return source_ && !TutorialActive() && !HasOverlay() && !dropdownOpen_ && !contextMenuOpen_;
+    }
+
+    void DrawLanczosComparisonControl() {
+        if (!LanczosComparisonControlVisible()) return;
+        const RECT bounds = GetLanczosComparisonBounds();
+        const bool hovered = hoveredButton_ == ButtonKind::CanvasLanczosComparison;
+        const bool pressed = pressedButton_ == ButtonKind::CanvasLanczosComparison;
+        ComPtr<ID2D1SolidColorBrush> background, border, text;
+        const bool dark = UseDarkAppMode();
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 0.11f : 0.92f, dark ? 0.11f : 0.92f, dark ? 0.12f : 0.94f,
+                pressed ? 0.96f : hovered ? 0.90f : 0.82f), &background)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f / 255.0f, 120.0f / 255.0f, 212.0f / 255.0f), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(30.f / 255, 30.f / 255, 30.f / 255), &text))) return;
+        const D2D1_RECT_F rect = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, 5.0f, 5.0f), background.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect, 5.0f, 5.0f), border.Get(), 1.0f);
+        DrawOverlayText(lanczosSelected_ ? L"Lanczos3" : L"Bilinear", rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+            12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        if (lanczosSelected_ && lanczosRendering_) DrawOverlayText(L"Rendering Lanczos3...", rect.right + 8.0f, rect.top,
+            static_cast<float>(MulDiv(156, GetDpiForWindow(window_), 96)), rect.bottom - rect.top, 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true);
+    }
+
     D2D1_POINT_2F ImageTopLeft(float scale, const D2D1_SIZE_F& target) const {
         return D2D1::Point2F((target.width - imageWidth_ * scale) / 2.0f + pan_.x,
             (target.height - imageHeight_ * scale) / 2.0f + pan_.y);
@@ -3200,7 +3361,9 @@ private:
         const D2D1_RECT_F destination = D2D1::RectF(topLeft.x, topLeft.y,
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
         DrawCheckerboard(destination);
-        renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        if (lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
+            renderTarget_->DrawBitmap(lanczosBitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        else renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
     HRESULT DecodeFilmstripThumbnailPixels(const fs::path& path, UINT targetHeight, PixelBuffer& thumbnail) const {
@@ -4421,6 +4584,7 @@ private:
 
     void DiscardRenderResources() {
         bitmap_.Reset();
+        lanczosBitmap_.Reset();
         for (FilmstripThumbnail& thumbnail : thumbnailCache_) thumbnail.bitmap.Reset();
         aboutLogo_.Reset();
         checkerboardBrush_.Reset();
@@ -4436,8 +4600,10 @@ private:
     ComPtr<IDWriteFactory> dwriteFactory_;
     ComPtr<IWICBitmapSource> source_;
     std::shared_ptr<std::vector<BYTE>> displayedPixels_;
+    std::shared_ptr<std::vector<BYTE>> lanczosPixels_;
     ComPtr<ID2D1HwndRenderTarget> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
+    ComPtr<ID2D1Bitmap> lanczosBitmap_;
     ComPtr<ID2D1Bitmap> aboutLogo_;
     ComPtr<ID2D1Bitmap> checkerboardBitmap_;
     ComPtr<ID2D1BitmapBrush> checkerboardBrush_;
@@ -4450,6 +4616,8 @@ private:
     UINT zoomHudDpi_ = 0;
     UINT imageWidth_ = 0;
     UINT imageHeight_ = 0;
+    UINT lanczosWidth_ = 0;
+    UINT lanczosHeight_ = 0;
     std::wstring currentPath_;
     std::wstring displayedPath_;
     FileIdentity currentFileIdentity_{};
@@ -4479,6 +4647,11 @@ private:
     std::vector<std::thread> fullDecodeThreads_;
     int fullDecodeWorkersInFlight_ = 0;
     bool imageDecodePending_ = false;
+    uint64_t lanczosGeneration_ = 0;
+    bool lanczosSelected_ = false;
+    bool lanczosRendering_ = false;
+    std::optional<LanczosRequest> pendingLanczosRequest_;
+    std::thread lanczosThread_;
     std::thread thumbnailDecodeThread_;
     bool thumbnailDecodeInFlight_ = false;
     HANDLE directoryWatcherHandle_ = INVALID_HANDLE_VALUE;
@@ -4898,6 +5071,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kPopulateFilmstripMessage: viewer->PopulateFilmstripThumbnailMessage(); return 0;
     case kDirectoryChangedMessage: viewer->QueueDirectoryRefreshFromWatcher(); return 0;
     case kFullDecodeCompleteMessage: viewer->FullDecodeCompleteMessage(reinterpret_cast<FullDecodeResult*>(lParam)); return 0;
+    case kLanczosCompleteMessage: viewer->LanczosCompleteMessage(reinterpret_cast<LanczosResult*>(lParam)); return 0;
     case kDecodeWorkerFinishedMessage: viewer->DecodeWorkerFinishedMessage(reinterpret_cast<DecodeWorkerFinished*>(lParam)); return 0;
     case kThumbnailDecodeCompleteMessage: viewer->ThumbnailDecodeCompleteMessage(reinterpret_cast<ThumbnailDecodeResult*>(lParam)); return 0;
     case WM_KEYDOWN:

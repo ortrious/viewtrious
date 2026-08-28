@@ -14,7 +14,7 @@
 - Uses Windows Imaging Component (WIC), supporting JPEG/JPG, PNG, BMP, GIF, TIFF/TIF, and ICO. Other installed WIC codecs (such as WebP, HEIF, or AVIF) work automatically when available.
 - Gracefully shows an in-window error for unsupported or corrupt images.
 
-Video, editing, file associations, metadata, menus/toolbars, and persistent viewer preferences beyond window placement are intentionally deferred.
+Video playback and animated-image playback are intentionally outside the current scope. Viewtrious includes native menus, persisted viewer preferences, safe JPEG/PNG rotation, and per-user Windows Default Apps capability registration without modifying Windows `UserChoice` values.
 
 ## Build prerequisites
 
@@ -38,7 +38,7 @@ Run a built executable with a quoted path, as Explorer would:
 .\out\release\Viewtrious.exe "C:\path\to\image.jpg"
 ```
 
-`out\release\Viewtrious.exe` is the permanent Release path for any future Windows file association. No file associations are changed by the build or application.
+`out\release\Viewtrious.exe` is the canonical Release output. Viewtrious refreshes its per-user Default Apps capability registration at startup so a copied portable executable can repair its registered command and icon paths; users still choose actual defaults through Windows Settings.
 
 ## Development timing
 

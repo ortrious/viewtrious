@@ -57,7 +57,6 @@ constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
 constexpr int kContextMenuPaddingDip = 8;
 constexpr float kMaximumZoom = 16.0f;
-constexpr float kZoomStep = 1.20f;
 constexpr float kWheelZoomStep = 1.11f;
 constexpr wchar_t kSettingsKey[] = L"Software\\Viewtrious";
 constexpr wchar_t kRegisteredApplicationName[] = L"Viewtrious";
@@ -1539,7 +1538,8 @@ public:
         EnsureRenderTarget();
         if (renderTarget_) {
             renderTarget_->BeginDraw();
-            renderTarget_->Clear(kViewerBackground);            if (source_ && !tutorialPresentation_) {
+            renderTarget_->Clear(kViewerBackground);
+            if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); }
             } else DrawEmptyState();
@@ -1670,7 +1670,6 @@ public:
             filmstripInitialPresentationPending_ = false;
             StartFilmstripHold(3000);
         } else QueueFilmstripPopulate();
-        if (currentRenamed) InvalidateRect(window_, nullptr, FALSE);
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -2338,135 +2337,6 @@ private:
         return hr;
     }
 
-    HRESULT RotatePngWithWic(bool clockwise, const wchar_t*& failedStage, DWORD& failedWin32Error) {
-        failedStage = nullptr;
-        failedWin32Error = ERROR_SUCCESS;
-        const auto stage = [&](const wchar_t* name, HRESULT result) {
-            const DWORD win32Error = FAILED(result) ? GetLastError() : ERROR_SUCCESS;
-            LogRotationStage(name, result, win32Error);
-            if (FAILED(result)) { failedStage = name; failedWin32Error = win32Error; }
-            return SUCCEEDED(result);
-        };
-        WIN32_FILE_ATTRIBUTE_DATA attributes{};
-        if (!GetFileAttributesExW(currentPath_.c_str(), GetFileExInfoStandard, &attributes)) {
-            const HRESULT openError = HRESULT_FROM_WIN32(GetLastError());
-            stage(L"source PNG attributes: GetFileAttributesExW", openError);
-            return openError;
-        }
-
-        ComPtr<IWICBitmapDecoder> decoder;
-        HRESULT hr = wicFactory_->CreateDecoderFromFilename(currentPath_.c_str(), nullptr, GENERIC_READ,
-            WICDecodeMetadataCacheOnLoad, &decoder);
-        if (!stage(L"source PNG open/decode: IWICImagingFactory::CreateDecoderFromFilename", hr)) return hr;
-        ComPtr<IWICBitmapFrameDecode> frame;
-        hr = decoder->GetFrame(0, &frame);
-        if (!stage(L"source PNG frame read: IWICBitmapDecoder::GetFrame", hr)) return hr;
-        ComPtr<IWICFormatConverter> converter;
-        hr = wicFactory_->CreateFormatConverter(&converter);
-        if (!stage(L"source PNG format conversion: CreateFormatConverter", hr)) return hr;
-        hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppBGRA,
-            WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-        if (!stage(L"source PNG format conversion: IWICFormatConverter::Initialize", hr)) return hr;
-        ComPtr<IWICBitmapFlipRotator> rotator;
-        hr = wicFactory_->CreateBitmapFlipRotator(&rotator);
-        if (!stage(L"WIC transform/rotation: CreateBitmapFlipRotator", hr)) return hr;
-        hr = rotator->Initialize(converter.Get(), clockwise ? WICBitmapTransformRotate90 : WICBitmapTransformRotate270);
-        if (!stage(L"WIC transform/rotation: IWICBitmapFlipRotator::Initialize", hr)) return hr;
-
-        struct TemporarySiblingFile {
-            std::wstring path;
-            ~TemporarySiblingFile() { if (!path.empty()) DeleteFileW(path.c_str()); }
-            void Release() { path.clear(); }
-        } temporary;
-        wchar_t tempPath[MAX_PATH]{};
-        const std::wstring directory = fs::path(currentPath_).parent_path().wstring();
-        if (!GetTempFileNameW(directory.c_str(), L"FV", 0, tempPath)) {
-            hr = HRESULT_FROM_WIN32(GetLastError());
-            stage(L"temp sibling path creation: GetTempFileNameW", hr);
-            return hr;
-        }
-        temporary.path = tempPath;
-        LogRotationStage(L"temp sibling path creation: GetTempFileNameW", S_OK);
-
-        ComPtr<IWICStream> stream;
-        hr = wicFactory_->CreateStream(&stream);
-        if (!stage(L"temp output stream creation: CreateStream", hr)) return hr;
-        hr = stream->InitializeFromFilename(temporary.path.c_str(), GENERIC_WRITE);
-        if (!stage(L"temp output stream creation: IWICStream::InitializeFromFilename", hr)) return hr;
-        ComPtr<IWICBitmapEncoder> encoder;
-        hr = wicFactory_->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
-        if (!stage(L"PNG encoder creation: CreateEncoder", hr)) return hr;
-        hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
-        if (!stage(L"PNG encoder initialization: IWICBitmapEncoder::Initialize", hr)) return hr;
-        ComPtr<IWICBitmapFrameEncode> encodedFrame;
-        IPropertyBag2* options = nullptr;
-        hr = encoder->CreateNewFrame(&encodedFrame, &options);
-        if (options) options->Release();
-        if (!stage(L"PNG frame creation: IWICBitmapEncoder::CreateNewFrame", hr)) return hr;
-        hr = encodedFrame->Initialize(nullptr);
-        if (!stage(L"frame initialization: IWICBitmapFrameEncode::Initialize", hr)) return hr;
-        UINT width = 0, height = 0;
-        hr = rotator->GetSize(&width, &height);
-        if (!stage(L"WIC transform output size: IWICBitmapSource::GetSize", hr)) return hr;
-        hr = encodedFrame->SetSize(width, height);
-        if (!stage(L"PNG frame size: IWICBitmapFrameEncode::SetSize", hr)) return hr;
-        WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
-        hr = encodedFrame->SetPixelFormat(&pixelFormat);
-        if (!stage(L"PNG pixel format: IWICBitmapFrameEncode::SetPixelFormat", hr)) return hr;
-        hr = encodedFrame->WriteSource(rotator.Get(), nullptr);
-        if (!stage(L"pixel write: IWICBitmapFrameEncode::WriteSource", hr)) return hr;
-        hr = encodedFrame->Commit();
-        if (!stage(L"frame commit: IWICBitmapFrameEncode::Commit", hr)) return hr;
-        hr = encoder->Commit();
-        if (!stage(L"encoder commit: IWICBitmapEncoder::Commit", hr)) return hr;
-        encodedFrame.Reset();
-        encoder.Reset();
-        stream.Reset();
-        rotator.Reset();
-        converter.Reset();
-        frame.Reset();
-        decoder.Reset();
-        LogRotationStage(L"stream/file close: released WIC encoder, frame, stream, and source decoder graph", S_OK);
-
-        ComPtr<IWICBitmapDecoder> validationDecoder;
-        hr = wicFactory_->CreateDecoderFromFilename(temporary.path.c_str(), nullptr, GENERIC_READ,
-            WICDecodeMetadataCacheOnLoad, &validationDecoder);
-        if (!stage(L"validation of temporary PNG: CreateDecoderFromFilename", hr)) return hr;
-        ComPtr<IWICBitmapFrameDecode> validationFrame;
-        hr = validationDecoder->GetFrame(0, &validationFrame);
-        if (!stage(L"validation of temporary PNG: IWICBitmapDecoder::GetFrame", hr)) return hr;
-        validationFrame.Reset();
-        validationDecoder.Reset();
-        LogRotationStage(L"validation of temporary PNG", S_OK);
-
-        const auto replacementProbe = [&](const std::wstring& path, const wchar_t* name) {
-            HANDLE probe = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (probe == INVALID_HANDLE_VALUE) {
-                const HRESULT probeError = HRESULT_FROM_WIN32(GetLastError());
-                stage(name, probeError);
-                return probeError;
-            }
-            CloseHandle(probe);
-            LogRotationStage(name, S_OK);
-            return S_OK;
-        };
-        hr = replacementProbe(currentPath_, L"replacement boundary probe: original source path");
-        if (FAILED(hr)) return hr;
-        hr = replacementProbe(temporary.path, L"replacement boundary probe: temporary replacement path");
-        if (FAILED(hr)) return hr;
-
-        if (!ReplaceFileW(currentPath_.c_str(), temporary.path.c_str(), nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr)) {
-            hr = HRESULT_FROM_WIN32(GetLastError());
-            stage(L"replacement of original: ReplaceFileW", hr);
-            return hr;
-        }
-        temporary.Release();
-        LogRotationStage(L"replacement of original: ReplaceFileW", S_OK);
-        SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, currentPath_.c_str(), nullptr);
-        return hr;
-    }
-
     static HRESULT GdiplusStatusToHresult(Gdiplus::Status status) {
         if (status == Gdiplus::Ok) return S_OK;
         if (status == Gdiplus::OutOfMemory) return E_OUTOFMEMORY;
@@ -2520,7 +2390,7 @@ private:
 
         wchar_t tempPath[MAX_PATH]{};
         const std::wstring directory = fs::path(currentPath_).parent_path().wstring();
-        if (!GetTempFileNameW(directory.c_str(), L"FV", 0, tempPath)) {
+        if (!GetTempFileNameW(directory.c_str(), L"VTR", 0, tempPath)) {
             const HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
             stage(L"GDI+ temp sibling path creation: GetTempFileNameW", hr);
             return hr;
@@ -4345,16 +4215,6 @@ private:
         ID2D1Brush* closeGlyph = (hoveredCaptionButton_ == CaptionButton::Close || pressedCaptionButton_ == CaptionButton::Close)
             ? closeGlyphBrush.Get() : glyphBrush.Get();
         DrawCaptionGlyph(L'\uE8BB', frame.close, closeGlyph);
-    }
-
-    void DrawErrorText() {
-        RECT client{};
-        GetClientRect(window_, &client);
-        ComPtr<ID2D1SolidColorBrush> brush;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(220.0f / 255.0f, 220.0f / 255.0f, 220.0f / 255.0f), &brush))) return;
-        const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
-        DrawOverlayText(error_.c_str(), 24.0f, top, static_cast<float>(std::max(1L, client.right - 48L)), static_cast<float>(client.bottom) - top,
-            13.0f, DWRITE_FONT_WEIGHT_NORMAL, brush.Get(), true, false, true);
     }
 
     void DiscardRenderResources() {

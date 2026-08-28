@@ -52,6 +52,8 @@ constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
 constexpr UINT_PTR kNavigationDecodeDebounceTimer = 5;
+constexpr UINT_PTR kShellRotationCheckTimer = 6;
+constexpr ULONGLONG kShellRotationSettleMs = 350;
 constexpr int kLogoResourceId = 102;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
@@ -169,6 +171,11 @@ bool IsJpegPath(const std::wstring& path) {
 
 bool IsPngPath(const std::wstring& path) {
     return LowercaseExtension(path) == L".png";
+}
+
+bool IsHeifPath(const std::wstring& path) {
+    const std::wstring extension = LowercaseExtension(path);
+    return extension == L".heic" || extension == L".heif";
 }
 
 bool PathsEqual(const fs::path& left, const fs::path& right) {
@@ -452,6 +459,9 @@ public:
     }
 
     HRESULT LoadImage(const std::wstring& path) {
+        KillTimer(window_, kShellRotationCheckTimer);
+        shellRotationPending_ = false;
+        shellRotationContextMenu_.Reset();
         ++decodeRequestGeneration_;
         pendingFullDecode_.reset();
         imageDecodePending_ = false;
@@ -609,6 +619,7 @@ public:
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
         if (!HasImage()) return;
+        RefreshHeifShellRotationCapability();
         DismissDropdown();
         DismissOverlay();
         contextMenuAnchor_ = point;
@@ -657,7 +668,9 @@ public:
             action == ContextAction::SetBackground || action == ContextAction::Delete)
             return true;
         return (action == ContextAction::RotateLeft || action == ContextAction::RotateRight) &&
-            DisplayedImageMatchesTarget() && (IsJpegPath(currentPath_) || IsPngPath(currentPath_));
+            DisplayedImageMatchesTarget() && (IsJpegPath(currentPath_) || IsPngPath(currentPath_) ||
+                (!shellRotationPending_ && IsHeifPath(currentPath_) &&
+                    (action == ContextAction::RotateLeft ? heifShellRotateLeftAvailable_ : heifShellRotateRightAvailable_)));
     }
     void SetContextHover(ContextAction action) {
         if (!ContextActionEnabled(action)) action = ContextAction::None;
@@ -1812,6 +1825,8 @@ public:
 
     void Shutdown() {
         StopDirectoryWatcher();
+        KillTimer(window_, kShellRotationCheckTimer);
+        shellRotationContextMenu_.Reset();
         decodeShuttingDown_ = true;
         KillTimer(window_, kNavigationDecodeDebounceTimer);
         ++decodeRequestGeneration_;
@@ -1821,6 +1836,7 @@ public:
         if (thumbnailDecodeThread_.joinable()) thumbnailDecodeThread_.join();
     }
     void NavigationDecodeTimer() { StartPendingFullDecode(); }
+    void ShellRotationTimer() { UpdateShellRotation(); }
     void FullDecodeCompleteMessage(FullDecodeResult* result) { HandleFullDecodeResult(result); }
     void DecodeWorkerFinishedMessage(DecodeWorkerFinished* finished) { HandleDecodeWorkerFinished(finished); }
     void DrainQueuedFullDecodeResults() {
@@ -2295,6 +2311,184 @@ private:
         LogRotationStage(L"sharing probe after Viewtrious WIC release: source is externally writable; Shell property-store-specific conflict", S_OK);
     }
 
+    HRESULT GetShellContextMenu(const std::wstring& path, ComPtr<IContextMenu>& contextMenu, UINT& commandCount) const {
+        contextMenu.Reset();
+        commandCount = 0;
+        PIDLIST_ABSOLUTE itemPidl = nullptr;
+        HRESULT hr = SHParseDisplayName(path.c_str(), nullptr, &itemPidl, 0, nullptr);
+        if (FAILED(hr)) return hr;
+        ComPtr<IShellFolder> parent;
+        PCUITEMID_CHILD child = nullptr;
+        hr = SHBindToParent(itemPidl, IID_PPV_ARGS(&parent), &child);
+        if (SUCCEEDED(hr)) hr = parent->GetUIObjectOf(window_, 1, &child, IID_IContextMenu, nullptr,
+            reinterpret_cast<void**>(contextMenu.GetAddressOf()));
+        CoTaskMemFree(itemPidl);
+        if (FAILED(hr)) return hr;
+        HMENU menu = CreatePopupMenu();
+        if (!menu) return HRESULT_FROM_WIN32(GetLastError());
+        const HRESULT queried = contextMenu->QueryContextMenu(menu, 0, 1, 0x7FFF, CMF_NORMAL | CMF_EXTENDEDVERBS);
+        DestroyMenu(menu);
+        if (FAILED(queried)) { contextMenu.Reset(); return queried; }
+        commandCount = HRESULT_CODE(queried);
+        return S_OK;
+    }
+
+    void RefreshHeifShellRotationCapability() {
+        if (!IsHeifPath(currentPath_)) {
+            heifShellRotationCapabilityPath_.clear();
+            heifShellRotateLeftAvailable_ = false;
+            heifShellRotateRightAvailable_ = false;
+            return;
+        }
+        if (PathsEqual(fs::path(heifShellRotationCapabilityPath_), fs::path(currentPath_))) return;
+        heifShellRotationCapabilityPath_ = currentPath_;
+        heifShellRotateLeftAvailable_ = false;
+        heifShellRotateRightAvailable_ = false;
+        ComPtr<IContextMenu> contextMenu;
+        UINT commandCount = 0;
+        if (FAILED(GetShellContextMenu(currentPath_, contextMenu, commandCount))) return;
+        for (UINT offset = 0; offset < commandCount; ++offset) {
+            wchar_t verb[64]{};
+            if (FAILED(contextMenu->GetCommandString(offset, GCS_VERBW, nullptr,
+                    reinterpret_cast<LPSTR>(verb), ARRAYSIZE(verb)))) continue;
+            if (_wcsicmp(verb, L"rotate90") == 0) heifShellRotateRightAvailable_ = true;
+            else if (_wcsicmp(verb, L"rotate270") == 0) heifShellRotateLeftAvailable_ = true;
+        }
+    }
+
+    bool ReadShellRotationFileState(const std::wstring& path, WIN32_FILE_ATTRIBUTE_DATA& attributes) const {
+        return GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) != FALSE;
+    }
+
+    bool IsShellRotationFileReady(const std::wstring& path) const {
+        // Explorer's HEIC handler can update the file timestamp before it has released its
+        // write handle. Require the same write/delete access a subsequent rotation needs
+        // before presenting the file as ready for another Shell command.
+        HANDLE probe = CreateFileW(path.c_str(), GENERIC_WRITE | DELETE, FILE_SHARE_READ,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (probe == INVALID_HANDLE_VALUE) return false;
+        CloseHandle(probe);
+        return true;
+    }
+
+    HRESULT DetachDisplayedImageForShellWrite() {
+        if (!source_) return E_FAIL;
+        ComPtr<IWICBitmap> detached;
+        const HRESULT hr = wicFactory_->CreateBitmapFromSource(source_.Get(), WICBitmapCacheOnLoad, &detached);
+        if (FAILED(hr)) return hr;
+        source_ = detached;
+        displayedPixels_.reset();
+        bitmap_.Reset();
+        return S_OK;
+    }
+
+    void FinishThumbnailDecodeForShellWrite() {
+        if (thumbnailDecodeThread_.joinable()) thumbnailDecodeThread_.join();
+        thumbnailDecodeInFlight_ = false;
+        MSG message{};
+        while (PeekMessageW(&message, window_, kThumbnailDecodeCompleteMessage, kThumbnailDecodeCompleteMessage, PM_REMOVE)) {
+            HandleThumbnailDecodeResult(reinterpret_cast<ThumbnailDecodeResult*>(message.lParam));
+        }
+    }
+
+    void BeginShellRotationRefresh() {
+        ++decodeRequestGeneration_;
+        pendingFullDecode_.reset();
+        imageDecodePending_ = false;
+        KillTimer(window_, kNavigationDecodeDebounceTimer);
+        thumbnailCache_.erase(std::remove_if(thumbnailCache_.begin(), thumbnailCache_.end(), [this](const FilmstripThumbnail& thumbnail) {
+            return PathsEqual(thumbnail.path, fs::path(currentPath_));
+        }), thumbnailCache_.end());
+        const size_t current = CurrentNavigationIndex();
+        if (current < filmstripThumbnailAspects_.size()) filmstripThumbnailAspects_[current] = 1.0f;
+        RebuildFilmstripLayout(false);
+        shellRotationPath_ = currentPath_;
+        shellRotationStarted_ = GetTickCount64();
+        shellRotationReadySince_ = 0;
+        shellRotationInitialStateValid_ = ReadShellRotationFileState(shellRotationPath_, shellRotationInitialState_);
+        shellRotationPending_ = true;
+        SetTimer(window_, kShellRotationCheckTimer, 100, nullptr);
+    }
+
+    void CompleteShellRotationRefresh() {
+        KillTimer(window_, kShellRotationCheckTimer);
+        shellRotationPending_ = false;
+        shellRotationContextMenu_.Reset();
+        if (!PathsEqual(fs::path(shellRotationPath_), fs::path(currentPath_))) return;
+        currentFileIdentity_ = ReadFileIdentity(fs::path(currentPath_));
+        fileSizeText_ = FormatFileSize(currentPath_);
+        imageDecodePending_ = true;
+        pendingFullDecode_ = DecodeRequest{ currentPath_, decodeRequestGeneration_, navigationFolderGeneration_ };
+        QueueLatestFullDecode();
+        QueueFilmstripPopulate();
+        RevealFilmstripForNavigation();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void UpdateShellRotation() {
+        if (!shellRotationPending_) { KillTimer(window_, kShellRotationCheckTimer); return; }
+        WIN32_FILE_ATTRIBUTE_DATA state{};
+        const bool changed = ReadShellRotationFileState(shellRotationPath_, state) && (!shellRotationInitialStateValid_ ||
+            CompareFileTime(&state.ftLastWriteTime, &shellRotationInitialState_.ftLastWriteTime) != 0 ||
+            state.nFileSizeHigh != shellRotationInitialState_.nFileSizeHigh || state.nFileSizeLow != shellRotationInitialState_.nFileSizeLow);
+        if (changed && IsShellRotationFileReady(shellRotationPath_)) {
+            const ULONGLONG now = GetTickCount64();
+            if (shellRotationReadySince_ == 0) shellRotationReadySince_ = now;
+            if (now - shellRotationReadySince_ >= kShellRotationSettleMs) { CompleteShellRotationRefresh(); return; }
+        } else {
+            shellRotationReadySince_ = 0;
+        }
+        if (GetTickCount64() - shellRotationStarted_ >= 10000) {
+            KillTimer(window_, kShellRotationCheckTimer);
+            shellRotationPending_ = false;
+            shellRotationContextMenu_.Reset();
+            ShowActionError(L"Windows did not complete the image rotation.");
+        }
+    }
+
+    HRESULT RotateHeifWithShell(bool clockwise) {
+        RefreshHeifShellRotationCapability();
+        const bool available = clockwise ? heifShellRotateRightAvailable_ : heifShellRotateLeftAvailable_;
+        if (!available) return E_NOTIMPL;
+        ComPtr<IContextMenu> contextMenu;
+        UINT commandCount = 0;
+        HRESULT hr = GetShellContextMenu(currentPath_, contextMenu, commandCount);
+        if (FAILED(hr)) return hr;
+        const wchar_t* verb = clockwise ? L"rotate90" : L"rotate270";
+        bool found = false;
+        for (UINT offset = 0; offset < commandCount; ++offset) {
+            wchar_t candidate[64]{};
+            if (SUCCEEDED(contextMenu->GetCommandString(offset, GCS_VERBW, nullptr,
+                    reinterpret_cast<LPSTR>(candidate), ARRAYSIZE(candidate))) && _wcsicmp(candidate, verb) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        hr = DetachDisplayedImageForShellWrite();
+        if (FAILED(hr)) return hr;
+        FinishThumbnailDecodeForShellWrite();
+        BeginShellRotationRefresh();
+        CMINVOKECOMMANDINFOEX invoke{ sizeof(invoke) };
+        // Do not authorize asynchronous execution here. The Shell handler may otherwise
+        // report a timestamp change before its own HEIC writer has released the file.
+        invoke.fMask = CMIC_MASK_UNICODE;
+        invoke.hwnd = window_;
+        invoke.lpVerb = clockwise ? "rotate90" : "rotate270";
+        invoke.lpVerbW = verb;
+        invoke.nShow = SW_SHOWNORMAL;
+        hr = contextMenu->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&invoke));
+        if (FAILED(hr)) {
+            KillTimer(window_, kShellRotationCheckTimer);
+            shellRotationPending_ = false;
+            return hr;
+        }
+        // InvokeCommand has returned; retaining the handler can keep handler-owned state
+        // alive and needlessly contend with the next rotation.
+        contextMenu.Reset();
+        return S_OK;
+    }
+
     HRESULT RotateJpeg(bool clockwise, const wchar_t*& failedStage, DWORD& failedWin32Error) {
         failedStage = nullptr;
         failedWin32Error = ERROR_SUCCESS;
@@ -2550,6 +2744,11 @@ private:
 
     void RotateImage(bool clockwise) {
         if (currentPath_.empty()) return;
+        if (IsHeifPath(currentPath_)) {
+            const HRESULT shellResult = RotateHeifWithShell(clockwise);
+            if (FAILED(shellResult)) ShowActionError(L"Windows could not rotate this HEIC/HEIF image.");
+            return;
+        }
         rotationDiagnosticDetail_.clear();
         const wchar_t* failedStage = nullptr;
         DWORD failedWin32Error = ERROR_SUCCESS;
@@ -2568,6 +2767,9 @@ private:
 
     void ClearDeletedImage() {
         StopDirectoryWatcher();
+        KillTimer(window_, kShellRotationCheckTimer);
+        shellRotationPending_ = false;
+        shellRotationContextMenu_.Reset();
         ++decodeRequestGeneration_;
         ++navigationFolderGeneration_;
         pendingFullDecode_.reset(); imageDecodePending_ = false;
@@ -4335,6 +4537,16 @@ private:
     ContextAction contextHovered_ = ContextAction::None;
     ContextAction contextPressed_ = ContextAction::None;
     POINT contextMenuAnchor_{};
+    std::wstring heifShellRotationCapabilityPath_;
+    bool heifShellRotateLeftAvailable_ = false;
+    bool heifShellRotateRightAvailable_ = false;
+    bool shellRotationPending_ = false;
+    std::wstring shellRotationPath_;
+    WIN32_FILE_ATTRIBUTE_DATA shellRotationInitialState_{};
+    bool shellRotationInitialStateValid_ = false;
+    ULONGLONG shellRotationStarted_ = 0;
+    ULONGLONG shellRotationReadySince_ = 0;
+    ComPtr<IContextMenu> shellRotationContextMenu_;
     bool openWithSubmenuOpen_ = false;
     int openWithHovered_ = -1;
     std::wstring openWithExtension_;
@@ -4631,7 +4843,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const ContextAction released = viewer->ContextActionAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
             viewer->ClearContextPressed();
             if (GetCapture() == window) ReleaseCapture();
-            if (pressed == released) viewer->InvokeContextAction(pressed);
+            if (pressed == released && viewer->ContextActionEnabled(pressed)) viewer->InvokeContextAction(pressed);
             return 0;
         }
         if (viewer->PressedDropdownItem() != DropdownItem::None) {
@@ -4673,6 +4885,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }
         if (wParam == kDirectoryChangeDebounceTimer) { KillTimer(window, kDirectoryChangeDebounceTimer); viewer->RefreshNavigationFromFileSystem(); return 0; }
         if (wParam == kNavigationDecodeDebounceTimer) { viewer->NavigationDecodeTimer(); return 0; }
+        if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {

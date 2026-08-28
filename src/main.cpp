@@ -14,12 +14,15 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <atomic>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -38,9 +41,11 @@ constexpr wchar_t kWindowClass[] = L"ViewtriousWindow";
 constexpr wchar_t kWindowTitle[] = L"Viewtrious";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
 constexpr UINT kPopulateFilmstripMessage = WM_APP + 2;
+constexpr UINT kDirectoryChangedMessage = WM_APP + 3;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
 constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
+constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
 constexpr int kLogoResourceId = 102;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
@@ -142,6 +147,29 @@ bool PathsEqual(const fs::path& left, const fs::path& right) {
     const std::wstring rightText = right.lexically_normal().wstring();
     return CompareStringOrdinal(leftText.c_str(), static_cast<int>(leftText.size()),
         rightText.c_str(), static_cast<int>(rightText.size()), TRUE) == CSTR_EQUAL;
+}
+
+struct FileIdentity {
+    DWORD volumeSerial = 0;
+    DWORD fileIndexHigh = 0;
+    DWORD fileIndexLow = 0;
+    bool valid = false;
+};
+
+FileIdentity ReadFileIdentity(const fs::path& path) {
+    const HANDLE file = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return {};
+    BY_HANDLE_FILE_INFORMATION information{};
+    const BOOL succeeded = GetFileInformationByHandle(file, &information);
+    CloseHandle(file);
+    if (!succeeded) return {};
+    return { information.dwVolumeSerialNumber, information.nFileIndexHigh, information.nFileIndexLow, true };
+}
+
+bool SameFileIdentity(const FileIdentity& left, const FileIdentity& right) {
+    return left.valid && right.valid && left.volumeSerial == right.volumeSerial &&
+        left.fileIndexHigh == right.fileIndexHigh && left.fileIndexLow == right.fileIndexLow;
 }
 
 bool ReadSetting(const wchar_t* name, DWORD& value) {
@@ -402,6 +430,7 @@ public:
         if (SUCCEEDED(hr)) {
             CommitImage(path, source, width, height, true);
         } else {
+            StopDirectoryWatcher();
             source_.Reset();
             bitmap_.Reset();
             imageWidth_ = imageHeight_ = 0;
@@ -754,6 +783,7 @@ public:
         DismissDropdown();
         DismissContextMenu();
         if (overlay == OverlayKind::DeleteConfirm) deleteWarningSuppressOnConfirm_ = false;
+        if (overlay == OverlayKind::Settings) settingsScroll_ = 0.0f;
         overlay_ = overlay;
         EndPan();
         InvalidateRect(window_, nullptr, FALSE);
@@ -770,14 +800,31 @@ public:
     }
     bool SettingsUsesCompactLayout() const {
         const RECT bounds = GetOverlayBounds();
-        return bounds.bottom - bounds.top < MulDiv(560, GetDpiForWindow(window_), 96);
+        return bounds.bottom - bounds.top < MulDiv(703, GetDpiForWindow(window_), 96);
+    }
+    float SettingsMaximumScroll() const {
+        if (overlay_ != OverlayKind::Settings) return 0.0f;
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const float contentBottom = static_cast<float>(MulDiv(SettingsUsesCompactLayout() ? 605 : 679, dpi, 96));
+        const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
+        return std::max(0.0f, contentBottom - viewportBottom);
+    }
+    bool SettingsContains(POINT point) const {
+        const RECT bounds = GetOverlayBounds();
+        return overlay_ == OverlayKind::Settings && PtInRect(&bounds, point);
+    }
+    void ScrollSettings(float delta) {
+        if (overlay_ != OverlayKind::Settings) return;
+        settingsScroll_ = std::clamp(settingsScroll_ + delta, 0.0f, SettingsMaximumScroll());
+        InvalidateRect(window_, nullptr, FALSE);
     }
     RECT GetSettingsOptionBounds(int option) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        static constexpr int kCompactRowTopDips[] = { 70, 96, 122, 174, 200, 226, 252 };
-        static constexpr int kRegularRowTopDips[] = { 90, 116, 142, 209, 235, 261, 287 };
+        static constexpr int kCompactRowTopDips[] = { 84, 110, 136, 200, 226, 252, 278 };
+        static constexpr int kRegularRowTopDips[] = { 90, 116, 142, 225, 251, 277, 303 };
         const int* rowTops = SettingsUsesCompactLayout() ? kCompactRowTopDips : kRegularRowTopDips;
         const int top = bounds.top + MulDiv(rowTops[option], dpi, 96);
         return { bounds.left + padding, top, bounds.right - padding, top + MulDiv(25, dpi, 96) };
@@ -788,7 +835,7 @@ public:
         const int padding = MulDiv(18, dpi, 96), width = MulDiv(76, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int index = static_cast<int>(preference);
         const int left = bounds.left + padding + index * (width + gap);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 328 : 386, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 367 : 411, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     void ToggleIncludeHiddenImages() {
@@ -848,22 +895,24 @@ public:
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 550 : 616, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 569 : 643, dpi, 96);
         return { bounds.left + padding, top, bounds.left + padding + MulDiv(100, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     RECT GetSettingsDefaultAppsButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 434 : 496, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 464 : 523, dpi, 96);
         return { bounds.left + padding, top, bounds.left + padding + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     bool SettingsDefaultAppsButtonContains(POINT point) const {
         const RECT button = GetSettingsDefaultAppsButtonBounds();
+        point.y += static_cast<LONG>(std::lround(settingsScroll_));
         return overlay_ == OverlayKind::Settings && PtInRect(&button, point);
     }
     bool SettingsResetButtonContains(POINT point) const {
         const RECT button = GetSettingsResetButtonBounds();
+        point.y += static_cast<LONG>(std::lround(settingsScroll_));
         return overlay_ == OverlayKind::Settings && PtInRect(&button, point);
     }
     RECT GetResetConfirmationButtonBounds(bool reset) const {
@@ -923,7 +972,7 @@ public:
     RECT GetDefaultAppsHelperButtonBounds(bool open) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int openWidth = MulDiv(166, dpi, 96), cancelWidth = MulDiv(92, dpi, 96);
+        const int openWidth = MulDiv(212, dpi, 96), cancelWidth = MulDiv(92, dpi, 96);
         const int height = MulDiv(36, dpi, 96), gap = MulDiv(10, dpi, 96);
         const int groupWidth = cancelWidth + gap + openWidth;
         const int left = bounds.left + (bounds.right - bounds.left - groupWidth) / 2;
@@ -972,7 +1021,10 @@ public:
         const int minimumWidth = MulDiv(180, GetDpiForWindow(window_), 96);
         const int desiredMargin = MulDiv(150, GetDpiForWindow(window_), 96);
         const int sideMargin = std::min(desiredMargin, std::max(MulDiv(16, GetDpiForWindow(window_), 96), (static_cast<int>(client.right) - minimumWidth) / 2));
-        const int width = std::max(minimumWidth, static_cast<int>(client.right) - sideMargin * 2);
+        const int maximumWidth = std::max(minimumWidth, static_cast<int>(client.right) - sideMargin * 2);
+        const float contentWidth = filmstripItemOffsets_.empty() ? static_cast<float>(minimumWidth) :
+            filmstripItemOffsets_.back() - static_cast<float>(FilmstripGap()) + static_cast<float>(FilmstripPadding());
+        const int width = std::min(maximumWidth, std::max(minimumWidth, static_cast<int>(std::ceil(contentWidth))));
         const int left = (client.right - width) / 2;
         const int bottomMargin = MulDiv(16, GetDpiForWindow(window_), 96);
         return { left, client.bottom - bottomMargin - height, left + width, client.bottom - bottomMargin };
@@ -990,7 +1042,7 @@ public:
         return std::max(0.0f, contentWidth - static_cast<float>(bounds.right - bounds.left));
     }
     size_t CurrentNavigationIndex() const {
-        const fs::path current(currentPath_);
+        fs::path current(currentPath_);
         const auto found = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&current](const fs::path& path) { return PathsEqual(path, current); });
         return found == navigationFiles_.end() ? 0 : static_cast<size_t>(std::distance(navigationFiles_.begin(), found));
     }
@@ -1094,7 +1146,6 @@ public:
         filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
         filmstripHoldDurationMs_ = holdDurationMs;
         filmstripVisibilityStart_ = GetTickCount64();
-        EnsureCurrentFilmstripVisible();
         QueueFilmstripPopulate();
         if (alwaysShowFilmstrip_) StopFilmstripVisibilityTimer();
         else SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
@@ -1107,7 +1158,6 @@ public:
         filmstripVisibilityState_ = FilmstripVisibilityState::Revealing;
         filmstripHoldDurationMs_ = 2000;
         filmstripVisibilityStart_ = GetTickCount64();
-        EnsureCurrentFilmstripVisible();
         QueueFilmstripPopulate();
         SetTimer(window_, kFilmstripVisibilityTimer, 16, nullptr);
         InvalidateRect(window_, nullptr, FALSE);
@@ -1208,16 +1258,19 @@ public:
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
         if (overlay_ == OverlayKind::Settings) {
-            if (contains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
-            if (contains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
-            if (contains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
-            if (contains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsShowZoomHud;
-            if (contains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAnimations;
-            if (contains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReverseWheelZoom;
-            if (contains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsAlwaysShowFilmstrip;
-            if (contains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
-            if (contains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
-            if (contains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
+            POINT settingsPoint = point;
+            settingsPoint.y += static_cast<LONG>(std::lround(settingsScroll_));
+            const auto settingsContains = [&settingsPoint](RECT bounds) { return PtInRect(&bounds, settingsPoint) != FALSE; };
+            if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
+            if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
+            if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
+            if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsShowZoomHud;
+            if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAnimations;
+            if (settingsContains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReverseWheelZoom;
+            if (settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsAlwaysShowFilmstrip;
+            if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
+            if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
+            if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
             if (SettingsDefaultAppsButtonContains(point)) return ButtonKind::SettingsDefaultApps;
         }
         if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
@@ -1257,7 +1310,7 @@ public:
         AdvanceCanvasNavigationFade();
         const auto targetFor = [this](ButtonKind button) {
             if (canvasNavigationPressed_ == button) return 0.86f;
-            if (canvasNavigationHovered_ == button) return 0.60f;
+            if (canvasNavigationHovered_ == button) return 0.72f;
             return 0.08f;
         };
         const float previousTarget = targetFor(ButtonKind::CanvasPrevious);
@@ -1362,7 +1415,7 @@ public:
         else if (button == ButtonKind::WelcomePrimary) ShowOverlay(OverlayKind::DefaultAppsHelper);
         else if (button == ButtonKind::DefaultAppsHelperCancel) {
             overlay_ = OverlayKind::Welcome;
-            InvalidateRect(window_, nullptr, FALSE);
+            CompleteWelcome(false);
         }
         else if (button == ButtonKind::DefaultAppsHelperOpen) {
             overlay_ = OverlayKind::Welcome;
@@ -1479,8 +1532,8 @@ public:
                 std::max(1L, client.bottom - client.top)));
         }
         if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
+        settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
         RebuildFilmstripLayout();
-        EnsureCurrentFilmstripVisible();
         QueueFilmstripPopulate();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -1507,11 +1560,13 @@ public:
         DragFinish(drop);
     }
 
-    void BuildNavigation() {
+    void BuildNavigation(bool refresh = false) {
         navigationBuildQueued_ = false;
-        if (navigationBuilt_ || currentPath_.empty()) return;
+        if ((navigationBuilt_ && !refresh) || currentPath_.empty()) return;
+        const bool navigationWasBuilt = navigationBuilt_;
 
-        const fs::path current(currentPath_);
+        fs::path current(currentPath_);
+        std::vector<fs::path> scannedFiles;
         std::error_code error;
         fs::directory_iterator iterator(current.parent_path(), error);
         for (; !error && iterator != fs::directory_iterator(); iterator.increment(error)) {
@@ -1520,46 +1575,85 @@ public:
             const bool hidden = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_HIDDEN) != 0;
             if (iterator->is_regular_file(typeError) && !typeError && IsSupportedExtension(iterator->path()) &&
                 (includeHiddenImages_ || !hidden)) {
-                navigationFiles_.push_back(iterator->path());
+                scannedFiles.push_back(iterator->path());
             }
         }
-        std::sort(navigationFiles_.begin(), navigationFiles_.end(), [](const fs::path& left, const fs::path& right) {
-            const int comparison = StrCmpLogicalW(left.filename().c_str(), right.filename().c_str());
-            return comparison == 0 ? left.wstring() < right.wstring() : comparison < 0;
-        });
-        if (std::none_of(navigationFiles_.begin(), navigationFiles_.end(),
-                [&current](const fs::path& path) { return PathsEqual(path, current); })) {
-            navigationFiles_.push_back(current);
-            std::sort(navigationFiles_.begin(), navigationFiles_.end(), [](const fs::path& left, const fs::path& right) {
+        const auto sortNaturally = [](std::vector<fs::path>& files) {
+            std::sort(files.begin(), files.end(), [](const fs::path& left, const fs::path& right) {
                 const int comparison = StrCmpLogicalW(left.filename().c_str(), right.filename().c_str());
                 return comparison == 0 ? left.wstring() < right.wstring() : comparison < 0;
             });
+        };
+        sortNaturally(scannedFiles);
+        bool currentRenamed = false;
+        if (currentFileIdentity_.valid) {
+            for (const fs::path& candidate : scannedFiles) {
+                if (SameFileIdentity(currentFileIdentity_, ReadFileIdentity(candidate))) {
+                    if (!PathsEqual(candidate, current)) {
+                        current = candidate;
+                        currentPath_ = candidate.wstring();
+                        filenameText_ = candidate.filename().wstring();
+                        fileSizeText_ = FormatFileSize(currentPath_);
+                        currentRenamed = true;
+                    }
+                    break;
+                }
+            }
+        }
+        std::error_code currentError;
+        if (!error && !fs::exists(current, currentError)) {
+            ClearDeletedImage();
+            return;
+        }
+        if (fs::exists(current, currentError) && std::none_of(scannedFiles.begin(), scannedFiles.end(),
+                [&current](const fs::path& path) { return PathsEqual(path, current); })) {
+            scannedFiles.push_back(current);
+            sortNaturally(scannedFiles);
+        }
+        const bool changed = scannedFiles.size() != navigationFiles_.size() || !std::equal(scannedFiles.begin(), scannedFiles.end(), navigationFiles_.begin(),
+            [](const fs::path& left, const fs::path& right) { return PathsEqual(left, right); });
+        if (changed) {
+            navigationFiles_ = std::move(scannedFiles);
+            thumbnailCache_.clear();
+            filmstripThumbnailAspects_.clear();
+            filmstripItemWidths_.clear();
+            filmstripItemOffsets_.clear();
+            filmstripScroll_ = 0.0f;
         }
         navigationBuilt_ = true;
+        if (!changed && !filmstripItemOffsets_.empty()) {
+            QueueFilmstripPopulate();
+            return;
+        }
         RebuildFilmstripLayout();
-        EnsureCurrentFilmstripVisible();
+        if (!navigationWasBuilt) EnsureCurrentFilmstripVisible();
         if (filmstripInitialPresentationPending_) {
             filmstripInitialPresentationPending_ = false;
             StartFilmstripHold(3000);
         } else QueueFilmstripPopulate();
+        if (currentRenamed) InvalidateRect(window_, nullptr, FALSE);
         InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void RefreshNavigationFromFileSystem() {
+        if (source_ && !TutorialActive()) BuildNavigation(true);
     }
 
     void PopulateFilmstripThumbnailMessage() { PopulateFilmstripThumbnail(); }
 
     void Navigate(int direction) {
         if (!source_) return;
-        BuildNavigation();
+        BuildNavigation(true);
         if (navigationFiles_.size() < 2) return;
 
         const fs::path current(currentPath_);
         auto currentIt = std::find_if(navigationFiles_.begin(), navigationFiles_.end(),
             [&current](const fs::path& path) { return PathsEqual(path, current); });
-        if (currentIt == navigationFiles_.end()) return;
-
         const ptrdiff_t count = static_cast<ptrdiff_t>(navigationFiles_.size());
-        const ptrdiff_t start = std::distance(navigationFiles_.begin(), currentIt);
-        for (ptrdiff_t attempt = 1; attempt < count; ++attempt) {
+        const bool currentMissing = currentIt == navigationFiles_.end();
+        const ptrdiff_t start = currentMissing ? (direction > 0 ? -1 : 0) : std::distance(navigationFiles_.begin(), currentIt);
+        const ptrdiff_t attempts = currentMissing ? count : count - 1;
+        for (ptrdiff_t attempt = 1; attempt <= attempts; ++attempt) {
             ptrdiff_t index = (start + direction * attempt) % count;
             if (index < 0) index += count;
             ComPtr<IWICBitmapSource> source;
@@ -1688,7 +1782,55 @@ public:
         RegCloseKey(key);
     }
 
+    void Shutdown() { StopDirectoryWatcher(); }
+    void QueueDirectoryRefreshFromWatcher() { QueueDirectoryRefresh(); }
+
 private:
+    void StopDirectoryWatcher() {
+        directoryWatcherStopping_ = true;
+        if (directoryWatcherHandle_ != INVALID_HANDLE_VALUE) CancelIoEx(directoryWatcherHandle_, nullptr);
+        if (directoryWatcherThread_.joinable()) {
+            CancelSynchronousIo(directoryWatcherThread_.native_handle());
+            directoryWatcherThread_.join();
+        }
+        if (directoryWatcherHandle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(directoryWatcherHandle_);
+            directoryWatcherHandle_ = INVALID_HANDLE_VALUE;
+        }
+        directoryWatcherFolder_.clear();
+        KillTimer(window_, kDirectoryChangeDebounceTimer);
+    }
+
+    void DirectoryWatcherLoop() {
+        std::array<BYTE, 4096> buffer{};
+        while (!directoryWatcherStopping_) {
+            DWORD bytes = 0;
+            const BOOL changed = ReadDirectoryChangesW(directoryWatcherHandle_, buffer.data(), static_cast<DWORD>(buffer.size()), FALSE,
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE, &bytes, nullptr, nullptr);
+            if (!changed) break;
+            if (bytes != 0 && !directoryWatcherStopping_) PostMessageW(window_, kDirectoryChangedMessage, 0, 0);
+        }
+    }
+
+    void StartDirectoryWatcher(const fs::path& folder) {
+        const std::wstring normalized = folder.lexically_normal().wstring();
+        if (PathsEqual(fs::path(directoryWatcherFolder_), folder)) return;
+        StopDirectoryWatcher();
+        const HANDLE handle = CreateFileW(folder.c_str(), FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) return;
+        directoryWatcherStopping_ = false;
+        directoryWatcherFolder_ = normalized;
+        directoryWatcherHandle_ = handle;
+        directoryWatcherThread_ = std::thread([this] { DirectoryWatcherLoop(); });
+    }
+
+    void QueueDirectoryRefresh() {
+        if (!source_ || TutorialActive()) return;
+        SetTimer(window_, kDirectoryChangeDebounceTimer, 150, nullptr);
+    }
+
     void RegisterDefaultAppCapabilities() {
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) return;
@@ -1871,9 +2013,23 @@ private:
         const HRESULT copy = source_->CopyPixels(nullptr, stride, static_cast<UINT>(pixelBytes), reinterpret_cast<BYTE*>(header + 1));
         GlobalUnlock(memory);
         if (FAILED(copy)) { GlobalFree(memory); ShowActionError(L"Viewtrious could not copy this image to the clipboard."); return; }
-        if (!OpenClipboard(window_)) { GlobalFree(memory); ShowActionError(L"The clipboard is currently unavailable."); return; }
+        const size_t dropBytes = sizeof(DROPFILES) + (currentPath_.size() + 2) * sizeof(wchar_t);
+        HGLOBAL fileDrop = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, dropBytes);
+        if (fileDrop) {
+            auto* drop = static_cast<DROPFILES*>(GlobalLock(fileDrop));
+            if (!drop) { GlobalFree(fileDrop); fileDrop = nullptr; }
+            else {
+                drop->pFiles = sizeof(DROPFILES);
+                drop->fWide = TRUE;
+                wchar_t* paths = reinterpret_cast<wchar_t*>(reinterpret_cast<BYTE*>(drop) + sizeof(DROPFILES));
+                memcpy(paths, currentPath_.c_str(), (currentPath_.size() + 1) * sizeof(wchar_t));
+                GlobalUnlock(fileDrop);
+            }
+        }
+        if (!OpenClipboard(window_)) { GlobalFree(memory); if (fileDrop) GlobalFree(fileDrop); ShowActionError(L"The clipboard is currently unavailable."); return; }
         EmptyClipboard();
-        if (!SetClipboardData(CF_DIBV5, memory)) { CloseClipboard(); GlobalFree(memory); ShowActionError(L"Viewtrious could not publish the image to the clipboard."); return; }
+        if (!SetClipboardData(CF_DIBV5, memory)) { CloseClipboard(); GlobalFree(memory); if (fileDrop) GlobalFree(fileDrop); ShowActionError(L"Viewtrious could not publish the image to the clipboard."); return; }
+        if (fileDrop && !SetClipboardData(CF_HDROP, fileDrop)) GlobalFree(fileDrop);
         CloseClipboard();
         StartCopyFeedback();
     }
@@ -2028,15 +2184,20 @@ private:
 
     UINT ReadPhotoOrientation(IWICBitmapFrameDecode* frame) const {
         ComPtr<IWICMetadataQueryReader> metadata;
-        PROPVARIANT value{};
-        PropVariantInit(&value);
         UINT orientation = 1;
-        if (SUCCEEDED(frame->GetMetadataQueryReader(&metadata)) &&
-            SUCCEEDED(metadata->GetMetadataByName(L"/app1/ifd/{ushort=274}", &value))) {
-            if (value.vt == VT_UI2) orientation = value.uiVal;
-            else if (value.vt == VT_UI4) orientation = value.ulVal;
+        if (SUCCEEDED(frame->GetMetadataQueryReader(&metadata))) {
+            for (const wchar_t* query : { L"/app1/ifd/{ushort=274}", L"/ifd/{ushort=274}", L"/{ushort=274}" }) {
+                PROPVARIANT value{};
+                PropVariantInit(&value);
+                const HRESULT result = metadata->GetMetadataByName(query, &value);
+                if (SUCCEEDED(result)) {
+                    if (value.vt == VT_UI2) orientation = value.uiVal;
+                    else if (value.vt == VT_UI4) orientation = value.ulVal;
+                }
+                PropVariantClear(&value);
+                if (orientation >= 1 && orientation <= 8 && SUCCEEDED(result)) break;
+            }
         }
-        PropVariantClear(&value);
         return orientation >= 1 && orientation <= 8 ? orientation : 1;
     }
 
@@ -2410,7 +2571,17 @@ private:
             default: return L"unknown or codec-specific metadata";
             }
         };
+        const auto mustPreserve = [](PROPID id) {
+            switch (id) {
+            case 0x010E: case 0x0112: case 0x011A: case 0x011B: case 0x0128:
+            case 0x0131: case 0x0132: case 0x013B: case 0x0301:
+                return true;
+            default:
+                return false;
+            }
+        };
         const auto missing = std::find_if(sourcePropertyIds.begin(), sourcePropertyIds.end(), [&](PROPID id) {
+            if (!mustPreserve(id)) return false;
             return std::find(outputPropertyIds.begin(), outputPropertyIds.end(), id) == outputPropertyIds.end();
         });
         if (missing != sourcePropertyIds.end()) {
@@ -2471,8 +2642,9 @@ private:
     }
 
     void ClearDeletedImage() {
+        StopDirectoryWatcher();
         source_.Reset(); bitmap_.Reset(); imageWidth_ = imageHeight_ = 0;
-        currentPath_.clear(); resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
+        currentPath_.clear(); currentFileIdentity_ = {}; resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
         navigationFiles_.clear(); thumbnailCache_.clear(); filmstripThumbnailAspects_.clear(); filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
         error_ = L"Drop an image here, or launch Viewtrious with an image path.";
@@ -2590,6 +2762,7 @@ private:
         imageWidth_ = width;
         imageHeight_ = height;
         currentPath_ = path;
+        currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         resolutionText_ = std::to_wstring(width) + L"\u00D7" + std::to_wstring(height);
         fileSizeText_ = FormatFileSize(path);
         filenameText_ = fs::path(path).filename().wstring();
@@ -2598,6 +2771,7 @@ private:
         zoom_ = 1.0f;
         pan_ = D2D1::Point2F();
         EndPan();
+        StartDirectoryWatcher(fs::path(path).parent_path());
         if (resetNavigation) {
             navigationFiles_.clear();
             thumbnailCache_.clear();
@@ -3017,13 +3191,14 @@ private:
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
             overlay_ == OverlayKind::Settings ? 680 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
             overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
-        const int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
+        int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
+            : overlay_ == OverlayKind::Settings ? MulDiv(703, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
             overlay_ == OverlayKind::Welcome ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(344, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
+        if (overlay_ == OverlayKind::Settings && availableHeight < desiredHeight) desiredHeight = MulDiv(629, dpi, 96);
         const int width = std::min(desiredWidth, availableWidth);
         const int height = std::min(desiredHeight, availableHeight);
         const int left = (client.right - width) / 2;
@@ -3097,7 +3272,7 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &buttonText))) return;
         const UINT dpi = GetDpiForWindow(window_);
         const float scale = static_cast<float>(dpi) / 96.0f;
-        const D2D1_SIZE_F target = renderTarget_->GetSize();
+        const D2D1_SIZE_F target = ClientSize();
         const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
         const float groupTop = top + std::max(0.0f, (target.height - top - 300.0f * scale) / 2.0f);
         if (EnsureAboutLogo()) {
@@ -3193,18 +3368,12 @@ private:
         } else if (overlay_ == OverlayKind::DefaultAppsHelper) {
             DrawOverlayText(L"Set up Viewtrious", left, static_cast<float>(bounds.top) + 28.0f * dpiScale,
                 contentWidth, 32.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            DrawOverlayText(L"Windows requires you to choose default file types in Settings.", left,
-                static_cast<float>(bounds.top) + 78.0f * dpiScale, contentWidth, 44.0f * dpiScale,
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
-            DrawOverlayText(L"1. Choose Viewtrious for the image formats you want it to open.", left,
-                static_cast<float>(bounds.top) + 132.0f * dpiScale, contentWidth, 24.0f * dpiScale,
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
-            DrawOverlayText(L"2. Repeat for any other image formats you want associated with Viewtrious.", left,
-                static_cast<float>(bounds.top) + 166.0f * dpiScale, contentWidth, 44.0f * dpiScale,
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get(), false, false, false, true);
-            DrawOverlayText(L"3. Close Windows Settings when you're finished.", left,
-                static_cast<float>(bounds.top) + 220.0f * dpiScale, contentWidth, 24.0f * dpiScale,
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
+            DrawOverlayText(L"Choose Viewtrious for the image formats you want to open.", left,
+                static_cast<float>(bounds.top) + 88.0f * dpiScale, contentWidth, 28.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            DrawOverlayText(L"Close Windows Settings when you are finished.", left,
+                static_cast<float>(bounds.top) + 134.0f * dpiScale, contentWidth, 28.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT cancelBounds = GetDefaultAppsHelperButtonBounds(false), openBounds = GetDefaultAppsHelperButtonBounds(true);
             const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));
             const D2D1_RECT_F open = D2D1::RectF(static_cast<float>(openBounds.left), static_cast<float>(openBounds.top), static_cast<float>(openBounds.right), static_cast<float>(openBounds.bottom));
@@ -3243,7 +3412,7 @@ private:
                 settingsWidth, 32.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             const auto group = [&](const wchar_t* label, float top) {
                 DrawOverlayText(label, settingsLeft, static_cast<float>(bounds.top) + top * dpiScale, settingsWidth,
-                    18.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, secondaryBrush.Get());
+                    18.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             };
             ComPtr<ID2D1SolidColorBrush> accent, checkmark, rowHover, segmentIdle, segmentHover;
             if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &accent)) ||
@@ -3267,19 +3436,22 @@ private:
                     renderTarget_->DrawLine(middle, end, checkmark.Get(), stroke);
                 } else renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(checkbox, 3.0f * dpiScale, 3.0f * dpiScale), borderBrush.Get(), 1.0f);
                 DrawOverlayText(label, checkbox.right + 12.0f * dpiScale, row.top, row.right - checkbox.right - 12.0f * dpiScale,
-                    row.bottom - row.top, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get(), true);
+                    row.bottom - row.top, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), true);
             };
             const bool compactSettings = SettingsUsesCompactLayout();
-            const float generalTop = compactSettings ? 50.0f : 66.0f;
-            const float viewerTop = compactSettings ? 154.0f : 185.0f;
-            const float appearanceTop = compactSettings ? 285.0f : 330.0f;
-            const float themeLabelTop = compactSettings ? 305.0f : 356.0f;
-            const float separatorTop = compactSettings ? 370.0f : 430.0f;
-            const float defaultTypesTitleTop = compactSettings ? 384.0f : 444.0f;
-            const float defaultTypesDescriptionTop = compactSettings ? 406.0f : 466.0f;
-            const float resetSeparatorTop = compactSettings ? 484.0f : 550.0f;
-            const float resetTitleTop = compactSettings ? 500.0f : 566.0f;
-            const float resetDescriptionTop = compactSettings ? 522.0f : 588.0f;
+            const float generalTop = compactSettings ? 64.0f : 66.0f;
+            const float viewerTop = compactSettings ? 180.0f : 201.0f;
+            const float appearanceTop = compactSettings ? 324.0f : 362.0f;
+            const float themeLabelTop = compactSettings ? 344.0f : 388.0f;
+            const float defaultTypesTitleTop = compactSettings ? 414.0f : 473.0f;
+            const float defaultTypesDescriptionTop = compactSettings ? 436.0f : 495.0f;
+            const float resetTitleTop = compactSettings ? 519.0f : 593.0f;
+            const float resetDescriptionTop = compactSettings ? 541.0f : 615.0f;
+            const D2D1_RECT_F settingsViewport = D2D1::RectF(static_cast<float>(bounds.left),
+                static_cast<float>(bounds.top) + 60.0f * dpiScale, static_cast<float>(bounds.right),
+                static_cast<float>(bounds.bottom) - 18.0f * dpiScale);
+            renderTarget_->PushAxisAlignedClip(settingsViewport, D2D1_ANTIALIAS_MODE_ALIASED);
+            renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -settingsScroll_));
             group(L"GENERAL", generalTop);
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"Remember window position and size", rememberWindowPlacement_);
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"Include hidden images in folder navigation", includeHiddenImages_);
@@ -3291,7 +3463,7 @@ private:
             drawToggle(6, ButtonKind::SettingsAlwaysShowFilmstrip, L"Always show filmstrip", alwaysShowFilmstrip_);
             group(L"APPEARANCE", appearanceTop);
             DrawOverlayText(L"Theme", settingsLeft, static_cast<float>(bounds.top) + themeLabelTop * dpiScale, settingsWidth,
-                22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get());
+                22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const auto drawTheme = [&](ThemePreference preference, ButtonKind button, const wchar_t* label) {
                 const RECT segmentBounds = GetSettingsThemeBounds(preference);
                 const D2D1_RECT_F segment = D2D1::RectF(static_cast<float>(segmentBounds.left), static_cast<float>(segmentBounds.top), static_cast<float>(segmentBounds.right), static_cast<float>(segmentBounds.bottom));
@@ -3304,12 +3476,10 @@ private:
             drawTheme(ThemePreference::System, ButtonKind::SettingsThemeSystem, L"System");
             drawTheme(ThemePreference::Light, ButtonKind::SettingsThemeLight, L"Light");
             drawTheme(ThemePreference::Dark, ButtonKind::SettingsThemeDark, L"Dark");
-            const float separatorY = static_cast<float>(bounds.top) + separatorTop * dpiScale;
-            renderTarget_->DrawLine(D2D1::Point2F(settingsLeft, separatorY), D2D1::Point2F(settingsLeft + settingsWidth, separatorY), borderBrush.Get(), 1.0f);
             group(L"DEFAULT FILE TYPES", defaultTypesTitleTop);
             DrawOverlayText(L"Choose which image types open with Viewtrious.", settingsLeft,
                 static_cast<float>(bounds.top) + defaultTypesDescriptionTop * dpiScale, settingsWidth, 20.0f * dpiScale,
-                15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT defaultAppsBounds = GetSettingsDefaultAppsButtonBounds();
             const D2D1_RECT_F defaultAppsButton = D2D1::RectF(static_cast<float>(defaultAppsBounds.left), static_cast<float>(defaultAppsBounds.top),
                 static_cast<float>(defaultAppsBounds.right), static_cast<float>(defaultAppsBounds.bottom));
@@ -3322,13 +3492,10 @@ private:
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"Change file type defaults", defaultAppsButton.left, defaultAppsButton.top,
                 defaultAppsButton.right - defaultAppsButton.left, defaultAppsButton.bottom - defaultAppsButton.top,
-                16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
-            const float resetSeparatorY = static_cast<float>(bounds.top) + resetSeparatorTop * dpiScale;
-            renderTarget_->DrawLine(D2D1::Point2F(settingsLeft, resetSeparatorY), D2D1::Point2F(settingsLeft + settingsWidth, resetSeparatorY), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"Reset Viewtrious to Defaults", settingsLeft, static_cast<float>(bounds.top) + resetTitleTop * dpiScale,
-                settingsWidth, 20.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+                14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            group(L"RESET VIEWTRIOUS TO DEFAULTS", resetTitleTop);
             DrawOverlayText(L"Removes preferences and app-owned data. Your images are never touched.", settingsLeft,
-                static_cast<float>(bounds.top) + resetDescriptionTop * dpiScale, settingsWidth, 20.0f * dpiScale, 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                static_cast<float>(bounds.top) + resetDescriptionTop * dpiScale, settingsWidth, 20.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT resetBounds = GetSettingsResetButtonBounds();
             const D2D1_RECT_F resetButton = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top),
                 static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
@@ -3340,7 +3507,9 @@ private:
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"Reset", resetButton.left, resetButton.top, resetButton.right - resetButton.left,
-                resetButton.bottom - resetButton.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+                resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+            renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::ResetConfirm) {
             DrawOverlayText(L"Reset Viewtrious to defaults?", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 36.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
@@ -3944,6 +4113,7 @@ private:
     UINT imageWidth_ = 0;
     UINT imageHeight_ = 0;
     std::wstring currentPath_;
+    FileIdentity currentFileIdentity_{};
     std::wstring resolutionText_;
     std::wstring fileSizeText_;
     std::wstring filenameText_;
@@ -3963,6 +4133,10 @@ private:
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
+    HANDLE directoryWatcherHandle_ = INVALID_HANDLE_VALUE;
+    std::wstring directoryWatcherFolder_;
+    std::thread directoryWatcherThread_;
+    std::atomic<bool> directoryWatcherStopping_{ false };
     bool filmstripPopulateQueued_ = false;
     bool filmstripInitialPresentationPending_ = false;
     bool filmstripPanelHovered_ = false;
@@ -3984,6 +4158,7 @@ private:
     bool reverseMouseWheelZoom_ = false;
     bool alwaysShowFilmstrip_ = false;
     ThemePreference themePreference_ = ThemePreference::System;
+    float settingsScroll_ = 0.0f;
     bool onboardingRequired_ = false;
     bool tourPending_ = false;
     TutorialStep tutorialStep_ = TutorialStep::None;
@@ -4114,9 +4289,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_DROPFILES: viewer->DropFile(reinterpret_cast<HDROP>(wParam)); return 0;
     case WM_MOUSEWHEEL: {
-        if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(window, &point);
+        if (viewer->SettingsContains(point)) {
+            const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+            viewer->ScrollSettings(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
+            return 0;
+        }
+        if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
         if (viewer->FilmstripContains(point)) viewer->ScrollFilmstrip(-wheelUnits * (viewer->FilmstripThumbnailHeight() + viewer->FilmstripGap()));
         else viewer->ZoomAt(point, viewer->WheelZoomFactor(wheelUnits));
@@ -4344,11 +4524,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; }
         if (wParam == kCanvasNavigationFadeTimer) { viewer->UpdateCanvasNavigationFade(); return 0; }
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }
+        if (wParam == kDirectoryChangeDebounceTimer) { KillTimer(window, kDirectoryChangeDebounceTimer); viewer->RefreshNavigationFromFileSystem(); return 0; }
         break;
-    case WM_ACTIVATE: if (LOWORD(wParam) != WA_INACTIVE) viewer->ResumePendingTour(); break;
+    case WM_ACTIVATE:
+        if (LOWORD(wParam) != WA_INACTIVE) {
+            viewer->RefreshNavigationFromFileSystem();
+            viewer->ResumePendingTour();
+        }
+        break;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case kPopulateFilmstripMessage: viewer->PopulateFilmstripThumbnailMessage(); return 0;
+    case kDirectoryChangedMessage: viewer->QueueDirectoryRefreshFromWatcher(); return 0;
     case WM_KEYDOWN:
         if (viewer->TutorialActive()) { if (wParam == VK_ESCAPE) viewer->StopTutorial(); return 0; }
         if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }
@@ -4376,7 +4563,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) { viewer->ZoomCentered(1.0f / kWheelZoomStep); return 0; }
         if (wParam == L'0' || wParam == VK_NUMPAD0) { viewer->FitToWindow(); return 0; }
         break;
-    case WM_DESTROY: viewer->SaveWindowPlacement(); PostQuitMessage(0); return 0;
+    case WM_DESTROY: viewer->SaveWindowPlacement(); viewer->Shutdown(); PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(window, message, wParam, lParam);
 }

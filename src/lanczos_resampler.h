@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -23,7 +24,8 @@ public:
 
     bool Initialize(uint32_t sourceWidth, uint32_t sourceHeight, uint32_t destinationWidth, uint32_t destinationHeight,
         const LanczosMapping& mapping = {});
-    bool Scale(const uint8_t* source, uint32_t sourceStride, std::vector<uint8_t>& destination);
+    bool Scale(const uint8_t* source, uint32_t sourceStride, std::vector<uint8_t>& destination,
+        const std::atomic_bool* cancellation = nullptr);
 
     size_t WorkingBytes() const;
     uint32_t DestinationWidth() const { return destinationWidth_; }
@@ -37,8 +39,8 @@ private:
     static CoefficientTable BuildCoefficientTable(uint32_t sourceLength, uint32_t destinationLength, float sourceOffset,
         float destinationOffset, float sourcePixelsPerDestination);
     static size_t TableBytes(const CoefficientTable& table);
-    void EnsureHorizontalRow(const uint8_t* source, uint32_t sourceStride, uint32_t sourceY,
-        uint32_t protectedFirst, uint32_t protectedCount);
+    bool EnsureHorizontalRow(const uint8_t* source, uint32_t sourceStride, uint32_t sourceY,
+        uint32_t protectedFirst, uint32_t protectedCount, const std::atomic_bool* cancellation);
     int32_t* CachedRow(uint32_t sourceY);
 
     uint32_t sourceWidth_ = 0, sourceHeight_ = 0, destinationWidth_ = 0, destinationHeight_ = 0;

@@ -94,15 +94,20 @@ Lanczos3Scaler::~Lanczos3Scaler() {
     delete rowCache_;
 }
 
-bool Lanczos3Scaler::Scale(const uint8_t* source, uint32_t sourceStride, std::vector<uint8_t>& destination) {
+bool Lanczos3Scaler::Scale(const uint8_t* source, uint32_t sourceStride, std::vector<uint8_t>& destination,
+    const std::atomic_bool* cancellation) {
     if (!source || !horizontal_ || !vertical_ || !rowCache_ || sourceStride < sourceWidth_ * 4) return false;
+    if (cancellation && cancellation->load(std::memory_order_relaxed)) return false;
     destination.resize(static_cast<size_t>(destinationWidth_) * destinationHeight_ * 4);
     for (uint32_t y = 0; y < destinationHeight_; ++y) {
+        if (cancellation && cancellation->load(std::memory_order_relaxed)) return false;
         const CoefficientTable::Entry& vertical = vertical_->entries[y];
         for (size_t tap = 0; tap < vertical.weights.size(); ++tap)
-            EnsureHorizontalRow(source, sourceStride, vertical.first + static_cast<uint32_t>(tap), vertical.first, static_cast<uint32_t>(vertical.weights.size()));
+            if (!EnsureHorizontalRow(source, sourceStride, vertical.first + static_cast<uint32_t>(tap), vertical.first,
+                static_cast<uint32_t>(vertical.weights.size()), cancellation)) return false;
         uint8_t* output = destination.data() + static_cast<size_t>(y) * destinationWidth_ * 4;
         for (uint32_t x = 0; x < destinationWidth_; ++x) {
+            if ((x & 63u) == 0 && cancellation && cancellation->load(std::memory_order_relaxed)) return false;
             std::array<int64_t, 4> sums{};
             for (size_t tap = 0; tap < vertical.weights.size(); ++tap) {
                 const int32_t* input = CachedRow(vertical.first + static_cast<uint32_t>(tap)) + static_cast<size_t>(x) * 4;
@@ -130,8 +135,10 @@ size_t Lanczos3Scaler::TableBytes(const CoefficientTable& table) {
     return bytes;
 }
 
-void Lanczos3Scaler::EnsureHorizontalRow(const uint8_t* source, uint32_t sourceStride, uint32_t sourceY, uint32_t protectedFirst, uint32_t protectedCount) {
-    if (CachedRow(sourceY)) return;
+bool Lanczos3Scaler::EnsureHorizontalRow(const uint8_t* source, uint32_t sourceStride, uint32_t sourceY, uint32_t protectedFirst,
+    uint32_t protectedCount, const std::atomic_bool* cancellation) {
+    if (cancellation && cancellation->load(std::memory_order_relaxed)) return false;
+    if (CachedRow(sourceY)) return true;
     Row* destination = nullptr;
     const uint32_t protectedLast = protectedFirst + protectedCount;
     for (size_t attempt = 0; attempt < rowCache_->size(); ++attempt) {
@@ -140,9 +147,10 @@ void Lanczos3Scaler::EnsureHorizontalRow(const uint8_t* source, uint32_t sourceS
             destination = &candidate; nextRow_ = (nextRow_ + attempt + 1) % rowCache_->size(); break;
         }
     }
-    if (!destination) return;
+    if (!destination) return false;
     const uint8_t* input = source + static_cast<size_t>(sourceY) * sourceStride;
     for (uint32_t x = 0; x < destinationWidth_; ++x) {
+        if ((x & 63u) == 0 && cancellation && cancellation->load(std::memory_order_relaxed)) return false;
         const CoefficientTable::Entry& horizontal = horizontal_->entries[x];
         for (uint32_t channel = 0; channel < 4; ++channel) {
             int32_t sum = 0;
@@ -151,6 +159,7 @@ void Lanczos3Scaler::EnsureHorizontalRow(const uint8_t* source, uint32_t sourceS
         }
     }
     destination->sourceY = sourceY;
+    return true;
 }
 
 int32_t* Lanczos3Scaler::CachedRow(uint32_t sourceY) {

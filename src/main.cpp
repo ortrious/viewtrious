@@ -1993,6 +1993,23 @@ public:
         const double halfHeight = canvas.height / scale / 2.0;
         return { -halfWidth, -halfHeight, -1.0, halfWidth, halfHeight, 1.0 };
     }
+    void TraceSpaceMouseDiagnostic(const wchar_t* event, uint64_t generation = 0, UINT width = 0, UINT height = 0) const {
+#if defined(_DEBUG)
+        LARGE_INTEGER now{}, frequency{};
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&frequency);
+        wchar_t message[256]{};
+        swprintf_s(message, L"Viewtrious SpaceMouse/Lanczos: %s qpc=%lld (%.3f ms) generation=%llu size=%ux%u motion=%d\\n",
+            event, now.QuadPart, 1000.0 * static_cast<double>(now.QuadPart) / static_cast<double>(frequency.QuadPart),
+            static_cast<unsigned long long>(generation), width, height, spaceMouseMotionActive_ ? 1 : 0);
+        OutputDebugStringW(message);
+#else
+        (void)event;
+        (void)generation;
+        (void)width;
+        (void)height;
+#endif
+    }
     void SetSpaceMouseCameraMatrix(const navlib::matrix_t& matrix) {
         if (!CanAcceptSpaceMouseInput()) return;
         const navlib::matrix_t current = SpaceMouseCameraMatrix();
@@ -2018,7 +2035,8 @@ public:
     }
     void SetSpaceMouseMotion(bool motion) {
         spaceMouseMotionActive_ = motion;
-        if (motion && lanczosSelected_) InvalidateLanczosVariant(true);
+        TraceSpaceMouseDiagnostic(motion ? L"SpaceMouse motion begin" : L"SpaceMouse motion end");
+        if (motion) InvalidateLanczosVariant(true);
         if (!motion && CanAcceptSpaceMouseInput() && lanczosSelected_) QueueLanczosRefinement();
     }
 
@@ -3478,11 +3496,12 @@ private:
     }
 
     void QueueLanczosRefinement(UINT delayMs = 120) {
-        if (lanczosSelected_ && source_ && !gifPlaying_) SetTimer(window_, kLanczosSettleTimer, delayMs, nullptr);
+        if (lanczosSelected_ && source_ && !gifPlaying_ && !spaceMouseMotionActive_)
+            SetTimer(window_, kLanczosSettleTimer, delayMs, nullptr);
     }
 
     bool BuildLanczosRequest(LanczosRequest& request) {
-        if (!source_ || !lanczosSelected_ || gifPlaying_) return false;
+        if (!source_ || !lanczosSelected_ || gifPlaying_ || spaceMouseMotionActive_) return false;
         const float dpiScale = RenderTargetDpi() / 96.0f;
         const float physicalScale = PhysicalPixelScale();
         const D2D1_SIZE_F canvas = ImageCanvasSize();
@@ -3530,6 +3549,7 @@ private:
     }
 
     void RequestLanczosVariant() {
+        if (spaceMouseMotionActive_) return;
         LanczosRequest request{};
         if (!BuildLanczosRequest(request)) return;
         if (lanczosRendering_) {
@@ -3540,28 +3560,47 @@ private:
     }
 
     void StartLanczosRequest(LanczosRequest request) {
+        if (spaceMouseMotionActive_) return;
         if (lanczosThread_.joinable()) lanczosThread_.join();
         lanczosRendering_ = true;
-        lanczosThread_ = std::thread([window = window_, request = std::move(request)]() mutable {
+        auto cancellation = std::make_shared<std::atomic_bool>(false);
+        lanczosCancellation_ = cancellation;
+        TraceSpaceMouseDiagnostic(L"Lanczos job start", request.generation, request.targetWidth, request.targetHeight);
+        lanczosThread_ = std::thread([window = window_, request = std::move(request), cancellation = std::move(cancellation)]() mutable {
             auto* result = new LanczosResult{};
             result->generation = request.generation;
             result->width = request.targetWidth;
             result->height = request.targetHeight;
             result->destination = request.destination;
             viewtrious::Lanczos3Scaler scaler;
-            if (scaler.Initialize(request.sourceWidth, request.sourceHeight, request.targetWidth, request.targetHeight, request.mapping)) {
+            if (!cancellation->load(std::memory_order_relaxed) &&
+                scaler.Initialize(request.sourceWidth, request.sourceHeight, request.targetWidth, request.targetHeight, request.mapping)) {
                 result->pixels = std::make_shared<std::vector<BYTE>>();
-                result->succeeded = scaler.Scale(request.sourcePixels->data(), request.sourceWidth * 4, *result->pixels);
+                result->succeeded = scaler.Scale(request.sourcePixels->data(), request.sourceWidth * 4, *result->pixels, cancellation.get());
             }
+#if defined(_DEBUG)
+            LARGE_INTEGER now{}, frequency{};
+            QueryPerformanceCounter(&now);
+            QueryPerformanceFrequency(&frequency);
+            wchar_t message[256]{};
+            swprintf_s(message, L"Viewtrious SpaceMouse/Lanczos: Lanczos job complete qpc=%lld (%.3f ms) generation=%llu size=%ux%u succeeded=%d\\n",
+                now.QuadPart, 1000.0 * static_cast<double>(now.QuadPart) / static_cast<double>(frequency.QuadPart),
+                static_cast<unsigned long long>(result->generation), result->width, result->height, result->succeeded ? 1 : 0);
+            OutputDebugStringW(message);
+#endif
             if (!PostMessageW(window, kLanczosCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
         });
     }
 
     void HandleLanczosResult(LanczosResult* result) {
         if (!result) return;
+        TraceSpaceMouseDiagnostic(L"Lanczos result received", result->generation, result->width, result->height);
         if (lanczosThread_.joinable()) lanczosThread_.join();
         lanczosRendering_ = false;
-        if (result->generation == lanczosGeneration_ && result->succeeded && result->pixels) {
+        lanczosCancellation_.reset();
+        const bool mayPublish = !spaceMouseMotionActive_ && result->generation == lanczosGeneration_ && result->succeeded && result->pixels;
+        if (mayPublish) {
+            TraceSpaceMouseDiagnostic(L"Lanczos cache publish", result->generation, result->width, result->height);
             lanczosPixels_ = std::move(result->pixels);
             lanczosWidth_ = result->width;
             lanczosHeight_ = result->height;
@@ -3573,9 +3612,13 @@ private:
         if (pendingLanczosRequest_) {
             LanczosRequest request = std::move(*pendingLanczosRequest_);
             pendingLanczosRequest_.reset();
-            if (request.generation == lanczosGeneration_ && lanczosSelected_) StartLanczosRequest(std::move(request));
+            if (!spaceMouseMotionActive_ && request.generation == lanczosGeneration_ && lanczosSelected_)
+                StartLanczosRequest(std::move(request));
         }
-        InvalidateRect(window_, nullptr, FALSE);
+        if (!spaceMouseMotionActive_ && mayPublish) {
+            TraceSpaceMouseDiagnostic(L"Lanczos invalidation requested");
+            InvalidateRect(window_, nullptr, FALSE);
+        }
     }
 
     bool IsFastNavigationPath(const std::wstring& path) const {
@@ -3820,6 +3863,7 @@ private:
 
     void InvalidateLanczosVariant(bool keepSelection) {
         (void)keepSelection;
+        if (lanczosCancellation_) lanczosCancellation_->store(true, std::memory_order_relaxed);
         ++lanczosGeneration_;
         KillTimer(window_, kLanczosSettleTimer);
         lanczosPixels_.reset();
@@ -5260,6 +5304,7 @@ private:
     bool lanczosSelected_ = false;
     bool lanczosRendering_ = false;
     std::optional<LanczosRequest> pendingLanczosRequest_;
+    std::shared_ptr<std::atomic_bool> lanczosCancellation_;
     std::thread lanczosThread_;
     std::thread thumbnailDecodeThread_;
     bool thumbnailDecodeInFlight_ = false;

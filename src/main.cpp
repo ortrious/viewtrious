@@ -72,7 +72,7 @@ constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback };
-enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
+enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, CopyHeicDiagnostics, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
@@ -589,6 +589,7 @@ public:
         top += separatorGap;
         item = hit(DropdownItem::About); if (item != DropdownItem::None) return item;
         item = hit(DropdownItem::Feedback); if (item != DropdownItem::None) return item;
+        item = hit(DropdownItem::CopyHeicDiagnostics); if (item != DropdownItem::None && !latestHeicRotationDiagnostics_.empty()) return item;
         top += separatorGap;
         return hit(DropdownItem::Close);
     }
@@ -616,6 +617,7 @@ public:
         else if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
         else if (item == DropdownItem::About) ShowOverlay(OverlayKind::About);
         else if (item == DropdownItem::Feedback) ShowOverlay(OverlayKind::Feedback);
+        else if (item == DropdownItem::CopyHeicDiagnostics) { CopyHeicDiagnostics(true); StartCopyFeedback(L"Diagnostics copied"); }
         else if (item == DropdownItem::Close) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
     }
     void OpenFile() {
@@ -2464,20 +2466,25 @@ private:
         if (ReadShellRotationFileState(currentPath_, state)) AppendHeicDiagnostic(L"Before: " + HeicFileState(state));
         else AppendHeicDiagnostic(L"Before: GetFileAttributesExW failed, error " + std::to_wstring(GetLastError()));
     }
-    bool CopyHeicDiagnostics() const {
+    bool CopyHeicDiagnostics(bool includeHistory = false) const {
         if (heicRotationDiagnostics_.empty() || !OpenClipboard(window_)) return false;
-        const size_t bytes = (heicRotationDiagnostics_.size() + 1) * sizeof(wchar_t);
+        const std::wstring report = includeHistory ?
+            L"Latest HEIC Rotation Session\r\n============================\r\n" + latestHeicRotationDiagnostics_ +
+            (previousHeicRotationDiagnostics_.empty() ? L"" : L"\r\nPrevious HEIC Rotation Session\r\n==============================\r\n" + previousHeicRotationDiagnostics_) : heicRotationDiagnostics_;
+        const size_t bytes = (report.size() + 1) * sizeof(wchar_t);
         HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
         if (!memory) { CloseClipboard(); return false; }
         void* destination = GlobalLock(memory);
         if (!destination) { GlobalFree(memory); CloseClipboard(); return false; }
-        std::memcpy(destination, heicRotationDiagnostics_.c_str(), bytes);
+        std::memcpy(destination, report.c_str(), bytes);
         GlobalUnlock(memory); EmptyClipboard();
         if (!SetClipboardData(CF_UNICODETEXT, memory)) GlobalFree(memory);
         CloseClipboard(); return true;
     }
     void FinishHeicDiagnostics(const wchar_t* outcome, bool abnormal) {
         AppendHeicDiagnostic(L"Final result: " + std::wstring(outcome));
+        previousHeicRotationDiagnostics_ = latestHeicRotationDiagnostics_;
+        latestHeicRotationDiagnostics_ = heicRotationDiagnostics_;
         if (abnormal) {
             const bool copied = CopyHeicDiagnostics();
             ShowActionError(copied ? L"HEIC rotation did not complete. Diagnostic details were copied to the clipboard."
@@ -2971,7 +2978,7 @@ private:
         const FrameMetrics frame = GetFrameMetrics(window_);
         const LONG margin = MulDiv(4, dpi, 96);
         const LONG width = std::min<LONG>(MulDiv(236, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
-        const LONG height = MulDiv(301, dpi, 96);
+        const LONG height = MulDiv(339, dpi, 96);
         const LONG left = std::clamp<LONG>(frame.hamburger.left + margin, margin,
             std::max<LONG>(margin, client.right - width - margin));
         const LONG top = frame.hamburger.bottom + margin;
@@ -4345,6 +4352,7 @@ private:
         separator();
         drawItem(DropdownItem::About, top, L"About", L'\uE946'); top += rowHeight;
         drawItem(DropdownItem::Feedback, top, L"Feedback", L'\uE939'); top += rowHeight;
+        drawItem(DropdownItem::CopyHeicDiagnostics, top, L"Copy HEIC Rotation Diagnostics", L'\uE8A5'); top += rowHeight;
         separator();
         drawItem(DropdownItem::Close, top, L"Close", L'\uE8BB');
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
@@ -4885,6 +4893,8 @@ private:
     ULONGLONG shellRotationStarted_ = 0;
     ULONGLONG lastHeicRotationRequest_ = 0;
     std::wstring heicRotationDiagnostics_;
+    std::wstring latestHeicRotationDiagnostics_;
+    std::wstring previousHeicRotationDiagnostics_;
     ComPtr<IContextMenu> shellRotationContextMenu_;
     bool openWithSubmenuOpen_ = false;
     int openWithHovered_ = -1;

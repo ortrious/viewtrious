@@ -1,9 +1,19 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.5.3.1 LANGUAGES CXX)
+project(Viewtrious VERSION 0.5.4.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
+endif()
+
+set(VIEWTRIOUS_3DXWARE_SDK_ROOT "" CACHE PATH "Root of the 3Dconnexion 3DxWare SDK (required for SpaceMouse support)")
+if(NOT VIEWTRIOUS_3DXWARE_SDK_ROOT)
+    message(FATAL_ERROR "Set VIEWTRIOUS_3DXWARE_SDK_ROOT to a 3DxWare SDK installation.")
+endif()
+set(VIEWTRIOUS_3DXWARE_INCLUDE_DIR "${VIEWTRIOUS_3DXWARE_SDK_ROOT}/inc")
+set(VIEWTRIOUS_3DXWARE_LIBRARY "${VIEWTRIOUS_3DXWARE_SDK_ROOT}/lib/x64/TDxNavLib.lib")
+if(NOT EXISTS "${VIEWTRIOUS_3DXWARE_INCLUDE_DIR}/SpaceMouse/CNavigation3D.hpp" OR NOT EXISTS "${VIEWTRIOUS_3DXWARE_LIBRARY}")
+    message(FATAL_ERROR "VIEWTRIOUS_3DXWARE_SDK_ROOT must contain inc/SpaceMouse/CNavigation3D.hpp and lib/x64/TDxNavLib.lib.")
 endif()
 
 string(REPLACE "." "," PROJECT_VERSION_COMMAS "${PROJECT_VERSION}")
@@ -25,15 +35,16 @@ add_executable(ViewtriousLanczosBenchmark
 
 target_compile_features(Viewtrious PRIVATE cxx_std_20)
 target_compile_definitions(Viewtrious PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX VIEWTRIOUS_VERSION=L\"${PROJECT_VERSION}\")
-target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32)
+target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_3DXWARE_INCLUDE_DIR}")
+target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 "${VIEWTRIOUS_3DXWARE_LIBRARY}")
 target_compile_features(ViewtriousLanczosBenchmark PRIVATE cxx_std_20)
 target_compile_definitions(ViewtriousLanczosBenchmark PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(ViewtriousLanczosBenchmark PRIVATE windowscodecs ole32)
 
 if(MSVC)
-    target_compile_options(Viewtrious PRIVATE /W4 /permissive-)
+    target_compile_options(Viewtrious PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(Viewtrious PRIVATE $<$<CONFIG:Release>:/O2>)
-    target_compile_options(ViewtriousLanczosBenchmark PRIVATE /W4 /permissive-)
+    target_compile_options(ViewtriousLanczosBenchmark PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(ViewtriousLanczosBenchmark PRIVATE $<$<CONFIG:Release>:/O2>)
 endif()
 

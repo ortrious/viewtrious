@@ -13,6 +13,8 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include <SpaceMouse/CNavigation3D.hpp>
+
 #include "lanczos_resampler.h"
 
 #include <algorithm>
@@ -22,6 +24,7 @@
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -81,7 +84,7 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    SettingsSpaceMouse, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
@@ -132,6 +135,60 @@ struct LanczosResult {
     uint64_t generation = 0;
     bool succeeded = false;
     D2D1_RECT_F destination{};
+};
+
+// The official NavLib wrapper owns device calibration and its event-driven input loop.  This
+// accessor deliberately exposes only the orthographic state Viewtrious actually has: camera
+// translation becomes image pan and view extents become center-anchored zoom.
+class SpaceMouseNavigation final : public TDx::SpaceMouse::Navigation3D::CNavigation3D {
+public:
+    std::function<navlib::matrix_t()> getCameraMatrix;
+    std::function<void(const navlib::matrix_t&)> setCameraMatrix;
+    std::function<navlib::box_t()> getViewExtents;
+    std::function<void(const navlib::box_t&)> setViewExtents;
+    std::function<void(bool)> setMotion;
+
+    SpaceMouseNavigation() : CNavigation3D(false, navlib::none) { PutProfileHint("Viewtrious"); }
+
+protected:
+    long GetCameraMatrix(navlib::matrix_t& matrix) const override {
+        if (!getCameraMatrix) return navlib::make_result_code(navlib::navlib_errc::no_data_available);
+        matrix = getCameraMatrix(); return 0;
+    }
+    long SetCameraMatrix(const navlib::matrix_t& matrix) override {
+        if (setCameraMatrix) setCameraMatrix(matrix); return 0;
+    }
+    long GetViewExtents(navlib::box_t& extents) const override {
+        if (!getViewExtents) return navlib::make_result_code(navlib::navlib_errc::no_data_available);
+        extents = getViewExtents(); return 0;
+    }
+    long SetViewExtents(const navlib::box_t& extents) override {
+        if (setViewExtents) setViewExtents(extents); return 0;
+    }
+    long GetPointerPosition(navlib::point_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
+    long GetViewFOV(double&) const override { return navlib::make_result_code(navlib::navlib_errc::invalid_operation); }
+    long GetViewFrustum(navlib::frustum_t&) const override { return navlib::make_result_code(navlib::navlib_errc::invalid_operation); }
+    long SetViewFOV(double) override { return navlib::make_result_code(navlib::navlib_errc::invalid_operation); }
+    long SetViewFrustum(const navlib::frustum_t&) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
+    long GetIsViewPerspective(navlib::bool_t& perspective) const override { perspective = false; return 0; }
+    long GetIsViewRotatable(navlib::bool_t& rotatable) const override { rotatable = false; return 0; }
+    long GetModelExtents(navlib::box_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
+    long GetSelectionExtents(navlib::box_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
+    long GetSelectionTransform(navlib::matrix_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
+    long GetIsSelectionEmpty(navlib::bool_t& empty) const override { empty = true; return 0; }
+    long SetSelectionTransform(const navlib::matrix_t&) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
+    long GetPivotPosition(navlib::point_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
+    long IsUserPivot(navlib::bool_t& userPivot) const override { userPivot = false; return 0; }
+    long SetPivotPosition(const navlib::point_t&) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
+    long GetPivotVisible(navlib::bool_t& visible) const override { visible = false; return 0; }
+    long SetPivotVisible(bool) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
+    long GetHitLookAt(navlib::point_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
+    long SetHitAperture(double) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
+    long SetHitDirection(const navlib::vector_t&) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
+    long SetHitLookFrom(const navlib::point_t&) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
+    long SetHitSelectionOnly(bool) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
+    long SetActiveCommand(std::string) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
+    long SetMotionFlag(bool motion) override { if (setMotion) setMotion(motion); return 0; }
 };
 constexpr ShortcutEntry kShortcutEntries[] = {
     { L"Ctrl+O", L"Open file" }, { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom in/out" },
@@ -488,6 +545,9 @@ public:
         DWORD alwaysShowFilmstrip = 0;
         ReadSetting(L"AlwaysShowFilmstrip", alwaysShowFilmstrip);
         alwaysShowFilmstrip_ = alwaysShowFilmstrip != 0;
+        DWORD spaceMouseEnabled = 1;
+        ReadSetting(L"EnableSpaceMouse", spaceMouseEnabled);
+        spaceMouseEnabled_ = spaceMouseEnabled != 0;
         DWORD theme = static_cast<DWORD>(ThemePreference::System);
         ReadSetting(L"Theme", theme);
         themePreference_ = theme <= static_cast<DWORD>(ThemePreference::Dark) ? static_cast<ThemePreference>(theme) : ThemePreference::System;
@@ -546,7 +606,24 @@ public:
         return hr;
     }
 
-    void SetWindow(HWND window) { window_ = window; ActivateGifPlayback(); }
+    void SetWindow(HWND window) { window_ = window; InitializeSpaceMouse(); ActivateGifPlayback(); }
+    void InitializeSpaceMouse() {
+        if (!window_ || spaceMouse_) return;
+        spaceMouse_ = std::make_unique<SpaceMouseNavigation>();
+        spaceMouse_->getCameraMatrix = [this] { return SpaceMouseCameraMatrix(); };
+        spaceMouse_->setCameraMatrix = [this](const navlib::matrix_t& matrix) { SetSpaceMouseCameraMatrix(matrix); };
+        spaceMouse_->getViewExtents = [this] { return SpaceMouseViewExtents(); };
+        spaceMouse_->setViewExtents = [this](const navlib::box_t& extents) { SetSpaceMouseViewExtents(extents); };
+        spaceMouse_->setMotion = [this](bool motion) { SetSpaceMouseMotion(motion); };
+        std::error_code error;
+        spaceMouse_->EnableNavigation(true, error);
+        spaceMouseRuntimeAvailable_ = !error && spaceMouse_->IsEnabled();
+        if (!spaceMouseRuntimeAvailable_) {
+            spaceMouse_.reset();
+            return;
+        }
+        if (!spaceMouseEnabled_) spaceMouse_->EnableNavigation(false, error);
+    }
     void ShowWelcomeIfNeeded() {
         if (tourPending_) { StartPendingTour(); return; }
         if (!onboardingRequired_) return;
@@ -907,7 +984,7 @@ public:
         if (overlay_ != OverlayKind::Settings) return 0.0f;
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const float contentBottom = static_cast<float>(MulDiv(SettingsUsesCompactLayout() ? 691 : 752, dpi, 96));
+        const float contentBottom = static_cast<float>(MulDiv(SettingsUsesCompactLayout() ? 717 : 778, dpi, 96));
         const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
         return std::max(0.0f, contentBottom - viewportBottom);
     }
@@ -924,8 +1001,8 @@ public:
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        static constexpr int kCompactRowTopDips[] = { 84, 110, 136, 200, 226, 252, 278 };
-        static constexpr int kRegularRowTopDips[] = { 90, 116, 142, 225, 251, 277, 303 };
+        static constexpr int kCompactRowTopDips[] = { 84, 110, 136, 200, 226, 252, 278, 304 };
+        static constexpr int kRegularRowTopDips[] = { 90, 116, 142, 225, 251, 277, 303, 329 };
         const int* rowTops = SettingsUsesCompactLayout() ? kCompactRowTopDips : kRegularRowTopDips;
         const int top = bounds.top + MulDiv(rowTops[option], dpi, 96);
         return { bounds.left + padding, top, bounds.right - padding, top + MulDiv(25, dpi, 96) };
@@ -936,7 +1013,7 @@ public:
         const int padding = MulDiv(18, dpi, 96), width = MulDiv(76, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int index = static_cast<int>(preference);
         const int left = bounds.left + padding + index * (width + gap);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 440 : 486, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 466 : 512, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     RECT GetSettingsScalingBounds(ImageScaling scaling) const {
@@ -944,7 +1021,7 @@ public:
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96), width = MulDiv(112, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int left = bounds.left + padding + static_cast<int>(scaling) * (width + gap);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 347 : 377, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 373 : 403, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     void ToggleIncludeHiddenImages() {
@@ -994,6 +1071,15 @@ public:
         else BeginFilmstripFadeSequence();
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void ToggleSpaceMouse() {
+        if (!spaceMouseRuntimeAvailable_ || !spaceMouse_) return;
+        spaceMouseEnabled_ = !spaceMouseEnabled_;
+        WriteSetting(L"EnableSpaceMouse", spaceMouseEnabled_ ? 1 : 0);
+        std::error_code error;
+        spaceMouse_->EnableNavigation(spaceMouseEnabled_, error);
+        if (error) { spaceMouseEnabled_ = false; WriteSetting(L"EnableSpaceMouse", 0); }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void SetThemePreference(ThemePreference preference) {
         themePreference_ = preference;
         WriteSetting(L"Theme", static_cast<DWORD>(preference));
@@ -1013,14 +1099,14 @@ public:
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 655 : 716, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 681 : 742, dpi, 96);
         return { bounds.left + padding, top, bounds.left + padding + MulDiv(100, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     RECT GetSettingsDefaultAppsButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 550 : 596, dpi, 96);
+        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 576 : 622, dpi, 96);
         return { bounds.left + padding, top, bounds.left + padding + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     bool SettingsDefaultAppsButtonContains(POINT point) const {
@@ -1383,6 +1469,7 @@ public:
             if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAnimations;
             if (settingsContains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReverseWheelZoom;
             if (settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsAlwaysShowFilmstrip;
+            if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsOptionBounds(7))) return ButtonKind::SettingsSpaceMouse;
             if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
             if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
             if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -1511,6 +1598,7 @@ public:
         else if (button == ButtonKind::SettingsAnimations) ToggleAnimationsAndFadeEffects();
         else if (button == ButtonKind::SettingsReverseWheelZoom) ToggleReverseMouseWheelZoom();
         else if (button == ButtonKind::SettingsAlwaysShowFilmstrip) ToggleAlwaysShowFilmstrip();
+        else if (button == ButtonKind::SettingsSpaceMouse) ToggleSpaceMouse();
         else if (button == ButtonKind::SettingsThemeSystem) SetThemePreference(ThemePreference::System);
         else if (button == ButtonKind::SettingsThemeLight) SetThemePreference(ThemePreference::Light);
         else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
@@ -1889,6 +1977,51 @@ public:
         if (GetCapture() == window_) ReleaseCapture();
     }
 
+    bool CanAcceptSpaceMouseInput() const {
+        return spaceMouseRuntimeAvailable_ && spaceMouseEnabled_ && source_ && !TutorialActive() &&
+            !HasOverlay() && !dropdownOpen_ && !contextMenuOpen_;
+    }
+    navlib::matrix_t SpaceMouseCameraMatrix() const {
+        const float scale = CurrentScale();
+        return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
+            source_ ? pan_.x / scale : 0.0f, source_ ? -pan_.y / scale : 0.0f, 0, 1 };
+    }
+    navlib::box_t SpaceMouseViewExtents() const {
+        const D2D1_SIZE_F canvas = ImageCanvasSize();
+        const double scale = std::max(0.0001f, CurrentScale());
+        const double halfWidth = canvas.width / scale / 2.0;
+        const double halfHeight = canvas.height / scale / 2.0;
+        return { -halfWidth, -halfHeight, -1.0, halfWidth, halfHeight, 1.0 };
+    }
+    void SetSpaceMouseCameraMatrix(const navlib::matrix_t& matrix) {
+        if (!CanAcceptSpaceMouseInput()) return;
+        const navlib::matrix_t current = SpaceMouseCameraMatrix();
+        const double dx = matrix.m30 - current.m30, dy = matrix.m31 - current.m31;
+        // NavLib supplies calibrated, time-integrated motion.  Ignore sub-millipixel camera
+        // changes to suppress neutral-device noise without adding a second acceleration model.
+        if (std::hypot(dx, dy) < 0.002) return;
+        const float scale = CurrentScale();
+        pan_.x += static_cast<float>(dx * scale);
+        pan_.y -= static_cast<float>(dy * scale);
+        ClampPan();
+        if (lanczosSelected_) { InvalidateLanczosVariant(true); QueueLanczosRefinement(); }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void SetSpaceMouseViewExtents(const navlib::box_t& extents) {
+        if (!CanAcceptSpaceMouseInput()) return;
+        const double requestedWidth = extents.max.x - extents.min.x;
+        const D2D1_SIZE_F canvas = ImageCanvasSize();
+        if (requestedWidth <= 0.0 || canvas.width <= 0.0f) return;
+        const float requestedScale = static_cast<float>(canvas.width / requestedWidth);
+        const D2D1_SIZE_F center = ImageCanvasSize();
+        SetScaleAt({ static_cast<LONG>(center.width / 2.0f), static_cast<LONG>(center.height / 2.0f) }, requestedScale);
+    }
+    void SetSpaceMouseMotion(bool motion) {
+        spaceMouseMotionActive_ = motion;
+        if (motion && lanczosSelected_) InvalidateLanczosVariant(true);
+        if (!motion && CanAcceptSpaceMouseInput() && lanczosSelected_) QueueLanczosRefinement();
+    }
+
     void MarkFirstPresentation() {
         if (!presented_) {
             presented_ = true;
@@ -1919,6 +2052,11 @@ public:
     }
 
     void Shutdown() {
+        if (spaceMouse_) {
+            std::error_code error;
+            spaceMouse_->EnableNavigation(false, error);
+            spaceMouse_.reset();
+        }
         StopGifPlayback();
         StopDirectoryWatcher();
         DisarmShellRotationDialogSuppression();
@@ -3773,7 +3911,7 @@ private:
         const D2D1_RECT_F destination = D2D1::RectF(topLeft.x, topLeft.y,
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
         DrawCheckerboard(destination);
-        if (!gifPlaying_ && lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
+        if (!gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
             renderTarget_->DrawBitmap(lanczosBitmap_.Get(), lanczosDestination_, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         else renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
@@ -4356,10 +4494,10 @@ private:
                 FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &rowHover)) ||
                 FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(50.f / 255, 54.f / 255, 63.f / 255) : D2D1::ColorF(238.f / 255, 238.f / 255, 238.f / 255), &segmentIdle)) ||
                 FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(65.f / 255, 69.f / 255, 80.f / 255) : D2D1::ColorF(220.f / 255, 220.f / 255, 220.f / 255), &segmentHover))) return;
-            const auto drawToggle = [&](int index, ButtonKind button, const wchar_t* label, bool checked) {
+            const auto drawToggle = [&](int index, ButtonKind button, const wchar_t* label, bool checked, bool enabled = true) {
                 const RECT rowBounds = GetSettingsOptionBounds(index);
                 const D2D1_RECT_F row = D2D1::RectF(static_cast<float>(rowBounds.left), static_cast<float>(rowBounds.top), static_cast<float>(rowBounds.right), static_cast<float>(rowBounds.bottom));
-                if (hoveredButton_ == button || pressedButton_ == button) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(row, 4.0f * dpiScale, 4.0f * dpiScale), rowHover.Get());
+                if (enabled && (hoveredButton_ == button || pressedButton_ == button)) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(row, 4.0f * dpiScale, 4.0f * dpiScale), rowHover.Get());
                 const float boxSize = 18.0f * dpiScale;
                 const D2D1_RECT_F checkbox = D2D1::RectF(row.left, row.top + (row.bottom - row.top - boxSize) / 2.0f, row.left + boxSize, row.top + (row.bottom - row.top - boxSize) / 2.0f + boxSize);
                 if (checked) {
@@ -4372,18 +4510,18 @@ private:
                     renderTarget_->DrawLine(middle, end, checkmark.Get(), stroke);
                 } else renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(checkbox, 3.0f * dpiScale, 3.0f * dpiScale), borderBrush.Get(), 1.0f);
                 DrawOverlayText(label, checkbox.right + 12.0f * dpiScale, row.top, row.right - checkbox.right - 12.0f * dpiScale,
-                    row.bottom - row.top, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), true);
+                    row.bottom - row.top, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, enabled ? secondaryBrush.Get() : borderBrush.Get(), true);
             };
             const bool compactSettings = SettingsUsesCompactLayout();
             const float generalTop = compactSettings ? 64.0f : 66.0f;
             const float viewerTop = compactSettings ? 180.0f : 201.0f;
-            const float scalingLabelTop = compactSettings ? 324.0f : 354.0f;
-            const float appearanceTop = compactSettings ? 397.0f : 437.0f;
-            const float themeLabelTop = compactSettings ? 417.0f : 463.0f;
-            const float defaultTypesTitleTop = compactSettings ? 500.0f : 546.0f;
-            const float defaultTypesDescriptionTop = compactSettings ? 522.0f : 568.0f;
-            const float resetTitleTop = compactSettings ? 605.0f : 666.0f;
-            const float resetDescriptionTop = compactSettings ? 627.0f : 688.0f;
+            const float scalingLabelTop = compactSettings ? 350.0f : 380.0f;
+            const float appearanceTop = compactSettings ? 423.0f : 463.0f;
+            const float themeLabelTop = compactSettings ? 443.0f : 489.0f;
+            const float defaultTypesTitleTop = compactSettings ? 526.0f : 572.0f;
+            const float defaultTypesDescriptionTop = compactSettings ? 548.0f : 594.0f;
+            const float resetTitleTop = compactSettings ? 631.0f : 692.0f;
+            const float resetDescriptionTop = compactSettings ? 653.0f : 714.0f;
             const D2D1_RECT_F settingsViewport = D2D1::RectF(static_cast<float>(bounds.left),
                 static_cast<float>(bounds.top) + 60.0f * dpiScale, static_cast<float>(bounds.right),
                 static_cast<float>(bounds.bottom) - 18.0f * dpiScale);
@@ -4398,6 +4536,13 @@ private:
             drawToggle(4, ButtonKind::SettingsAnimations, L"Animations and fade effects", animationsEnabled_);
             drawToggle(5, ButtonKind::SettingsReverseWheelZoom, L"Reverse mouse wheel zoom direction", reverseMouseWheelZoom_);
             drawToggle(6, ButtonKind::SettingsAlwaysShowFilmstrip, L"Always show filmstrip", alwaysShowFilmstrip_);
+            drawToggle(7, ButtonKind::SettingsSpaceMouse, L"Enable SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
+            if (!spaceMouseRuntimeAvailable_) {
+                const RECT spaceMouseBounds = GetSettingsOptionBounds(7);
+                DrawOverlayText(L"Requires 3Dconnexion 3DxWare software", settingsLeft + 30.0f * dpiScale,
+                    static_cast<float>(spaceMouseBounds.top) + 18.0f * dpiScale, settingsWidth - 30.0f * dpiScale,
+                    18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, borderBrush.Get(), true);
+            }
             group(L"APPEARANCE", appearanceTop);
             DrawOverlayText(L"Theme", settingsLeft, static_cast<float>(bounds.top) + themeLabelTop * dpiScale, settingsWidth,
                 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
@@ -4573,6 +4718,8 @@ private:
                 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
             DrawOverlayText(L"Extremely lightweight image viewer", logoLeft, textTop + 25.0f * dpiScale, logoWidth,
                 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
+            DrawOverlayText(L"3D input device development tools and related technology are provided under license from 3Dconnexion. © 3Dconnexion 1992 - 2025. All rights reserved.",
+                logoLeft, textTop + 49.0f * dpiScale, logoWidth, 38.0f * dpiScale, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         }
     }
 
@@ -5141,6 +5288,10 @@ private:
     bool animationsEnabled_ = true;
     bool reverseMouseWheelZoom_ = false;
     bool alwaysShowFilmstrip_ = false;
+    bool spaceMouseEnabled_ = true;
+    bool spaceMouseRuntimeAvailable_ = false;
+    bool spaceMouseMotionActive_ = false;
+    std::unique_ptr<SpaceMouseNavigation> spaceMouse_;
     ThemePreference themePreference_ = ThemePreference::System;
     ImageScaling imageScaling_ = ImageScaling::Quality;
     float settingsScroll_ = 0.0f;

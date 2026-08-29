@@ -2614,20 +2614,22 @@ private:
         AppendHeicDiagnostic(L"Shell verb selected: " + std::wstring(verb) + L"; exposed: " + (found ? L"yes" : L"no"));
         if (!found) { FinishHeicDiagnostics(L"requested Shell verb was not exposed", true); return HRESULT_FROM_WIN32(ERROR_NOT_FOUND); }
         hr = DetachDisplayedImageForShellWrite();
-        if (FAILED(hr)) return hr;
+        if (FAILED(hr)) { FinishHeicDiagnostics(L"Viewtrious could not prepare the image for Shell rotation", true); return hr; }
         FinishThumbnailDecodeForShellWrite();
         BeginShellRotationRefresh();
         CMINVOKECOMMANDINFOEX invoke{ sizeof(invoke) };
         // Do not authorize asynchronous execution here. The Shell handler may otherwise
         // report a timestamp change before its own HEIC writer has released the file.
-        invoke.fMask = CMIC_MASK_UNICODE;
+        // CMINVOKECOMMANDINFOEX is accepted through its CMINVOKECOMMANDINFO base.
+        // Suppress handler-owned UI; post-operation file/readiness verification remains authoritative.
+        invoke.fMask = CMIC_MASK_UNICODE | CMIC_MASK_FLAG_NO_UI;
         invoke.hwnd = window_;
         invoke.lpVerb = clockwise ? "rotate90" : "rotate270";
         invoke.lpVerbW = verb;
         invoke.nShow = SW_SHOWNORMAL;
         const ULONGLONG invokeStarted = GetTickCount64();
         hr = contextMenu->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&invoke));
-        AppendHeicDiagnostic(L"InvokeCommand HRESULT: 0x" + std::to_wstring(static_cast<unsigned long>(hr)) + L"; duration: " + std::to_wstring(GetTickCount64() - invokeStarted) + L" ms; returned synchronously: yes");
+        AppendHeicDiagnostic(L"InvokeCommand flags: CMIC_MASK_UNICODE | CMIC_MASK_FLAG_NO_UI; HRESULT: 0x" + std::to_wstring(static_cast<unsigned long>(hr)) + L"; duration: " + std::to_wstring(GetTickCount64() - invokeStarted) + L" ms; returned synchronously: yes");
         if (FAILED(hr)) {
             KillTimer(window_, kShellRotationCheckTimer);
             shellRotationPending_ = false;
@@ -2896,8 +2898,7 @@ private:
     void RotateImage(bool clockwise) {
         if (currentPath_.empty()) return;
         if (IsHeifPath(currentPath_)) {
-            const HRESULT shellResult = RotateHeifWithShell(clockwise);
-            if (FAILED(shellResult)) ShowActionError(L"Windows could not rotate this HEIC/HEIF image.");
+            RotateHeifWithShell(clockwise);
             return;
         }
         rotationDiagnosticDetail_.clear();

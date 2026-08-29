@@ -2436,17 +2436,6 @@ private:
         return GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) != FALSE;
     }
 
-    bool IsShellRotationFileReady(const std::wstring& path) const {
-        // Explorer's HEIC handler can update the file timestamp before it has released its
-        // write handle. Require the same write/delete access a subsequent rotation needs
-        // before presenting the file as ready for another Shell command.
-        HANDLE probe = CreateFileW(path.c_str(), GENERIC_WRITE | DELETE, FILE_SHARE_READ,
-            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (probe == INVALID_HANDLE_VALUE) return false;
-        CloseHandle(probe);
-        return true;
-    }
-
     static std::wstring HeicFileState(const WIN32_FILE_ATTRIBUTE_DATA& state) {
         ULARGE_INTEGER size{}; size.HighPart = state.nFileSizeHigh; size.LowPart = state.nFileSizeLow;
         ULARGE_INTEGER write{}; write.HighPart = state.ftLastWriteTime.dwHighDateTime; write.LowPart = state.ftLastWriteTime.dwLowDateTime;
@@ -2531,6 +2520,7 @@ private:
             std::wstring(shellRotationInitialStateValid_ ? HeicFileState(shellRotationInitialState_) : L"unavailable"));
         shellRotationPending_ = true;
         shellRotationStableChecks_ = 0;
+        shellRotationWicAttempts_ = 0;
         shellRotationLastStateValid_ = false;
         SetTimer(window_, kShellRotationCheckTimer, kShellRotationCheckIntervalMs, nullptr);
     }
@@ -2547,11 +2537,8 @@ private:
         QueueLatestFullDecode();
         QueueFilmstripPopulate();
         WIN32_FILE_ATTRIBUTE_DATA finalState{};
-        if (ReadShellRotationFileState(shellRotationPath_, finalState)) AppendHeicDiagnostic(L"Ready declared @ " + std::to_wstring(GetTickCount64() - shellRotationStarted_) + L" ms; probes " + std::to_wstring(shellRotationProbeCount_) + L"; final: " + HeicFileState(finalState));
-        ComPtr<IWICBitmapDecoder> decoder;
-        const HRESULT reopen = wicFactory_->CreateDecoderFromFilename(shellRotationPath_.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
-        AppendHeicDiagnostic(L"WIC reopen HRESULT: 0x" + std::to_wstring(static_cast<unsigned long>(reopen)));
-        FinishHeicDiagnostics(SUCCEEDED(reopen) ? L"verified ready" : L"ready but WIC reopen failed", FAILED(reopen));
+        if (ReadShellRotationFileState(shellRotationPath_, finalState)) AppendHeicDiagnostic(L"Verified ready @ " + std::to_wstring(GetTickCount64() - shellRotationStarted_) + L" ms; probes " + std::to_wstring(shellRotationProbeCount_) + L"; final: " + HeicFileState(finalState));
+        FinishHeicDiagnostics(L"verified ready", false);
         RevealFilmstripForNavigation();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -2564,24 +2551,27 @@ private:
         const bool changed = ReadShellRotationFileState(shellRotationPath_, state) && (!shellRotationInitialStateValid_ ||
             CompareFileTime(&state.ftLastWriteTime, &shellRotationInitialState_.ftLastWriteTime) != 0 ||
             state.nFileSizeHigh != shellRotationInitialState_.nFileSizeHigh || state.nFileSizeLow != shellRotationInitialState_.nFileSizeLow);
-        DWORD readinessError = ERROR_SUCCESS;
-        const bool reopenReady = IsShellRotationFileReady(shellRotationPath_);
-        if (!reopenReady) readinessError = GetLastError();
         AppendHeicDiagnostic(L"Probe " + std::to_wstring(shellRotationProbeCount_) + L" @ " + std::to_wstring(elapsed) + L" ms: " +
             (ReadShellRotationFileState(shellRotationPath_, state) ? HeicFileState(state) : L"file state unavailable") +
-            L"; write/delete reopen " + (reopenReady ? L"success" : L"failed error " + std::to_wstring(readinessError)));
-        if (changed && reopenReady) {
+            L"; differs from original: " + (changed ? L"yes" : L"no"));
+        if (changed) {
             const bool stable = shellRotationLastStateValid_ &&
                 CompareFileTime(&state.ftLastWriteTime, &shellRotationLastState_.ftLastWriteTime) == 0 &&
                 state.nFileSizeHigh == shellRotationLastState_.nFileSizeHigh && state.nFileSizeLow == shellRotationLastState_.nFileSizeLow;
             shellRotationLastState_ = state;
             shellRotationLastStateValid_ = true;
             shellRotationStableChecks_ = stable ? shellRotationStableChecks_ + 1 : 0;
-            AppendHeicDiagnostic(L"Stable match: " + std::wstring(stable ? L"yes" : L"no") + L"; stable count: " + std::to_wstring(shellRotationStableChecks_));
-            if (shellRotationStableChecks_ >= 2) { CompleteShellRotationRefresh(); return; }
+            AppendHeicDiagnostic(L"Matches previous observation: " + std::wstring(stable ? L"yes" : L"no") + L"; consecutive stable observations: " + std::to_wstring(shellRotationStableChecks_ + 1));
+            if (shellRotationStableChecks_ >= 2) {
+                ++shellRotationWicAttempts_;
+                ComPtr<IWICBitmapDecoder> decoder;
+                const HRESULT reopen = wicFactory_->CreateDecoderFromFilename(shellRotationPath_.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
+                AppendHeicDiagnostic(L"WIC verification attempt " + std::to_wstring(shellRotationWicAttempts_) + L" @ " + std::to_wstring(elapsed) + L" ms: HRESULT 0x" + std::to_wstring(static_cast<unsigned long>(reopen)) + (SUCCEEDED(reopen) ? L"; success" : L"; failure; monitoring continues"));
+                if (SUCCEEDED(reopen)) { CompleteShellRotationRefresh(); return; }
+            }
         } else {
-            shellRotationStableChecks_ = 0;
-            shellRotationLastStateValid_ = false;
+        shellRotationStableChecks_ = 0;
+        shellRotationLastStateValid_ = false;
         }
         if (GetTickCount64() - shellRotationStarted_ >= kShellRotationTimeoutMs) {
             KillTimer(window_, kShellRotationCheckTimer);
@@ -4891,6 +4881,7 @@ private:
     bool shellRotationLastStateValid_ = false;
     UINT shellRotationStableChecks_ = 0;
     UINT shellRotationProbeCount_ = 0;
+    UINT shellRotationWicAttempts_ = 0;
     ULONGLONG shellRotationStarted_ = 0;
     ULONGLONG lastHeicRotationRequest_ = 0;
     std::wstring heicRotationDiagnostics_;

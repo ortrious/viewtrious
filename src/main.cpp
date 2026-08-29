@@ -57,6 +57,7 @@ constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
 constexpr UINT_PTR kNavigationDecodeDebounceTimer = 5;
 constexpr UINT_PTR kShellRotationCheckTimer = 6;
 constexpr UINT_PTR kLanczosSettleTimer = 7;
+constexpr UINT_PTR kShellRotationDialogGraceTimer = 8;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr int kLogoResourceId = 102;
@@ -1893,6 +1894,7 @@ public:
 
     void Shutdown() {
         StopDirectoryWatcher();
+        DisarmShellRotationDialogSuppression();
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationContextMenu_.Reset();
         decodeShuttingDown_ = true;
@@ -1912,6 +1914,7 @@ public:
     void NavigationDecodeTimer() { StartPendingFullDecode(); }
     void LanczosRefinementTimer() { RequestLanczosVariant(); }
     void ShellRotationTimer() { UpdateShellRotation(); }
+    void ShellRotationDialogGraceTimer() { DisarmShellRotationDialogSuppression(); }
     void FullDecodeCompleteMessage(FullDecodeResult* result) { HandleFullDecodeResult(result); }
     void LanczosCompleteMessage(LanczosResult* result) { HandleLanczosResult(result); }
     void DecodeWorkerFinishedMessage(DecodeWorkerFinished* finished) { HandleDecodeWorkerFinished(finished); }
@@ -2502,6 +2505,39 @@ private:
         }
     }
 
+    static Viewer*& ShellRotationDialogOwner() { static Viewer* owner = nullptr; return owner; }
+    static void CALLBACK ShellRotationDialogEvent(HWINEVENTHOOK, DWORD, HWND dialog, LONG objectId, LONG childId, DWORD, DWORD) {
+        if (objectId == OBJID_WINDOW && childId == 0 && ShellRotationDialogOwner()) ShellRotationDialogOwner()->SuppressKnownShellRotationDialog(dialog);
+    }
+    static BOOL CALLBACK DialogTextMatches(HWND child, LPARAM context) {
+        auto* matched = reinterpret_cast<bool*>(context);
+        wchar_t text[256]{}; GetWindowTextW(child, text, ARRAYSIZE(text));
+        if (wcsstr(text, L"You cannot rotate this image. The file might be in use or open in another program, or the file or folder might be read-only.")) *matched = true;
+        return *matched ? FALSE : TRUE;
+    }
+    void SuppressKnownShellRotationDialog(HWND dialog) {
+        if (!shellRotationDialogHook_ || (!shellRotationPending_ && GetTickCount64() > shellRotationDialogGraceUntil_)) return;
+        DWORD processId = 0; GetWindowThreadProcessId(dialog, &processId);
+        wchar_t className[16]{}, title[32]{}; GetClassNameW(dialog, className, ARRAYSIZE(className)); GetWindowTextW(dialog, title, ARRAYSIZE(title));
+        bool textMatched = false; EnumChildWindows(dialog, DialogTextMatches, reinterpret_cast<LPARAM>(&textMatched));
+        if (processId == GetCurrentProcessId() && wcscmp(className, L"#32770") == 0 && wcscmp(title, L"Rotation") == 0 && textMatched) {
+            AppendHeicDiagnostic(L"Bogus Shell Rotation dialog matched and suppressed.");
+            PostMessageW(dialog, WM_CLOSE, 0, 0);
+        }
+    }
+    void ArmShellRotationDialogSuppression() {
+        if (shellRotationDialogHook_) return;
+        ShellRotationDialogOwner() = this;
+        shellRotationDialogHook_ = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, ShellRotationDialogEvent,
+            GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
+        AppendHeicDiagnostic(shellRotationDialogHook_ ? L"Shell Rotation dialog suppression armed." : L"Shell Rotation dialog suppression hook failed.");
+    }
+    void DisarmShellRotationDialogSuppression() {
+        KillTimer(window_, kShellRotationDialogGraceTimer);
+        if (shellRotationDialogHook_) UnhookWinEvent(shellRotationDialogHook_);
+        shellRotationDialogHook_ = nullptr; ShellRotationDialogOwner() = nullptr; shellRotationDialogGraceUntil_ = 0;
+    }
+
     void BeginShellRotationRefresh() {
         ++decodeRequestGeneration_;
         pendingFullDecode_.reset();
@@ -2519,6 +2555,7 @@ private:
         AppendHeicDiagnostic(L"Readiness monitoring started; initial state: " +
             std::wstring(shellRotationInitialStateValid_ ? HeicFileState(shellRotationInitialState_) : L"unavailable"));
         shellRotationPending_ = true;
+        ArmShellRotationDialogSuppression();
         shellRotationStableChecks_ = 0;
         shellRotationWicAttempts_ = 0;
         shellRotationLastStateValid_ = false;
@@ -2539,6 +2576,8 @@ private:
         WIN32_FILE_ATTRIBUTE_DATA finalState{};
         if (ReadShellRotationFileState(shellRotationPath_, finalState)) AppendHeicDiagnostic(L"Verified ready @ " + std::to_wstring(GetTickCount64() - shellRotationStarted_) + L" ms; probes " + std::to_wstring(shellRotationProbeCount_) + L"; final: " + HeicFileState(finalState));
         FinishHeicDiagnostics(L"verified ready", false);
+        shellRotationDialogGraceUntil_ = GetTickCount64() + 1500;
+        SetTimer(window_, kShellRotationDialogGraceTimer, 1500, nullptr);
         RevealFilmstripForNavigation();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -2577,6 +2616,7 @@ private:
             KillTimer(window_, kShellRotationCheckTimer);
             shellRotationPending_ = false;
             shellRotationContextMenu_.Reset();
+            DisarmShellRotationDialogSuppression();
             FinishHeicDiagnostics(L"timeout: file change/readiness was not verified", true);
         }
     }
@@ -4883,6 +4923,8 @@ private:
     UINT shellRotationProbeCount_ = 0;
     UINT shellRotationWicAttempts_ = 0;
     ULONGLONG shellRotationStarted_ = 0;
+    HWINEVENTHOOK shellRotationDialogHook_ = nullptr;
+    ULONGLONG shellRotationDialogGraceUntil_ = 0;
     ULONGLONG lastHeicRotationRequest_ = 0;
     std::wstring heicRotationDiagnostics_;
     std::wstring latestHeicRotationDiagnostics_;
@@ -5227,6 +5269,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kDirectoryChangeDebounceTimer) { KillTimer(window, kDirectoryChangeDebounceTimer); viewer->RefreshNavigationFromFileSystem(); return 0; }
         if (wParam == kNavigationDecodeDebounceTimer) { viewer->NavigationDecodeTimer(); return 0; }
         if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
+        if (wParam == kShellRotationDialogGraceTimer) { viewer->ShellRotationDialogGraceTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
         break;
     case WM_ACTIVATE:

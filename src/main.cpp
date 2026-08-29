@@ -22,6 +22,7 @@
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -60,6 +61,7 @@ constexpr UINT_PTR kShellRotationCheckTimer = 6;
 constexpr UINT_PTR kLanczosSettleTimer = 7;
 constexpr UINT_PTR kShellRotationDialogGraceTimer = 8;
 constexpr UINT_PTR kShellRotationDialogValidateTimer = 9;
+constexpr UINT_PTR kGifPlaybackTimer = 10;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr int kLogoResourceId = 102;
@@ -199,6 +201,23 @@ bool IsPngPath(const std::wstring& path) {
 bool IsHeifPath(const std::wstring& path) {
     const std::wstring extension = LowercaseExtension(path);
     return extension == L".heic" || extension == L".heif";
+}
+
+bool IsGifPath(const std::wstring& path) { return LowercaseExtension(path) == L".gif"; }
+
+UINT GifMetadataUInt(IWICMetadataQueryReader* reader, const wchar_t* name, UINT fallback = 0) {
+    if (!reader) return fallback;
+    PROPVARIANT value{};
+    PropVariantInit(&value);
+    const HRESULT hr = reader->GetMetadataByName(name, &value);
+    UINT result = fallback;
+    if (SUCCEEDED(hr)) {
+        if (value.vt == VT_UI1) result = value.bVal;
+        else if (value.vt == VT_UI2) result = value.uiVal;
+        else if (value.vt == VT_UI4) result = value.ulVal;
+    }
+    PropVariantClear(&value);
+    return result;
 }
 
 bool PathsEqual(const fs::path& left, const fs::path& right) {
@@ -486,6 +505,7 @@ public:
     }
 
     HRESULT LoadImage(const std::wstring& path) {
+        StopGifPlayback();
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationPending_ = false;
         shellRotationContextMenu_.Reset();
@@ -493,6 +513,10 @@ public:
         pendingFullDecode_.reset();
         imageDecodePending_ = false;
         KillTimer(window_, kNavigationDecodeDebounceTimer);
+        if (IsGifPath(path)) {
+            const HRESULT gifResult = LoadAnimatedGif(path, true);
+            if (SUCCEEDED(gifResult)) return S_OK;
+        }
         ComPtr<IWICBitmapSource> source;
         UINT width = 0;
         UINT height = 0;
@@ -1895,6 +1919,7 @@ public:
     }
 
     void Shutdown() {
+        StopGifPlayback();
         StopDirectoryWatcher();
         DisarmShellRotationDialogSuppression();
         KillTimer(window_, kShellRotationCheckTimer);
@@ -1914,6 +1939,8 @@ public:
         if (thumbnailDecodeThread_.joinable()) thumbnailDecodeThread_.join();
     }
     void NavigationDecodeTimer() { StartPendingFullDecode(); }
+    void GifPlaybackTimerMessage() { GifPlaybackTimer(); }
+    void GifPlaybackVisibilityChanged(bool visible) { SetGifPlaybackVisible(visible); }
     void LanczosRefinementTimer() { RequestLanczosVariant(); }
     void ShellRotationTimer() { UpdateShellRotation(); }
     void ShellRotationDialogGraceTimer() { DisarmShellRotationDialogSuppression(); }
@@ -1994,6 +2021,7 @@ private:
             { L".jpeg", L"Viewtrious.jpeg", L"Viewtrious JPEG Image" },
             { L".png", L"Viewtrious.png", L"Viewtrious PNG Image" },
             { L".bmp", L"Viewtrious.bmp", L"Viewtrious BMP Image" },
+            { L".gif", L"Viewtrious.gif", L"Viewtrious GIF Image" },
             { L".heic", L"Viewtrious.heic", L"Viewtrious HEIC Image" },
             { L".heif", L"Viewtrious.heif", L"Viewtrious HEIF Image" },
             { L".dng", L"Viewtrious.dng", L"Viewtrious DNG Image" },
@@ -2968,6 +2996,7 @@ private:
     }
 
     void ClearDeletedImage() {
+        StopGifPlayback();
         StopDirectoryWatcher();
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationPending_ = false;
@@ -2986,6 +3015,7 @@ private:
     }
 
     void ShowImageAfterDelete() {
+        StopGifPlayback();
         BuildNavigation();
         const fs::path deleted(currentPath_);
         auto current = std::find_if(navigationFiles_.begin(), navigationFiles_.end(),
@@ -2995,6 +3025,10 @@ private:
         navigationFiles_.erase(current);
         for (size_t offset = 0; offset < navigationFiles_.size(); ++offset) {
             const size_t candidate = (index + offset) % navigationFiles_.size();
+            if (IsGifPath(navigationFiles_[candidate].wstring()) && SUCCEEDED(LoadAnimatedGif(navigationFiles_[candidate].wstring(), false))) {
+                InvalidateRect(window_, nullptr, FALSE);
+                return;
+            }
             ComPtr<IWICBitmapSource> source;
             UINT width = 0, height = 0;
             if (SUCCEEDED(DecodeImage(navigationFiles_[candidate].wstring(), source, width, height))) {
@@ -3037,6 +3071,7 @@ private:
     }
 
     HRESULT ReloadCurrentImage() {
+        if (IsGifPath(currentPath_)) return LoadImage(currentPath_);
         ComPtr<IWICBitmapSource> source;
         UINT width = 0, height = 0;
         const HRESULT hr = DecodeImage(currentPath_, source, width, height);
@@ -3047,6 +3082,182 @@ private:
             ShowActionError(L"The image was changed, but Viewtrious could not reload it.");
         }
         return hr;
+    }
+
+    bool ReadGifLoopCount(const std::wstring& path, UINT& loopCount) const {
+        std::ifstream input(fs::path(path), std::ios::binary);
+        std::array<BYTE, 13> header{};
+        if (!input.read(reinterpret_cast<char*>(header.data()), header.size()) ||
+            std::memcmp(header.data(), "GIF", 3) != 0) return false;
+        const auto skipSubBlocks = [&input]() {
+            for (;;) { BYTE size = 0; if (!input.read(reinterpret_cast<char*>(&size), 1)) return false; if (!size) return true; input.seekg(size, std::ios::cur); if (!input) return false; }
+        };
+        if (header[10] & 0x80) input.seekg(3 * (1u << ((header[10] & 0x07) + 1)), std::ios::cur);
+        for (;;) {
+            BYTE marker = 0; if (!input.read(reinterpret_cast<char*>(&marker), 1)) return false;
+            if (marker == 0x3B) return false;
+            if (marker == 0x2C) { std::array<BYTE, 9> descriptor{}; if (!input.read(reinterpret_cast<char*>(descriptor.data()), descriptor.size())) return false; const BYTE packed = descriptor[8]; if (packed & 0x80) input.seekg(3 * (1u << ((packed & 7) + 1)), std::ios::cur); BYTE lzw = 0; if (!input.read(reinterpret_cast<char*>(&lzw), 1)) return false; if (!skipSubBlocks()) return false; continue; }
+            if (marker != 0x21) return false;
+            BYTE label = 0; if (!input.read(reinterpret_cast<char*>(&label), 1)) return false;
+            if (label == 0xFF) {
+                BYTE size = 0; if (!input.read(reinterpret_cast<char*>(&size), 1) || size != 11) return false;
+                std::array<char, 11> application{}; if (!input.read(application.data(), application.size())) return false;
+                BYTE dataSize = 0; if (!input.read(reinterpret_cast<char*>(&dataSize), 1)) return false;
+                std::array<BYTE, 255> data{}; if (dataSize && !input.read(reinterpret_cast<char*>(data.data()), dataSize)) return false;
+                if ((std::memcmp(application.data(), "NETSCAPE2.0", 11) == 0 || std::memcmp(application.data(), "ANIMEXTS1.0", 11) == 0) && dataSize >= 3 && data[0] == 1) {
+                    loopCount = static_cast<UINT>(data[1]) | (static_cast<UINT>(data[2]) << 8);
+                    return true;
+                }
+                if (!skipSubBlocks()) return false;
+            } else if (label == 0xF9) input.seekg(6, std::ios::cur);
+            else if (!skipSubBlocks()) return false;
+        }
+    }
+
+    void StopGifPlayback() {
+        KillTimer(window_, kGifPlaybackTimer);
+        gifDecoder_.Reset();
+        gifCanvas_.reset();
+        gifPreviousCanvas_.reset();
+        gifFrameIndex_ = gifFrameCount_ = 0;
+        gifCompletedLoops_ = 0;
+        gifLoopCount_ = 0; gifHasLoopExtension_ = false;
+        gifPlaying_ = gifPaused_ = false;
+    }
+
+    void FinishGifPlayback() {
+        KillTimer(window_, kGifPlaybackTimer);
+        gifDecoder_.Reset();
+        gifPreviousCanvas_.reset();
+        gifPlaying_ = gifPaused_ = false;
+        if (lanczosSelected_) QueueLanczosRefinement();
+    }
+
+    void ApplyGifPreviousDisposal() {
+        if (!gifCanvas_) return;
+        if (gifPreviousDisposal_ == 3 && gifPreviousCanvas_) {
+            *gifCanvas_ = *gifPreviousCanvas_;
+        } else if (gifPreviousDisposal_ == 2) {
+            const UINT right = std::min(gifCanvasWidth_, gifPreviousLeft_ + gifPreviousWidth_);
+            const UINT bottom = std::min(gifCanvasHeight_, gifPreviousTop_ + gifPreviousHeight_);
+            for (UINT y = std::min(gifPreviousTop_, gifCanvasHeight_); y < bottom; ++y) {
+                BYTE* row = gifCanvas_->data() + (static_cast<size_t>(y) * gifCanvasWidth_ + gifPreviousLeft_) * 4;
+                std::memset(row, 0, static_cast<size_t>(right - gifPreviousLeft_) * 4);
+            }
+        }
+        gifPreviousCanvas_.reset();
+    }
+
+    HRESULT PresentGifFrame(bool initial, bool resetNavigation = false) {
+        if (!gifDecoder_ || !gifCanvas_ || gifFrameIndex_ >= gifFrameCount_) return E_FAIL;
+        ApplyGifPreviousDisposal();
+        ComPtr<IWICBitmapFrameDecode> frame;
+        HRESULT hr = gifDecoder_->GetFrame(gifFrameIndex_, &frame);
+        ComPtr<IWICMetadataQueryReader> metadata;
+        if (SUCCEEDED(hr)) frame->GetMetadataQueryReader(&metadata);
+        const UINT left = GifMetadataUInt(metadata.Get(), L"/imgdesc/Left");
+        const UINT top = GifMetadataUInt(metadata.Get(), L"/imgdesc/Top");
+        UINT frameWidth = GifMetadataUInt(metadata.Get(), L"/imgdesc/Width");
+        UINT frameHeight = GifMetadataUInt(metadata.Get(), L"/imgdesc/Height");
+        const UINT disposal = GifMetadataUInt(metadata.Get(), L"/grctlext/Disposal");
+        const UINT delayCentiseconds = GifMetadataUInt(metadata.Get(), L"/grctlext/Delay");
+        if (SUCCEEDED(hr) && (!frameWidth || !frameHeight)) hr = frame->GetSize(&frameWidth, &frameHeight);
+        ComPtr<IWICFormatConverter> converter;
+        if (SUCCEEDED(hr)) hr = wicFactory_->CreateFormatConverter(&converter);
+        if (SUCCEEDED(hr)) hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+        UINT decodedWidth = 0, decodedHeight = 0;
+        if (SUCCEEDED(hr)) hr = converter->GetSize(&decodedWidth, &decodedHeight);
+        if (FAILED(hr)) return hr;
+
+        // Keep at most the logical canvas, one previous-disposal canvas, and this frame.
+        const UINT copyWidth = std::min({ frameWidth, decodedWidth, gifCanvasWidth_ > left ? gifCanvasWidth_ - left : 0u });
+        const UINT copyHeight = std::min({ frameHeight, decodedHeight, gifCanvasHeight_ > top ? gifCanvasHeight_ - top : 0u });
+        if (!copyWidth || !copyHeight) return E_FAIL;
+        if (decodedWidth > UINT_MAX / 4 || decodedHeight > UINT_MAX / (decodedWidth * 4)) return E_OUTOFMEMORY;
+        const size_t frameBytes = static_cast<size_t>(decodedWidth) * decodedHeight * 4;
+        std::vector<BYTE> pixels(frameBytes);
+        hr = converter->CopyPixels(nullptr, decodedWidth * 4, static_cast<UINT>(frameBytes), pixels.data());
+        if (FAILED(hr)) return hr;
+        if (disposal == 3) gifPreviousCanvas_ = std::make_shared<std::vector<BYTE>>(*gifCanvas_);
+        for (UINT y = 0; y < copyHeight; ++y) for (UINT x = 0; x < copyWidth; ++x) {
+            const BYTE* src = pixels.data() + (static_cast<size_t>(y) * decodedWidth + x) * 4;
+            BYTE* dst = gifCanvas_->data() + (static_cast<size_t>(top + y) * gifCanvasWidth_ + left + x) * 4;
+            const unsigned alpha = src[3];
+            const unsigned inverse = 255 - alpha;
+            dst[0] = static_cast<BYTE>(src[0] + (dst[0] * inverse + 127) / 255);
+            dst[1] = static_cast<BYTE>(src[1] + (dst[1] * inverse + 127) / 255);
+            dst[2] = static_cast<BYTE>(src[2] + (dst[2] * inverse + 127) / 255);
+            dst[3] = static_cast<BYTE>(alpha + (dst[3] * inverse + 127) / 255);
+        }
+        gifPreviousDisposal_ = disposal;
+        gifPreviousLeft_ = left; gifPreviousTop_ = top; gifPreviousWidth_ = copyWidth; gifPreviousHeight_ = copyHeight;
+        // Clamp zero/near-zero authored delays to 20 ms, matching common viewer behavior without a busy timer.
+        gifFrameDelayMs_ = std::max(20u, delayCentiseconds * 10u);
+
+        ComPtr<IWICBitmap> bitmap;
+        hr = wicFactory_->CreateBitmapFromMemory(gifCanvasWidth_, gifCanvasHeight_, GUID_WICPixelFormat32bppPBGRA,
+            gifCanvasWidth_ * 4, static_cast<UINT>(gifCanvas_->size()), gifCanvas_->data(), &bitmap);
+        if (FAILED(hr)) return hr;
+        if (initial) {
+            committingGifFrame_ = true;
+            CommitImage(currentPath_, bitmap, gifCanvasWidth_, gifCanvasHeight_, resetNavigation);
+            committingGifFrame_ = false;
+        } else {
+            InvalidateLanczosVariant(false);
+            source_ = bitmap; bitmap_.Reset(); imageWidth_ = gifCanvasWidth_; imageHeight_ = gifCanvasHeight_;
+        }
+        displayedPixels_ = gifCanvas_;
+        InvalidateRect(window_, nullptr, FALSE);
+        return S_OK;
+    }
+
+    HRESULT LoadAnimatedGif(const std::wstring& path, bool resetNavigation) {
+        ComPtr<IWICBitmapDecoder> decoder;
+        HRESULT hr = wicFactory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+        UINT frameCount = 0;
+        if (SUCCEEDED(hr)) hr = decoder->GetFrameCount(&frameCount);
+        if (FAILED(hr) || frameCount <= 1) return FAILED(hr) ? hr : S_FALSE;
+        ComPtr<IWICMetadataQueryReader> metadata;
+        if (SUCCEEDED(decoder->GetMetadataQueryReader(&metadata))) {
+            gifCanvasWidth_ = GifMetadataUInt(metadata.Get(), L"/logscrdesc/Width");
+            gifCanvasHeight_ = GifMetadataUInt(metadata.Get(), L"/logscrdesc/Height");
+        }
+        ComPtr<IWICBitmapFrameDecode> first;
+        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &first);
+        if (SUCCEEDED(hr) && (!gifCanvasWidth_ || !gifCanvasHeight_)) hr = first->GetSize(&gifCanvasWidth_, &gifCanvasHeight_);
+        const size_t bytes = static_cast<size_t>(gifCanvasWidth_) * gifCanvasHeight_ * 4;
+        if (FAILED(hr) || !gifCanvasWidth_ || !gifCanvasHeight_ || bytes > UINT_MAX) return FAILED(hr) ? hr : E_OUTOFMEMORY;
+        gifDecoder_ = decoder; gifFrameCount_ = frameCount; gifFrameIndex_ = 0; gifCompletedLoops_ = 0;
+        gifHasLoopExtension_ = ReadGifLoopCount(path, gifLoopCount_);
+        gifCanvas_ = std::make_shared<std::vector<BYTE>>(bytes, BYTE{ 0 }); gifPreviousCanvas_.reset();
+        gifPreviousDisposal_ = gifPreviousLeft_ = gifPreviousTop_ = gifPreviousWidth_ = gifPreviousHeight_ = 0;
+        gifPlaying_ = true; gifPaused_ = !gifVisible_;
+        currentPath_ = path;
+        hr = PresentGifFrame(true, resetNavigation);
+        if (FAILED(hr)) { StopGifPlayback(); return hr; }
+        if (!gifPaused_) SetTimer(window_, kGifPlaybackTimer, gifFrameDelayMs_, nullptr);
+        return S_OK;
+    }
+
+    void GifPlaybackTimer() {
+        if (!gifPlaying_ || gifPaused_) return;
+        ++gifFrameIndex_;
+        if (gifFrameIndex_ == gifFrameCount_) {
+            ++gifCompletedLoops_;
+            // NETSCAPE's count is the number of repetitions after the first pass; zero means forever.
+            if (gifHasLoopExtension_ && gifLoopCount_ != 0 && gifCompletedLoops_ > gifLoopCount_) { FinishGifPlayback(); return; }
+            gifFrameIndex_ = 0;
+        }
+        if (FAILED(PresentGifFrame(false))) { StopGifPlayback(); return; }
+        SetTimer(window_, kGifPlaybackTimer, gifFrameDelayMs_, nullptr);
+    }
+
+    void SetGifPlaybackVisible(bool visible) {
+        gifVisible_ = visible;
+        if (!gifPlaying_) return;
+        if (!visible) { gifPaused_ = true; KillTimer(window_, kGifPlaybackTimer); }
+        else if (gifPaused_) { gifPaused_ = false; SetTimer(window_, kGifPlaybackTimer, gifFrameDelayMs_, nullptr); }
     }
 
     HRESULT DecodeImage(const std::wstring& path, ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height) {
@@ -3123,11 +3334,11 @@ private:
     }
 
     void QueueLanczosRefinement(UINT delayMs = 120) {
-        if (lanczosSelected_ && source_) SetTimer(window_, kLanczosSettleTimer, delayMs, nullptr);
+        if (lanczosSelected_ && source_ && !gifPlaying_) SetTimer(window_, kLanczosSettleTimer, delayMs, nullptr);
     }
 
     bool BuildLanczosRequest(LanczosRequest& request) {
-        if (!source_ || !lanczosSelected_) return false;
+        if (!source_ || !lanczosSelected_ || gifPlaying_) return false;
         const float dpiScale = RenderTargetDpi() / 96.0f;
         const float physicalScale = PhysicalPixelScale();
         const D2D1_SIZE_F canvas = ImageCanvasSize();
@@ -3274,6 +3485,13 @@ private:
 
     void SelectNavigationTarget(const std::wstring& path, int direction = 0, bool immediatePaint = true) {
         if (path.empty()) return;
+        if (IsGifPath(path)) {
+            LoadImage(path);
+            if (direction != 0) filmstripNavigationDirection_ = direction > 0 ? 1 : -1;
+            RevealFilmstripForNavigation(false);
+            PresentNavigationUpdate(immediatePaint);
+            return;
+        }
         currentPath_ = path;
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         filenameText_ = fs::path(path).filename().wstring();
@@ -3369,6 +3587,7 @@ private:
 
     void CommitImage(const std::wstring& path, const ComPtr<IWICBitmapSource>& source, UINT width, UINT height,
         bool resetNavigation) {
+        if (!committingGifFrame_) StopGifPlayback();
         InvalidateLanczosVariant(false);
         displayedPixels_.reset();
         source_ = source;
@@ -3387,7 +3606,7 @@ private:
         pan_ = D2D1::Point2F();
         EndPan();
         StartDirectoryWatcher(fs::path(path).parent_path());
-        if (lanczosSelected_) QueueLanczosRefinement();
+        if (lanczosSelected_ && !gifPlaying_) QueueLanczosRefinement();
         if (resetNavigation) {
             navigationFiles_.clear();
             thumbnailCache_.clear();
@@ -3548,7 +3767,7 @@ private:
         const D2D1_RECT_F destination = D2D1::RectF(topLeft.x, topLeft.y,
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
         DrawCheckerboard(destination);
-        if (lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
+        if (!gifPlaying_ && lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
             renderTarget_->DrawBitmap(lanczosBitmap_.Get(), lanczosDestination_, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         else renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
@@ -4816,7 +5035,10 @@ private:
     ComPtr<ID2D1Factory> d2dFactory_;
     ComPtr<IDWriteFactory> dwriteFactory_;
     ComPtr<IWICBitmapSource> source_;
+    ComPtr<IWICBitmapDecoder> gifDecoder_;
     std::shared_ptr<std::vector<BYTE>> displayedPixels_;
+    std::shared_ptr<std::vector<BYTE>> gifCanvas_;
+    std::shared_ptr<std::vector<BYTE>> gifPreviousCanvas_;
     std::shared_ptr<std::vector<BYTE>> lanczosPixels_;
     ComPtr<ID2D1HwndRenderTarget> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
@@ -4833,6 +5055,15 @@ private:
     UINT zoomHudDpi_ = 0;
     UINT imageWidth_ = 0;
     UINT imageHeight_ = 0;
+    UINT gifCanvasWidth_ = 0;
+    UINT gifCanvasHeight_ = 0;
+    UINT gifFrameCount_ = 0;
+    UINT gifFrameIndex_ = 0;
+    UINT gifCompletedLoops_ = 0;
+    UINT gifLoopCount_ = 0;
+    UINT gifFrameDelayMs_ = 100;
+    UINT gifPreviousDisposal_ = 0;
+    UINT gifPreviousLeft_ = 0, gifPreviousTop_ = 0, gifPreviousWidth_ = 0, gifPreviousHeight_ = 0;
     UINT lanczosWidth_ = 0;
     UINT lanczosHeight_ = 0;
     D2D1_RECT_F lanczosDestination_{};
@@ -4854,6 +5085,11 @@ private:
     POINT lastDragPoint_{};
     float zoom_ = 1.0f;
     bool fitToWindow_ = true;
+    bool gifPlaying_ = false;
+    bool gifPaused_ = false;
+    bool gifVisible_ = true;
+    bool gifHasLoopExtension_ = false;
+    bool committingGifFrame_ = false;
     bool dragging_ = false;
     bool presented_ = false;
     bool navigationBuilt_ = false;
@@ -5019,6 +5255,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_PAINT: viewer->Paint(); return 0;
     case WM_SIZE:
         viewer->Resize();
+        viewer->GifPlaybackVisibilityChanged(wParam != SIZE_MINIMIZED);
         ApplyWindowCornerPreference(window, !viewer->IsFullscreen() && !IsZoomed(window));
         return 0;
     case WM_DPICHANGED: {
@@ -5285,6 +5522,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_TIMER:
+        if (wParam == kGifPlaybackTimer) { viewer->GifPlaybackTimerMessage(); return 0; }
         if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; }
         if (wParam == kCanvasNavigationFadeTimer) { viewer->UpdateCanvasNavigationFade(); return 0; }
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }
@@ -5300,6 +5538,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->RefreshNavigationFromFileSystem();
             viewer->ResumePendingTour();
         }
+        break;
+    case WM_SHOWWINDOW:
+        viewer->GifPlaybackVisibilityChanged(wParam != FALSE && !IsIconic(window));
         break;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;

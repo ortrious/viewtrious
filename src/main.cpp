@@ -50,6 +50,7 @@ constexpr UINT kFullDecodeCompleteMessage = WM_APP + 4;
 constexpr UINT kThumbnailDecodeCompleteMessage = WM_APP + 5;
 constexpr UINT kDecodeWorkerFinishedMessage = WM_APP + 6;
 constexpr UINT kLanczosCompleteMessage = WM_APP + 7;
+constexpr UINT kShellRotationDialogCandidateMessage = WM_APP + 8;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
 constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
@@ -58,6 +59,7 @@ constexpr UINT_PTR kNavigationDecodeDebounceTimer = 5;
 constexpr UINT_PTR kShellRotationCheckTimer = 6;
 constexpr UINT_PTR kLanczosSettleTimer = 7;
 constexpr UINT_PTR kShellRotationDialogGraceTimer = 8;
+constexpr UINT_PTR kShellRotationDialogValidateTimer = 9;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr int kLogoResourceId = 102;
@@ -1915,6 +1917,8 @@ public:
     void LanczosRefinementTimer() { RequestLanczosVariant(); }
     void ShellRotationTimer() { UpdateShellRotation(); }
     void ShellRotationDialogGraceTimer() { DisarmShellRotationDialogSuppression(); }
+    void ShellRotationDialogCandidate(HWND dialog) { QueueShellRotationDialogValidation(dialog); }
+    void ShellRotationDialogValidateTimer() { ValidateShellRotationDialogCandidate(); }
     void FullDecodeCompleteMessage(FullDecodeResult* result) { HandleFullDecodeResult(result); }
     void LanczosCompleteMessage(LanczosResult* result) { HandleLanczosResult(result); }
     void DecodeWorkerFinishedMessage(DecodeWorkerFinished* finished) { HandleDecodeWorkerFinished(finished); }
@@ -2506,8 +2510,10 @@ private:
     }
 
     static Viewer*& ShellRotationDialogOwner() { static Viewer* owner = nullptr; return owner; }
-    static void CALLBACK ShellRotationDialogEvent(HWINEVENTHOOK, DWORD, HWND dialog, LONG objectId, LONG childId, DWORD, DWORD) {
-        if (objectId == OBJID_WINDOW && childId == 0 && ShellRotationDialogOwner()) ShellRotationDialogOwner()->SuppressKnownShellRotationDialog(dialog);
+    static void CALLBACK ShellRotationDialogEvent(HWINEVENTHOOK, DWORD, HWND dialog, LONG objectId, LONG, DWORD, DWORD) {
+        if (objectId != OBJID_WINDOW || !dialog || !ShellRotationDialogOwner()) return;
+        const HWND root = GetAncestor(dialog, GA_ROOT);
+        if (root) PostMessageW(ShellRotationDialogOwner()->window_, kShellRotationDialogCandidateMessage, 0, reinterpret_cast<LPARAM>(root));
     }
     static BOOL CALLBACK DialogTextMatches(HWND child, LPARAM context) {
         auto* matched = reinterpret_cast<bool*>(context);
@@ -2515,27 +2521,41 @@ private:
         if (wcsstr(text, L"You cannot rotate this image. The file might be in use or open in another program, or the file or folder might be read-only.")) *matched = true;
         return *matched ? FALSE : TRUE;
     }
-    void SuppressKnownShellRotationDialog(HWND dialog) {
-        if (!shellRotationDialogHook_ || (!shellRotationPending_ && GetTickCount64() > shellRotationDialogGraceUntil_)) return;
+    bool IsKnownShellRotationDialog(HWND dialog) {
         DWORD processId = 0; GetWindowThreadProcessId(dialog, &processId);
         wchar_t className[16]{}, title[32]{}; GetClassNameW(dialog, className, ARRAYSIZE(className)); GetWindowTextW(dialog, title, ARRAYSIZE(title));
         bool textMatched = false; EnumChildWindows(dialog, DialogTextMatches, reinterpret_cast<LPARAM>(&textMatched));
-        if (processId == GetCurrentProcessId() && wcscmp(className, L"#32770") == 0 && wcscmp(title, L"Rotation") == 0 && textMatched) {
-            AppendHeicDiagnostic(L"Bogus Shell Rotation dialog matched and suppressed.");
-            PostMessageW(dialog, WM_CLOSE, 0, 0);
-        }
+        return processId == GetCurrentProcessId() && wcscmp(className, L"#32770") == 0 && wcscmp(title, L"Rotation") == 0 && textMatched;
+    }
+    void QueueShellRotationDialogValidation(HWND dialog) {
+        if (!shellRotationDialogHook_ || (!shellRotationPending_ && GetTickCount64() > shellRotationDialogGraceUntil_)) return;
+        DWORD processId = 0; GetWindowThreadProcessId(dialog, &processId);
+        wchar_t className[16]{}, title[32]{}; GetClassNameW(dialog, className, ARRAYSIZE(className)); GetWindowTextW(dialog, title, ARRAYSIZE(title));
+        if (processId != GetCurrentProcessId() || wcscmp(className, L"#32770") != 0 || wcscmp(title, L"Rotation") != 0) return;
+        shellRotationDialogCandidate_ = dialog; shellRotationDialogValidationAttempts_ = 0;
+        AppendHeicDiagnostic(L"Rotation dialog candidate accepted; deferred validation scheduled.");
+        SetTimer(window_, kShellRotationDialogValidateTimer, 30, nullptr);
+    }
+    void ValidateShellRotationDialogCandidate() {
+        if (!shellRotationDialogCandidate_) return;
+        ++shellRotationDialogValidationAttempts_;
+        const bool matched = IsWindow(shellRotationDialogCandidate_) && IsKnownShellRotationDialog(shellRotationDialogCandidate_);
+        AppendHeicDiagnostic(L"Rotation dialog validation attempt " + std::to_wstring(shellRotationDialogValidationAttempts_) + L": exact text match " + (matched ? L"yes" : L"no"));
+        if (matched) { PostMessageW(shellRotationDialogCandidate_, WM_CLOSE, 0, 0); AppendHeicDiagnostic(L"Bogus Shell Rotation dialog dismissal posted."); shellRotationDialogCandidate_ = nullptr; KillTimer(window_, kShellRotationDialogValidateTimer); return; }
+        if (shellRotationDialogValidationAttempts_ >= 5) { shellRotationDialogCandidate_ = nullptr; KillTimer(window_, kShellRotationDialogValidateTimer); }
     }
     void ArmShellRotationDialogSuppression() {
         if (shellRotationDialogHook_) return;
         ShellRotationDialogOwner() = this;
-        shellRotationDialogHook_ = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, ShellRotationDialogEvent,
+        shellRotationDialogHook_ = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_NAMECHANGE, nullptr, ShellRotationDialogEvent,
             GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
         AppendHeicDiagnostic(shellRotationDialogHook_ ? L"Shell Rotation dialog suppression armed." : L"Shell Rotation dialog suppression hook failed.");
     }
     void DisarmShellRotationDialogSuppression() {
         KillTimer(window_, kShellRotationDialogGraceTimer);
+        KillTimer(window_, kShellRotationDialogValidateTimer);
         if (shellRotationDialogHook_) UnhookWinEvent(shellRotationDialogHook_);
-        shellRotationDialogHook_ = nullptr; ShellRotationDialogOwner() = nullptr; shellRotationDialogGraceUntil_ = 0;
+        shellRotationDialogHook_ = nullptr; ShellRotationDialogOwner() = nullptr; shellRotationDialogGraceUntil_ = 0; shellRotationDialogCandidate_ = nullptr;
     }
 
     void BeginShellRotationRefresh() {
@@ -4925,6 +4945,8 @@ private:
     ULONGLONG shellRotationStarted_ = 0;
     HWINEVENTHOOK shellRotationDialogHook_ = nullptr;
     ULONGLONG shellRotationDialogGraceUntil_ = 0;
+    HWND shellRotationDialogCandidate_ = nullptr;
+    UINT shellRotationDialogValidationAttempts_ = 0;
     ULONGLONG lastHeicRotationRequest_ = 0;
     std::wstring heicRotationDiagnostics_;
     std::wstring latestHeicRotationDiagnostics_;
@@ -5270,6 +5292,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kNavigationDecodeDebounceTimer) { viewer->NavigationDecodeTimer(); return 0; }
         if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
         if (wParam == kShellRotationDialogGraceTimer) { viewer->ShellRotationDialogGraceTimer(); return 0; }
+        if (wParam == kShellRotationDialogValidateTimer) { viewer->ShellRotationDialogValidateTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
         break;
     case WM_ACTIVATE:
@@ -5284,6 +5307,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kDirectoryChangedMessage: viewer->QueueDirectoryRefreshFromWatcher(); return 0;
     case kFullDecodeCompleteMessage: viewer->FullDecodeCompleteMessage(reinterpret_cast<FullDecodeResult*>(lParam)); return 0;
     case kLanczosCompleteMessage: viewer->LanczosCompleteMessage(reinterpret_cast<LanczosResult*>(lParam)); return 0;
+    case kShellRotationDialogCandidateMessage: viewer->ShellRotationDialogCandidate(reinterpret_cast<HWND>(lParam)); return 0;
     case kDecodeWorkerFinishedMessage: viewer->DecodeWorkerFinishedMessage(reinterpret_cast<DecodeWorkerFinished*>(lParam)); return 0;
     case kThumbnailDecodeCompleteMessage: viewer->ThumbnailDecodeCompleteMessage(reinterpret_cast<ThumbnailDecodeResult*>(lParam)); return 0;
     case WM_KEYDOWN:

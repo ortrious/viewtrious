@@ -504,7 +504,7 @@ public:
         return S_OK;
     }
 
-    HRESULT LoadImage(const std::wstring& path) {
+    HRESULT LoadImage(const std::wstring& path, bool resetNavigation = true) {
         StopGifPlayback();
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationPending_ = false;
@@ -514,7 +514,7 @@ public:
         imageDecodePending_ = false;
         KillTimer(window_, kNavigationDecodeDebounceTimer);
         if (IsGifPath(path)) {
-            const HRESULT gifResult = LoadAnimatedGif(path, true);
+            const HRESULT gifResult = LoadAnimatedGif(path, resetNavigation);
             if (SUCCEEDED(gifResult)) return S_OK;
         }
         ComPtr<IWICBitmapSource> source;
@@ -522,7 +522,7 @@ public:
         UINT height = 0;
         const HRESULT hr = DecodeImage(path, source, width, height);
         if (SUCCEEDED(hr)) {
-            CommitImage(path, source, width, height, true);
+            CommitImage(path, source, width, height, resetNavigation);
         } else {
             StopDirectoryWatcher();
             source_.Reset();
@@ -546,7 +546,7 @@ public:
         return hr;
     }
 
-    void SetWindow(HWND window) { window_ = window; }
+    void SetWindow(HWND window) { window_ = window; ActivateGifPlayback(); }
     void ShowWelcomeIfNeeded() {
         if (tourPending_) { StartPendingTour(); return; }
         if (!onboardingRequired_) return;
@@ -3071,7 +3071,7 @@ private:
     }
 
     HRESULT ReloadCurrentImage() {
-        if (IsGifPath(currentPath_)) return LoadImage(currentPath_);
+        if (IsGifPath(currentPath_)) return LoadImage(currentPath_, false);
         ComPtr<IWICBitmapSource> source;
         UINT width = 0, height = 0;
         const HRESULT hr = DecodeImage(currentPath_, source, width, height);
@@ -3122,15 +3122,20 @@ private:
         gifFrameIndex_ = gifFrameCount_ = 0;
         gifCompletedLoops_ = 0;
         gifLoopCount_ = 0; gifHasLoopExtension_ = false;
-        gifPlaying_ = gifPaused_ = false;
+        gifPlaying_ = gifPaused_ = gifPlaybackTimerActive_ = false;
     }
 
     void FinishGifPlayback() {
         KillTimer(window_, kGifPlaybackTimer);
         gifDecoder_.Reset();
         gifPreviousCanvas_.reset();
-        gifPlaying_ = gifPaused_ = false;
+        gifPlaying_ = gifPaused_ = gifPlaybackTimerActive_ = false;
         if (lanczosSelected_) QueueLanczosRefinement();
+    }
+
+    void ActivateGifPlayback() {
+        if (!window_ || !gifPlaying_ || gifPaused_ || gifPlaybackTimerActive_) return;
+        if (SetTimer(window_, kGifPlaybackTimer, gifFrameDelayMs_, nullptr)) gifPlaybackTimerActive_ = true;
     }
 
     void ApplyGifPreviousDisposal() {
@@ -3209,6 +3214,7 @@ private:
         }
         displayedPixels_ = gifCanvas_;
         InvalidateRect(window_, nullptr, FALSE);
+        if (initial) ActivateGifPlayback();
         return S_OK;
     }
 
@@ -3236,7 +3242,6 @@ private:
         currentPath_ = path;
         hr = PresentGifFrame(true, resetNavigation);
         if (FAILED(hr)) { StopGifPlayback(); return hr; }
-        if (!gifPaused_) SetTimer(window_, kGifPlaybackTimer, gifFrameDelayMs_, nullptr);
         return S_OK;
     }
 
@@ -3250,14 +3255,15 @@ private:
             gifFrameIndex_ = 0;
         }
         if (FAILED(PresentGifFrame(false))) { StopGifPlayback(); return; }
-        SetTimer(window_, kGifPlaybackTimer, gifFrameDelayMs_, nullptr);
+        gifPlaybackTimerActive_ = false;
+        ActivateGifPlayback();
     }
 
     void SetGifPlaybackVisible(bool visible) {
         gifVisible_ = visible;
         if (!gifPlaying_) return;
-        if (!visible) { gifPaused_ = true; KillTimer(window_, kGifPlaybackTimer); }
-        else if (gifPaused_) { gifPaused_ = false; SetTimer(window_, kGifPlaybackTimer, gifFrameDelayMs_, nullptr); }
+        if (!visible) { gifPaused_ = true; gifPlaybackTimerActive_ = false; KillTimer(window_, kGifPlaybackTimer); }
+        else if (gifPaused_) { gifPaused_ = false; ActivateGifPlayback(); }
     }
 
     HRESULT DecodeImage(const std::wstring& path, ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height) {
@@ -3486,7 +3492,7 @@ private:
     void SelectNavigationTarget(const std::wstring& path, int direction = 0, bool immediatePaint = true) {
         if (path.empty()) return;
         if (IsGifPath(path)) {
-            LoadImage(path);
+            LoadImage(path, false);
             if (direction != 0) filmstripNavigationDirection_ = direction > 0 ? 1 : -1;
             RevealFilmstripForNavigation(false);
             PresentNavigationUpdate(immediatePaint);
@@ -5087,6 +5093,7 @@ private:
     bool fitToWindow_ = true;
     bool gifPlaying_ = false;
     bool gifPaused_ = false;
+    bool gifPlaybackTimerActive_ = false;
     bool gifVisible_ = true;
     bool gifHasLoopExtension_ = false;
     bool committingGifFrame_ = false;

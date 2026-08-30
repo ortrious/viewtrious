@@ -20,12 +20,15 @@ public:
     void Resize(GraphicsHost& host, const RECT& bounds);
     void Render(GraphicsHost& host, const RECT& bounds);
     void Fit();
+    bool BeginAnimatedHome();
+    bool AdvanceAnimatedHome(float progress);
+    void CancelAnimatedHome() { homeAnimationActive_ = false; }
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);
     bool SetNavLibCameraState(const OrbitCamera::State& state);
-    bool SetNavLibCameraTarget(Float3 target) { if (!camera_.SetCameraTargetFromNavLib(target)) return false; NotifyCameraChanged(); return true; }
+    bool SetNavLibCameraTarget(Float3 target);
     OrbitCamera::State NavLibCameraState() const { return camera_.NavLibState(); }
     ModelBounds ModelBoundsForNavLib() const { return document_ ? document_->bounds : ModelBounds{}; }
-    bool SetNavLibPivot(Float3 pivot) { if (!camera_.SetPivotFromNavLib(pivot)) return false; NotifyCameraChanged(); return true; }
+    bool SetNavLibPivot(Float3 pivot);
     void SetNavLibFieldOfView(float radians) { camera_.SetFieldOfView(radians); NotifyCameraChanged(); }
     bool Active() const { return resources_ != nullptr; }
     void BeginOrbit(POINT point);
@@ -49,6 +52,9 @@ private:
 
     std::shared_ptr<ModelDocument> document_;
     OrbitCamera camera_;
+    OrbitCamera::AnimationState homeAnimationStart_{};
+    OrbitCamera::AnimationState homeAnimationTarget_{};
+    bool homeAnimationActive_ = false;
     CameraChanged cameraChanged_ = nullptr;
     void* cameraContext_ = nullptr;
     POINT dragStart_{};

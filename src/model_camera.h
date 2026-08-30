@@ -5,6 +5,17 @@
 class OrbitCamera {
 public:
     struct State { Float3 position; Float3 forward; Float3 up; };
+    struct AnimationState {
+        Float3 pivot;
+        Float3 forward;
+        Float3 up;
+        float framingRight;
+        float framingUp;
+        float distance;
+        float radius;
+        float aspect;
+        float fieldOfView;
+    };
     void Fit(const ModelBounds& bounds, float aspectRatio);
     void SetAspectRatio(float aspectRatio);
     void Orbit(float deltaX, float deltaY);
@@ -15,6 +26,8 @@ public:
     bool SetFromNavLibState(const State& state);
     bool SetCameraTargetFromNavLib(Float3 target);
     bool SetPivotFromNavLib(Float3 pivot);
+    AnimationState CaptureAnimationState();
+    void ApplyInterpolatedAnimationState(const AnimationState& start, const AnimationState& target, float progress);
     State NavLibState() const;
     void SetPivot(Float3 pivot);
     void SetFieldOfView(float radians);

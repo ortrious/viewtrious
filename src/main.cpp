@@ -63,6 +63,7 @@ constexpr UINT_PTR kShellRotationCheckTimer = 6;
 constexpr UINT_PTR kLanczosSettleTimer = 7;
 constexpr UINT_PTR kHeifRotationMenuRefreshTimer = 8;
 constexpr UINT_PTR kGifPlaybackTimer = 10;
+constexpr UINT_PTR kModelHomeAnimationTimer = 11;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
@@ -72,6 +73,7 @@ constexpr int kContextMenuSeparatorCount = 4;
 constexpr int kContextMenuPaddingDip = 8;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kWheelZoomStep = 1.11f;
+constexpr ULONGLONG kModelHomeAnimationDurationMs = 240;
 constexpr float kSettingsMajorSectionGapDips = 40.0f;
 constexpr wchar_t kSettingsKey[] = L"Software\\Viewtrious";
 constexpr wchar_t kRegisteredApplicationName[] = L"Viewtrious";
@@ -780,12 +782,21 @@ public:
     }
     bool HasImage() const { return source_ != nullptr; }
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
-    void FitModel() { if (ModelActive()) { modelViewport_.Fit(); InvalidateRect(window_, nullptr, FALSE); } }
-    void BeginModelOrbit(POINT point) { if (ModelActive()) modelViewport_.BeginOrbit(point); }
-    void BeginModelPan(POINT point) { if (ModelActive()) modelViewport_.BeginPan(point); }
-    void ContinueModelDrag(POINT point) { if (!ModelActive()) return; const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); InvalidateRect(window_, nullptr, FALSE); }
+    void CancelAnimatedModelHome() { KillTimer(window_, kModelHomeAnimationTimer); modelViewport_.CancelAnimatedHome(); }
+    void FitModel() { if (ModelActive()) { CancelAnimatedModelHome(); modelViewport_.Fit(); InvalidateRect(window_, nullptr, FALSE); } }
+    void BeginAnimatedModelHome() { if (!ModelActive() || !modelViewport_.BeginAnimatedHome()) return; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
+    void UpdateAnimatedModelHome() {
+        if (!ModelActive()) { CancelAnimatedModelHome(); return; }
+        const float progress = std::clamp(static_cast<float>(GetTickCount64() - modelHomeAnimationStartMs_) / static_cast<float>(kModelHomeAnimationDurationMs), 0.0f, 1.0f);
+        const float eased = progress * progress * (3.0f - 2.0f * progress);
+        if (!modelViewport_.AdvanceAnimatedHome(eased)) KillTimer(window_, kModelHomeAnimationTimer);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void BeginModelOrbit(POINT point) { if (ModelActive()) { CancelAnimatedModelHome(); modelViewport_.BeginOrbit(point); } }
+    void BeginModelPan(POINT point) { if (ModelActive()) { CancelAnimatedModelHome(); modelViewport_.BeginPan(point); } }
+    void ContinueModelDrag(POINT point) { if (!ModelActive()) return; CancelAnimatedModelHome(); const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); InvalidateRect(window_, nullptr, FALSE); }
     void EndModelDrag() { modelViewport_.EndDrag(); }
-    void DollyModel(float steps) { if (ModelActive()) { modelViewport_.Dolly(steps); InvalidateRect(window_, nullptr, FALSE); } }
+    void DollyModel(float steps) { if (ModelActive()) { CancelAnimatedModelHome(); modelViewport_.Dolly(steps); InvalidateRect(window_, nullptr, FALSE); } }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
@@ -1892,6 +1903,7 @@ public:
     }
     void SetSpaceMouseMotion(bool motion) {
         spaceMouseMotionActive_ = motion;
+        if (motion) CancelAnimatedModelHome();
         TraceSpaceMouseDiagnostic(motion ? L"SpaceMouse motion begin" : L"SpaceMouse motion end");
         if (motion) InvalidateLanczosVariant(true);
         if (!motion && CanAcceptSpaceMouseInput() && lanczosSelected_) QueueLanczosRefinement();
@@ -1928,6 +1940,7 @@ public:
 
     void Shutdown() {
         shuttingDown_ = true;
+        KillTimer(window_, kModelHomeAnimationTimer);
         ++modelLoadGeneration_;
         if (modelLoadThread_.joinable()) modelLoadThread_.join();
         DeactivateModel();
@@ -2039,6 +2052,7 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DeactivateModel() {
+        CancelAnimatedModelHome();
         modelViewport_.Destroy(); modelDocument_.reset(); modelLoading_ = false;
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
@@ -4941,6 +4955,7 @@ private:
     bool spaceMouseEnabled_ = true;
     bool spaceMouseRuntimeAvailable_ = false;
     bool spaceMouseMotionActive_ = false;
+    ULONGLONG modelHomeAnimationStartMs_ = 0;
     std::wstring startupPath_;
 #if defined(_DEBUG)
     LONGLONG lastModelNavLibTraceQpc_ = 0;
@@ -5216,6 +5231,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         break;
+    case WM_MBUTTONDBLCLK:
+        if (!viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen() && viewer->ModelActive()) {
+            viewer->BeginAnimatedModelHome();
+            return 0;
+        }
+        break;
     case WM_MOUSEMOVE: {
         if (viewer->TutorialActive()) {
             viewer->SetButtonHover(viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }));
@@ -5345,6 +5366,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
         if (wParam == kHeifRotationMenuRefreshTimer) { viewer->HeifRotationMenuRefreshTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
+        if (wParam == kModelHomeAnimationTimer) { viewer->UpdateAnimatedModelHome(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {
@@ -5414,6 +5436,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     viewer.Initialize(path);
 
     WNDCLASSEXW windowClass{ sizeof(windowClass) };
+    windowClass.style = CS_DBLCLKS;
     windowClass.hInstance = instance;
     windowClass.lpszClassName = kWindowClass;
     windowClass.lpfnWndProc = WindowProc;

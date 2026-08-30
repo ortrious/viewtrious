@@ -16,6 +16,46 @@ Float3 RotateAroundAxis(Float3 value, Float3 axis, float radians) {
     const float c = std::cos(radians), s = std::sin(radians);
     return Add(Add(Mul(value, c), Mul(Cross(axis, value), s)), Mul(axis, Dot(axis, value) * (1.0f - c)));
 }
+float Lerp(float start, float target, float progress) { return start + (target - start) * progress; }
+Float3 Lerp(Float3 start, Float3 target, float progress) { return Add(Mul(start, 1.0f - progress), Mul(target, progress)); }
+struct Quaternion { float x, y, z, w; };
+Quaternion Normalize(Quaternion value) {
+    const float length = std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z + value.w * value.w);
+    return length > 1e-12f ? Quaternion{ value.x / length, value.y / length, value.z / length, value.w / length } : Quaternion{ 0, 0, 0, 1 };
+}
+Quaternion OrientationQuaternion(Float3 forward, Float3 up) {
+    const Float3 right = Normalize(Cross(up, forward));
+    up = Normalize(Cross(forward, right));
+    const float m00 = right.x, m01 = up.x, m02 = -forward.x;
+    const float m10 = right.y, m11 = up.y, m12 = -forward.y;
+    const float m20 = right.z, m21 = up.z, m22 = -forward.z;
+    const float trace = m00 + m11 + m22;
+    Quaternion result{};
+    if (trace > 0.0f) { const float scale = std::sqrt(trace + 1.0f) * 2.0f; result = { (m21 - m12) / scale, (m02 - m20) / scale, (m10 - m01) / scale, 0.25f * scale }; }
+    else if (m00 > m11 && m00 > m22) { const float scale = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f; result = { 0.25f * scale, (m01 + m10) / scale, (m02 + m20) / scale, (m21 - m12) / scale }; }
+    else if (m11 > m22) { const float scale = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f; result = { (m01 + m10) / scale, 0.25f * scale, (m12 + m21) / scale, (m02 - m20) / scale }; }
+    else { const float scale = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f; result = { (m02 + m20) / scale, (m12 + m21) / scale, 0.25f * scale, (m10 - m01) / scale }; }
+    return Normalize(result);
+}
+Quaternion Slerp(Quaternion start, Quaternion target, float progress) {
+    float dot = start.x * target.x + start.y * target.y + start.z * target.z + start.w * target.w;
+    if (dot < 0.0f) { target = { -target.x, -target.y, -target.z, -target.w }; dot = -dot; }
+    if (dot > 0.9995f) return Normalize({ Lerp(start.x, target.x, progress), Lerp(start.y, target.y, progress), Lerp(start.z, target.z, progress), Lerp(start.w, target.w, progress) });
+    const float angle = std::acos(std::clamp(dot, -1.0f, 1.0f));
+    const float sinAngle = std::sin(angle);
+    return Normalize({ std::sin((1.0f - progress) * angle) / sinAngle * start.x + std::sin(progress * angle) / sinAngle * target.x,
+        std::sin((1.0f - progress) * angle) / sinAngle * start.y + std::sin(progress * angle) / sinAngle * target.y,
+        std::sin((1.0f - progress) * angle) / sinAngle * start.z + std::sin(progress * angle) / sinAngle * target.z,
+        std::sin((1.0f - progress) * angle) / sinAngle * start.w + std::sin(progress * angle) / sinAngle * target.w });
+}
+void QuaternionOrientation(Quaternion rotation, Float3& forward, Float3& up) {
+    rotation = Normalize(rotation);
+    const float xx = rotation.x * rotation.x, yy = rotation.y * rotation.y, zz = rotation.z * rotation.z;
+    const float xy = rotation.x * rotation.y, xz = rotation.x * rotation.z, yz = rotation.y * rotation.z;
+    const float xw = rotation.x * rotation.w, yw = rotation.y * rotation.w, zw = rotation.z * rotation.w;
+    up = Normalize(Float3{ 2.0f * (xy - zw), 1.0f - 2.0f * (xx + zz), 2.0f * (yz + xw) });
+    forward = Normalize(Float3{ -2.0f * (xz + yw), -2.0f * (yz - xw), -(1.0f - 2.0f * (xx + yy)) });
+}
 }
 
 void OrbitCamera::Fit(const ModelBounds& bounds, float aspectRatio) {
@@ -113,6 +153,25 @@ bool OrbitCamera::SetPivotFromNavLib(Float3 pivot) {
     SetLocalOrientation(Normalize(eyeToPivot), current.up);
     Update();
     return true;
+}
+OrbitCamera::AnimationState OrbitCamera::CaptureAnimationState() {
+    MaterializeNavLibState();
+    return { pivot_, forward_, up_, framingRight_, framingUp_, distance_, radius_, aspect_, fieldOfView_ };
+}
+void OrbitCamera::ApplyInterpolatedAnimationState(const AnimationState& start, const AnimationState& target, float progress) {
+    progress = std::clamp(progress, 0.0f, 1.0f);
+    Float3 forward{}, up{};
+    QuaternionOrientation(Slerp(OrientationQuaternion(start.forward, start.up), OrientationQuaternion(target.forward, target.up), progress), forward, up);
+    navLibStateActive_ = false;
+    pivot_ = Lerp(start.pivot, target.pivot, progress);
+    framingRight_ = Lerp(start.framingRight, target.framingRight, progress);
+    framingUp_ = Lerp(start.framingUp, target.framingUp, progress);
+    distance_ = Lerp(start.distance, target.distance, progress);
+    radius_ = Lerp(start.radius, target.radius, progress);
+    aspect_ = Lerp(start.aspect, target.aspect, progress);
+    fieldOfView_ = Lerp(start.fieldOfView, target.fieldOfView, progress);
+    SetLocalOrientation(forward, up);
+    Update();
 }
 Float3 OrbitCamera::Position() const {
     if (navLibStateActive_) return navLibState_.position;

@@ -44,6 +44,7 @@ void OrbitCamera::SetFieldOfView(float radians) { if (std::isfinite(radians)) { 
 bool OrbitCamera::SetFromNavLibState(const State& state) {
     if (!std::isfinite(state.position.x) || !std::isfinite(state.position.y) || !std::isfinite(state.position.z) ||
         !std::isfinite(state.forward.x) || !std::isfinite(state.forward.y) || !std::isfinite(state.forward.z) ||
+        !std::isfinite(state.up.x) || !std::isfinite(state.up.y) || !std::isfinite(state.up.z) ||
         std::sqrt(Dot(state.forward, state.forward)) <= 1e-8f || std::sqrt(Dot(state.up, state.up)) <= 1e-8f) return false;
     const Float3 forward = Normalize(state.forward);
     const Float3 offset = Mul(forward, -distance_);

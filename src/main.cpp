@@ -1871,6 +1871,8 @@ public:
         shuttingDown_ = true;
         if (modelUiPopup_) { DestroyWindow(modelUiPopup_); modelUiPopup_ = nullptr; }
         modelUiPopupTarget_.Reset();
+        if (modelRevisionPopup_) { DestroyWindow(modelRevisionPopup_); modelRevisionPopup_ = nullptr; }
+        modelRevisionPopupTarget_.Reset();
         ++modelLoadGeneration_;
         if (modelLoadThread_.joinable()) modelLoadThread_.join();
         DeactivateModel();
@@ -1990,14 +1992,20 @@ private:
             SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(viewer));
         }
         if (!viewer) return DefWindowProcW(window, message, wParam, lParam);
-        if (message == WM_NCHITTEST) return HTTRANSPARENT;
-        if (message == WM_PAINT) { viewer->PaintModelUiPopup(); return 0; }
+        if (message == WM_NCHITTEST) return window == viewer->modelRevisionPopup_ ? HTTRANSPARENT : HTCLIENT;
+        if (message == WM_PAINT) { viewer->PaintModelUiPopup(window); return 0; }
+        if (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_RBUTTONUP) {
+            POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ClientToScreen(window, &point); ScreenToClient(viewer->window_, &point);
+            return SendMessageW(viewer->window_, message, wParam, MAKELPARAM(point.x, point.y));
+        }
+        if (message == WM_MOUSEWHEEL) return SendMessageW(viewer->window_, message, wParam, lParam);
         return DefWindowProcW(window, message, wParam, lParam);
     }
     void SyncModelUiPopup() {
         const bool overlay = HasOverlay();
         const bool show = ModelActive() && (dropdownOpen_ || overlay);
-        if (!show) { if (modelUiPopup_) ShowWindow(modelUiPopup_, SW_HIDE); return; }
+        if (!show) { if (modelUiPopup_) ShowWindow(modelUiPopup_, SW_HIDE); SyncModelRevisionPopup(); return; }
         if (!modelUiPopup_) {
             static const ATOM atom = [] {
                 WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"ViewtriousModelUiPopup";
@@ -2015,27 +2023,45 @@ private:
         SetWindowPos(modelUiPopup_, HWND_TOP, origin.x, origin.y, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top),
             SWP_NOACTIVATE | SWP_SHOWWINDOW);
         InvalidateRect(modelUiPopup_, nullptr, FALSE);
+        SyncModelRevisionPopup();
     }
-    void PaintModelUiPopup() {
-        PAINTSTRUCT paint{}; BeginPaint(modelUiPopup_, &paint);
-        if (!modelUiPopupTarget_) {
-            const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties();
-            const D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProperties = D2D1::HwndRenderTargetProperties(modelUiPopup_);
-            d2dFactory_->CreateHwndRenderTarget(properties, hwndProperties, &modelUiPopupTarget_);
+    void SyncModelRevisionPopup() {
+        if (!ModelActive()) { if (modelRevisionPopup_) ShowWindow(modelRevisionPopup_, SW_HIDE); return; }
+        if (!modelRevisionPopup_) {
+            modelRevisionPopup_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, L"ViewtriousModelUiPopup", L"",
+                WS_POPUP, 0, 0, 1, 1, window_, nullptr, GetModuleHandleW(nullptr), this);
+            if (!modelRevisionPopup_) return;
         }
-        if (modelUiPopupTarget_) {
-            RECT client{}; GetClientRect(modelUiPopup_, &client);
-            modelUiPopupTarget_->Resize(D2D1::SizeU(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top)));
+        RECT client{}; GetClientRect(window_, &client);
+        const UINT dpi = GetDpiForWindow(window_);
+        const LONG width = MulDiv(106, dpi, 96), height = MulDiv(52, dpi, 96);
+        POINT origin{ 0, std::max(0L, client.bottom - height) }; ClientToScreen(window_, &origin);
+        SetLayeredWindowAttributes(modelRevisionPopup_, 0, 255, LWA_ALPHA);
+        SetWindowPos(modelRevisionPopup_, HWND_TOP, origin.x, origin.y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        InvalidateRect(modelRevisionPopup_, nullptr, FALSE);
+    }
+    void PaintModelUiPopup(HWND popup) {
+        PAINTSTRUCT paint{}; BeginPaint(popup, &paint);
+        ComPtr<ID2D1HwndRenderTarget>& target = popup == modelRevisionPopup_ ? modelRevisionPopupTarget_ : modelUiPopupTarget_;
+        if (!target) {
+            const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties();
+            const D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProperties = D2D1::HwndRenderTargetProperties(popup);
+            d2dFactory_->CreateHwndRenderTarget(properties, hwndProperties, &target);
+        }
+        if (target) {
+            RECT client{}; GetClientRect(popup, &client);
+            target->Resize(D2D1::SizeU(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top)));
             const ComPtr<ID2D1HwndRenderTarget> parentTarget = renderTarget_;
-            renderTarget_ = modelUiPopupTarget_;
+            renderTarget_ = target;
             renderTarget_->BeginDraw(); renderTarget_->Clear(kViewerBackground);
-            if (HasOverlay()) DrawOverlay();
+            if (popup == modelRevisionPopup_) DrawRevisionLabel();
+            else if (HasOverlay()) DrawOverlay();
             else { const RECT bounds = GetDropdownBounds(); renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(-static_cast<float>(bounds.left), -static_cast<float>(bounds.top))); DrawDropdown(); }
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
-            if (renderTarget_->EndDraw() == D2DERR_RECREATE_TARGET) modelUiPopupTarget_.Reset();
+            if (renderTarget_->EndDraw() == D2DERR_RECREATE_TARGET) target.Reset();
             renderTarget_ = parentTarget;
         }
-        EndPaint(modelUiPopup_, &paint);
+        EndPaint(popup, &paint);
     }
     void StopDirectoryWatcher() {
         directoryWatcherStopping_ = true;
@@ -4935,6 +4961,8 @@ private:
     bool navLibPivotValid_ = false;
     HWND modelUiPopup_ = nullptr;
     ComPtr<ID2D1HwndRenderTarget> modelUiPopupTarget_;
+    HWND modelRevisionPopup_ = nullptr;
+    ComPtr<ID2D1HwndRenderTarget> modelRevisionPopupTarget_;
 #if defined(_DEBUG)
     LONGLONG lastModelNavLibTraceQpc_ = 0;
 #endif

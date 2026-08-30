@@ -82,13 +82,14 @@ const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
-enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsRememberPlacement, SettingsIncludeHidden,
+enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsSpaceMouse, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
+enum class SettingsPage { General, Image2D, Model3D };
 enum class ContentKind { None, Image2D, Model3D };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
@@ -993,7 +994,10 @@ public:
         DismissDropdown();
         DismissContextMenu();
         if (overlay == OverlayKind::DeleteConfirm) deleteWarningSuppressOnConfirm_ = false;
-        if (overlay == OverlayKind::Settings) settingsScroll_ = 0.0f;
+        if (overlay == OverlayKind::Settings) {
+            settingsPage_ = SettingsPage::General;
+            settingsScroll_ = 0.0f;
+        }
         overlay_ = overlay;
         EndPan();
         InvalidateRect(window_, nullptr, FALSE);
@@ -1015,7 +1019,7 @@ public:
         if (overlay_ != OverlayKind::Settings) return 0.0f;
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const float contentBottom = static_cast<float>(MulDiv(SettingsUsesCompactLayout() ? 717 : 778, dpi, 96));
+        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 500 : settingsPage_ == SettingsPage::Image2D ? 350 : 160, dpi, 96));
         const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
         return std::max(0.0f, contentBottom - viewportBottom);
     }
@@ -1028,31 +1032,39 @@ public:
         settingsScroll_ = std::clamp(settingsScroll_ + delta, 0.0f, SettingsMaximumScroll());
         InvalidateRect(window_, nullptr, FALSE);
     }
+    RECT GetSettingsNavigationBounds(SettingsPage page) const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int left = bounds.left + MulDiv(18, dpi, 96);
+        const int top = bounds.top + MulDiv(66 + static_cast<int>(page) * 38, dpi, 96);
+        return { left, top, left + MulDiv(164, dpi, 96), top + MulDiv(32, dpi, 96) };
+    }
+    int SettingsContentLeft() const {
+        const RECT bounds = GetOverlayBounds();
+        return bounds.left + MulDiv(206, GetDpiForWindow(window_), 96);
+    }
     RECT GetSettingsOptionBounds(int option) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int padding = MulDiv(18, dpi, 96);
-        static constexpr int kCompactRowTopDips[] = { 84, 110, 136, 200, 226, 252, 278, 304 };
-        static constexpr int kRegularRowTopDips[] = { 90, 116, 142, 225, 251, 277, 303, 329 };
-        const int* rowTops = SettingsUsesCompactLayout() ? kCompactRowTopDips : kRegularRowTopDips;
-        const int top = bounds.top + MulDiv(rowTops[option], dpi, 96);
-        return { bounds.left + padding, top, bounds.right - padding, top + MulDiv(25, dpi, 96) };
+        static constexpr int kRowTops[] = { 106, 106, 132, 132, 158, 184, 158 };
+        const int top = bounds.top + MulDiv(kRowTops[option], dpi, 96);
+        return { SettingsContentLeft(), top, bounds.right - MulDiv(18, dpi, 96), top + MulDiv(25, dpi, 96) };
     }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int padding = MulDiv(18, dpi, 96), width = MulDiv(76, dpi, 96), gap = MulDiv(8, dpi, 96);
+        const int width = MulDiv(76, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int index = static_cast<int>(preference);
-        const int left = bounds.left + padding + index * (width + gap);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 466 : 512, dpi, 96);
+        const int left = SettingsContentLeft() + index * (width + gap);
+        const int top = bounds.top + MulDiv(224, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     RECT GetSettingsScalingBounds(ImageScaling scaling) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int padding = MulDiv(18, dpi, 96), width = MulDiv(112, dpi, 96), gap = MulDiv(8, dpi, 96);
-        const int left = bounds.left + padding + static_cast<int>(scaling) * (width + gap);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 373 : 403, dpi, 96);
+        const int width = MulDiv(112, dpi, 96), gap = MulDiv(8, dpi, 96);
+        const int left = SettingsContentLeft() + static_cast<int>(scaling) * (width + gap);
+        const int top = bounds.top + MulDiv(252, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     void ToggleIncludeHiddenImages() {
@@ -1116,16 +1128,14 @@ public:
     RECT GetSettingsResetButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 681 : 742, dpi, 96);
-        return { bounds.left + padding, top, bounds.left + padding + MulDiv(100, dpi, 96), top + MulDiv(36, dpi, 96) };
+        const int top = bounds.top + MulDiv(450, dpi, 96);
+        return { SettingsContentLeft(), top, SettingsContentLeft() + MulDiv(100, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     RECT GetSettingsDefaultAppsButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int padding = MulDiv(18, dpi, 96);
-        const int top = bounds.top + MulDiv(SettingsUsesCompactLayout() ? 576 : 622, dpi, 96);
-        return { bounds.left + padding, top, bounds.left + padding + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
+        const int top = bounds.top + MulDiv(342, dpi, 96);
+        return { SettingsContentLeft(), top, SettingsContentLeft() + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     bool SettingsDefaultAppsButtonContains(POINT point) const {
         const RECT button = GetSettingsDefaultAppsButtonBounds();
@@ -1247,24 +1257,34 @@ public:
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (EmptyStateActive() && EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
         if (overlay_ == OverlayKind::Settings) {
+            const auto containsNavigation = [&point, this](SettingsPage page) {
+                const RECT navigation = GetSettingsNavigationBounds(page);
+                return PtInRect(&navigation, point) != FALSE;
+            };
+            if (containsNavigation(SettingsPage::General)) return ButtonKind::SettingsGeneralPage;
+            if (containsNavigation(SettingsPage::Image2D)) return ButtonKind::SettingsImage2DPage;
+            if (containsNavigation(SettingsPage::Model3D)) return ButtonKind::SettingsModel3DPage;
             POINT settingsPoint = point;
             settingsPoint.y += static_cast<LONG>(std::lround(settingsScroll_));
             const auto settingsContains = [&settingsPoint](RECT bounds) { return PtInRect(&bounds, settingsPoint) != FALSE; };
-            if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
-            if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
-            if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
-            if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsShowZoomHud;
-            if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAnimations;
-            if (settingsContains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReverseWheelZoom;
-            if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsSpaceMouse;
-            if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
-            if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
-            if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
-            if (settingsContains(GetSettingsScalingBounds(ImageScaling::Performance))) return ButtonKind::SettingsScalingPerformance;
-            if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
-            if (SettingsDefaultAppsButtonContains(point)) return ButtonKind::SettingsDefaultApps;
+            if (settingsPage_ == SettingsPage::General) {
+                if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
+                if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
+                if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsSpaceMouse;
+                if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
+                if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
+                if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
+                if (SettingsDefaultAppsButtonContains(point)) return ButtonKind::SettingsDefaultApps;
+            } else if (settingsPage_ == SettingsPage::Image2D) {
+                if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
+                if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsShowZoomHud;
+                if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAnimations;
+                if (settingsContains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReverseWheelZoom;
+                if (settingsContains(GetSettingsScalingBounds(ImageScaling::Performance))) return ButtonKind::SettingsScalingPerformance;
+                if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
+            }
         }
-        if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
+        if (settingsPage_ == SettingsPage::General && SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
         if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
         if (ResetConfirmationButtonContains(point, true)) return ButtonKind::ResetConfirm;
         if (DeleteWarningCheckboxContains(point)) return ButtonKind::DeleteWarningSuppress;
@@ -1378,6 +1398,9 @@ public:
         if (button == ButtonKind::EmptyOpenFile) OpenFile();
         else if (button == ButtonKind::CanvasPrevious) Navigate(-1);
         else if (button == ButtonKind::CanvasNext) Navigate(1);
+        else if (button == ButtonKind::SettingsGeneralPage) { settingsPage_ = SettingsPage::General; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::SettingsImage2DPage) { settingsPage_ = SettingsPage::Image2D; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::SettingsModel3DPage) { settingsPage_ = SettingsPage::Model3D; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsRememberPlacement) ToggleRememberWindowPlacement();
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
@@ -3905,16 +3928,15 @@ private:
         const int titleGap = MulDiv(14, dpi, 96);
         const int rowHeight = GetShortcutRowHeight();
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
-            overlay_ == OverlayKind::Settings ? 680 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
+            overlay_ == OverlayKind::Settings ? 760 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
             overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : overlay_ == OverlayKind::Settings ? MulDiv(779, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
+            : overlay_ == OverlayKind::Settings ? MulDiv(560, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
             overlay_ == OverlayKind::Welcome ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(344, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
-        if (overlay_ == OverlayKind::Settings && availableHeight < desiredHeight) desiredHeight = MulDiv(679, dpi, 96);
         const int width = std::min(desiredWidth, availableWidth);
         const int height = std::min(desiredHeight, availableHeight);
         const int left = (client.right - width) / 2;
@@ -4122,8 +4144,8 @@ private:
                 y += shortcutRowHeight;
             }
         } else if (overlay_ == OverlayKind::Settings) {
-            const float settingsLeft = static_cast<float>(bounds.left) + 18.0f * dpiScale;
-            const float settingsWidth = static_cast<float>(bounds.right - bounds.left) - 36.0f * dpiScale;
+            const float settingsLeft = static_cast<float>(SettingsContentLeft());
+            const float settingsWidth = static_cast<float>(bounds.right) - settingsLeft - 18.0f * dpiScale;
             DrawOverlayText(L"Settings", settingsLeft, static_cast<float>(bounds.top) + 18.0f * dpiScale,
                 settingsWidth, 32.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             const auto group = [&](const wchar_t* label, float top) {
@@ -4136,6 +4158,21 @@ private:
                 FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &rowHover)) ||
                 FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(50.f / 255, 54.f / 255, 63.f / 255) : D2D1::ColorF(238.f / 255, 238.f / 255, 238.f / 255), &segmentIdle)) ||
                 FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(65.f / 255, 69.f / 255, 80.f / 255) : D2D1::ColorF(220.f / 255, 220.f / 255, 220.f / 255), &segmentHover))) return;
+            const auto drawNavigation = [&](SettingsPage page, ButtonKind button, const wchar_t* label) {
+                const RECT navigationBounds = GetSettingsNavigationBounds(page);
+                const D2D1_RECT_F navigation = D2D1::RectF(static_cast<float>(navigationBounds.left), static_cast<float>(navigationBounds.top), static_cast<float>(navigationBounds.right), static_cast<float>(navigationBounds.bottom));
+                const bool selected = settingsPage_ == page;
+                if (selected) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(navigation, 4.0f * dpiScale, 4.0f * dpiScale), accent.Get());
+                else if (hoveredButton_ == button || pressedButton_ == button) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(navigation, 4.0f * dpiScale, 4.0f * dpiScale), rowHover.Get());
+                DrawOverlayText(label, navigation.left + 10.0f * dpiScale, navigation.top, navigation.right - navigation.left - 20.0f * dpiScale,
+                    navigation.bottom - navigation.top, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, selected ? checkmark.Get() : primaryBrush.Get(), true);
+            };
+            drawNavigation(SettingsPage::General, ButtonKind::SettingsGeneralPage, L"GENERAL");
+            drawNavigation(SettingsPage::Image2D, ButtonKind::SettingsImage2DPage, L"2D SETTINGS");
+            drawNavigation(SettingsPage::Model3D, ButtonKind::SettingsModel3DPage, L"3D SETTINGS");
+            const float dividerX = static_cast<float>(bounds.left) + 194.0f * dpiScale;
+            renderTarget_->DrawLine(D2D1::Point2F(dividerX, static_cast<float>(bounds.top) + 58.0f * dpiScale),
+                D2D1::Point2F(dividerX, static_cast<float>(bounds.bottom) - 18.0f * dpiScale), borderBrush.Get(), 1.0f);
             const auto drawToggle = [&](int index, ButtonKind button, const wchar_t* label, bool checked, bool enabled = true) {
                 const RECT rowBounds = GetSettingsOptionBounds(index);
                 const D2D1_RECT_F row = D2D1::RectF(static_cast<float>(rowBounds.left), static_cast<float>(rowBounds.top), static_cast<float>(rowBounds.right), static_cast<float>(rowBounds.bottom));
@@ -4154,29 +4191,15 @@ private:
                 DrawOverlayText(label, checkbox.right + 12.0f * dpiScale, row.top, row.right - checkbox.right - 12.0f * dpiScale,
                     row.bottom - row.top, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, enabled ? secondaryBrush.Get() : borderBrush.Get(), true);
             };
-            const bool compactSettings = SettingsUsesCompactLayout();
-            const float generalTop = compactSettings ? 64.0f : 66.0f;
-            const float viewerTop = compactSettings ? 180.0f : 201.0f;
-            const float scalingLabelTop = compactSettings ? 350.0f : 380.0f;
-            const float appearanceTop = compactSettings ? 423.0f : 463.0f;
-            const float themeLabelTop = compactSettings ? 443.0f : 489.0f;
-            const float defaultTypesTitleTop = compactSettings ? 526.0f : 572.0f;
-            const float defaultTypesDescriptionTop = compactSettings ? 548.0f : 594.0f;
-            const float resetTitleTop = compactSettings ? 631.0f : 692.0f;
-            const float resetDescriptionTop = compactSettings ? 653.0f : 714.0f;
             const D2D1_RECT_F settingsViewport = D2D1::RectF(static_cast<float>(bounds.left),
                 static_cast<float>(bounds.top) + 60.0f * dpiScale, static_cast<float>(bounds.right),
                 static_cast<float>(bounds.bottom) - 18.0f * dpiScale);
             renderTarget_->PushAxisAlignedClip(settingsViewport, D2D1_ANTIALIAS_MODE_ALIASED);
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -settingsScroll_));
-            group(L"GENERAL", generalTop);
+            if (settingsPage_ == SettingsPage::General) {
+            group(L"GENERAL", 76.0f);
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"Remember window position and size", rememberWindowPlacement_);
-            drawToggle(1, ButtonKind::SettingsIncludeHidden, L"Include hidden images in folder navigation", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"Confirm before deleting images", confirmBeforeDeleting_);
-            group(L"VIEWER", viewerTop);
-            drawToggle(3, ButtonKind::SettingsShowZoomHud, L"Show zoom percentage", showZoomPercentage_);
-            drawToggle(4, ButtonKind::SettingsAnimations, L"Animations and fade effects", animationsEnabled_);
-            drawToggle(5, ButtonKind::SettingsReverseWheelZoom, L"Reverse mouse wheel zoom direction", reverseMouseWheelZoom_);
             drawToggle(6, ButtonKind::SettingsSpaceMouse, L"Enable SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
             if (!spaceMouseRuntimeAvailable_) {
                 const RECT spaceMouseBounds = GetSettingsOptionBounds(6);
@@ -4184,8 +4207,8 @@ private:
                     static_cast<float>(spaceMouseBounds.top) + 18.0f * dpiScale, settingsWidth - 30.0f * dpiScale,
                     18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, borderBrush.Get(), true);
             }
-            group(L"APPEARANCE", appearanceTop);
-            DrawOverlayText(L"Theme", settingsLeft, static_cast<float>(bounds.top) + themeLabelTop * dpiScale, settingsWidth,
+            group(L"APPEARANCE", 196.0f);
+            DrawOverlayText(L"Theme", settingsLeft, static_cast<float>(bounds.top) + 224.0f * dpiScale, settingsWidth,
                 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const auto drawTheme = [&](ThemePreference preference, ButtonKind button, const wchar_t* label) {
                 const RECT segmentBounds = GetSettingsThemeBounds(preference);
@@ -4199,7 +4222,33 @@ private:
             drawTheme(ThemePreference::System, ButtonKind::SettingsThemeSystem, L"System");
             drawTheme(ThemePreference::Light, ButtonKind::SettingsThemeLight, L"Light");
             drawTheme(ThemePreference::Dark, ButtonKind::SettingsThemeDark, L"Dark");
-            DrawOverlayText(L"Image scaling", settingsLeft, static_cast<float>(bounds.top) + scalingLabelTop * dpiScale, settingsWidth,
+            group(L"DEFAULT FILE TYPES", 292.0f);
+            DrawOverlayText(L"Choose which image types open with Viewtrious.", settingsLeft,
+                static_cast<float>(bounds.top) + 314.0f * dpiScale, settingsWidth, 20.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const RECT defaultAppsBounds = GetSettingsDefaultAppsButtonBounds();
+            const D2D1_RECT_F defaultAppsButton = D2D1::RectF(static_cast<float>(defaultAppsBounds.left), static_cast<float>(defaultAppsBounds.top),
+                static_cast<float>(defaultAppsBounds.right), static_cast<float>(defaultAppsBounds.bottom));
+            if (pressedButton_ == ButtonKind::SettingsDefaultApps) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), segmentHover.Get());
+            else if (hoveredButton_ == ButtonKind::SettingsDefaultApps) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), rowHover.Get());
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
+            DrawOverlayText(L"Change file type defaults", defaultAppsButton.left, defaultAppsButton.top, defaultAppsButton.right - defaultAppsButton.left, defaultAppsButton.bottom - defaultAppsButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            group(L"RESET VIEWTRIOUS TO DEFAULTS", 400.0f);
+            DrawOverlayText(L"Removes preferences and app-owned data. Your images are never touched.", settingsLeft,
+                static_cast<float>(bounds.top) + 422.0f * dpiScale, settingsWidth, 20.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const RECT resetBounds = GetSettingsResetButtonBounds();
+            const D2D1_RECT_F resetButton = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top), static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
+            if (pressedButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), segmentHover.Get());
+            else if (hoveredButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), rowHover.Get());
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
+            DrawOverlayText(L"Reset", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            } else if (settingsPage_ == SettingsPage::Image2D) {
+            group(L"2D VIEWER", 76.0f);
+            drawToggle(1, ButtonKind::SettingsIncludeHidden, L"Include hidden images in folder navigation", includeHiddenImages_);
+            drawToggle(3, ButtonKind::SettingsShowZoomHud, L"Show zoom percentage", showZoomPercentage_);
+            drawToggle(4, ButtonKind::SettingsAnimations, L"Animations and fade effects", animationsEnabled_);
+            drawToggle(5, ButtonKind::SettingsReverseWheelZoom, L"Reverse mouse wheel zoom direction", reverseMouseWheelZoom_);
+            DrawOverlayText(L"Image scaling", settingsLeft, static_cast<float>(bounds.top) + 224.0f * dpiScale, settingsWidth,
                 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const auto drawScaling = [&](ImageScaling scaling, ButtonKind button, const wchar_t* label) {
                 const RECT segmentBounds = GetSettingsScalingBounds(scaling);
@@ -4213,38 +4262,11 @@ private:
             };
             drawScaling(ImageScaling::Performance, ButtonKind::SettingsScalingPerformance, L"Performance");
             drawScaling(ImageScaling::Quality, ButtonKind::SettingsScalingQuality, L"Quality");
-            group(L"DEFAULT FILE TYPES", defaultTypesTitleTop);
-            DrawOverlayText(L"Choose which image types open with Viewtrious.", settingsLeft,
-                static_cast<float>(bounds.top) + defaultTypesDescriptionTop * dpiScale, settingsWidth, 20.0f * dpiScale,
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            const RECT defaultAppsBounds = GetSettingsDefaultAppsButtonBounds();
-            const D2D1_RECT_F defaultAppsButton = D2D1::RectF(static_cast<float>(defaultAppsBounds.left), static_cast<float>(defaultAppsBounds.top),
-                static_cast<float>(defaultAppsBounds.right), static_cast<float>(defaultAppsBounds.bottom));
-            ComPtr<ID2D1SolidColorBrush> defaultAppsHover, defaultAppsPressed;
-            if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f/255,64.f/255,74.f/255), &defaultAppsHover)) &&
-                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f/255,80.f/255,92.f/255), &defaultAppsPressed))) {
-                if (pressedButton_ == ButtonKind::SettingsDefaultApps) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), defaultAppsPressed.Get());
-                else if (hoveredButton_ == ButtonKind::SettingsDefaultApps) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), defaultAppsHover.Get());
+            } else {
+            group(L"3D SETTINGS", 76.0f);
+            DrawOverlayText(L"3D viewer settings will appear here.", settingsLeft, static_cast<float>(bounds.top) + 108.0f * dpiScale,
+                settingsWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             }
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"Change file type defaults", defaultAppsButton.left, defaultAppsButton.top,
-                defaultAppsButton.right - defaultAppsButton.left, defaultAppsButton.bottom - defaultAppsButton.top,
-                14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
-            group(L"RESET VIEWTRIOUS TO DEFAULTS", resetTitleTop);
-            DrawOverlayText(L"Removes preferences and app-owned data. Your images are never touched.", settingsLeft,
-                static_cast<float>(bounds.top) + resetDescriptionTop * dpiScale, settingsWidth, 20.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            const RECT resetBounds = GetSettingsResetButtonBounds();
-            const D2D1_RECT_F resetButton = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top),
-                static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
-            ComPtr<ID2D1SolidColorBrush> buttonHover, buttonPressed;
-            if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f/255,64.f/255,74.f/255), &buttonHover)) &&
-                SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f/255,80.f/255,92.f/255), &buttonPressed))) {
-                if (pressedButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), buttonPressed.Get());
-                else if (hoveredButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), buttonHover.Get());
-            }
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"Reset", resetButton.left, resetButton.top, resetButton.right - resetButton.left,
-                resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
             renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::ResetConfirm) {
@@ -4930,6 +4952,7 @@ private:
     bool modelLoading_ = false;
     ThemePreference themePreference_ = ThemePreference::System;
     ImageScaling imageScaling_ = ImageScaling::Quality;
+    SettingsPage settingsPage_ = SettingsPage::General;
     float settingsScroll_ = 0.0f;
     bool onboardingRequired_ = false;
     bool tourPending_ = false;

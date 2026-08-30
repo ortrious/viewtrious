@@ -66,21 +66,27 @@ bool OrbitCamera::SetFromNavLibState(const State& state) {
         !std::isfinite(state.forward.x) || !std::isfinite(state.forward.y) || !std::isfinite(state.forward.z) ||
         !std::isfinite(state.up.x) || !std::isfinite(state.up.y) || !std::isfinite(state.up.z) ||
         std::sqrt(Dot(state.forward, state.forward)) <= 1e-8f || std::sqrt(Dot(state.up, state.up)) <= 1e-8f) return false;
-    const Float3 forward = Normalize(state.forward);
-    const Float3 right = Normalize(Cross(state.up, forward));
-    const Float3 up = Normalize(Cross(forward, right));
-    // NavLib camera matrices are absolute. Their lateral camera-target displacement is
-    // the Model3D pan request. Move the live orbit pivot by that view-plane component so
-    // the camera and rotation centre remain one coherent panned state. The forward-axis
-    // component is deliberately excluded: push/pull continues to be camera dolly only.
-    const Float3 requestedTarget = Add(state.position, Mul(forward, Distance()));
-    const Float3 targetOffset = Sub(requestedTarget, pivot_);
-    const Float3 pan = Add(Mul(right, Dot(targetOffset, right)), Mul(up, Dot(targetOffset, up)));
-    if (std::isfinite(pan.x) && std::isfinite(pan.y) && std::isfinite(pan.z)) pivot_ = Add(pivot_, pan);
-    // Keep the exact accepted pose active so the next GetCameraMatrix returns the same
-    // baseline at the next motion session.
-    navLibState_ = { state.position, forward, up };
+    // NavLib camera matrices are absolute. Keep the exact accepted pose active so the
+    // next GetCameraMatrix returns the same baseline at the next motion session.
+    navLibState_ = { state.position, Normalize(state.forward), Normalize(state.up) };
     navLibStateActive_ = true;
+    Update();
+    return true;
+}
+bool OrbitCamera::SetCameraTargetFromNavLib(Float3 target) {
+    if (!std::isfinite(target.x) || !std::isfinite(target.y) || !std::isfinite(target.z)) return false;
+    const State current = NavLibState();
+    const Float3 forward = Normalize(current.forward);
+    const Float3 right = Normalize(Cross(forward, current.up));
+    const Float3 up = Normalize(Cross(right, forward));
+    const Float3 targetOffset = Sub(target, pivot_);
+    const Float3 pan = Add(Mul(right, Dot(targetOffset, right)), Mul(up, Dot(targetOffset, up)));
+    if (!std::isfinite(pan.x) || !std::isfinite(pan.y) || !std::isfinite(pan.z)) return false;
+
+    // Camera-target requests carry view-plane translation. Keep eye and the one live
+    // pivot together, exactly as normal mouse pan does, while retaining its COG relation.
+    pivot_ = Add(pivot_, pan);
+    if (navLibStateActive_) navLibState_.position = Add(navLibState_.position, pan);
     Update();
     return true;
 }

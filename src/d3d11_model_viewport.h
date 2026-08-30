@@ -22,6 +22,7 @@ public:
     void Fit();
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);
     bool SetNavLibCameraState(const OrbitCamera::State& state);
+    bool SetNavLibCameraTarget(Float3 target) { if (!camera_.SetCameraTargetFromNavLib(target)) return false; NotifyCameraChanged(); return true; }
     OrbitCamera::State NavLibCameraState() const { return camera_.NavLibState(); }
     ModelBounds ModelBoundsForNavLib() const { return document_ ? document_->bounds : ModelBounds{}; }
     bool SetNavLibPivot(Float3 pivot) { if (!camera_.SetPivotFromNavLib(pivot)) return false; NotifyCameraChanged(); return true; }

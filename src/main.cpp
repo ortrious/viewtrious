@@ -644,6 +644,7 @@ public:
         spaceMouse_->getPerspective = [this] { return ModelActive(); };
         spaceMouse_->getRotatable = [this] { return ModelActive(); };
         spaceMouse_->getCameraTarget = [this] { return SpaceMouseModelPivot(); };
+        spaceMouse_->setCameraTarget = [this](const navlib::point_t& point) { SetSpaceMouseModelCameraTarget(point); };
         spaceMouse_->getPivot = [this] { return SpaceMouseModelPivot(); };
         spaceMouse_->setPivot = [this](const navlib::point_t& point) { SetSpaceMouseModelPivot(point); };
         spaceMouse_->getModelExtents = [this] { return SpaceMouseModelExtents(); };
@@ -1990,6 +1991,12 @@ private:
     void SetSpaceMouseModelPivot(const navlib::point_t& point) {
         // Late NavLib pivot echoes must not create a state that differs from the rendered camera.
         (void)point;
+    }
+    void SetSpaceMouseModelCameraTarget(const navlib::point_t& point) {
+        if (!spaceMouseMotionActive_ || !ModelActive()) return;
+        if (modelViewport_.SetNavLibCameraTarget({ static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z) })) {
+            InvalidateRect(window_, nullptr, FALSE);
+        }
     }
     void BeginModelLoad(const std::wstring& path) {
         DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);

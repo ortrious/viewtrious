@@ -561,7 +561,7 @@ public:
         DWORD tourPending = 0;
         ReadSetting(L"TourPending", tourPending);
         tourPending_ = tourPending != 0;
-        if (!path.empty()) return LoadContent(path);
+        startupPath_ = path;
         return S_OK;
     }
 
@@ -624,7 +624,12 @@ public:
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
     }
 
-    void SetWindow(HWND window) { window_ = window; InitializeSpaceMouse(); ActivateGifPlayback(); }
+    void SetWindow(HWND window) {
+        window_ = window;
+        InitializeSpaceMouse();
+        ActivateGifPlayback();
+        if (!startupPath_.empty()) LoadContent(std::exchange(startupPath_, {}));
+    }
     void InitializeSpaceMouse() {
         if (!window_ || spaceMouse_) return;
         spaceMouse_ = std::make_unique<SpaceMouseNavigation>();
@@ -1800,7 +1805,20 @@ public:
     void SetSpaceMouseCameraMatrix(const navlib::matrix_t& matrix) {
         if (!CanAcceptSpaceMouseInput()) return;
         if (ModelActive()) {
-            const bool accepted = modelViewport_.SetNavLibCameraState(OrbitStateFromNavLibCameraToWorld(matrix));
+            OrbitCamera::State requested = OrbitStateFromNavLibCameraToWorld(matrix);
+            const OrbitCamera::State current = modelViewport_.NavLibCameraState();
+            // Model3D defaults invert only the physically verified world-up and spin axes.
+            requested.position.y = current.position.y - (requested.position.y - current.position.y);
+            const auto dot = [](Float3 a, Float3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+            const auto cross = [](Float3 a, Float3 b) { return Float3{ a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; };
+            const auto normalize = [&dot](Float3 value) { const float length = std::sqrt(dot(value, value)); return length > 1e-8f ? Float3{ value.x / length, value.y / length, value.z / length } : Float3{ 0, 1, 0 }; };
+            const Float3 forward = normalize(requested.forward);
+            const Float3 baseRight = normalize(cross({ 0, 1, 0 }, forward));
+            const Float3 baseUp = normalize(cross(baseRight, forward));
+            const float roll = std::atan2(dot(normalize(requested.up), baseRight), dot(normalize(requested.up), baseUp));
+            requested.up = { baseUp.x * std::cos(roll) + baseRight.x * std::sin(roll),
+                baseUp.y * std::cos(roll) + baseRight.y * std::sin(roll), baseUp.z * std::cos(roll) + baseRight.z * std::sin(roll) };
+            const bool accepted = modelViewport_.SetNavLibCameraState(requested);
             TraceModelSpaceMouseState(matrix, accepted);
             return;
         }
@@ -1864,6 +1882,8 @@ public:
 
     void Shutdown() {
         shuttingDown_ = true;
+        if (modelUiPopup_) { DestroyWindow(modelUiPopup_); modelUiPopup_ = nullptr; }
+        modelUiPopupTarget_.Reset();
         ++modelLoadGeneration_;
         if (modelLoadThread_.joinable()) modelLoadThread_.join();
         DeactivateModel();
@@ -1921,7 +1941,7 @@ private:
     }
     navlib::point_t SpaceMouseModelPivot() const {
         if (!ModelActive()) return {};
-        const Float3 pivot = modelViewport_.Camera().Pivot();
+        const Float3 pivot = navLibPivotValid_ ? navLibPivot_ : modelViewport_.Camera().Pivot();
         return { pivot.x, pivot.y, pivot.z };
     }
     static navlib::matrix_t NavLibCameraToWorld(const OrbitCamera::State& state) {
@@ -1950,13 +1970,14 @@ private:
     }
     void SetSpaceMouseModelPivot(const navlib::point_t& point) {
         if (!ModelActive()) return;
-        // The SDK defines SetPivotPosition as an authoritative world-space rotation-centre
-        // request.  OrbitCamera preserves the eye and rebuilds its forward/pivot/distance
-        // relation atomically, so this cannot leave a stale pivot beside a new camera matrix.
-        modelViewport_.SetNavLibPivot({ static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z) });
+        // NavLib's world-space rotation centre is independent of the rendered camera target.
+        // Keep it for the next transaction, but do not move the view on an idle echo.
+        navLibPivot_ = { static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z) };
+        navLibPivotValid_ = std::isfinite(navLibPivot_.x) && std::isfinite(navLibPivot_.y) && std::isfinite(navLibPivot_.z);
     }
     void BeginModelLoad(const std::wstring& path) {
         DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
+        navLibPivotValid_ = false;
         ++decodeRequestGeneration_; ++modelLoadGeneration_; const uint64_t generation = modelLoadGeneration_;
         currentPath_ = path; displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
@@ -1972,7 +1993,62 @@ private:
     void SyncModelViewport() {
         if (!modelViewport_.Window()) return;
         modelViewport_.SetBounds(ModelCanvasBounds());
-        modelViewport_.SetVisible(contentKind_ == ContentKind::Model3D && !modelLoading_ && !HasOverlay() && !dropdownOpen_ && !contextMenuOpen_ && !TutorialActive());
+        modelViewport_.SetVisible(contentKind_ == ContentKind::Model3D && !modelLoading_ && !TutorialActive());
+        SyncModelUiPopup();
+    }
+    static LRESULT CALLBACK ModelUiPopupProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+        Viewer* viewer = reinterpret_cast<Viewer*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+        if (message == WM_NCCREATE) {
+            viewer = reinterpret_cast<Viewer*>(reinterpret_cast<CREATESTRUCTW*>(lParam)->lpCreateParams);
+            SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(viewer));
+        }
+        if (!viewer) return DefWindowProcW(window, message, wParam, lParam);
+        if (message == WM_NCHITTEST) return HTTRANSPARENT;
+        if (message == WM_PAINT) { viewer->PaintModelUiPopup(); return 0; }
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+    void SyncModelUiPopup() {
+        const bool overlay = HasOverlay();
+        const bool show = ModelActive() && (dropdownOpen_ || overlay);
+        if (!show) { if (modelUiPopup_) ShowWindow(modelUiPopup_, SW_HIDE); return; }
+        if (!modelUiPopup_) {
+            static const ATOM atom = [] {
+                WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"ViewtriousModelUiPopup";
+                wc.lpfnWndProc = ModelUiPopupProc; return RegisterClassW(&wc);
+            }();
+            if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return;
+            modelUiPopup_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, L"ViewtriousModelUiPopup", L"",
+                WS_POPUP, 0, 0, 1, 1, window_, nullptr, GetModuleHandleW(nullptr), this);
+            if (!modelUiPopup_) return;
+        }
+        RECT bounds{};
+        if (overlay) GetClientRect(window_, &bounds); else bounds = GetDropdownBounds();
+        POINT origin{ bounds.left, bounds.top }; ClientToScreen(window_, &origin);
+        SetLayeredWindowAttributes(modelUiPopup_, 0, overlay ? 220 : 255, LWA_ALPHA);
+        SetWindowPos(modelUiPopup_, HWND_TOP, origin.x, origin.y, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top),
+            SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        InvalidateRect(modelUiPopup_, nullptr, FALSE);
+    }
+    void PaintModelUiPopup() {
+        PAINTSTRUCT paint{}; BeginPaint(modelUiPopup_, &paint);
+        if (!modelUiPopupTarget_) {
+            const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties();
+            const D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProperties = D2D1::HwndRenderTargetProperties(modelUiPopup_);
+            d2dFactory_->CreateHwndRenderTarget(properties, hwndProperties, &modelUiPopupTarget_);
+        }
+        if (modelUiPopupTarget_) {
+            RECT client{}; GetClientRect(modelUiPopup_, &client);
+            modelUiPopupTarget_->Resize(D2D1::SizeU(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top)));
+            const ComPtr<ID2D1HwndRenderTarget> parentTarget = renderTarget_;
+            renderTarget_ = modelUiPopupTarget_;
+            renderTarget_->BeginDraw(); renderTarget_->Clear(kViewerBackground);
+            if (HasOverlay()) DrawOverlay();
+            else { const RECT bounds = GetDropdownBounds(); renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(-static_cast<float>(bounds.left), -static_cast<float>(bounds.top))); DrawDropdown(); }
+            renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+            if (renderTarget_->EndDraw() == D2DERR_RECREATE_TARGET) modelUiPopupTarget_.Reset();
+            renderTarget_ = parentTarget;
+        }
+        EndPaint(modelUiPopup_, &paint);
     }
     void StopDirectoryWatcher() {
         directoryWatcherStopping_ = true;
@@ -2033,6 +2109,7 @@ private:
             { L".heic", L"Viewtrious.heic", L"Viewtrious HEIC Image" },
             { L".heif", L"Viewtrious.heif", L"Viewtrious HEIF Image" },
             { L".dng", L"Viewtrious.dng", L"Viewtrious DNG Image" },
+            { L".stl", L"Viewtrious.stl", L"Viewtrious STL Model" },
         };
         for (const Association& association : associations) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
@@ -4866,6 +4943,11 @@ private:
     bool spaceMouseEnabled_ = true;
     bool spaceMouseRuntimeAvailable_ = false;
     bool spaceMouseMotionActive_ = false;
+    std::wstring startupPath_;
+    Float3 navLibPivot_{};
+    bool navLibPivotValid_ = false;
+    HWND modelUiPopup_ = nullptr;
+    ComPtr<ID2D1HwndRenderTarget> modelUiPopupTarget_;
 #if defined(_DEBUG)
     LONGLONG lastModelNavLibTraceQpc_ = 0;
 #endif
@@ -5344,7 +5426,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         bounds.right = bounds.left + width;
         bounds.bottom = bounds.top + height;
     }
-    const DWORD windowStyle = WS_OVERLAPPEDWINDOW;
+    const DWORD windowStyle = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
     HWND window = CreateWindowExW(0, kWindowClass, kWindowTitle, windowStyle,
         bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
         nullptr, nullptr, instance, &viewer);

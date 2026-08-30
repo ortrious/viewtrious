@@ -54,7 +54,11 @@ bool D3D11ModelViewport::Create(HWND parent, const RECT& bounds, std::shared_ptr
 }
 void D3D11ModelViewport::Destroy() { if(window_){DestroyWindow(window_);window_=nullptr;} DiscardD3D(); document_.reset(); }
 void D3D11ModelViewport::SetBounds(const RECT& bounds) { if(window_) SetWindowPos(window_,nullptr,bounds.left,bounds.top,std::max(1L,bounds.right-bounds.left),std::max(1L,bounds.bottom-bounds.top),SWP_NOZORDER|SWP_NOACTIVATE); }
-void D3D11ModelViewport::SetVisible(bool visible) { if(window_) ShowWindow(window_,visible?SW_SHOWNA:SW_HIDE); if(visible) Render(); }
+void D3D11ModelViewport::SetVisible(bool visible) {
+    if (!window_ || (IsWindowVisible(window_) != FALSE) == visible) return;
+    ShowWindow(window_, visible ? SW_SHOWNA : SW_HIDE);
+    if (visible) Render();
+}
 bool D3D11ModelViewport::IsVisible() const { return window_ && IsWindowVisible(window_); }
 void D3D11ModelViewport::Fit() { if(document_){camera_.Fit(document_->bounds,height_?float(width_)/height_:1.0f);NotifyCameraChanged();} }
 void D3D11ModelViewport::ApplySpaceMouse(float x,float y,float z,float pitch,float yaw,float roll){camera_.ApplySpaceMouse(x,y,z,pitch,yaw,roll);NotifyCameraChanged();Render();}

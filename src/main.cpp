@@ -16,6 +16,8 @@
 #include <SpaceMouse/CNavigation3D.hpp>
 
 #include "lanczos_resampler.h"
+#include "d3d11_model_viewport.h"
+#include "stl_loader.h"
 
 #include <algorithm>
 #include <atomic>
@@ -52,6 +54,7 @@ constexpr UINT kDirectoryChangedMessage = WM_APP + 3;
 constexpr UINT kFullDecodeCompleteMessage = WM_APP + 4;
 constexpr UINT kDecodeWorkerFinishedMessage = WM_APP + 6;
 constexpr UINT kLanczosCompleteMessage = WM_APP + 7;
+constexpr UINT kModelLoadCompleteMessage = WM_APP + 8;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
 constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
 constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
@@ -86,6 +89,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
+enum class ContentKind { None, Image2D, Model3D };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
@@ -107,6 +111,7 @@ struct FullDecodeResult : PixelBuffer {
     bool deliveredSynchronously = false;
 };
 struct DecodeWorkerFinished { std::thread::id workerId{}; };
+struct ModelLoadResult { std::wstring path; uint64_t generation = 0; StlLoadResult result; };
 struct LanczosRequest {
     std::shared_ptr<std::vector<BYTE>> sourcePixels;
     UINT sourceWidth = 0, sourceHeight = 0, targetWidth = 0, targetHeight = 0;
@@ -224,12 +229,15 @@ bool IsSupportedExtension(const fs::path& path) {
         extension == L".nef" || extension == L".arw" || extension == L".raf";
 }
 
+
 std::wstring LowercaseExtension(const std::wstring& path) {
     std::wstring extension = fs::path(path).extension().wstring();
     std::transform(extension.begin(), extension.end(), extension.begin(),
         [](wchar_t character) { return static_cast<wchar_t>(std::towlower(character)); });
     return extension;
 }
+
+bool IsStlPath(const std::wstring& path) { return LowercaseExtension(path) == L".stl"; }
 
 bool IsJpegPath(const std::wstring& path) {
     const std::wstring extension = LowercaseExtension(path);
@@ -542,11 +550,19 @@ public:
         DWORD tourPending = 0;
         ReadSetting(L"TourPending", tourPending);
         tourPending_ = tourPending != 0;
-        if (!path.empty()) return LoadImage(path);
+        if (!path.empty()) return LoadContent(path);
         return S_OK;
     }
 
+    HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
+        if (IsStlPath(path)) { BeginModelLoad(path); return S_OK; }
+        DeactivateModel();
+        contentKind_ = ContentKind::Image2D;
+        return LoadImage(path, resetNavigation);
+    }
+
     HRESULT LoadImage(const std::wstring& path, bool resetNavigation = true) {
+        ++modelLoadGeneration_;
         StopGifPlayback();
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationPending_ = false;
@@ -579,6 +595,22 @@ public:
             error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
         }
         return hr;
+    }
+
+    void ModelLoadCompleteMessage(ModelLoadResult* result) {
+        std::unique_ptr<ModelLoadResult> owned(result);
+        if (!result || shuttingDown_ || result->generation != modelLoadGeneration_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_))) return;
+        if (modelLoadThread_.joinable()) modelLoadThread_.join();
+        modelLoading_ = false;
+        if (!result->result.IsSuccess()) { contentKind_ = ContentKind::None; error_ = result->result.error; InvalidateRect(window_, nullptr, FALSE); return; }
+        modelDocument_ = result->result.document;
+        std::wstring viewportError;
+        if (!modelViewport_.Create(window_, ModelCanvasBounds(), modelDocument_, viewportError)) {
+            modelDocument_.reset(); contentKind_ = ContentKind::None; error_ = viewportError; InvalidateRect(window_, nullptr, FALSE); return;
+        }
+        contentKind_ = ContentKind::Model3D;
+        resolutionText_ = std::to_wstring(modelDocument_->geometries.front().indices.size() / 3) + L" triangles";
+        error_.clear(); InvalidateRect(window_, nullptr, FALSE);
     }
 
     void SetWindow(HWND window) { window_ = window; InitializeSpaceMouse(); ActivateGifPlayback(); }
@@ -701,7 +733,7 @@ public:
         ComPtr<IFileOpenDialog> dialog;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
         static const COMDLG_FILTERSPEC filters[] = {
-            { L"Supported images", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf" },
+            { L"Supported files", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.stl" },
             { L"All files", L"*.*" },
         };
         dialog->SetFileTypes(ARRAYSIZE(filters), filters);
@@ -712,12 +744,14 @@ public:
         ComPtr<IShellItem> item;
         PWSTR path = nullptr;
         if (SUCCEEDED(dialog->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-            LoadImage(path);
+            LoadContent(path);
             CoTaskMemFree(path);
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool HasImage() const { return source_ != nullptr; }
+    bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Window() != nullptr; }
+    void FitModel() { if (ModelActive()) { modelViewport_.Fit(); modelViewport_.Render(); } }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
@@ -1426,6 +1460,7 @@ public:
     void Paint() {
         PAINTSTRUCT paint{};
         BeginPaint(window_, &paint);
+        SyncModelViewport();
         EnsureRenderTarget();
         if (renderTarget_) {
             renderTarget_->BeginDraw();
@@ -1433,7 +1468,7 @@ public:
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
-            } else DrawEmptyState();
+            } else if (contentKind_ != ContentKind::Model3D || modelLoading_) DrawEmptyState();
             if (!tutorialPresentation_) DrawRevisionLabel();
             DrawTitleBar();
             DrawDropdown();
@@ -1482,7 +1517,7 @@ public:
             std::wstring path(length + 1, L'\0');
             DragQueryFileW(drop, 0, path.data(), length + 1);
             path.resize(length);
-            LoadImage(path);
+            LoadContent(path);
             InvalidateRect(window_, nullptr, FALSE);
         }
         DragFinish(drop);
@@ -1674,10 +1709,14 @@ public:
     }
 
     bool CanAcceptSpaceMouseInput() const {
-        return spaceMouseRuntimeAvailable_ && spaceMouseEnabled_ && source_ && !TutorialActive() &&
+        return spaceMouseRuntimeAvailable_ && spaceMouseEnabled_ && (source_ || ModelActive()) && !TutorialActive() &&
             !HasOverlay() && !dropdownOpen_ && !contextMenuOpen_;
     }
     navlib::matrix_t SpaceMouseCameraMatrix() const {
+        if (ModelActive()) {
+            const Float3 position = modelViewport_.Camera().Position();
+            return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, position.x, position.y, position.z, 1 };
+        }
         const float scale = CurrentScale();
         return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
             source_ ? pan_.x / scale : 0.0f, source_ ? -pan_.y / scale : 0.0f, 0, 1 };
@@ -1709,6 +1748,12 @@ public:
     void SetSpaceMouseCameraMatrix(const navlib::matrix_t& matrix) {
         if (!CanAcceptSpaceMouseInput()) return;
         const navlib::matrix_t current = SpaceMouseCameraMatrix();
+        if (ModelActive()) {
+            modelViewport_.ApplySpaceMouse(static_cast<float>(matrix.m30 - current.m30), static_cast<float>(matrix.m31 - current.m31),
+                static_cast<float>(matrix.m32 - current.m32), static_cast<float>(matrix.m21 - current.m21),
+                static_cast<float>(matrix.m20 - current.m20), static_cast<float>(matrix.m10 - current.m10));
+            return;
+        }
         const double dx = matrix.m30 - current.m30, dy = matrix.m31 - current.m31;
         // NavLib supplies calibrated, time-integrated motion.  Ignore sub-millipixel camera
         // changes to suppress neutral-device noise without adding a second acceleration model.
@@ -1722,6 +1767,7 @@ public:
     }
     void SetSpaceMouseViewExtents(const navlib::box_t& extents) {
         if (!CanAcceptSpaceMouseInput()) return;
+        if (ModelActive()) return;
         const double requestedWidth = extents.max.x - extents.min.x;
         const D2D1_SIZE_F canvas = ImageCanvasSize();
         if (requestedWidth <= 0.0 || canvas.width <= 0.0f) return;
@@ -1766,6 +1812,10 @@ public:
     }
 
     void Shutdown() {
+        shuttingDown_ = true;
+        ++modelLoadGeneration_;
+        if (modelLoadThread_.joinable()) modelLoadThread_.join();
+        DeactivateModel();
         if (spaceMouse_) {
             std::error_code error;
             spaceMouse_->EnableNavigation(false, error);
@@ -1813,6 +1863,30 @@ public:
     void QueueDirectoryRefreshFromWatcher() { QueueDirectoryRefresh(); }
 
 private:
+    RECT ModelCanvasBounds() const {
+        RECT client{}; GetClientRect(window_, &client);
+        const LONG top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
+        return { 0, top, client.right, std::max(top + 1L, client.bottom) };
+    }
+    void BeginModelLoad(const std::wstring& path) {
+        DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
+        ++decodeRequestGeneration_; ++modelLoadGeneration_; const uint64_t generation = modelLoadGeneration_;
+        currentPath_ = path; displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
+        filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
+        navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; contentKind_ = ContentKind::Model3D;
+        if (modelLoadThread_.joinable()) modelLoadThread_.join();
+        modelLoadThread_ = std::thread([this, path, generation] { auto* result = new ModelLoadResult{ path, generation, LoadStlDocument(path) }; if (shuttingDown_ || !PostMessageW(window_, kModelLoadCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result; });
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void DeactivateModel() {
+        modelViewport_.Destroy(); modelDocument_.reset(); modelLoading_ = false;
+        if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
+    }
+    void SyncModelViewport() {
+        if (!modelViewport_.Window()) return;
+        modelViewport_.SetBounds(ModelCanvasBounds());
+        modelViewport_.SetVisible(contentKind_ == ContentKind::Model3D && !modelLoading_ && !HasOverlay() && !dropdownOpen_ && !contextMenuOpen_ && !TutorialActive());
+    }
     void StopDirectoryWatcher() {
         directoryWatcherStopping_ = true;
         if (directoryWatcherHandle_ != INVALID_HANDLE_VALUE) CancelIoEx(directoryWatcherHandle_, nullptr);
@@ -4706,6 +4780,13 @@ private:
     bool spaceMouseRuntimeAvailable_ = false;
     bool spaceMouseMotionActive_ = false;
     std::unique_ptr<SpaceMouseNavigation> spaceMouse_;
+    ContentKind contentKind_ = ContentKind::None;
+    std::shared_ptr<ModelDocument> modelDocument_;
+    D3D11ModelViewport modelViewport_;
+    std::thread modelLoadThread_;
+    std::atomic<uint64_t> modelLoadGeneration_{ 0 };
+    std::atomic<bool> shuttingDown_{ false };
+    bool modelLoading_ = false;
     ThemePreference themePreference_ = ThemePreference::System;
     ImageScaling imageScaling_ = ImageScaling::Quality;
     float settingsScroll_ = 0.0f;
@@ -5092,6 +5173,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kFullDecodeCompleteMessage: viewer->FullDecodeCompleteMessage(reinterpret_cast<FullDecodeResult*>(lParam)); return 0;
     case kLanczosCompleteMessage: viewer->LanczosCompleteMessage(reinterpret_cast<LanczosResult*>(lParam)); return 0;
     case kDecodeWorkerFinishedMessage: viewer->DecodeWorkerFinishedMessage(reinterpret_cast<DecodeWorkerFinished*>(lParam)); return 0;
+    case kModelLoadCompleteMessage: viewer->ModelLoadCompleteMessage(reinterpret_cast<ModelLoadResult*>(lParam)); return 0;
     case WM_KEYDOWN:
         if (viewer->TutorialActive()) { if (wParam == VK_ESCAPE) viewer->StopTutorial(); return 0; }
         if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }
@@ -5121,7 +5203,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (wParam == VK_OEM_PLUS || wParam == VK_ADD || wParam == L'=') { viewer->ZoomCentered(kWheelZoomStep); return 0; }
         if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) { viewer->ZoomCentered(1.0f / kWheelZoomStep); return 0; }
-        if (wParam == L'0' || wParam == VK_NUMPAD0) { viewer->FitToWindow(); return 0; }
+        if (wParam == L'0' || wParam == VK_NUMPAD0) { if (viewer->ModelActive()) viewer->FitModel(); else viewer->FitToWindow(); return 0; }
         break;
     case WM_DESTROY: viewer->SaveWindowPlacement(); viewer->Shutdown(); PostQuitMessage(0); return 0;
     }

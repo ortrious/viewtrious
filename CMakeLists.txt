@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.5.4.5 LANGUAGES CXX)
+project(Viewtrious VERSION 0.5.5.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -23,6 +23,9 @@ configure_file(src/Viewtrious.rc.in "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc" 
 add_executable(Viewtrious WIN32
     src/main.cpp
     src/lanczos_resampler.cpp
+    src/model_camera.cpp
+    src/stl_loader.cpp
+    src/d3d11_model_viewport.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc"
 )
 
@@ -36,7 +39,7 @@ add_executable(ViewtriousLanczosBenchmark
 target_compile_features(Viewtrious PRIVATE cxx_std_20)
 target_compile_definitions(Viewtrious PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX VIEWTRIOUS_VERSION=L\"${PROJECT_VERSION}\")
 target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_3DXWARE_INCLUDE_DIR}")
-target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 "${VIEWTRIOUS_3DXWARE_LIBRARY}")
+target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 d3d11 dxgi d3dcompiler "${VIEWTRIOUS_3DXWARE_LIBRARY}")
 target_compile_features(ViewtriousLanczosBenchmark PRIVATE cxx_std_20)
 target_compile_definitions(ViewtriousLanczosBenchmark PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(ViewtriousLanczosBenchmark PRIVATE windowscodecs ole32)

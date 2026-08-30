@@ -1714,8 +1714,12 @@ public:
     }
     navlib::matrix_t SpaceMouseCameraMatrix() const {
         if (ModelActive()) {
-            const Float3 position = modelViewport_.Camera().Position();
-            return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, position.x, position.y, position.z, 1 };
+            const OrbitCamera::State state = modelViewport_.NavLibCameraState();
+            const Float3 right{ state.up.y * state.forward.z - state.up.z * state.forward.y,
+                state.up.z * state.forward.x - state.up.x * state.forward.z,
+                state.up.x * state.forward.y - state.up.y * state.forward.x };
+            return { right.x, right.y, right.z, 0, state.up.x, state.up.y, state.up.z, 0,
+                -state.forward.x, -state.forward.y, -state.forward.z, 0, state.position.x, state.position.y, state.position.z, 1 };
         }
         const float scale = CurrentScale();
         return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
@@ -1749,9 +1753,21 @@ public:
         if (!CanAcceptSpaceMouseInput()) return;
         const navlib::matrix_t current = SpaceMouseCameraMatrix();
         if (ModelActive()) {
-            modelViewport_.ApplySpaceMouse(static_cast<float>(matrix.m30 - current.m30), static_cast<float>(matrix.m31 - current.m31),
-                static_cast<float>(matrix.m32 - current.m32), static_cast<float>(matrix.m21 - current.m21),
-                static_cast<float>(matrix.m20 - current.m20), static_cast<float>(matrix.m10 - current.m10));
+            const OrbitCamera::State requested{
+                { static_cast<float>(matrix.m30), static_cast<float>(matrix.m31), static_cast<float>(matrix.m32) },
+                { static_cast<float>(-matrix.m20), static_cast<float>(-matrix.m21), static_cast<float>(-matrix.m22) },
+                { static_cast<float>(matrix.m10), static_cast<float>(matrix.m11), static_cast<float>(matrix.m12) },
+            };
+            const bool accepted = modelViewport_.SetNavLibCameraState(requested);
+#if defined(_DEBUG)
+            wchar_t message[320]{};
+            swprintf_s(message, L"Viewtrious model NavLib absolute=%d in=(%.4f,%.4f,%.4f) current=(%.4f,%.4f,%.4f) distance=%.4f radius=%.4f\n",
+                accepted ? 1 : 0, matrix.m30, matrix.m31, matrix.m32, current.m30, current.m31, current.m32,
+                modelViewport_.Camera().Distance(), modelViewport_.Camera().Radius());
+            OutputDebugStringW(message);
+#else
+            (void)accepted;
+#endif
             return;
         }
         const double dx = matrix.m30 - current.m30, dy = matrix.m31 - current.m31;

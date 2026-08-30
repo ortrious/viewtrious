@@ -4,16 +4,21 @@
 
 class OrbitCamera {
 public:
+    struct State { Float3 position; Float3 forward; Float3 up; };
     void Fit(const ModelBounds& bounds, float aspectRatio);
     void SetAspectRatio(float aspectRatio);
     void Orbit(float deltaX, float deltaY);
     void Pan(float deltaX, float deltaY);
     void Dolly(float wheelUnits);
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);
+    bool SetFromNavLibState(const State& state);
+    State NavLibState() const;
     const Matrix4& ViewProjection() const;
     Float3 Position() const;
     Float3 Pivot() const { return pivot_; }
     float FieldOfView() const { return fieldOfView_; }
+    float Distance() const { return distance_; }
+    float Radius() const { return radius_; }
 
 private:
     void Update();

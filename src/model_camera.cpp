@@ -27,11 +27,32 @@ void OrbitCamera::Orbit(float dx, float dy) { yaw_ += dx; pitch_ = std::clamp(pi
 void OrbitCamera::Pan(float dx, float dy) {
     const Float3 position = Position(); const Float3 forward = Normalize(Sub(pivot_, position));
     const Float3 right = Normalize(Cross(forward, { 0, 1, 0 })); const Float3 up = Normalize(Cross(right, forward));
-    pivot_ = Add(pivot_, Add(Mul(right, -dx * distance_), Mul(up, dy * distance_))); Update();
+    pivot_ = Add(pivot_, Add(Mul(right, dx * distance_), Mul(up, dy * distance_))); Update();
 }
 void OrbitCamera::Dolly(float wheelUnits) { distance_ = std::clamp(distance_ * std::exp(-wheelUnits * 0.14f), radius_ * 0.02f, radius_ * 10000.0f); Update(); }
 void OrbitCamera::ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll) {
     Pan(x * 0.06f, y * 0.06f); Dolly(-z * 0.45f); yaw_ += yaw * 0.025f; pitch_ = std::clamp(pitch * 0.025f + pitch_, -1.52f, 1.52f); roll_ += roll * 0.025f; Update();
+}
+OrbitCamera::State OrbitCamera::NavLibState() const {
+    const Float3 eye = Position(); const Float3 forward = Normalize(Sub(pivot_, eye));
+    const Float3 right = Normalize(Cross({ 0, 1, 0 }, forward)); const Float3 up = Normalize(Cross(right, forward));
+    return { eye, forward, up };
+}
+bool OrbitCamera::SetFromNavLibState(const State& state) {
+    if (!std::isfinite(state.position.x) || !std::isfinite(state.position.y) || !std::isfinite(state.position.z) ||
+        !std::isfinite(state.forward.x) || !std::isfinite(state.forward.y) || !std::isfinite(state.forward.z) ||
+        std::sqrt(Dot(state.forward, state.forward)) <= 1e-8f || std::sqrt(Dot(state.up, state.up)) <= 1e-8f) return false;
+    const Float3 forward = Normalize(state.forward);
+    const Float3 offset = Mul(forward, -distance_);
+    pivot_ = Add(state.position, Mul(forward, distance_));
+    yaw_ = std::atan2(-offset.x, -offset.z);
+    pitch_ = std::asin(std::clamp(-offset.y / std::max(distance_, 1e-8f), -1.0f, 1.0f));
+    const Float3 baseRight = Normalize(Cross({ 0, 1, 0 }, forward));
+    const Float3 baseUp = Normalize(Cross(baseRight, forward));
+    const Float3 requestedUp = Normalize(state.up);
+    roll_ = std::atan2(Dot(requestedUp, baseRight), Dot(requestedUp, baseUp));
+    Update();
+    return true;
 }
 Float3 OrbitCamera::Position() const {
     const float cp = std::cos(pitch_); return Add(pivot_, { distance_ * std::sin(yaw_) * cp, distance_ * std::sin(pitch_), distance_ * std::cos(yaw_) * cp });

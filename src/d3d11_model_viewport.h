@@ -21,6 +21,8 @@ public:
     void Render();
     void Fit();
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);
+    bool SetNavLibCameraState(const OrbitCamera::State& state);
+    OrbitCamera::State NavLibCameraState() const { return camera_.NavLibState(); }
     bool IsVisible() const;
     HWND Window() const { return window_; }
     OrbitCamera& Camera() { return camera_; }

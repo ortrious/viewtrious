@@ -1237,11 +1237,14 @@ public:
         const RECT next = GetCanvasNavigationZoneBounds(true);
         return PtInRect(&next, point) ? ButtonKind::CanvasNext : ButtonKind::None;
     }
+    bool EmptyStateActive() const {
+        return contentKind_ != ContentKind::Model3D && source_ == nullptr;
+    }
     ButtonKind ButtonAt(POINT point) const {
         const auto contains = [&point](RECT bounds) { return PtInRect(&bounds, point) != FALSE; };
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
-        if (EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
+        if (EmptyStateActive() && EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
         if (overlay_ == OverlayKind::Settings) {
             POINT settingsPoint = point;
             settingsPoint.y += static_cast<LONG>(std::lround(settingsScroll_));
@@ -1461,7 +1464,7 @@ public:
         DestroyWindow(window_);
     }
     bool EmptyOpenFileButtonContains(POINT point) const {
-        if ((HasImage() && !tutorialPresentation_) || HasOverlay() || dropdownOpen_ || contextMenuOpen_) return false;
+        if (!EmptyStateActive() || tutorialPresentation_ || HasOverlay() || dropdownOpen_ || contextMenuOpen_) return false;
         const RECT bounds = GetEmptyOpenFileButtonBounds();
         return PtInRect(&bounds, point);
     }
@@ -1495,11 +1498,11 @@ public:
         if (renderTarget_ && graphicsHost_.Ready()) {
             if (ModelActive() && !TutorialActive()) modelViewport_.Render(graphicsHost_, ModelCanvasBounds());
             graphicsHost_.BeginDraw();
-            if (!ModelActive() || TutorialActive()) renderTarget_->Clear(kViewerBackground);
+            if (contentKind_ != ContentKind::Model3D || TutorialActive()) renderTarget_->Clear(kViewerBackground);
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
-            } else if (contentKind_ != ContentKind::Model3D || modelLoading_) DrawEmptyState();
+            } else if (EmptyStateActive()) DrawEmptyState();
             if (!tutorialPresentation_) DrawRevisionLabel();
             DrawTitleBar();
             DrawDropdown();
@@ -3946,7 +3949,7 @@ private:
     }
 
     void DrawEmptyState() {
-        if (HasOverlay()) return;
+        if (!EmptyStateActive() || HasOverlay()) return;
         const bool dark = UseDarkAppMode();
         ComPtr<ID2D1SolidColorBrush> primary, secondary, button, buttonHover, buttonPressed, buttonText;
         if (FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(30.f/255,30.f/255,30.f/255), &primary)) ||

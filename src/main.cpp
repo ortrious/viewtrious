@@ -72,6 +72,7 @@ constexpr int kContextMenuSeparatorCount = 4;
 constexpr int kContextMenuPaddingDip = 8;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kWheelZoomStep = 1.11f;
+constexpr float kSettingsMajorSectionGapDips = 40.0f;
 constexpr wchar_t kSettingsKey[] = L"Software\\Viewtrious";
 constexpr wchar_t kRegisteredApplicationName[] = L"Viewtrious";
 constexpr wchar_t kCapabilitiesPath[] = L"Software\\Viewtrious\\Capabilities";
@@ -1019,7 +1020,7 @@ public:
         if (overlay_ != OverlayKind::Settings) return 0.0f;
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 500 : settingsPage_ == SettingsPage::Image2D ? 350 : 160, dpi, 96));
+        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 504 : settingsPage_ == SettingsPage::Image2D ? 350 : 160, dpi, 96));
         const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
         return std::max(0.0f, contentBottom - viewportBottom);
     }
@@ -1047,7 +1048,7 @@ public:
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         static constexpr int kRowTops[] = { 106, 106, 132, 132, 158, 184, 158 };
-        const int top = bounds.top + MulDiv(kRowTops[option], dpi, 96);
+        const int top = bounds.top + MulDiv(option == 6 && settingsPage_ == SettingsPage::Model3D ? 106 : kRowTops[option], dpi, 96);
         return { SettingsContentLeft(), top, bounds.right - MulDiv(18, dpi, 96), top + MulDiv(25, dpi, 96) };
     }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
@@ -1056,7 +1057,7 @@ public:
         const int width = MulDiv(76, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int index = static_cast<int>(preference);
         const int left = SettingsContentLeft() + index * (width + gap);
-        const int top = bounds.top + MulDiv(224, dpi, 96);
+        const int top = bounds.top + MulDiv(225, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     RECT GetSettingsScalingBounds(ImageScaling scaling) const {
@@ -1128,7 +1129,7 @@ public:
     RECT GetSettingsResetButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int top = bounds.top + MulDiv(450, dpi, 96);
+        const int top = bounds.top + MulDiv(468, dpi, 96);
         return { SettingsContentLeft(), top, SettingsContentLeft() + MulDiv(100, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     RECT GetSettingsDefaultAppsButtonBounds() const {
@@ -1270,7 +1271,6 @@ public:
             if (settingsPage_ == SettingsPage::General) {
                 if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
-                if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsSpaceMouse;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -1282,6 +1282,8 @@ public:
                 if (settingsContains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReverseWheelZoom;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Performance))) return ButtonKind::SettingsScalingPerformance;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
+            } else if (settingsPage_ == SettingsPage::Model3D) {
+                if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsSpaceMouse;
             }
         }
         if (settingsPage_ == SettingsPage::General && SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
@@ -4197,18 +4199,14 @@ private:
             renderTarget_->PushAxisAlignedClip(settingsViewport, D2D1_ANTIALIAS_MODE_ALIASED);
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -settingsScroll_));
             if (settingsPage_ == SettingsPage::General) {
+            const float appearanceTop = 157.0f + kSettingsMajorSectionGapDips;
+            const float defaultTypesTop = 253.0f + kSettingsMajorSectionGapDips;
+            const float resetTop = 378.0f + kSettingsMajorSectionGapDips;
             group(L"GENERAL", 76.0f);
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"Remember window position and size", rememberWindowPlacement_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"Confirm before deleting images", confirmBeforeDeleting_);
-            drawToggle(6, ButtonKind::SettingsSpaceMouse, L"Enable SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
-            if (!spaceMouseRuntimeAvailable_) {
-                const RECT spaceMouseBounds = GetSettingsOptionBounds(6);
-                DrawOverlayText(L"Requires 3Dconnexion 3DxWare software", settingsLeft + 30.0f * dpiScale,
-                    static_cast<float>(spaceMouseBounds.top) + 18.0f * dpiScale, settingsWidth - 30.0f * dpiScale,
-                    18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, borderBrush.Get(), true);
-            }
-            group(L"APPEARANCE", 196.0f);
-            DrawOverlayText(L"Theme", settingsLeft, static_cast<float>(bounds.top) + 224.0f * dpiScale, settingsWidth,
+            group(L"APPEARANCE", appearanceTop);
+            DrawOverlayText(L"Theme", settingsLeft, static_cast<float>(bounds.top) + (appearanceTop + 28.0f) * dpiScale, settingsWidth,
                 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const auto drawTheme = [&](ThemePreference preference, ButtonKind button, const wchar_t* label) {
                 const RECT segmentBounds = GetSettingsThemeBounds(preference);
@@ -4222,9 +4220,9 @@ private:
             drawTheme(ThemePreference::System, ButtonKind::SettingsThemeSystem, L"System");
             drawTheme(ThemePreference::Light, ButtonKind::SettingsThemeLight, L"Light");
             drawTheme(ThemePreference::Dark, ButtonKind::SettingsThemeDark, L"Dark");
-            group(L"DEFAULT FILE TYPES", 292.0f);
+            group(L"DEFAULT FILE TYPES", defaultTypesTop);
             DrawOverlayText(L"Choose which image types open with Viewtrious.", settingsLeft,
-                static_cast<float>(bounds.top) + 314.0f * dpiScale, settingsWidth, 20.0f * dpiScale,
+                static_cast<float>(bounds.top) + (defaultTypesTop + 22.0f) * dpiScale, settingsWidth, 20.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT defaultAppsBounds = GetSettingsDefaultAppsButtonBounds();
             const D2D1_RECT_F defaultAppsButton = D2D1::RectF(static_cast<float>(defaultAppsBounds.left), static_cast<float>(defaultAppsBounds.top),
@@ -4233,9 +4231,9 @@ private:
             else if (hoveredButton_ == ButtonKind::SettingsDefaultApps) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), rowHover.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"Change file type defaults", defaultAppsButton.left, defaultAppsButton.top, defaultAppsButton.right - defaultAppsButton.left, defaultAppsButton.bottom - defaultAppsButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
-            group(L"RESET VIEWTRIOUS TO DEFAULTS", 400.0f);
+            group(L"RESET VIEWTRIOUS TO DEFAULTS", resetTop);
             DrawOverlayText(L"Removes preferences and app-owned data. Your images are never touched.", settingsLeft,
-                static_cast<float>(bounds.top) + 422.0f * dpiScale, settingsWidth, 20.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                static_cast<float>(bounds.top) + (resetTop + 22.0f) * dpiScale, settingsWidth, 20.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT resetBounds = GetSettingsResetButtonBounds();
             const D2D1_RECT_F resetButton = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top), static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
             if (pressedButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), segmentHover.Get());
@@ -4263,9 +4261,14 @@ private:
             drawScaling(ImageScaling::Performance, ButtonKind::SettingsScalingPerformance, L"Performance");
             drawScaling(ImageScaling::Quality, ButtonKind::SettingsScalingQuality, L"Quality");
             } else {
-            group(L"3D SETTINGS", 76.0f);
-            DrawOverlayText(L"3D viewer settings will appear here.", settingsLeft, static_cast<float>(bounds.top) + 108.0f * dpiScale,
-                settingsWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            group(L"INPUT", 76.0f);
+            drawToggle(6, ButtonKind::SettingsSpaceMouse, L"Enable SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
+            if (!spaceMouseRuntimeAvailable_) {
+                const RECT spaceMouseBounds = GetSettingsOptionBounds(6);
+                DrawOverlayText(L"Requires 3Dconnexion 3DxWare software", settingsLeft + 30.0f * dpiScale,
+                    static_cast<float>(spaceMouseBounds.top) + 18.0f * dpiScale, settingsWidth - 30.0f * dpiScale,
+                    18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, borderBrush.Get(), true);
+            }
             }
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
             renderTarget_->PopAxisAlignedClip();

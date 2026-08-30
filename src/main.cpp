@@ -1805,20 +1805,7 @@ public:
     void SetSpaceMouseCameraMatrix(const navlib::matrix_t& matrix) {
         if (!CanAcceptSpaceMouseInput()) return;
         if (ModelActive()) {
-            OrbitCamera::State requested = OrbitStateFromNavLibCameraToWorld(matrix);
-            const OrbitCamera::State current = modelViewport_.NavLibCameraState();
-            // Model3D defaults invert only the physically verified world-up and spin axes.
-            requested.position.y = current.position.y - (requested.position.y - current.position.y);
-            const auto dot = [](Float3 a, Float3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
-            const auto cross = [](Float3 a, Float3 b) { return Float3{ a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; };
-            const auto normalize = [&dot](Float3 value) { const float length = std::sqrt(dot(value, value)); return length > 1e-8f ? Float3{ value.x / length, value.y / length, value.z / length } : Float3{ 0, 1, 0 }; };
-            const Float3 forward = normalize(requested.forward);
-            const Float3 baseRight = normalize(cross({ 0, 1, 0 }, forward));
-            const Float3 baseUp = normalize(cross(baseRight, forward));
-            const float roll = std::atan2(dot(normalize(requested.up), baseRight), dot(normalize(requested.up), baseUp));
-            requested.up = { baseUp.x * std::cos(roll) + baseRight.x * std::sin(roll),
-                baseUp.y * std::cos(roll) + baseRight.y * std::sin(roll), baseUp.z * std::cos(roll) + baseRight.z * std::sin(roll) };
-            const bool accepted = modelViewport_.SetNavLibCameraState(requested);
+            const bool accepted = modelViewport_.SetNavLibCameraState(OrbitStateFromNavLibCameraToWorld(matrix));
             TraceModelSpaceMouseState(matrix, accepted);
             return;
         }

@@ -1949,10 +1949,19 @@ private:
         // view.affine is NavLib's documented read/write camera property.  Publishing the
         // locally rendered pose updates NavLib's action baseline before the next 3D-mouse
         // transaction, so mouse navigation and reset cannot leave an old cached pose behind.
-        const long result = spaceMouse_->Write(navlib::view_affine_k, navlib::value_t(SpaceMouseCameraMatrix()));
+        const navlib::matrix_t affine = SpaceMouseCameraMatrix();
+        const navlib::value_t publication(affine);
+        const long result = spaceMouse_->Write(navlib::view_affine_k, publication);
 #if defined(_DEBUG)
-        wchar_t message[128]{};
-        swprintf_s(message, L"Viewtrious SpaceMouse: rebased local Model3D view.affine result=%ld\\n", result);
+        navlib::value_t readback;
+        const long readResult = spaceMouse_->Read(navlib::view_affine_k, readback);
+        const navlib::matrix_t returned = readResult == 0 && readback.type == navlib::matrix_type ? readback.matrix : navlib::matrix_t{};
+        wchar_t message[1024]{};
+        swprintf_s(message, L"Viewtrious SpaceMouse: rebase write=%ld read=%ld get=[%.4f %.4f %.4f %.4f|%.4f %.4f %.4f %.4f|%.4f %.4f %.4f %.4f|%.4f %.4f %.4f %.4f] published=[%.4f %.4f %.4f %.4f|%.4f %.4f %.4f %.4f|%.4f %.4f %.4f %.4f|%.4f %.4f %.4f %.4f] read=[%.4f %.4f %.4f %.4f|%.4f %.4f %.4f %.4f|%.4f %.4f %.4f %.4f|%.4f %.4f %.4f %.4f]\\n",
+            result, readResult,
+            affine.m00, affine.m01, affine.m02, affine.m03, affine.m10, affine.m11, affine.m12, affine.m13, affine.m20, affine.m21, affine.m22, affine.m23, affine.m30, affine.m31, affine.m32, affine.m33,
+            publication.matrix.m00, publication.matrix.m01, publication.matrix.m02, publication.matrix.m03, publication.matrix.m10, publication.matrix.m11, publication.matrix.m12, publication.matrix.m13, publication.matrix.m20, publication.matrix.m21, publication.matrix.m22, publication.matrix.m23, publication.matrix.m30, publication.matrix.m31, publication.matrix.m32, publication.matrix.m33,
+            returned.m00, returned.m01, returned.m02, returned.m03, returned.m10, returned.m11, returned.m12, returned.m13, returned.m20, returned.m21, returned.m22, returned.m23, returned.m30, returned.m31, returned.m32, returned.m33);
         OutputDebugStringW(message);
 #else
         (void)result;
@@ -1961,9 +1970,9 @@ private:
     static navlib::matrix_t NavLibCameraToWorld(const OrbitCamera::State& state) {
         // NavLib consumes a right-handed, row-major camera-to-world matrix.  The camera's
         // local forward axis is -Z, so row 2 is the negated view forward vector.
-        const Float3 right{ state.up.y * state.forward.z - state.up.z * state.forward.y,
-            state.up.z * state.forward.x - state.up.x * state.forward.z,
-            state.up.x * state.forward.y - state.up.y * state.forward.x };
+        const Float3 right{ state.forward.y * state.up.z - state.forward.z * state.up.y,
+            state.forward.z * state.up.x - state.forward.x * state.up.z,
+            state.forward.x * state.up.y - state.forward.y * state.up.x };
         return { right.x, right.y, right.z, 0, state.up.x, state.up.y, state.up.z, 0,
             -state.forward.x, -state.forward.y, -state.forward.z, 0,
             state.position.x, state.position.y, state.position.z, 1 };

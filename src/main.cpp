@@ -1540,6 +1540,7 @@ public:
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
             } else if (EmptyStateActive()) DrawEmptyState();
+            if (ModelActive() && !tutorialPresentation_) DrawModelAxisIndicator();
             if (!tutorialPresentation_) DrawRevisionLabel();
             DrawTitleBar();
             DrawDropdown();
@@ -1992,6 +1993,15 @@ public:
     void QueueDirectoryRefreshFromWatcher() { QueueDirectoryRefresh(); }
 
 private:
+    void DrawModelAxisIndicator() {
+        const RECT canvas = ModelCanvasBounds(); const float dpi = GetDpiForWindow(window_) / 96.0f;
+        const float originX = canvas.right - 38.0f * dpi, originY = canvas.top + 42.0f * dpi;
+        const OrbitCamera::State state = modelViewport_.Camera().NavLibState();
+        const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}; const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
+        const float forwardLength=std::sqrt(dot(state.forward,state.forward)); if(forwardLength<1e-5f)return; const Float3 forward{state.forward.x/forwardLength,state.forward.y/forwardLength,state.forward.z/forwardLength}; Float3 right=cross(state.up,forward); const float rightLength=std::sqrt(dot(right,right)); if(rightLength<1e-5f)return; right={right.x/rightLength,right.y/rightLength,right.z/rightLength}; const Float3 up=cross(forward,right);
+        ComPtr<ID2D1SolidColorBrush> x,y,z,junction; if(FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.88f,.30f,.30f),&x))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.35f,.78f,.42f),&y))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.35f,.55f,.95f),&z))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.90f,.92f,.96f,.9f),&junction)))return;
+        const auto axis=[&](Float3 world,ID2D1Brush* brush,const wchar_t* label){const D2D1_POINT_2F end=D2D1::Point2F(originX+dot(world,right)*22*dpi,originY-dot(world,up)*22*dpi);renderTarget_->DrawLine(D2D1::Point2F(originX,originY),end,brush,2*dpi);DrawOverlayText(label,end.x-5*dpi,end.y-8*dpi,12*dpi,16*dpi,11,DWRITE_FONT_WEIGHT_SEMI_BOLD,brush,true);}; axis({1,0,0},x.Get(),L"X");axis({0,1,0},y.Get(),L"Y");axis({0,0,1},z.Get(),L"Z");renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(originX,originY),2*dpi,2*dpi),junction.Get());
+    }
     RECT ModelCanvasBounds() const {
         RECT client{}; GetClientRect(window_, &client);
         const LONG top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;

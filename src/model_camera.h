@@ -18,17 +18,20 @@ public:
     void SetFieldOfView(float radians);
     const Matrix4& ViewProjection() const;
     Float3 Position() const;
-    Float3 Pivot() const { return pivot_; }
+    Float3 Pivot() const;
     float FieldOfView() const { return fieldOfView_; }
     float Distance() const { return distance_; }
     float Radius() const { return radius_; }
     float AspectRatio() const { return aspect_; }
 
 private:
+    void MaterializeNavLibState();
     void Update();
     Float3 pivot_{};
     float yaw_ = 0.62f, pitch_ = -0.42f, roll_ = 0.0f;
     float distance_ = 5.0f, radius_ = 1.0f, aspect_ = 1.0f;
     float fieldOfView_ = 0.785398163f;
+    State navLibState_{};
+    bool navLibStateActive_ = false;
     Matrix4 viewProjection_ = Matrix4::Identity();
 };

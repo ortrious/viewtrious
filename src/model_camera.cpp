@@ -14,6 +14,7 @@ Float3 Normalize(Float3 value) { const float length = std::sqrt(Dot(value, value
 }
 
 void OrbitCamera::Fit(const ModelBounds& bounds, float aspectRatio) {
+    navLibStateActive_ = false;
     pivot_ = Mul(Add(bounds.minimum, bounds.maximum), 0.5f);
     const Float3 diagonal = Sub(bounds.maximum, bounds.minimum);
     radius_ = std::max(1e-5f, 0.5f * std::sqrt(Dot(diagonal, diagonal)));
@@ -23,45 +24,43 @@ void OrbitCamera::Fit(const ModelBounds& bounds, float aspectRatio) {
     Update();
 }
 void OrbitCamera::SetAspectRatio(float aspectRatio) { aspect_ = std::max(0.01f, aspectRatio); Update(); }
-void OrbitCamera::Orbit(float dx, float dy) { yaw_ += dx; pitch_ = std::clamp(pitch_ + dy, -1.52f, 1.52f); Update(); }
+void OrbitCamera::Orbit(float dx, float dy) { MaterializeNavLibState(); yaw_ += dx; pitch_ = std::clamp(pitch_ + dy, -1.52f, 1.52f); Update(); }
 void OrbitCamera::Pan(float dx, float dy) {
+    MaterializeNavLibState();
     const Float3 position = Position(); const Float3 forward = Normalize(Sub(pivot_, position));
     const Float3 right = Normalize(Cross(forward, { 0, 1, 0 })); const Float3 up = Normalize(Cross(right, forward));
     pivot_ = Add(pivot_, Add(Mul(right, dx * distance_), Mul(up, dy * distance_))); Update();
 }
-void OrbitCamera::Dolly(float wheelUnits) { distance_ = std::clamp(distance_ * std::exp(-wheelUnits * 0.14f), radius_ * 0.02f, radius_ * 10000.0f); Update(); }
+void OrbitCamera::Dolly(float wheelUnits) { MaterializeNavLibState(); distance_ = std::clamp(distance_ * std::exp(-wheelUnits * 0.14f), radius_ * 0.02f, radius_ * 10000.0f); Update(); }
 void OrbitCamera::ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll) {
+    MaterializeNavLibState();
     Pan(x * 0.06f, y * 0.06f); Dolly(-z * 0.45f); yaw_ += yaw * 0.025f; pitch_ = std::clamp(pitch * 0.025f + pitch_, -1.52f, 1.52f); roll_ += roll * 0.025f; Update();
 }
 OrbitCamera::State OrbitCamera::NavLibState() const {
+    if (navLibStateActive_) return navLibState_;
     const Float3 eye = Position(); const Float3 forward = Normalize(Sub(pivot_, eye));
     const Float3 right = Normalize(Cross({ 0, 1, 0 }, forward)); const Float3 baseUp = Normalize(Cross(right, forward));
     const Float3 up = Add(Mul(baseUp, std::cos(roll_)), Mul(right, -std::sin(roll_)));
     return { eye, forward, up };
 }
-void OrbitCamera::SetPivot(Float3 pivot) { if (std::isfinite(pivot.x) && std::isfinite(pivot.y) && std::isfinite(pivot.z)) { pivot_ = pivot; Update(); } }
+void OrbitCamera::SetPivot(Float3 pivot) { if (std::isfinite(pivot.x) && std::isfinite(pivot.y) && std::isfinite(pivot.z)) { MaterializeNavLibState(); pivot_ = pivot; Update(); } }
 void OrbitCamera::SetFieldOfView(float radians) { if (std::isfinite(radians)) { fieldOfView_ = std::clamp(radians, 0.17f, 2.6f); Update(); } }
 bool OrbitCamera::SetFromNavLibState(const State& state) {
     if (!std::isfinite(state.position.x) || !std::isfinite(state.position.y) || !std::isfinite(state.position.z) ||
         !std::isfinite(state.forward.x) || !std::isfinite(state.forward.y) || !std::isfinite(state.forward.z) ||
         !std::isfinite(state.up.x) || !std::isfinite(state.up.y) || !std::isfinite(state.up.z) ||
         std::sqrt(Dot(state.forward, state.forward)) <= 1e-8f || std::sqrt(Dot(state.up, state.up)) <= 1e-8f) return false;
-    const Float3 forward = Normalize(state.forward);
-    const Float3 offset = Mul(forward, -distance_);
-    pivot_ = Add(state.position, Mul(forward, distance_));
-    // Position() is pivot + eye-to-pivot.  NavLib supplies pivot-to-eye forward, so
-    // reconstruct yaw/pitch from its negation (the eye-to-pivot offset) without another sign flip.
-    yaw_ = std::atan2(offset.x, offset.z);
-    pitch_ = std::asin(std::clamp(offset.y / std::max(distance_, 1e-8f), -1.0f, 1.0f));
-    const Float3 baseRight = Normalize(Cross({ 0, 1, 0 }, forward));
-    const Float3 baseUp = Normalize(Cross(baseRight, forward));
-    const Float3 requestedUp = Normalize(state.up);
-    roll_ = std::atan2(Dot(requestedUp, baseRight), Dot(requestedUp, baseUp));
+    // NavLib camera matrices are absolute. Keep the exact accepted pose active so the
+    // next GetCameraMatrix returns the same baseline at the next motion session.
+    navLibState_ = { state.position, Normalize(state.forward), Normalize(state.up) };
+    navLibStateActive_ = true;
+    pivot_ = Add(navLibState_.position, Mul(navLibState_.forward, distance_));
     Update();
     return true;
 }
 bool OrbitCamera::SetPivotFromNavLib(Float3 pivot) {
     if (!std::isfinite(pivot.x) || !std::isfinite(pivot.y) || !std::isfinite(pivot.z)) return false;
+    MaterializeNavLibState();
     const State current = NavLibState();
     const Float3 eyeToPivot = Sub(pivot, current.position);
     const float distance = std::sqrt(Dot(eyeToPivot, eyeToPivot));
@@ -83,13 +82,36 @@ bool OrbitCamera::SetPivotFromNavLib(Float3 pivot) {
     return true;
 }
 Float3 OrbitCamera::Position() const {
+    if (navLibStateActive_) return navLibState_.position;
     const float cp = std::cos(pitch_); return Add(pivot_, { distance_ * std::sin(yaw_) * cp, distance_ * std::sin(pitch_), distance_ * std::cos(yaw_) * cp });
+}
+Float3 OrbitCamera::Pivot() const {
+    return navLibStateActive_ ? Add(navLibState_.position, Mul(navLibState_.forward, distance_)) : pivot_;
+}
+void OrbitCamera::MaterializeNavLibState() {
+    if (!navLibStateActive_) return;
+    const Float3 forward = Normalize(navLibState_.forward);
+    pivot_ = Add(navLibState_.position, Mul(forward, distance_));
+    const Float3 offset = Mul(forward, -distance_);
+    yaw_ = std::atan2(offset.x, offset.z);
+    pitch_ = std::asin(std::clamp(offset.y / std::max(distance_, 1e-8f), -1.0f, 1.0f));
+    const Float3 baseRight = Normalize(Cross({ 0, 1, 0 }, forward));
+    const Float3 baseUp = Normalize(Cross(baseRight, forward));
+    roll_ = std::atan2(Dot(navLibState_.up, baseRight), Dot(navLibState_.up, baseUp));
+    navLibStateActive_ = false;
 }
 const Matrix4& OrbitCamera::ViewProjection() const { return viewProjection_; }
 void OrbitCamera::Update() {
-    const Float3 eye = Position(), forward = Normalize(Sub(pivot_, eye));
-    Float3 right = Normalize(Cross({ 0, 1, 0 }, forward)); Float3 up = Cross(forward, right);
-    const float c = std::cos(roll_), s = std::sin(roll_); const Float3 rolledRight = Add(Mul(right, c), Mul(up, s)); up = Add(Mul(up, c), Mul(right, -s)); right = rolledRight;
+    const Float3 eye = Position();
+    const Float3 forward = navLibStateActive_ ? Normalize(navLibState_.forward) : Normalize(Sub(pivot_, eye));
+    Float3 right{}; Float3 up{};
+    if (navLibStateActive_) {
+        right = Normalize(Cross(navLibState_.up, forward));
+        up = Normalize(Cross(forward, right));
+    } else {
+        right = Normalize(Cross({ 0, 1, 0 }, forward)); up = Cross(forward, right);
+        const float c = std::cos(roll_), s = std::sin(roll_); const Float3 rolledRight = Add(Mul(right, c), Mul(up, s)); up = Add(Mul(up, c), Mul(right, -s)); right = rolledRight;
+    }
     Matrix4 view{}; view.m[0]=right.x; view.m[4]=right.y; view.m[8]=right.z; view.m[1]=up.x; view.m[5]=up.y; view.m[9]=up.z; view.m[2]=-forward.x; view.m[6]=-forward.y; view.m[10]=-forward.z; view.m[12]=-Dot(right,eye); view.m[13]=-Dot(up,eye); view.m[14]=Dot(forward,eye); view.m[15]=1;
     const float nearPlane = std::max(radius_ * 0.001f, distance_ * 0.001f), farPlane = std::max(nearPlane * 2.0f, distance_ + radius_ * 8.0f); const float f = 1.0f / std::tan(fieldOfView_ * 0.5f);
     Matrix4 projection{}; projection.m[0]=f/aspect_; projection.m[5]=f; projection.m[10]=farPlane/(nearPlane-farPlane); projection.m[11]=-1; projection.m[14]=(nearPlane*farPlane)/(nearPlane-farPlane);

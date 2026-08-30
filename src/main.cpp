@@ -1805,10 +1805,29 @@ public:
         const Float3 pivot = camera.Pivot();
         const ModelBounds bounds = modelViewport_.ModelBoundsForNavLib();
         const Float3 center{ (bounds.minimum.x + bounds.maximum.x) * 0.5f, (bounds.minimum.y + bounds.maximum.y) * 0.5f, (bounds.minimum.z + bounds.maximum.z) * 0.5f };
-        wchar_t message[640]{};
-        swprintf_s(message, L"Viewtrious model NavLib accepted=%d inputEye=(%.4f,%.4f,%.4f) inputForward=(%.4f,%.4f,%.4f) eye=(%.4f,%.4f,%.4f) target/pivot=(%.4f,%.4f,%.4f) distance=%.4f modelCenter=(%.4f,%.4f,%.4f)\\n",
+        const OrbitCamera::ClipPlanes clips = camera.CurrentClipPlanes();
+        const double halfHeight = camera.Distance() * std::tan(camera.FieldOfView() * 0.5f);
+        const double halfWidth = halfHeight * camera.AspectRatio();
+        const Matrix4& projection = camera.ViewProjection();
+        float minimumDepth = 0.0f, maximumDepth = 0.0f, minimumW = 0.0f, maximumW = 0.0f;
+        unsigned visibleCorners = 0;
+        bool haveCorner = false;
+        for (float x : { bounds.minimum.x, bounds.maximum.x }) for (float y : { bounds.minimum.y, bounds.maximum.y }) for (float z : { bounds.minimum.z, bounds.maximum.z }) {
+            const float clipX = x * projection.m[0] + y * projection.m[4] + z * projection.m[8] + projection.m[12];
+            const float clipY = x * projection.m[1] + y * projection.m[5] + z * projection.m[9] + projection.m[13];
+            const float clipZ = x * projection.m[2] + y * projection.m[6] + z * projection.m[10] + projection.m[14];
+            const float clipW = x * projection.m[3] + y * projection.m[7] + z * projection.m[11] + projection.m[15];
+            if (!haveCorner) { minimumDepth = maximumDepth = clipZ; minimumW = maximumW = clipW; haveCorner = true; }
+            else { minimumDepth = std::min(minimumDepth, clipZ); maximumDepth = std::max(maximumDepth, clipZ); minimumW = std::min(minimumW, clipW); maximumW = std::max(maximumW, clipW); }
+            if (clipW > 0.0f && clipX >= -clipW && clipX <= clipW && clipY >= -clipW && clipY <= clipW && clipZ >= 0.0f && clipZ <= clipW) ++visibleCorners;
+        }
+        wchar_t message[1152]{};
+        swprintf_s(message, L"Viewtrious model NavLib accepted=%d inputEye=(%.4f,%.4f,%.4f) inputForward=(%.4f,%.4f,%.4f) eye=(%.4f,%.4f,%.4f) target/pivot=(%.4f,%.4f,%.4f) distance=%.4f fov=%.4f aspect=%.4f extents=(%.4f,%.4f) clip=(%.6f,%.4f) radius=%.4f modelCenter=(%.4f,%.4f,%.4f) vp=(%.4f,%.4f,%.4f,%.4f) boundsClip=(corners=%u z=%.4f..%.4f w=%.4f..%.4f)\\n",
             accepted ? 1 : 0, input.m30, input.m31, input.m32, -input.m20, -input.m21, -input.m22,
-            state.position.x, state.position.y, state.position.z, pivot.x, pivot.y, pivot.z, camera.Distance(), center.x, center.y, center.z);
+            state.position.x, state.position.y, state.position.z, pivot.x, pivot.y, pivot.z, camera.Distance(),
+            camera.FieldOfView(), camera.AspectRatio(), halfWidth, halfHeight, clips.nearPlane, clips.farPlane, camera.Radius(),
+            center.x, center.y, center.z, projection.m[0], projection.m[5], projection.m[10], projection.m[14],
+            visibleCorners, minimumDepth, maximumDepth, minimumW, maximumW);
         OutputDebugStringW(message);
 #else
         (void)input;

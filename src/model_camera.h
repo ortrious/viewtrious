@@ -20,7 +20,9 @@ public:
     Float3 Position() const;
     Float3 Pivot() const;
     float FieldOfView() const { return fieldOfView_; }
-    float Distance() const { return distance_; }
+    float Distance() const;
+    struct ClipPlanes { float nearPlane; float farPlane; };
+    ClipPlanes CurrentClipPlanes() const;
     float Radius() const { return radius_; }
     float AspectRatio() const { return aspect_; }
 

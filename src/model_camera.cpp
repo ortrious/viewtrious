@@ -99,6 +99,17 @@ Float3 OrbitCamera::Position() const {
 Float3 OrbitCamera::Pivot() const {
     return pivot_;
 }
+float OrbitCamera::Distance() const {
+    if (!navLibStateActive_) return distance_;
+    const Float3 eyeToPivot = Sub(pivot_, navLibState_.position);
+    const float distance = std::sqrt(Dot(eyeToPivot, eyeToPivot));
+    return std::isfinite(distance) && distance > 1e-8f ? distance : distance_;
+}
+OrbitCamera::ClipPlanes OrbitCamera::CurrentClipPlanes() const {
+    const float distance = Distance();
+    const float nearPlane = std::max(radius_ * 0.001f, distance * 0.001f);
+    return { nearPlane, std::max(nearPlane * 2.0f, distance + radius_ * 8.0f) };
+}
 void OrbitCamera::MaterializeNavLibState() {
     if (!navLibStateActive_) return;
     // Preserve the established live rotation centre while returning to local orbit
@@ -134,7 +145,7 @@ void OrbitCamera::Update() {
         up = Normalize(Cross(forward, right));
     }
     Matrix4 view{}; view.m[0]=right.x; view.m[4]=right.y; view.m[8]=right.z; view.m[1]=up.x; view.m[5]=up.y; view.m[9]=up.z; view.m[2]=-forward.x; view.m[6]=-forward.y; view.m[10]=-forward.z; view.m[12]=-Dot(right,eye); view.m[13]=-Dot(up,eye); view.m[14]=Dot(forward,eye); view.m[15]=1;
-    const float nearPlane = std::max(radius_ * 0.001f, distance_ * 0.001f), farPlane = std::max(nearPlane * 2.0f, distance_ + radius_ * 8.0f); const float f = 1.0f / std::tan(fieldOfView_ * 0.5f);
+    const ClipPlanes clips = CurrentClipPlanes(); const float nearPlane = clips.nearPlane, farPlane = clips.farPlane; const float f = 1.0f / std::tan(fieldOfView_ * 0.5f);
     Matrix4 projection{}; projection.m[0]=f/aspect_; projection.m[5]=f; projection.m[10]=farPlane/(nearPlane-farPlane); projection.m[11]=-1; projection.m[14]=(nearPlane*farPlane)/(nearPlane-farPlane);
     Matrix4 result{}; for (int r=0;r<4;++r) for (int col=0;col<4;++col) for (int k=0;k<4;++k) result.m[r*4+col] += view.m[r*4+k]*projection.m[k*4+col]; viewProjection_=result;
 }

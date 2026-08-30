@@ -7,7 +7,7 @@
 #include <propkey.h>
 #include <propsys.h>
 #include <dwmapi.h>
-#include <d2d1.h>
+#include <d2d1_1.h>
 #include <dwrite.h>
 #include <gdiplus.h>
 #include <wincodec.h>
@@ -616,7 +616,8 @@ public:
         if (!result->result.IsSuccess()) { contentKind_ = ContentKind::None; error_ = result->result.error; InvalidateRect(window_, nullptr, FALSE); return; }
         modelDocument_ = result->result.document;
         std::wstring viewportError;
-        if (!modelViewport_.Create(window_, ModelCanvasBounds(), modelDocument_, viewportError)) {
+        EnsureRenderTarget();
+        if (!graphicsHost_.Ready() || (!modelViewport_.Active() && !modelViewport_.Create(graphicsHost_, modelDocument_, viewportError))) {
             modelDocument_.reset(); contentKind_ = ContentKind::None; error_ = viewportError; InvalidateRect(window_, nullptr, FALSE); return;
         }
         contentKind_ = ContentKind::Model3D;
@@ -626,6 +627,7 @@ public:
 
     void SetWindow(HWND window) {
         window_ = window;
+        EnsureRenderTarget();
         InitializeSpaceMouse();
         ActivateGifPlayback();
         if (!startupPath_.empty()) LoadContent(std::exchange(startupPath_, {}));
@@ -774,8 +776,13 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool HasImage() const { return source_ != nullptr; }
-    bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Window() != nullptr; }
-    void FitModel() { if (ModelActive()) { modelViewport_.Fit(); modelViewport_.Render(); } }
+    bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
+    void FitModel() { if (ModelActive()) { modelViewport_.Fit(); InvalidateRect(window_, nullptr, FALSE); } }
+    void BeginModelOrbit(POINT point) { if (ModelActive()) modelViewport_.BeginOrbit(point); }
+    void BeginModelPan(POINT point) { if (ModelActive()) modelViewport_.BeginPan(point); }
+    void ContinueModelDrag(POINT point) { if (!ModelActive()) return; const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); InvalidateRect(window_, nullptr, FALSE); }
+    void EndModelDrag() { modelViewport_.EndDrag(); }
+    void DollyModel(float steps) { if (ModelActive()) { modelViewport_.Dolly(steps); InvalidateRect(window_, nullptr, FALSE); } }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
@@ -1484,11 +1491,11 @@ public:
     void Paint() {
         PAINTSTRUCT paint{};
         BeginPaint(window_, &paint);
-        SyncModelViewport();
         EnsureRenderTarget();
-        if (renderTarget_) {
-            renderTarget_->BeginDraw();
-            renderTarget_->Clear(kViewerBackground);
+        if (renderTarget_ && graphicsHost_.Ready()) {
+            if (ModelActive() && !TutorialActive()) modelViewport_.Render(graphicsHost_, ModelCanvasBounds());
+            graphicsHost_.BeginDraw();
+            if (!ModelActive() || TutorialActive()) renderTarget_->Clear(kViewerBackground);
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
@@ -1501,19 +1508,22 @@ public:
             DrawOverlay();
             if (!tutorialPresentation_) DrawCopyFeedback();
             DrawTutorial();
-            const HRESULT hr = renderTarget_->EndDraw();
+            const HRESULT hr = graphicsHost_.EndDraw();
             if (SUCCEEDED(hr) && bitmap_ && !tutorialPresentation_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
+            else if (SUCCEEDED(hr)) graphicsHost_.Present();
         }
         EndPaint(window_, &paint);
     }
 
     void Resize() {
-        if (renderTarget_) {
+        if (graphicsHost_.Ready()) {
             RECT client{};
             GetClientRect(window_, &client);
-            renderTarget_->Resize(D2D1::SizeU(std::max(1L, client.right - client.left),
-                std::max(1L, client.bottom - client.top)));
+            std::wstring error;
+            if (!graphicsHost_.Resize(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top), static_cast<float>(GetDpiForWindow(window_)), error)) error_ = error;
+            renderTarget_ = graphicsHost_.D2DContext();
+            bitmap_.Reset(); lanczosBitmap_.Reset(); aboutLogo_.Reset(); checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
         }
         if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
@@ -1869,13 +1879,10 @@ public:
 
     void Shutdown() {
         shuttingDown_ = true;
-        if (modelUiPopup_) { DestroyWindow(modelUiPopup_); modelUiPopup_ = nullptr; }
-        modelUiPopupTarget_.Reset();
-        if (modelRevisionPopup_) { DestroyWindow(modelRevisionPopup_); modelRevisionPopup_ = nullptr; }
-        modelRevisionPopupTarget_.Reset();
         ++modelLoadGeneration_;
         if (modelLoadThread_.joinable()) modelLoadThread_.join();
         DeactivateModel();
+        graphicsHost_.Destroy();
         if (spaceMouse_) {
             std::error_code error;
             spaceMouse_->EnableNavigation(false, error);
@@ -1978,90 +1985,6 @@ private:
     void DeactivateModel() {
         modelViewport_.Destroy(); modelDocument_.reset(); modelLoading_ = false;
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
-    }
-    void SyncModelViewport() {
-        if (!modelViewport_.Window()) return;
-        modelViewport_.SetBounds(ModelCanvasBounds());
-        modelViewport_.SetVisible(contentKind_ == ContentKind::Model3D && !modelLoading_ && !TutorialActive());
-        SyncModelUiPopup();
-    }
-    static LRESULT CALLBACK ModelUiPopupProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
-        Viewer* viewer = reinterpret_cast<Viewer*>(GetWindowLongPtrW(window, GWLP_USERDATA));
-        if (message == WM_NCCREATE) {
-            viewer = reinterpret_cast<Viewer*>(reinterpret_cast<CREATESTRUCTW*>(lParam)->lpCreateParams);
-            SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(viewer));
-        }
-        if (!viewer) return DefWindowProcW(window, message, wParam, lParam);
-        if (message == WM_NCHITTEST) return window == viewer->modelRevisionPopup_ ? HTTRANSPARENT : HTCLIENT;
-        if (message == WM_PAINT) { viewer->PaintModelUiPopup(window); return 0; }
-        if (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_RBUTTONUP) {
-            POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            ClientToScreen(window, &point); ScreenToClient(viewer->window_, &point);
-            return SendMessageW(viewer->window_, message, wParam, MAKELPARAM(point.x, point.y));
-        }
-        if (message == WM_MOUSEWHEEL) return SendMessageW(viewer->window_, message, wParam, lParam);
-        return DefWindowProcW(window, message, wParam, lParam);
-    }
-    void SyncModelUiPopup() {
-        const bool overlay = HasOverlay();
-        const bool show = ModelActive() && (dropdownOpen_ || overlay);
-        if (!show) { if (modelUiPopup_) ShowWindow(modelUiPopup_, SW_HIDE); SyncModelRevisionPopup(); return; }
-        if (!modelUiPopup_) {
-            static const ATOM atom = [] {
-                WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"ViewtriousModelUiPopup";
-                wc.lpfnWndProc = ModelUiPopupProc; return RegisterClassW(&wc);
-            }();
-            if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return;
-            modelUiPopup_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, L"ViewtriousModelUiPopup", L"",
-                WS_POPUP, 0, 0, 1, 1, window_, nullptr, GetModuleHandleW(nullptr), this);
-            if (!modelUiPopup_) return;
-        }
-        RECT bounds{};
-        if (overlay) GetClientRect(window_, &bounds); else bounds = GetDropdownBounds();
-        POINT origin{ bounds.left, bounds.top }; ClientToScreen(window_, &origin);
-        SetLayeredWindowAttributes(modelUiPopup_, 0, overlay ? 220 : 255, LWA_ALPHA);
-        SetWindowPos(modelUiPopup_, HWND_TOP, origin.x, origin.y, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top),
-            SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        InvalidateRect(modelUiPopup_, nullptr, FALSE);
-        SyncModelRevisionPopup();
-    }
-    void SyncModelRevisionPopup() {
-        if (!ModelActive()) { if (modelRevisionPopup_) ShowWindow(modelRevisionPopup_, SW_HIDE); return; }
-        if (!modelRevisionPopup_) {
-            modelRevisionPopup_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, L"ViewtriousModelUiPopup", L"",
-                WS_POPUP, 0, 0, 1, 1, window_, nullptr, GetModuleHandleW(nullptr), this);
-            if (!modelRevisionPopup_) return;
-        }
-        RECT client{}; GetClientRect(window_, &client);
-        const UINT dpi = GetDpiForWindow(window_);
-        const LONG width = MulDiv(106, dpi, 96), height = MulDiv(52, dpi, 96);
-        POINT origin{ 0, std::max(0L, client.bottom - height) }; ClientToScreen(window_, &origin);
-        SetLayeredWindowAttributes(modelRevisionPopup_, 0, 255, LWA_ALPHA);
-        SetWindowPos(modelRevisionPopup_, HWND_TOP, origin.x, origin.y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        InvalidateRect(modelRevisionPopup_, nullptr, FALSE);
-    }
-    void PaintModelUiPopup(HWND popup) {
-        PAINTSTRUCT paint{}; BeginPaint(popup, &paint);
-        ComPtr<ID2D1HwndRenderTarget>& target = popup == modelRevisionPopup_ ? modelRevisionPopupTarget_ : modelUiPopupTarget_;
-        if (!target) {
-            const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties();
-            const D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProperties = D2D1::HwndRenderTargetProperties(popup);
-            d2dFactory_->CreateHwndRenderTarget(properties, hwndProperties, &target);
-        }
-        if (target) {
-            RECT client{}; GetClientRect(popup, &client);
-            target->Resize(D2D1::SizeU(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top)));
-            const ComPtr<ID2D1HwndRenderTarget> parentTarget = renderTarget_;
-            renderTarget_ = target;
-            renderTarget_->BeginDraw(); renderTarget_->Clear(kViewerBackground);
-            if (popup == modelRevisionPopup_) DrawRevisionLabel();
-            else if (HasOverlay()) DrawOverlay();
-            else { const RECT bounds = GetDropdownBounds(); renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(-static_cast<float>(bounds.left), -static_cast<float>(bounds.top))); DrawDropdown(); }
-            renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
-            if (renderTarget_->EndDraw() == D2DERR_RECREATE_TARGET) target.Reset();
-            renderTarget_ = parentTarget;
-        }
-        EndPaint(popup, &paint);
     }
     void StopDirectoryWatcher() {
         directoryWatcherStopping_ = true;
@@ -3631,13 +3554,16 @@ private:
     }
 
     void EnsureRenderTarget() {
-        if (renderTarget_) return;
-        const D2D1_SIZE_F client = ClientSize();
-        d2dFactory_->CreateHwndRenderTarget(D2D1::RenderTargetProperties(),
-            D2D1::HwndRenderTargetProperties(window_, D2D1::SizeU(
-                static_cast<UINT32>(std::max(1.0f, client.width)),
-                static_cast<UINT32>(std::max(1.0f, client.height)))), &renderTarget_);
-        timer_.Log(L"rendering/window initialization complete");
+        if (renderTarget_ || !window_) return;
+        std::wstring error;
+        if (!graphicsHost_.Create(window_, d2dFactory_.Get(), error)) { error_ = error; return; }
+        renderTarget_ = graphicsHost_.D2DContext();
+        if (contentKind_ == ContentKind::Model3D && modelDocument_ && !modelViewport_.Active() &&
+            !modelViewport_.Create(graphicsHost_, modelDocument_, error)) {
+            contentKind_ = ContentKind::None;
+            error_ = error;
+        }
+        timer_.Log(L"shared graphics/window initialization complete");
     }
 
     void EnsureBitmap() {
@@ -4863,13 +4789,15 @@ private:
         checkerboardBrush_.Reset();
         checkerboardBitmap_.Reset();
         checkerboardDpi_ = 0;
+        modelViewport_.Destroy();
         renderTarget_.Reset();
+        graphicsHost_.Destroy();
     }
 
     const StartupTimer& timer_;
     HWND window_ = nullptr;
     ComPtr<IWICImagingFactory> wicFactory_;
-    ComPtr<ID2D1Factory> d2dFactory_;
+    ComPtr<ID2D1Factory1> d2dFactory_;
     ComPtr<IDWriteFactory> dwriteFactory_;
     ComPtr<IWICBitmapSource> source_;
     ComPtr<IWICBitmapDecoder> gifDecoder_;
@@ -4877,7 +4805,8 @@ private:
     std::shared_ptr<std::vector<BYTE>> gifCanvas_;
     std::shared_ptr<std::vector<BYTE>> gifPreviousCanvas_;
     std::shared_ptr<std::vector<BYTE>> lanczosPixels_;
-    ComPtr<ID2D1HwndRenderTarget> renderTarget_;
+    GraphicsHost graphicsHost_;
+    ComPtr<ID2D1DeviceContext> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
     ComPtr<ID2D1Bitmap> lanczosBitmap_;
     ComPtr<ID2D1Bitmap> aboutLogo_;
@@ -4959,10 +4888,6 @@ private:
     std::wstring startupPath_;
     Float3 navLibPivot_{};
     bool navLibPivotValid_ = false;
-    HWND modelUiPopup_ = nullptr;
-    ComPtr<ID2D1HwndRenderTarget> modelUiPopupTarget_;
-    HWND modelRevisionPopup_ = nullptr;
-    ComPtr<ID2D1HwndRenderTarget> modelRevisionPopupTarget_;
 #if defined(_DEBUG)
     LONGLONG lastModelNavLibTraceQpc_ = 0;
 #endif
@@ -5127,6 +5052,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+        if (viewer->ModelActive()) { viewer->DollyModel(wheelUnits); return 0; }
         viewer->ZoomAt(point, viewer->WheelZoomFactor(wheelUnits));
         return 0;
     }
@@ -5223,10 +5149,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->SetHamburgerPressed(true);
             SetCapture(window);
         } else {
-            viewer->BeginPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            if (viewer->ModelActive()) { viewer->BeginModelOrbit({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); SetCapture(window); }
+            else viewer->BeginPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         }
         return 0;
     }
+    case WM_MBUTTONDOWN:
+        if (!viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen() && viewer->ModelActive()) {
+            viewer->BeginModelPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            SetCapture(window);
+            return 0;
+        }
+        break;
     case WM_MOUSEMOVE: {
         if (viewer->TutorialActive()) {
             viewer->SetButtonHover(viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }));
@@ -5273,7 +5207,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->ContinueCanvasNavigationClick(point);
             return 0;
         }
-        if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) viewer->PanTo(point);
+        if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) {
+            if (viewer->ModelActive()) viewer->ContinueModelDrag(point); else viewer->PanTo(point);
+        }
         return 0;
     }
     case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
@@ -5320,7 +5256,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         const CaptionButton pressed = viewer->PressedCaptionButton();
-        if (pressed == CaptionButton::None) { viewer->EndPan(); return 0; }
+        if (pressed == CaptionButton::None) { viewer->EndPan(); viewer->EndModelDrag(); if (GetCapture() == window) ReleaseCapture(); return 0; }
         const FrameMetrics frame = GetFrameMetrics(window);
         const CaptionButton released = CaptionButtonAt(frame, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         viewer->ClearCaptionButtonPressed();
@@ -5329,7 +5265,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->CancelCanvasNavigationClick(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelCanvasNavigationClick(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (!viewer->TutorialActive()) viewer->OpenContextMenu(point);
@@ -5441,7 +5377,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         bounds.right = bounds.left + width;
         bounds.bottom = bounds.top + height;
     }
-    const DWORD windowStyle = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+    const DWORD windowStyle = WS_OVERLAPPEDWINDOW;
     HWND window = CreateWindowExW(0, kWindowClass, kWindowTitle, windowStyle,
         bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
         nullptr, nullptr, instance, &viewer);

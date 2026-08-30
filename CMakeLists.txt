@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.5.5.8 LANGUAGES CXX)
+project(Viewtrious VERSION 0.6.0.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -26,6 +26,7 @@ add_executable(Viewtrious WIN32
     src/model_camera.cpp
     src/stl_loader.cpp
     src/d3d11_model_viewport.cpp
+    src/graphics_host.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc"
 )
 

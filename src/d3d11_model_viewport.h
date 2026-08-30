@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include "model_camera.h"
+#include "graphics_host.h"
 
 #include <memory>
 #include <string>
@@ -14,37 +15,37 @@ public:
     D3D11ModelViewport(const D3D11ModelViewport&) = delete;
     D3D11ModelViewport& operator=(const D3D11ModelViewport&) = delete;
 
-    bool Create(HWND parent, const RECT& bounds, std::shared_ptr<ModelDocument> document, std::wstring& error);
+    bool Create(GraphicsHost& host, std::shared_ptr<ModelDocument> document, std::wstring& error);
     void Destroy();
-    void SetBounds(const RECT& bounds);
-    void SetVisible(bool visible);
-    void Render();
+    void Resize(GraphicsHost& host, const RECT& bounds);
+    void Render(GraphicsHost& host, const RECT& bounds);
     void Fit();
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);
     bool SetNavLibCameraState(const OrbitCamera::State& state);
     OrbitCamera::State NavLibCameraState() const { return camera_.NavLibState(); }
     ModelBounds ModelBoundsForNavLib() const { return document_ ? document_->bounds : ModelBounds{}; }
-    bool SetNavLibPivot(Float3 pivot) { if (!camera_.SetPivotFromNavLib(pivot)) return false; NotifyCameraChanged(); Render(); return true; }
-    void SetNavLibFieldOfView(float radians) { camera_.SetFieldOfView(radians); NotifyCameraChanged(); Render(); }
-    bool IsVisible() const;
-    HWND Window() const { return window_; }
+    bool SetNavLibPivot(Float3 pivot) { if (!camera_.SetPivotFromNavLib(pivot)) return false; NotifyCameraChanged(); return true; }
+    void SetNavLibFieldOfView(float radians) { camera_.SetFieldOfView(radians); NotifyCameraChanged(); }
+    bool Active() const { return resources_ != nullptr; }
+    void BeginOrbit(POINT point);
+    void BeginPan(POINT point);
+    void ContinueDrag(POINT point, UINT width, UINT height);
+    void EndDrag();
+    void Dolly(float steps);
     OrbitCamera& Camera() { return camera_; }
     const OrbitCamera& Camera() const { return camera_; }
     const ModelDocument* Document() const { return document_.get(); }
     void SetCameraChangedCallback(CameraChanged callback, void* context) { cameraChanged_ = callback; cameraContext_ = context; }
 
 private:
-    static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
-    LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
-    bool InitializeD3D(std::wstring& error);
+    bool InitializeD3D(GraphicsHost& host, std::wstring& error);
     bool UploadModel(std::wstring& error);
     bool CreateTargets();
     void DiscardTargets();
     void DiscardD3D();
-    void Resize();
+    void ResizeDepth(GraphicsHost& host, UINT width, UINT height);
     void NotifyCameraChanged();
 
-    HWND window_ = nullptr;
     std::shared_ptr<ModelDocument> document_;
     OrbitCamera camera_;
     CameraChanged cameraChanged_ = nullptr;

@@ -637,9 +637,8 @@ public:
         spaceMouse_->getPerspective = [this] { return ModelActive(); };
         spaceMouse_->getRotatable = [this] { return ModelActive(); };
         spaceMouse_->getCameraTarget = [this] { return SpaceMouseModelPivot(); };
-        spaceMouse_->setCameraTarget = [this](const navlib::point_t& point) { ObserveSpaceMouseModelPivotRequest(point); };
         spaceMouse_->getPivot = [this] { return SpaceMouseModelPivot(); };
-        spaceMouse_->setPivot = [this](const navlib::point_t& point) { ObserveSpaceMouseModelPivotRequest(point); };
+        spaceMouse_->setPivot = [this](const navlib::point_t& point) { SetSpaceMouseModelPivot(point); };
         spaceMouse_->getModelExtents = [this] { return SpaceMouseModelExtents(); };
         spaceMouse_->setMotion = [this](bool motion) { SetSpaceMouseMotion(motion); };
         std::error_code error;
@@ -1759,11 +1758,15 @@ public:
         LARGE_INTEGER now{}, frequency{};
         QueryPerformanceCounter(&now);
         QueryPerformanceFrequency(&frequency);
-        wchar_t message[320]{};
+        wchar_t message[448]{};
         const Float3 pivot = ModelActive() ? modelViewport_.Camera().Pivot() : Float3{};
-        swprintf_s(message, L"Viewtrious SpaceMouse: %s qpc=%lld (%.3f ms) generation=%llu size=%ux%u motion=%d pivot=(%.4f,%.4f,%.4f)\\n",
+        const OrbitCamera::State state = ModelActive() ? modelViewport_.Camera().NavLibState() : OrbitCamera::State{};
+        const float distance = ModelActive() ? modelViewport_.Camera().Distance() : 0.0f;
+        swprintf_s(message, L"Viewtrious SpaceMouse: %s qpc=%lld (%.3f ms) generation=%llu size=%ux%u motion=%d eye=(%.4f,%.4f,%.4f) forward=(%.4f,%.4f,%.4f) pivot=(%.4f,%.4f,%.4f) distance=%.4f\\n",
             event, now.QuadPart, 1000.0 * static_cast<double>(now.QuadPart) / static_cast<double>(frequency.QuadPart),
-            static_cast<unsigned long long>(generation), width, height, spaceMouseMotionActive_ ? 1 : 0, pivot.x, pivot.y, pivot.z);
+            static_cast<unsigned long long>(generation), width, height, spaceMouseMotionActive_ ? 1 : 0,
+            state.position.x, state.position.y, state.position.z, state.forward.x, state.forward.y, state.forward.z,
+            pivot.x, pivot.y, pivot.z, distance);
         OutputDebugStringW(message);
 #else
         (void)event;
@@ -1945,11 +1948,12 @@ private:
         const ModelBounds bounds = modelViewport_.ModelBoundsForNavLib();
         return { { bounds.minimum.x, bounds.minimum.y, bounds.minimum.z }, { bounds.maximum.x, bounds.maximum.y, bounds.maximum.z } };
     }
-    void ObserveSpaceMouseModelPivotRequest(const navlib::point_t&) {
-        // OrbitCamera owns the single persistent model pivot.  NavLib may echo its profile
-        // default target/pivot during a motion update; accepting that stale value would reset
-        // mouse- or SpaceMouse-translated pivots back to the bounds centre.  The absolute
-        // camera matrix remains the authoritative NavLib input and derives the live pivot.
+    void SetSpaceMouseModelPivot(const navlib::point_t& point) {
+        if (!ModelActive()) return;
+        // The SDK defines SetPivotPosition as an authoritative world-space rotation-centre
+        // request.  OrbitCamera preserves the eye and rebuilds its forward/pivot/distance
+        // relation atomically, so this cannot leave a stale pivot beside a new camera matrix.
+        modelViewport_.SetNavLibPivot({ static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z) });
     }
     void BeginModelLoad(const std::wstring& path) {
         DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);

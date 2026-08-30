@@ -49,11 +49,35 @@ bool OrbitCamera::SetFromNavLibState(const State& state) {
     const Float3 forward = Normalize(state.forward);
     const Float3 offset = Mul(forward, -distance_);
     pivot_ = Add(state.position, Mul(forward, distance_));
-    yaw_ = std::atan2(-offset.x, -offset.z);
-    pitch_ = std::asin(std::clamp(-offset.y / std::max(distance_, 1e-8f), -1.0f, 1.0f));
+    // Position() is pivot + eye-to-pivot.  NavLib supplies pivot-to-eye forward, so
+    // reconstruct yaw/pitch from its negation (the eye-to-pivot offset) without another sign flip.
+    yaw_ = std::atan2(offset.x, offset.z);
+    pitch_ = std::asin(std::clamp(offset.y / std::max(distance_, 1e-8f), -1.0f, 1.0f));
     const Float3 baseRight = Normalize(Cross({ 0, 1, 0 }, forward));
     const Float3 baseUp = Normalize(Cross(baseRight, forward));
     const Float3 requestedUp = Normalize(state.up);
+    roll_ = std::atan2(Dot(requestedUp, baseRight), Dot(requestedUp, baseUp));
+    Update();
+    return true;
+}
+bool OrbitCamera::SetPivotFromNavLib(Float3 pivot) {
+    if (!std::isfinite(pivot.x) || !std::isfinite(pivot.y) || !std::isfinite(pivot.z)) return false;
+    const State current = NavLibState();
+    const Float3 eyeToPivot = Sub(pivot, current.position);
+    const float distance = std::sqrt(Dot(eyeToPivot, eyeToPivot));
+    if (!std::isfinite(distance) || distance <= std::max(radius_ * 1e-5f, 1e-8f) || distance > radius_ * 10000.0f) return false;
+
+    // NavLib defines the pivot as a world-space rotation centre.  Preserve the eye and rebuild
+    // the orbit relation so eye, forward, pivot, and distance remain one coherent state.
+    pivot_ = pivot;
+    distance_ = distance;
+    const Float3 forward = Normalize(eyeToPivot);
+    const Float3 offset = Mul(forward, -distance_);
+    yaw_ = std::atan2(offset.x, offset.z);
+    pitch_ = std::asin(std::clamp(offset.y / distance_, -1.0f, 1.0f));
+    const Float3 baseRight = Normalize(Cross({ 0, 1, 0 }, forward));
+    const Float3 baseUp = Normalize(Cross(baseRight, forward));
+    const Float3 requestedUp = Normalize(current.up);
     roll_ = std::atan2(Dot(requestedUp, baseRight), Dot(requestedUp, baseUp));
     Update();
     return true;

@@ -24,7 +24,7 @@ public:
     bool SetNavLibCameraState(const OrbitCamera::State& state);
     OrbitCamera::State NavLibCameraState() const { return camera_.NavLibState(); }
     ModelBounds ModelBoundsForNavLib() const { return document_ ? document_->bounds : ModelBounds{}; }
-    void SetNavLibPivot(Float3 pivot) { camera_.SetPivot(pivot); NotifyCameraChanged(); Render(); }
+    bool SetNavLibPivot(Float3 pivot) { if (!camera_.SetPivotFromNavLib(pivot)) return false; NotifyCameraChanged(); Render(); return true; }
     void SetNavLibFieldOfView(float radians) { camera_.SetFieldOfView(radians); NotifyCameraChanged(); Render(); }
     bool IsVisible() const;
     HWND Window() const { return window_; }

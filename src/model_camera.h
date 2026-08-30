@@ -12,6 +12,7 @@ public:
     void Dolly(float wheelUnits);
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);
     bool SetFromNavLibState(const State& state);
+    bool SetPivotFromNavLib(Float3 pivot);
     State NavLibState() const;
     void SetPivot(Float3 pivot);
     void SetFieldOfView(float radians);

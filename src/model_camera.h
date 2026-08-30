@@ -20,6 +20,7 @@ public:
     const Matrix4& ViewProjection() const;
     Float3 Position() const;
     Float3 Pivot() const;
+    Float3 CameraTarget() const;
     float FieldOfView() const { return fieldOfView_; }
     float Distance() const;
     struct ClipPlanes { float nearPlane; float farPlane; };
@@ -30,10 +31,12 @@ public:
 private:
     void MaterializeNavLibState();
     void SetLocalOrientation(Float3 forward, Float3 up);
+    Float3 LocalFramingOffset() const;
     void Update();
     Float3 pivot_{};
     Float3 forward_{ 0.0f, 0.0f, -1.0f };
     Float3 up_{ 0.0f, 1.0f, 0.0f };
+    float framingRight_ = 0.0f, framingUp_ = 0.0f;
     float distance_ = 5.0f, radius_ = 1.0f, aspect_ = 1.0f;
     float fieldOfView_ = 0.785398163f;
     State navLibState_{};

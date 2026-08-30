@@ -21,6 +21,7 @@ Float3 RotateAroundAxis(Float3 value, Float3 axis, float radians) {
 void OrbitCamera::Fit(const ModelBounds& bounds, float aspectRatio) {
     navLibStateActive_ = false;
     pivot_ = Mul(Add(bounds.minimum, bounds.maximum), 0.5f);
+    framingRight_ = framingUp_ = 0.0f;
     const Float3 diagonal = Sub(bounds.maximum, bounds.minimum);
     radius_ = std::max(1e-5f, 0.5f * std::sqrt(Dot(diagonal, diagonal)));
     aspect_ = std::max(0.01f, aspectRatio);
@@ -44,9 +45,9 @@ void OrbitCamera::Orbit(float dx, float dy) {
 }
 void OrbitCamera::Pan(float dx, float dy) {
     MaterializeNavLibState();
-    const Float3 forward = forward_;
-    const Float3 right = Normalize(Cross(forward, up_)); const Float3 up = Normalize(Cross(right, forward));
-    pivot_ = Add(pivot_, Add(Mul(right, dx * distance_), Mul(up, dy * distance_))); Update();
+    framingRight_ += dx * distance_;
+    framingUp_ += dy * distance_;
+    Update();
 }
 void OrbitCamera::Dolly(float wheelUnits) { MaterializeNavLibState(); distance_ = std::clamp(distance_ * std::exp(-wheelUnits * 0.14f), radius_ * 0.02f, radius_ * 10000.0f); Update(); }
 void OrbitCamera::ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll) {
@@ -79,14 +80,14 @@ bool OrbitCamera::SetCameraTargetFromNavLib(Float3 target) {
     const Float3 forward = Normalize(current.forward);
     const Float3 right = Normalize(Cross(forward, current.up));
     const Float3 up = Normalize(Cross(right, forward));
-    const Float3 targetOffset = Sub(target, pivot_);
+    const Float3 targetOffset = Sub(target, CameraTarget());
     const Float3 pan = Add(Mul(right, Dot(targetOffset, right)), Mul(up, Dot(targetOffset, up)));
     if (!std::isfinite(pan.x) || !std::isfinite(pan.y) || !std::isfinite(pan.z)) return false;
 
-    // Camera-target requests carry view-plane translation. Keep eye and the one live
-    // pivot together, exactly as normal mouse pan does, while retaining its COG relation.
-    pivot_ = Add(pivot_, pan);
+    // Camera-target requests carry framing translation. The orbit pivot remains attached
+    // to the model, while the camera/view frame moves in its current right/up plane.
     if (navLibStateActive_) navLibState_.position = Add(navLibState_.position, pan);
+    else { framingRight_ += Dot(pan, right); framingUp_ += Dot(pan, up); }
     Update();
     return true;
 }
@@ -108,15 +109,19 @@ bool OrbitCamera::SetPivotFromNavLib(Float3 pivot) {
 }
 Float3 OrbitCamera::Position() const {
     if (navLibStateActive_) return navLibState_.position;
-    return Sub(pivot_, Mul(forward_, distance_));
+    return Add(Sub(pivot_, Mul(forward_, distance_)), LocalFramingOffset());
 }
 Float3 OrbitCamera::Pivot() const {
     return pivot_;
 }
+Float3 OrbitCamera::CameraTarget() const {
+    if (navLibStateActive_) return Add(navLibState_.position, Mul(Normalize(navLibState_.forward), Distance()));
+    return Add(pivot_, LocalFramingOffset());
+}
 float OrbitCamera::Distance() const {
     if (!navLibStateActive_) return distance_;
     const Float3 eyeToPivot = Sub(pivot_, navLibState_.position);
-    const float distance = std::sqrt(Dot(eyeToPivot, eyeToPivot));
+    const float distance = Dot(eyeToPivot, Normalize(navLibState_.forward));
     return std::isfinite(distance) && distance > 1e-8f ? distance : distance_;
 }
 OrbitCamera::ClipPlanes OrbitCamera::CurrentClipPlanes() const {
@@ -128,12 +133,15 @@ void OrbitCamera::MaterializeNavLibState() {
     if (!navLibStateActive_) return;
     // Preserve the established live rotation centre while returning to local orbit
     // controls. It must never be reconstructed from the last camera eye.
-    const Float3 eyeToPivot = Sub(pivot_, navLibState_.position);
-    const float pivotDistance = std::sqrt(Dot(eyeToPivot, eyeToPivot));
-    if (std::isfinite(pivotDistance) && pivotDistance > 1e-8f) distance_ = pivotDistance;
-    const Float3 forward = pivotDistance > 1e-8f ? Mul(eyeToPivot, 1.0f / pivotDistance) : Normalize(navLibState_.forward);
-    // Match the active NavLib rendering basis exactly before local mouse orbit starts.
+    const Float3 forward = Normalize(navLibState_.forward);
     SetLocalOrientation(forward, navLibState_.up);
+    const float focusDistance = Dot(Sub(pivot_, navLibState_.position), forward_);
+    if (std::isfinite(focusDistance) && focusDistance > 1e-8f) distance_ = focusDistance;
+    const Float3 framing = Sub(navLibState_.position, Sub(pivot_, Mul(forward_, distance_)));
+    const Float3 right = Normalize(Cross(forward_, up_));
+    const Float3 up = Normalize(Cross(right, forward_));
+    framingRight_ = Dot(framing, right);
+    framingUp_ = Dot(framing, up);
     navLibStateActive_ = false;
 }
 void OrbitCamera::SetLocalOrientation(Float3 forward, Float3 up) {
@@ -145,6 +153,11 @@ void OrbitCamera::SetLocalOrientation(Float3 forward, Float3 up) {
     }
     right = Normalize(right);
     up_ = Normalize(Cross(forward_, right));
+}
+Float3 OrbitCamera::LocalFramingOffset() const {
+    const Float3 right = Normalize(Cross(forward_, up_));
+    const Float3 up = Normalize(Cross(right, forward_));
+    return Add(Mul(right, framingRight_), Mul(up, framingUp_));
 }
 const Matrix4& OrbitCamera::ViewProjection() const { return viewProjection_; }
 void OrbitCamera::Update() {

@@ -643,7 +643,7 @@ public:
         spaceMouse_->setViewFov = [this](double fov) { if (ModelActive()) modelViewport_.SetNavLibFieldOfView(static_cast<float>(fov)); };
         spaceMouse_->getPerspective = [this] { return ModelActive(); };
         spaceMouse_->getRotatable = [this] { return ModelActive(); };
-        spaceMouse_->getCameraTarget = [this] { return SpaceMouseModelPivot(); };
+        spaceMouse_->getCameraTarget = [this] { return SpaceMouseModelCameraTarget(); };
         spaceMouse_->setCameraTarget = [this](const navlib::point_t& point) { SetSpaceMouseModelCameraTarget(point); };
         spaceMouse_->getPivot = [this] { return SpaceMouseModelPivot(); };
         spaceMouse_->setPivot = [this](const navlib::point_t& point) { SetSpaceMouseModelPivot(point); };
@@ -1963,6 +1963,11 @@ private:
         if (!ModelActive()) return {};
         const Float3 pivot = modelViewport_.Camera().Pivot();
         return { pivot.x, pivot.y, pivot.z };
+    }
+    navlib::point_t SpaceMouseModelCameraTarget() const {
+        if (!ModelActive()) return {};
+        const Float3 target = modelViewport_.Camera().CameraTarget();
+        return { target.x, target.y, target.z };
     }
     static navlib::matrix_t NavLibCameraToWorld(const OrbitCamera::State& state) {
         // NavLib consumes a right-handed, row-major camera-to-world matrix.  The camera's

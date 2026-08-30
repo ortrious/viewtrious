@@ -35,9 +35,12 @@ void OrbitCamera::ApplySpaceMouse(float x, float y, float z, float pitch, float 
 }
 OrbitCamera::State OrbitCamera::NavLibState() const {
     const Float3 eye = Position(); const Float3 forward = Normalize(Sub(pivot_, eye));
-    const Float3 right = Normalize(Cross({ 0, 1, 0 }, forward)); const Float3 up = Normalize(Cross(right, forward));
+    const Float3 right = Normalize(Cross({ 0, 1, 0 }, forward)); const Float3 baseUp = Normalize(Cross(right, forward));
+    const Float3 up = Add(Mul(baseUp, std::cos(roll_)), Mul(right, -std::sin(roll_)));
     return { eye, forward, up };
 }
+void OrbitCamera::SetPivot(Float3 pivot) { if (std::isfinite(pivot.x) && std::isfinite(pivot.y) && std::isfinite(pivot.z)) { pivot_ = pivot; Update(); } }
+void OrbitCamera::SetFieldOfView(float radians) { if (std::isfinite(radians)) { fieldOfView_ = std::clamp(radians, 0.17f, 2.6f); Update(); } }
 bool OrbitCamera::SetFromNavLibState(const State& state) {
     if (!std::isfinite(state.position.x) || !std::isfinite(state.position.y) || !std::isfinite(state.position.z) ||
         !std::isfinite(state.forward.x) || !std::isfinite(state.forward.y) || !std::isfinite(state.forward.z) ||

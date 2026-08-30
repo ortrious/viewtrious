@@ -23,6 +23,9 @@ public:
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);
     bool SetNavLibCameraState(const OrbitCamera::State& state);
     OrbitCamera::State NavLibCameraState() const { return camera_.NavLibState(); }
+    ModelBounds ModelBoundsForNavLib() const { return document_ ? document_->bounds : ModelBounds{}; }
+    void SetNavLibPivot(Float3 pivot) { camera_.SetPivot(pivot); NotifyCameraChanged(); Render(); }
+    void SetNavLibFieldOfView(float radians) { camera_.SetFieldOfView(radians); NotifyCameraChanged(); Render(); }
     bool IsVisible() const;
     HWND Window() const { return window_; }
     OrbitCamera& Camera() { return camera_; }

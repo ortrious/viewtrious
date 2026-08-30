@@ -136,6 +136,15 @@ public:
     std::function<void(const navlib::matrix_t&)> setCameraMatrix;
     std::function<navlib::box_t()> getViewExtents;
     std::function<void(const navlib::box_t&)> setViewExtents;
+    std::function<double()> getViewFov;
+    std::function<void(double)> setViewFov;
+    std::function<bool()> getPerspective;
+    std::function<bool()> getRotatable;
+    std::function<navlib::point_t()> getCameraTarget;
+    std::function<void(const navlib::point_t&)> setCameraTarget;
+    std::function<navlib::point_t()> getPivot;
+    std::function<void(const navlib::point_t&)> setPivot;
+    std::function<navlib::box_t()> getModelExtents;
     std::function<void(bool)> setMotion;
 
     SpaceMouseNavigation() : CNavigation3D(false, navlib::none) { PutProfileHint("Viewtrious"); }
@@ -156,22 +165,24 @@ protected:
         if (setViewExtents) setViewExtents(extents); return 0;
     }
     long GetPointerPosition(navlib::point_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
-    long GetViewFOV(double&) const override { return navlib::make_result_code(navlib::navlib_errc::invalid_operation); }
+    long GetViewFOV(double& fov) const override { if (!getViewFov) return navlib::make_result_code(navlib::navlib_errc::invalid_operation); fov = getViewFov(); return 0; }
     long GetViewFrustum(navlib::frustum_t&) const override { return navlib::make_result_code(navlib::navlib_errc::invalid_operation); }
-    long SetViewFOV(double) override { return navlib::make_result_code(navlib::navlib_errc::invalid_operation); }
+    long SetViewFOV(double fov) override { if (!setViewFov) return navlib::make_result_code(navlib::navlib_errc::invalid_operation); setViewFov(fov); return 0; }
     long SetViewFrustum(const navlib::frustum_t&) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
-    long GetIsViewPerspective(navlib::bool_t& perspective) const override { perspective = false; return 0; }
-    long GetIsViewRotatable(navlib::bool_t& rotatable) const override { rotatable = false; return 0; }
-    long GetModelExtents(navlib::box_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
+    long GetIsViewPerspective(navlib::bool_t& perspective) const override { perspective = getPerspective && getPerspective(); return 0; }
+    long GetIsViewRotatable(navlib::bool_t& rotatable) const override { rotatable = getRotatable && getRotatable(); return 0; }
+    long GetModelExtents(navlib::box_t& extents) const override { if (!getModelExtents) return navlib::make_result_code(navlib::navlib_errc::no_data_available); extents = getModelExtents(); return 0; }
     long GetSelectionExtents(navlib::box_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
     long GetSelectionTransform(navlib::matrix_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
     long GetIsSelectionEmpty(navlib::bool_t& empty) const override { empty = true; return 0; }
     long SetSelectionTransform(const navlib::matrix_t&) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
-    long GetPivotPosition(navlib::point_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
-    long IsUserPivot(navlib::bool_t& userPivot) const override { userPivot = false; return 0; }
-    long SetPivotPosition(const navlib::point_t&) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
-    long GetPivotVisible(navlib::bool_t& visible) const override { visible = false; return 0; }
-    long SetPivotVisible(bool) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
+    long GetCameraTarget(navlib::point_t& target) const override { if (!getCameraTarget) return navlib::make_result_code(navlib::navlib_errc::no_data_available); target = getCameraTarget(); return 0; }
+    long SetCameraTarget(const navlib::point_t& target) override { if (!setCameraTarget) return navlib::make_result_code(navlib::navlib_errc::function_not_supported); setCameraTarget(target); return 0; }
+    long GetPivotPosition(navlib::point_t& pivot) const override { if (!getPivot) return navlib::make_result_code(navlib::navlib_errc::no_data_available); pivot = getPivot(); return 0; }
+    long IsUserPivot(navlib::bool_t& userPivot) const override { userPivot = getPivot != nullptr; return 0; }
+    long SetPivotPosition(const navlib::point_t& pivot) override { if (!setPivot) return navlib::make_result_code(navlib::navlib_errc::function_not_supported); setPivot(pivot); return 0; }
+    long GetPivotVisible(navlib::bool_t& visible) const override { visible = getPivot != nullptr; return 0; }
+    long SetPivotVisible(bool) override { return getPivot ? 0 : navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
     long GetHitLookAt(navlib::point_t&) const override { return navlib::make_result_code(navlib::navlib_errc::no_data_available); }
     long SetHitAperture(double) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
     long SetHitDirection(const navlib::vector_t&) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
@@ -621,6 +632,15 @@ public:
         spaceMouse_->setCameraMatrix = [this](const navlib::matrix_t& matrix) { SetSpaceMouseCameraMatrix(matrix); };
         spaceMouse_->getViewExtents = [this] { return SpaceMouseViewExtents(); };
         spaceMouse_->setViewExtents = [this](const navlib::box_t& extents) { SetSpaceMouseViewExtents(extents); };
+        spaceMouse_->getViewFov = [this] { return ModelActive() ? static_cast<double>(modelViewport_.Camera().FieldOfView()) : 0.0; };
+        spaceMouse_->setViewFov = [this](double fov) { if (ModelActive()) modelViewport_.SetNavLibFieldOfView(static_cast<float>(fov)); };
+        spaceMouse_->getPerspective = [this] { return ModelActive(); };
+        spaceMouse_->getRotatable = [this] { return ModelActive(); };
+        spaceMouse_->getCameraTarget = [this] { return SpaceMouseModelPivot(); };
+        spaceMouse_->setCameraTarget = [this](const navlib::point_t& point) { SetSpaceMouseModelPivot(point); };
+        spaceMouse_->getPivot = [this] { return SpaceMouseModelPivot(); };
+        spaceMouse_->setPivot = [this](const navlib::point_t& point) { SetSpaceMouseModelPivot(point); };
+        spaceMouse_->getModelExtents = [this] { return SpaceMouseModelExtents(); };
         spaceMouse_->setMotion = [this](bool motion) { SetSpaceMouseMotion(motion); };
         std::error_code error;
         spaceMouse_->EnableNavigation(true, error);
@@ -1726,6 +1746,13 @@ public:
             source_ ? pan_.x / scale : 0.0f, source_ ? -pan_.y / scale : 0.0f, 0, 1 };
     }
     navlib::box_t SpaceMouseViewExtents() const {
+        if (ModelActive()) {
+            const OrbitCamera& camera = modelViewport_.Camera();
+            const double halfHeight = camera.Distance() * std::tan(camera.FieldOfView() * 0.5f);
+            const double halfWidth = halfHeight * camera.AspectRatio();
+            const double depth = std::max<double>(camera.Distance() + camera.Radius() * 8.0f, 1.0e-5);
+            return { { -halfWidth, -halfHeight, -depth }, { halfWidth, halfHeight, depth } };
+        }
         const D2D1_SIZE_F canvas = ImageCanvasSize();
         const double scale = std::max(0.0001f, CurrentScale());
         const double halfWidth = canvas.width / scale / 2.0;
@@ -1883,6 +1910,19 @@ private:
         RECT client{}; GetClientRect(window_, &client);
         const LONG top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         return { 0, top, client.right, std::max(top + 1L, client.bottom) };
+    }
+    navlib::point_t SpaceMouseModelPivot() const {
+        if (!ModelActive()) return {};
+        const Float3 pivot = modelViewport_.Camera().Pivot();
+        return { pivot.x, pivot.y, pivot.z };
+    }
+    navlib::box_t SpaceMouseModelExtents() const {
+        if (!ModelActive()) return {};
+        const ModelBounds bounds = modelViewport_.ModelBoundsForNavLib();
+        return { { bounds.minimum.x, bounds.minimum.y, bounds.minimum.z }, { bounds.maximum.x, bounds.maximum.y, bounds.maximum.z } };
+    }
+    void SetSpaceMouseModelPivot(const navlib::point_t& point) {
+        if (ModelActive()) modelViewport_.SetNavLibPivot({ static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z) });
     }
     void BeginModelLoad(const std::wstring& path) {
         DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);

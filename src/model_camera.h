@@ -13,12 +13,15 @@ public:
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);
     bool SetFromNavLibState(const State& state);
     State NavLibState() const;
+    void SetPivot(Float3 pivot);
+    void SetFieldOfView(float radians);
     const Matrix4& ViewProjection() const;
     Float3 Position() const;
     Float3 Pivot() const { return pivot_; }
     float FieldOfView() const { return fieldOfView_; }
     float Distance() const { return distance_; }
     float Radius() const { return radius_; }
+    float AspectRatio() const { return aspect_; }
 
 private:
     void Update();

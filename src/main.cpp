@@ -1820,6 +1820,7 @@ public:
         if (ModelActive()) {
             const bool accepted = modelViewport_.SetNavLibCameraState(OrbitStateFromNavLibCameraToWorld(matrix));
             TraceModelSpaceMouseState(matrix, accepted);
+            if (accepted) InvalidateRect(window_, nullptr, FALSE);
             return;
         }
         const navlib::matrix_t current = SpaceMouseCameraMatrix();

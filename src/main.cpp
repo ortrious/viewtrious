@@ -1941,7 +1941,7 @@ private:
     }
     navlib::point_t SpaceMouseModelPivot() const {
         if (!ModelActive()) return {};
-        const Float3 pivot = navLibPivotValid_ ? navLibPivot_ : modelViewport_.Camera().Pivot();
+        const Float3 pivot = modelViewport_.Camera().Pivot();
         return { pivot.x, pivot.y, pivot.z };
     }
     static navlib::matrix_t NavLibCameraToWorld(const OrbitCamera::State& state) {
@@ -1969,15 +1969,11 @@ private:
         return { { bounds.minimum.x, bounds.minimum.y, bounds.minimum.z }, { bounds.maximum.x, bounds.maximum.y, bounds.maximum.z } };
     }
     void SetSpaceMouseModelPivot(const navlib::point_t& point) {
-        if (!ModelActive()) return;
-        // NavLib's world-space rotation centre is independent of the rendered camera target.
-        // Keep it for the next transaction, but do not move the view on an idle echo.
-        navLibPivot_ = { static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z) };
-        navLibPivotValid_ = std::isfinite(navLibPivot_.x) && std::isfinite(navLibPivot_.y) && std::isfinite(navLibPivot_.z);
+        // Late NavLib pivot echoes must not create a state that differs from the rendered camera.
+        (void)point;
     }
     void BeginModelLoad(const std::wstring& path) {
         DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
-        navLibPivotValid_ = false;
         ++decodeRequestGeneration_; ++modelLoadGeneration_; const uint64_t generation = modelLoadGeneration_;
         currentPath_ = path; displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
@@ -4890,8 +4886,6 @@ private:
     bool spaceMouseRuntimeAvailable_ = false;
     bool spaceMouseMotionActive_ = false;
     std::wstring startupPath_;
-    Float3 navLibPivot_{};
-    bool navLibPivotValid_ = false;
 #if defined(_DEBUG)
     LONGLONG lastModelNavLibTraceQpc_ = 0;
 #endif

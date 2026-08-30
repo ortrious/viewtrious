@@ -39,7 +39,7 @@ void OrbitCamera::ApplySpaceMouse(float x, float y, float z, float pitch, float 
 OrbitCamera::State OrbitCamera::NavLibState() const {
     if (navLibStateActive_) return navLibState_;
     const Float3 eye = Position(); const Float3 forward = Normalize(Sub(pivot_, eye));
-    const Float3 right = Normalize(Cross({ 0, 1, 0 }, forward)); const Float3 baseUp = Normalize(Cross(right, forward));
+    const Float3 right = Normalize(Cross({ 0, 1, 0 }, forward)); const Float3 baseUp = Normalize(Cross(forward, right));
     const Float3 up = Add(Mul(baseUp, std::cos(roll_)), Mul(right, -std::sin(roll_)));
     return { eye, forward, up };
 }
@@ -102,8 +102,10 @@ void OrbitCamera::MaterializeNavLibState() {
     yaw_ = std::atan2(offset.x, offset.z);
     pitch_ = std::asin(std::clamp(offset.y / std::max(distance_, 1e-8f), -1.0f, 1.0f));
     const Float3 baseRight = Normalize(Cross({ 0, 1, 0 }, forward));
-    const Float3 baseUp = Normalize(Cross(baseRight, forward));
-    roll_ = std::atan2(Dot(navLibState_.up, baseRight), Dot(navLibState_.up, baseUp));
+    const Float3 baseUp = Normalize(Cross(forward, baseRight));
+    // Update() renders up = baseUp*cos(roll) - baseRight*sin(roll).  Use that
+    // same basis when materializing NavLib's exact pose for local mouse control.
+    roll_ = std::atan2(-Dot(navLibState_.up, baseRight), Dot(navLibState_.up, baseUp));
     navLibStateActive_ = false;
 }
 const Matrix4& OrbitCamera::ViewProjection() const { return viewProjection_; }

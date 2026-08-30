@@ -53,7 +53,7 @@ void D3D11ModelViewport::ApplySpaceMouse(float x,float y,float z,float pitch,flo
 bool D3D11ModelViewport::SetNavLibCameraState(const OrbitCamera::State& state){if(!camera_.SetFromNavLibState(state))return false;NotifyCameraChanged();return true;}
 void D3D11ModelViewport::BeginOrbit(POINT point){drag_=Drag::Orbit;dragStart_=point;}
 void D3D11ModelViewport::BeginPan(POINT point){drag_=Drag::Pan;dragStart_=point;}
-void D3D11ModelViewport::ContinueDrag(POINT point,UINT width,UINT height){if(drag_==Drag::None)return;float dx=float(point.x-dragStart_.x)/std::max(1u,width),dy=float(point.y-dragStart_.y)/std::max(1u,height);if(drag_==Drag::Orbit)camera_.Orbit(dx*4,dy*4);else camera_.Pan(dx*2,dy*2);dragStart_=point;NotifyCameraChanged();}
+void D3D11ModelViewport::ContinueDrag(POINT point,UINT width,UINT height){if(drag_==Drag::None)return;float dx=float(point.x-dragStart_.x)/std::max(1u,width),dy=float(point.y-dragStart_.y)/std::max(1u,height);if(dx==0.0f&&dy==0.0f)return;if(drag_==Drag::Orbit)camera_.Orbit(dx*4,dy*4);else camera_.Pan(dx*2,dy*2);dragStart_=point;NotifyCameraChanged();}
 void D3D11ModelViewport::EndDrag(){drag_=Drag::None;}
 void D3D11ModelViewport::Dolly(float steps){camera_.Dolly(steps);NotifyCameraChanged();}
 void D3D11ModelViewport::NotifyCameraChanged(){if(cameraChanged_)cameraChanged_(cameraContext_);}

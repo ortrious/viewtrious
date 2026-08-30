@@ -54,7 +54,9 @@ bool OrbitCamera::SetFromNavLibState(const State& state) {
     // next GetCameraMatrix returns the same baseline at the next motion session.
     navLibState_ = { state.position, Normalize(state.forward), Normalize(state.up) };
     navLibStateActive_ = true;
-    pivot_ = Add(navLibState_.position, Mul(navLibState_.forward, distance_));
+    // The fit/reset model centre is the live Object Mode rotation centre. An absolute
+    // NavLib camera pose describes the eye and orientation only; deriving a replacement
+    // pivot from that pose turns an arbitrary camera-distance point into the COG.
     Update();
     return true;
 }
@@ -86,12 +88,16 @@ Float3 OrbitCamera::Position() const {
     const float cp = std::cos(pitch_); return Add(pivot_, { distance_ * std::sin(yaw_) * cp, distance_ * std::sin(pitch_), distance_ * std::cos(yaw_) * cp });
 }
 Float3 OrbitCamera::Pivot() const {
-    return navLibStateActive_ ? Add(navLibState_.position, Mul(navLibState_.forward, distance_)) : pivot_;
+    return pivot_;
 }
 void OrbitCamera::MaterializeNavLibState() {
     if (!navLibStateActive_) return;
-    const Float3 forward = Normalize(navLibState_.forward);
-    pivot_ = Add(navLibState_.position, Mul(forward, distance_));
+    // Preserve the established live rotation centre while returning to local orbit
+    // controls. It must never be reconstructed from the last camera eye.
+    const Float3 eyeToPivot = Sub(pivot_, navLibState_.position);
+    const float pivotDistance = std::sqrt(Dot(eyeToPivot, eyeToPivot));
+    if (std::isfinite(pivotDistance) && pivotDistance > 1e-8f) distance_ = pivotDistance;
+    const Float3 forward = pivotDistance > 1e-8f ? Mul(eyeToPivot, 1.0f / pivotDistance) : Normalize(navLibState_.forward);
     const Float3 offset = Mul(forward, -distance_);
     yaw_ = std::atan2(offset.x, offset.z);
     pitch_ = std::asin(std::clamp(offset.y / std::max(distance_, 1e-8f), -1.0f, 1.0f));

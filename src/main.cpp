@@ -48,25 +48,21 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"ViewtriousWindow";
 constexpr wchar_t kWindowTitle[] = L"Viewtrious";
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
-constexpr UINT kPopulateFilmstripMessage = WM_APP + 2;
 constexpr UINT kDirectoryChangedMessage = WM_APP + 3;
 constexpr UINT kFullDecodeCompleteMessage = WM_APP + 4;
-constexpr UINT kThumbnailDecodeCompleteMessage = WM_APP + 5;
 constexpr UINT kDecodeWorkerFinishedMessage = WM_APP + 6;
 constexpr UINT kLanczosCompleteMessage = WM_APP + 7;
-constexpr UINT kShellRotationDialogCandidateMessage = WM_APP + 8;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
 constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
-constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
 constexpr UINT_PTR kNavigationDecodeDebounceTimer = 5;
 constexpr UINT_PTR kShellRotationCheckTimer = 6;
 constexpr UINT_PTR kLanczosSettleTimer = 7;
-constexpr UINT_PTR kShellRotationDialogGraceTimer = 8;
-constexpr UINT_PTR kShellRotationDialogValidateTimer = 9;
+constexpr UINT_PTR kHeifRotationMenuRefreshTimer = 8;
 constexpr UINT_PTR kGifPlaybackTimer = 10;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
+constexpr ULONGLONG kHeifRotationCooldownMs = 0;
 constexpr int kLogoResourceId = 102;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
@@ -79,25 +75,20 @@ constexpr wchar_t kCapabilitiesPath[] = L"Software\\Viewtrious\\Capabilities";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
+
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback };
-enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, CopyHeicDiagnostics, Close };
+enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsRememberPlacement, SettingsIncludeHidden,
-    SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
+    SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsSpaceMouse, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
-enum class FilmstripVisibilityState { Hidden, Revealing, Holding, Fading };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
-struct FilmstripThumbnail {
-    fs::path path;
-    ComPtr<IWICBitmapSource> source;
-    ComPtr<ID2D1Bitmap> bitmap;
-};
 struct PixelBuffer {
     UINT width = 0;
     UINT height = 0;
@@ -114,12 +105,6 @@ struct FullDecodeResult : PixelBuffer {
     HRESULT result = E_FAIL;
     std::thread::id workerId{};
     bool deliveredSynchronously = false;
-};
-struct ThumbnailDecodeResult : PixelBuffer {
-    fs::path path;
-    uint64_t folderGeneration = 0;
-    size_t index = 0;
-    HRESULT result = E_FAIL;
 };
 struct DecodeWorkerFinished { std::thread::id workerId{}; };
 struct LanczosRequest {
@@ -542,9 +527,6 @@ public:
         DWORD reverseWheelZoom = 0;
         ReadSetting(L"ReverseMouseWheelZoom", reverseWheelZoom);
         reverseMouseWheelZoom_ = reverseWheelZoom != 0;
-        DWORD alwaysShowFilmstrip = 0;
-        ReadSetting(L"AlwaysShowFilmstrip", alwaysShowFilmstrip);
-        alwaysShowFilmstrip_ = alwaysShowFilmstrip != 0;
         DWORD spaceMouseEnabled = 1;
         ReadSetting(L"EnableSpaceMouse", spaceMouseEnabled);
         spaceMouseEnabled_ = spaceMouseEnabled != 0;
@@ -568,7 +550,6 @@ public:
         StopGifPlayback();
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationPending_ = false;
-        shellRotationContextMenu_.Reset();
         ++decodeRequestGeneration_;
         pendingFullDecode_.reset();
         imageDecodePending_ = false;
@@ -594,13 +575,7 @@ public:
             fileSizeText_ = FormatFileSize(path);
             filenameText_ = fs::path(path).filename().wstring();
             navigationFiles_.clear();
-            thumbnailCache_.clear();
-            filmstripThumbnailAspects_.clear();
-            filmstripItemWidths_.clear();
-            filmstripItemOffsets_.clear();
-            filmstripScroll_ = 0.0f;
             navigationBuilt_ = false;
-            filmstripPopulateQueued_ = false;
             error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
         }
         return hr;
@@ -693,7 +668,6 @@ public:
         top += separatorGap;
         item = hit(DropdownItem::About); if (item != DropdownItem::None) return item;
         item = hit(DropdownItem::Feedback); if (item != DropdownItem::None) return item;
-        item = hit(DropdownItem::CopyHeicDiagnostics); if (item != DropdownItem::None && !latestHeicRotationDiagnostics_.empty()) return item;
         top += separatorGap;
         return hit(DropdownItem::Close);
     }
@@ -721,7 +695,6 @@ public:
         else if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
         else if (item == DropdownItem::About) ShowOverlay(OverlayKind::About);
         else if (item == DropdownItem::Feedback) ShowOverlay(OverlayKind::Feedback);
-        else if (item == DropdownItem::CopyHeicDiagnostics) { CopyHeicDiagnostics(true); StartCopyFeedback(L"Diagnostics copied"); }
         else if (item == DropdownItem::Close) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
     }
     void OpenFile() {
@@ -754,13 +727,17 @@ public:
         DismissOverlay();
         contextMenuAnchor_ = point;
         contextMenuOpen_ = true;
+        heifRotationMenuLocked_ = IsHeifPath(currentPath_) && IsHeifRotationGateActive();
+        if (heifRotationMenuLocked_) SetTimer(window_, kHeifRotationMenuRefreshTimer, 100, nullptr);
         contextHovered_ = ContextAction::None;
         contextPressed_ = ContextAction::None;
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DismissContextMenu() {
         if (!contextMenuOpen_) return;
+        KillTimer(window_, kHeifRotationMenuRefreshTimer);
         contextMenuOpen_ = false;
+        heifRotationMenuLocked_ = false;
         openWithSubmenuOpen_ = false;
         contextHovered_ = ContextAction::None;
         contextPressed_ = ContextAction::None;
@@ -799,7 +776,7 @@ public:
             return true;
         return (action == ContextAction::RotateLeft || action == ContextAction::RotateRight) &&
             DisplayedImageMatchesTarget() && (IsJpegPath(currentPath_) || IsPngPath(currentPath_) ||
-                (!shellRotationPending_ && IsHeifPath(currentPath_) &&
+                (!heifRotationMenuLocked_ && IsHeifPath(currentPath_) &&
                     (action == ContextAction::RotateLeft ? heifShellRotateLeftAvailable_ : heifShellRotateRightAvailable_)));
     }
     void SetContextHover(ContextAction action) {
@@ -907,11 +884,6 @@ public:
         tutorialZoom_ = zoom_;
         tutorialPan_ = pan_;
         tutorialFitToWindow_ = fitToWindow_;
-        tutorialFilmstripScroll_ = filmstripScroll_;
-        tutorialFilmstripOpacity_ = filmstripOpacity_;
-        tutorialFilmstripState_ = filmstripVisibilityState_;
-        tutorialFilmstripHoldDurationMs_ = filmstripHoldDurationMs_;
-        StopFilmstripVisibilityTimer();
         copyFeedbackActive_ = false;
         KillTimer(window_, kCopyFeedbackTimer);
         if (fullscreen_) ToggleFullscreen();
@@ -936,18 +908,12 @@ public:
         zoom_ = tutorialZoom_;
         pan_ = tutorialPan_;
         fitToWindow_ = tutorialFitToWindow_;
-        filmstripScroll_ = tutorialFilmstripScroll_;
-        filmstripOpacity_ = tutorialFilmstripOpacity_;
-        filmstripVisibilityState_ = tutorialFilmstripState_;
-        filmstripHoldDurationMs_ = tutorialFilmstripHoldDurationMs_;
         SetWindowPos(window_, nullptr, tutorialWindowRect_.left, tutorialWindowRect_.top,
             tutorialWindowRect_.right - tutorialWindowRect_.left, tutorialWindowRect_.bottom - tutorialWindowRect_.top,
             SWP_NOZORDER | SWP_NOACTIVATE);
         if (tutorialWasMaximized_) ShowWindow(window_, SW_MAXIMIZE);
         if (tutorialWasFullscreen_) ToggleFullscreen();
         tutorialPlacementSuppressed_ = false;
-        if (alwaysShowFilmstrip_) StartFilmstripHold(UINT_MAX);
-        else if (filmstripOpacity_ > 0.001f && FilmstripEligible()) BeginFilmstripFadeSequence();
     }
     void AdvanceTutorial() {
         if (tutorialStep_ == TutorialStep::OpenImages) SetTutorialStep(TutorialStep::ResizeWindow);
@@ -969,7 +935,6 @@ public:
     void DismissOverlay() {
         if (!HasOverlay()) return;
         overlay_ = OverlayKind::None;
-        if (alwaysShowFilmstrip_ && FilmstripEligible()) StartFilmstripHold(UINT_MAX);
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool OverlayContains(POINT point) const {
@@ -1028,14 +993,8 @@ public:
         includeHiddenImages_ = !includeHiddenImages_;
         WriteSetting(L"IncludeHiddenImages", includeHiddenImages_ ? 1 : 0);
         navigationFiles_.clear();
-        thumbnailCache_.clear();
-        filmstripThumbnailAspects_.clear();
-        filmstripItemWidths_.clear();
-        filmstripItemOffsets_.clear();
-        filmstripScroll_ = 0.0f;
         navigationBuilt_ = false;
         navigationBuildQueued_ = false;
-        filmstripPopulateQueued_ = false;
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleRememberWindowPlacement() {
@@ -1062,13 +1021,6 @@ public:
     void ToggleReverseMouseWheelZoom() {
         reverseMouseWheelZoom_ = !reverseMouseWheelZoom_;
         WriteSetting(L"ReverseMouseWheelZoom", reverseMouseWheelZoom_ ? 1 : 0);
-        InvalidateRect(window_, nullptr, FALSE);
-    }
-    void ToggleAlwaysShowFilmstrip() {
-        alwaysShowFilmstrip_ = !alwaysShowFilmstrip_;
-        WriteSetting(L"AlwaysShowFilmstrip", alwaysShowFilmstrip_ ? 1 : 0);
-        if (alwaysShowFilmstrip_) StartFilmstripHold(UINT_MAX);
-        else BeginFilmstripFadeSequence();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleSpaceMouse() {
@@ -1202,239 +1154,6 @@ public:
         return source_ && navigationBuilt_ && navigationFiles_.size() > 1 &&
             !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
     }
-    bool FilmstripEligible() const { return source_ && navigationBuilt_ && navigationFiles_.size() > 1 && !HasOverlay() && !TutorialActive() && !tutorialPresentation_; }
-    bool FilmstripVisible() const { return FilmstripEligible() && filmstripOpacity_ > 0.001f; }
-    int FilmstripHeight() const {
-        if (!FilmstripEligible()) return 0;
-        RECT client{};
-        GetClientRect(window_, &client);
-        const UINT dpi = GetDpiForWindow(window_);
-        const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
-        return client.bottom - canvasTop < MulDiv(560, dpi, 96) ? MulDiv(96, dpi, 96) : MulDiv(112, dpi, 96);
-    }
-    int FilmstripThumbnailHeight() const { return std::min(MulDiv(92, GetDpiForWindow(window_), 96), FilmstripHeight() - MulDiv(20, GetDpiForWindow(window_), 96)); }
-    int FilmstripThumbnailMinimumWidth() const { return static_cast<int>(std::lround(FilmstripThumbnailHeight() * 2.0f / 3.0f)); }
-    int FilmstripThumbnailMaximumWidth() const { return static_cast<int>(std::lround(FilmstripThumbnailHeight() * 16.0f / 9.0f)); }
-    int FilmstripGap() const { return MulDiv(22, GetDpiForWindow(window_), 96); }
-    int FilmstripPadding() const { return MulDiv(14, GetDpiForWindow(window_), 96); }
-    RECT GetFilmstripBounds() const {
-        RECT client{};
-        GetClientRect(window_, &client);
-        const int height = FilmstripHeight();
-        if (height == 0) return {};
-        const int minimumWidth = MulDiv(180, GetDpiForWindow(window_), 96);
-        const int desiredMargin = MulDiv(150, GetDpiForWindow(window_), 96);
-        const int sideMargin = std::min(desiredMargin, std::max(MulDiv(16, GetDpiForWindow(window_), 96), (static_cast<int>(client.right) - minimumWidth) / 2));
-        const int maximumWidth = std::max(minimumWidth, static_cast<int>(client.right) - sideMargin * 2);
-        const float contentWidth = filmstripItemOffsets_.empty() ? static_cast<float>(minimumWidth) :
-            filmstripItemOffsets_.back() - static_cast<float>(FilmstripGap()) + static_cast<float>(FilmstripPadding());
-        const int width = std::min(maximumWidth, std::max(minimumWidth, static_cast<int>(std::ceil(contentWidth))));
-        const int left = (client.right - width) / 2;
-        const int bottomMargin = MulDiv(16, GetDpiForWindow(window_), 96);
-        return { left, client.bottom - bottomMargin - height, left + width, client.bottom - bottomMargin };
-    }
-    bool FilmstripContains(POINT point) const {
-        const RECT bounds = GetFilmstripBounds();
-        return FilmstripVisible() && bounds.right > bounds.left && PtInRect(&bounds, point);
-    }
-    float FilmstripThumbnailWidth(size_t index) const {
-        return index < filmstripItemWidths_.size() ? filmstripItemWidths_[index] : static_cast<float>(FilmstripThumbnailHeight());
-    }
-    float FilmstripMaximumScroll() const {
-        const RECT bounds = GetFilmstripBounds();
-        const float contentWidth = filmstripItemOffsets_.empty() ? 0.0f : filmstripItemOffsets_.back() - static_cast<float>(FilmstripGap()) + static_cast<float>(FilmstripPadding());
-        return std::max(0.0f, contentWidth - static_cast<float>(bounds.right - bounds.left));
-    }
-    size_t CurrentNavigationIndex() const {
-        fs::path current(currentPath_);
-        const auto found = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&current](const fs::path& path) { return PathsEqual(path, current); });
-        return found == navigationFiles_.end() ? 0 : static_cast<size_t>(std::distance(navigationFiles_.begin(), found));
-    }
-    void RebuildFilmstripLayout(bool clampScroll = true) {
-        const size_t count = navigationFiles_.size();
-        filmstripThumbnailAspects_.resize(count, 1.0f);
-        filmstripItemWidths_.resize(count, static_cast<float>(FilmstripThumbnailHeight()));
-        filmstripItemOffsets_.resize(count + 1, static_cast<float>(FilmstripPadding()));
-        const float height = static_cast<float>(FilmstripThumbnailHeight());
-        const float minimum = static_cast<float>(FilmstripThumbnailMinimumWidth());
-        const float maximum = static_cast<float>(FilmstripThumbnailMaximumWidth());
-        const float gap = static_cast<float>(FilmstripGap());
-        float offset = static_cast<float>(FilmstripPadding());
-        for (size_t index = 0; index < count; ++index) {
-            filmstripItemOffsets_[index] = offset;
-            filmstripItemWidths_[index] = std::clamp(height * filmstripThumbnailAspects_[index], minimum, maximum);
-            offset += filmstripItemWidths_[index] + gap;
-        }
-        if (!filmstripItemOffsets_.empty()) filmstripItemOffsets_.back() = offset;
-        if (clampScroll) filmstripScroll_ = std::clamp(filmstripScroll_, 0.0f, FilmstripMaximumScroll());
-    }
-    std::pair<size_t, size_t> FilmstripVisibleRange() const {
-        if (navigationFiles_.empty() || filmstripItemOffsets_.empty()) return { 0, 0 };
-        const RECT bounds = GetFilmstripBounds();
-        const float visibleLeft = filmstripScroll_, visibleRight = visibleLeft + static_cast<float>(bounds.right - bounds.left);
-        const auto end = filmstripItemOffsets_.begin() + static_cast<ptrdiff_t>(navigationFiles_.size());
-        auto found = std::upper_bound(filmstripItemOffsets_.begin(), end, visibleLeft);
-        size_t first = found == filmstripItemOffsets_.begin() ? 0 : static_cast<size_t>(std::distance(filmstripItemOffsets_.begin(), found - 1));
-        while (first < navigationFiles_.size() && filmstripItemOffsets_[first] + FilmstripThumbnailWidth(first) < visibleLeft) ++first;
-        size_t last = first;
-        while (last < navigationFiles_.size() && filmstripItemOffsets_[last] <= visibleRight) ++last;
-        return { first, last };
-    }
-    void EnsureCurrentFilmstripVisible() {
-        if (!FilmstripEligible()) return;
-        const RECT bounds = GetFilmstripBounds();
-        const size_t current = CurrentNavigationIndex();
-        const float slotLeft = current < filmstripItemOffsets_.size() ? filmstripItemOffsets_[current] : static_cast<float>(FilmstripPadding());
-        const float slotRight = slotLeft + FilmstripThumbnailWidth(current);
-        const float visibleLeft = filmstripScroll_;
-        const float visibleRight = filmstripScroll_ + static_cast<float>(bounds.right - bounds.left);
-        if (slotLeft < visibleLeft) filmstripScroll_ = slotLeft;
-        else if (slotRight > visibleRight) filmstripScroll_ = slotRight - static_cast<float>(bounds.right - bounds.left);
-        filmstripScroll_ = std::clamp(filmstripScroll_, 0.0f, FilmstripMaximumScroll());
-    }
-    RECT GetFilmstripThumbnailBounds(size_t index) const {
-        const RECT strip = GetFilmstripBounds();
-        const float itemLeft = index < filmstripItemOffsets_.size() ? filmstripItemOffsets_[index] : static_cast<float>(FilmstripPadding());
-        const int left = strip.left + static_cast<int>(std::lround(itemLeft - filmstripScroll_));
-        const int height = FilmstripThumbnailHeight();
-        const int top = strip.top + (strip.bottom - strip.top - height) / 2;
-        return { left, top, left + static_cast<int>(std::lround(FilmstripThumbnailWidth(index))), top + height };
-    }
-    int FilmstripItemAt(POINT point) const {
-        if (!FilmstripContains(point)) return -1;
-        const auto [first, last] = FilmstripVisibleRange();
-        for (size_t index = first; index < last; ++index) {
-            const RECT bounds = GetFilmstripThumbnailBounds(index);
-            RECT hit = bounds;
-            InflateRect(&hit, MulDiv(5, GetDpiForWindow(window_), 96), MulDiv(4, GetDpiForWindow(window_), 96));
-            if (PtInRect(&hit, point)) return static_cast<int>(index);
-        }
-        return -1;
-    }
-    void ScrollFilmstrip(float delta) {
-        if (!FilmstripVisible()) return;
-        filmstripScroll_ = std::clamp(filmstripScroll_ + delta, 0.0f, FilmstripMaximumScroll());
-        filmstripNavigationDirection_ = delta >= 0.0f ? 1 : -1;
-        StartFilmstripHold();
-        QueueFilmstripPopulate();
-        InvalidateRect(window_, nullptr, FALSE);
-    }
-    RECT GetFilmstripRevealBounds() const {
-        RECT client{};
-        GetClientRect(window_, &client);
-        const UINT dpi = GetDpiForWindow(window_);
-        const int height = MulDiv(60, dpi, 96);
-        const int top = std::max(fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight, static_cast<int>(client.bottom) - height);
-        const RECT previous = GetCanvasNavigationZoneBounds(false);
-        const RECT next = GetCanvasNavigationZoneBounds(true);
-        return { previous.right, top, next.left, client.bottom };
-    }
-    bool FilmstripRevealContains(POINT point) const {
-        const RECT bounds = GetFilmstripRevealBounds();
-        return FilmstripEligible() && PtInRect(&bounds, point);
-    }
-    RECT GetFilmstripHintBounds() const {
-        const RECT strip = GetFilmstripBounds();
-        const UINT dpi = GetDpiForWindow(window_);
-        const int width = MulDiv(174, dpi, 96), height = MulDiv(28, dpi, 96), gap = MulDiv(7, dpi, 96);
-        const int left = strip.left + (strip.right - strip.left - width) / 2;
-        return { left, strip.top - gap - height, left + width, strip.top - gap };
-    }
-    bool FilmstripHintContains(POINT point) const {
-        const RECT bounds = GetFilmstripHintBounds();
-        return FilmstripVisible() && PtInRect(&bounds, point);
-    }
-    void StopFilmstripVisibilityTimer() { KillTimer(window_, kFilmstripVisibilityTimer); }
-    void StartFilmstripHold(UINT holdDurationMs = 2000, bool invalidate = true) {
-        if (!FilmstripEligible()) return;
-        filmstripOpacity_ = 1.0f;
-        filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
-        filmstripHoldDurationMs_ = holdDurationMs;
-        filmstripVisibilityStart_ = GetTickCount64();
-        QueueFilmstripPopulate();
-        if (alwaysShowFilmstrip_) StopFilmstripVisibilityTimer();
-        else SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
-        if (invalidate) InvalidateRect(window_, nullptr, FALSE);
-    }
-    void StartFilmstripReveal() {
-        if (!FilmstripEligible()) return;
-        if (!animationsEnabled_) { StartFilmstripHold(); return; }
-        filmstripRevealStartOpacity_ = filmstripOpacity_;
-        filmstripVisibilityState_ = FilmstripVisibilityState::Revealing;
-        filmstripHoldDurationMs_ = 2000;
-        filmstripVisibilityStart_ = GetTickCount64();
-        QueueFilmstripPopulate();
-        SetTimer(window_, kFilmstripVisibilityTimer, 16, nullptr);
-        InvalidateRect(window_, nullptr, FALSE);
-    }
-    void BeginFilmstripFadeSequence() {
-        if (filmstripOpacity_ <= 0.001f) return;
-        if (filmstripVisibilityState_ == FilmstripVisibilityState::Revealing) return;
-        filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
-        filmstripHoldDurationMs_ = 2000;
-        filmstripVisibilityStart_ = GetTickCount64();
-        SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
-    }
-    void SetFilmstripPointerState(POINT point) {
-        const bool overPanel = FilmstripContains(point);
-        const bool overReveal = FilmstripRevealContains(point);
-        const bool overHint = FilmstripHintContains(point);
-        const bool wasHeld = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
-        filmstripPanelHovered_ = overPanel;
-        filmstripRevealHovered_ = overReveal;
-        filmstripHintHovered_ = overHint;
-        if ((overPanel || overReveal || overHint) && !wasHeld) StartFilmstripReveal();
-        else if (wasHeld) BeginFilmstripFadeSequence();
-    }
-    void UpdateFilmstripVisibility() {
-        if (!FilmstripEligible()) { filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); return; }
-        if (alwaysShowFilmstrip_) { filmstripOpacity_ = 1.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Holding; StopFilmstripVisibilityTimer(); return; }
-        const bool held = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
-        const ULONGLONG elapsed = GetTickCount64() - filmstripVisibilityStart_;
-        float opacity = filmstripOpacity_;
-        if (filmstripVisibilityState_ == FilmstripVisibilityState::Revealing) {
-            opacity = animationsEnabled_ ? filmstripRevealStartOpacity_ + (1.0f - filmstripRevealStartOpacity_) * std::min(1.0f, static_cast<float>(elapsed) / 500.0f) : 1.0f;
-            if (!animationsEnabled_ || elapsed >= 500) {
-                filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
-                filmstripVisibilityStart_ = GetTickCount64();
-                if (held) StopFilmstripVisibilityTimer();
-            }
-        } else if (held) {
-            StopFilmstripVisibilityTimer();
-            return;
-        } else if (filmstripVisibilityState_ == FilmstripVisibilityState::Holding && elapsed >= filmstripHoldDurationMs_) {
-            if (!animationsEnabled_) opacity = 0.0f;
-            else {
-                filmstripVisibilityState_ = FilmstripVisibilityState::Fading;
-                filmstripVisibilityStart_ = GetTickCount64();
-            }
-        } else if (filmstripVisibilityState_ == FilmstripVisibilityState::Fading) {
-            opacity = animationsEnabled_ ? std::max(0.0f, 1.0f - static_cast<float>(elapsed) / 1000.0f) : 0.0f;
-        }
-        if (std::abs(opacity - filmstripOpacity_) > 0.001f) {
-            filmstripOpacity_ = opacity;
-            InvalidateRect(window_, nullptr, FALSE);
-        }
-        if (opacity <= 0.001f) { filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); }
-    }
-    void RevealFilmstripForNavigation(bool invalidate = true) {
-        EnsureCurrentFilmstripVisible();
-        StartFilmstripHold(1000, invalidate);
-    }
-    void SelectFilmstripItem(int index) {
-        if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
-        const std::wstring path = navigationFiles_[index].wstring();
-        if (PathsEqual(fs::path(path), fs::path(currentPath_))) return;
-        const size_t current = CurrentNavigationIndex();
-        if (NavigateFastRasterSynchronously(path, index >= static_cast<int>(current) ? 1 : -1)) return;
-        SelectNavigationTarget(path, index >= static_cast<int>(current) ? 1 : -1, true);
-    }
-    void SetFilmstripHover(POINT point) {
-        const int index = FilmstripItemAt(point);
-        if (filmstripHoveredIndex_ == index) return;
-        filmstripHoveredIndex_ = index;
-        InvalidateRect(window_, nullptr, FALSE);
-    }
     RECT GetCanvasNavigationZoneBounds(bool next) const {
         RECT client{};
         GetClientRect(window_, &client);
@@ -1468,8 +1187,7 @@ public:
             if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsShowZoomHud;
             if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAnimations;
             if (settingsContains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReverseWheelZoom;
-            if (settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsAlwaysShowFilmstrip;
-            if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsOptionBounds(7))) return ButtonKind::SettingsSpaceMouse;
+            if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsSpaceMouse;
             if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
             if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
             if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -1597,7 +1315,6 @@ public:
         else if (button == ButtonKind::SettingsShowZoomHud) ToggleShowZoomPercentage();
         else if (button == ButtonKind::SettingsAnimations) ToggleAnimationsAndFadeEffects();
         else if (button == ButtonKind::SettingsReverseWheelZoom) ToggleReverseMouseWheelZoom();
-        else if (button == ButtonKind::SettingsAlwaysShowFilmstrip) ToggleAlwaysShowFilmstrip();
         else if (button == ButtonKind::SettingsSpaceMouse) ToggleSpaceMouse();
         else if (button == ButtonKind::SettingsThemeSystem) SetThemePreference(ThemePreference::System);
         else if (button == ButtonKind::SettingsThemeLight) SetThemePreference(ThemePreference::Light);
@@ -1663,7 +1380,6 @@ public:
         showZoomPercentage_ = true;
         animationsEnabled_ = true;
         reverseMouseWheelZoom_ = false;
-        alwaysShowFilmstrip_ = false;
         themePreference_ = ThemePreference::System;
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) { DestroyWindow(window_); return; }
@@ -1716,7 +1432,7 @@ public:
             renderTarget_->Clear(kViewerBackground);
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
-                if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); }
+                if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
             } else DrawEmptyState();
             if (!tutorialPresentation_) DrawRevisionLabel();
             DrawTitleBar();
@@ -1742,8 +1458,6 @@ public:
         }
         if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
-        RebuildFilmstripLayout();
-        QueueFilmstripPopulate();
         ClampPan();
         if (lanczosSelected_ && source_) {
             InvalidateLanczosVariant(true);
@@ -1777,7 +1491,6 @@ public:
     void BuildNavigation(bool refresh = false) {
         navigationBuildQueued_ = false;
         if ((navigationBuilt_ && !refresh) || currentPath_.empty()) return;
-        const bool navigationWasBuilt = navigationBuilt_;
 
         fs::path current(currentPath_);
         std::vector<fs::path> scannedFiles;
@@ -1829,11 +1542,6 @@ public:
         if (changed) {
             ++navigationFolderGeneration_;
             navigationFiles_ = std::move(scannedFiles);
-            thumbnailCache_.clear();
-            filmstripThumbnailAspects_.clear();
-            filmstripItemWidths_.clear();
-            filmstripItemOffsets_.clear();
-            filmstripScroll_ = 0.0f;
         }
         if ((changed || currentRenamed) && imageDecodePending_) {
             ++decodeRequestGeneration_;
@@ -1841,24 +1549,12 @@ public:
             QueueLatestFullDecode();
         }
         navigationBuilt_ = true;
-        if (!changed && !filmstripItemOffsets_.empty()) {
-            QueueFilmstripPopulate();
-            return;
-        }
-        RebuildFilmstripLayout();
-        if (!navigationWasBuilt) EnsureCurrentFilmstripVisible();
-        if (filmstripInitialPresentationPending_) {
-            filmstripInitialPresentationPending_ = false;
-            StartFilmstripHold(1000);
-        } else QueueFilmstripPopulate();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
     void RefreshNavigationFromFileSystem() {
         if (source_ && !TutorialActive()) BuildNavigation(true);
     }
-
-    void PopulateFilmstripThumbnailMessage() { PopulateFilmstripThumbnail(); }
 
     void Navigate(int direction, bool immediatePaint = true) {
         if (currentPath_.empty()) return;
@@ -2077,9 +1773,8 @@ public:
         }
         StopGifPlayback();
         StopDirectoryWatcher();
-        DisarmShellRotationDialogSuppression();
         KillTimer(window_, kShellRotationCheckTimer);
-        shellRotationContextMenu_.Reset();
+        KillTimer(window_, kHeifRotationMenuRefreshTimer);
         decodeShuttingDown_ = true;
         KillTimer(window_, kNavigationDecodeDebounceTimer);
         ++decodeRequestGeneration_;
@@ -2092,16 +1787,13 @@ public:
         MSG lanczosMessage{};
         while (PeekMessageW(&lanczosMessage, window_, kLanczosCompleteMessage, kLanczosCompleteMessage, PM_REMOVE))
             delete reinterpret_cast<LanczosResult*>(lanczosMessage.lParam);
-        if (thumbnailDecodeThread_.joinable()) thumbnailDecodeThread_.join();
     }
     void NavigationDecodeTimer() { StartPendingFullDecode(); }
     void GifPlaybackTimerMessage() { GifPlaybackTimer(); }
     void GifPlaybackVisibilityChanged(bool visible) { SetGifPlaybackVisible(visible); }
     void LanczosRefinementTimer() { RequestLanczosVariant(); }
     void ShellRotationTimer() { UpdateShellRotation(); }
-    void ShellRotationDialogGraceTimer() { DisarmShellRotationDialogSuppression(); }
-    void ShellRotationDialogCandidate(HWND dialog) { QueueShellRotationDialogValidation(dialog); }
-    void ShellRotationDialogValidateTimer() { ValidateShellRotationDialogCandidate(); }
+    void HeifRotationMenuRefreshTimer() { RefreshHeifRotationContextMenu(); }
     void FullDecodeCompleteMessage(FullDecodeResult* result) { HandleFullDecodeResult(result); }
     void LanczosCompleteMessage(LanczosResult* result) { HandleLanczosResult(result); }
     void DecodeWorkerFinishedMessage(DecodeWorkerFinished* finished) { HandleDecodeWorkerFinished(finished); }
@@ -2118,7 +1810,6 @@ public:
         }
         if (drained) UpdateWindow(window_);
     }
-    void ThumbnailDecodeCompleteMessage(ThumbnailDecodeResult* result) { HandleThumbnailDecodeResult(result); }
     void QueueDirectoryRefreshFromWatcher() { QueueDirectoryRefresh(); }
 
 private:
@@ -2627,52 +2318,6 @@ private:
         return GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) != FALSE;
     }
 
-    static std::wstring HeicFileState(const WIN32_FILE_ATTRIBUTE_DATA& state) {
-        ULARGE_INTEGER size{}; size.HighPart = state.nFileSizeHigh; size.LowPart = state.nFileSizeLow;
-        ULARGE_INTEGER write{}; write.HighPart = state.ftLastWriteTime.dwHighDateTime; write.LowPart = state.ftLastWriteTime.dwLowDateTime;
-        return std::to_wstring(size.QuadPart) + L" bytes; write FILETIME " + std::to_wstring(write.QuadPart);
-    }
-    void AppendHeicDiagnostic(const std::wstring& line) { heicRotationDiagnostics_ += line + L"\r\n"; }
-    void BeginHeicDiagnostics(bool clockwise) {
-        const ULONGLONG now = GetTickCount64();
-        heicRotationDiagnostics_ = L"Viewtrious HEIC Rotation Diagnostics\r\nVersion: " VIEWTRIOUS_VERSION L"\r\n\r\n";
-        AppendHeicDiagnostic(L"File: " + currentPath_);
-        AppendHeicDiagnostic(L"Dimensions: " + std::to_wstring(imageWidth_) + L"x" + std::to_wstring(imageHeight_));
-        AppendHeicDiagnostic(L"Direction: " + std::wstring(clockwise ? L"Right" : L"Left"));
-        AppendHeicDiagnostic(L"Previous rotation request: " + (lastHeicRotationRequest_ ? std::to_wstring(now - lastHeicRotationRequest_) + L" ms ago" : L"none"));
-        AppendHeicDiagnostic(L"Prior readiness active: " + std::wstring(shellRotationPending_ ? L"yes" : L"no"));
-        lastHeicRotationRequest_ = now;
-        WIN32_FILE_ATTRIBUTE_DATA state{};
-        if (ReadShellRotationFileState(currentPath_, state)) AppendHeicDiagnostic(L"Before: " + HeicFileState(state));
-        else AppendHeicDiagnostic(L"Before: GetFileAttributesExW failed, error " + std::to_wstring(GetLastError()));
-    }
-    bool CopyHeicDiagnostics(bool includeHistory = false) const {
-        if (heicRotationDiagnostics_.empty() || !OpenClipboard(window_)) return false;
-        const std::wstring report = includeHistory ?
-            L"Latest HEIC Rotation Session\r\n============================\r\n" + latestHeicRotationDiagnostics_ +
-            (previousHeicRotationDiagnostics_.empty() ? L"" : L"\r\nPrevious HEIC Rotation Session\r\n==============================\r\n" + previousHeicRotationDiagnostics_) : heicRotationDiagnostics_;
-        const size_t bytes = (report.size() + 1) * sizeof(wchar_t);
-        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
-        if (!memory) { CloseClipboard(); return false; }
-        void* destination = GlobalLock(memory);
-        if (!destination) { GlobalFree(memory); CloseClipboard(); return false; }
-        std::memcpy(destination, report.c_str(), bytes);
-        GlobalUnlock(memory); EmptyClipboard();
-        if (!SetClipboardData(CF_UNICODETEXT, memory)) GlobalFree(memory);
-        CloseClipboard(); return true;
-    }
-    void FinishHeicDiagnostics(const wchar_t* outcome, bool abnormal) {
-        AppendHeicDiagnostic(L"Final result: " + std::wstring(outcome));
-        previousHeicRotationDiagnostics_ = latestHeicRotationDiagnostics_;
-        latestHeicRotationDiagnostics_ = heicRotationDiagnostics_;
-        if (abnormal) {
-            const bool copied = CopyHeicDiagnostics();
-            ShowActionError(copied ? L"HEIC rotation did not complete. Diagnostic details were copied to the clipboard."
-                                   : L"HEIC rotation did not complete. Diagnostic details are available in the debugger output.");
-            OutputDebugStringW(heicRotationDiagnostics_.c_str());
-        }
-    }
-
     HRESULT DetachDisplayedImageForShellWrite() {
         if (!source_) return E_FAIL;
         ComPtr<IWICBitmap> detached;
@@ -2684,105 +2329,57 @@ private:
         return S_OK;
     }
 
-    void FinishThumbnailDecodeForShellWrite() {
-        if (thumbnailDecodeThread_.joinable()) thumbnailDecodeThread_.join();
-        thumbnailDecodeInFlight_ = false;
-        MSG message{};
-        while (PeekMessageW(&message, window_, kThumbnailDecodeCompleteMessage, kThumbnailDecodeCompleteMessage, PM_REMOVE)) {
-            HandleThumbnailDecodeResult(reinterpret_cast<ThumbnailDecodeResult*>(message.lParam));
-        }
-    }
-
-    static Viewer*& ShellRotationDialogOwner() { static Viewer* owner = nullptr; return owner; }
-    static void CALLBACK ShellRotationDialogEvent(HWINEVENTHOOK, DWORD, HWND dialog, LONG objectId, LONG, DWORD, DWORD) {
-        if (objectId != OBJID_WINDOW || !dialog || !ShellRotationDialogOwner()) return;
-        const HWND root = GetAncestor(dialog, GA_ROOT);
-        if (root) PostMessageW(ShellRotationDialogOwner()->window_, kShellRotationDialogCandidateMessage, 0, reinterpret_cast<LPARAM>(root));
-    }
-    static BOOL CALLBACK DialogTextMatches(HWND child, LPARAM context) {
-        auto* matched = reinterpret_cast<bool*>(context);
-        wchar_t text[256]{}; GetWindowTextW(child, text, ARRAYSIZE(text));
-        if (wcsstr(text, L"You cannot rotate this image. The file might be in use or open in another program, or the file or folder might be read-only.")) *matched = true;
-        return *matched ? FALSE : TRUE;
-    }
-    bool IsKnownShellRotationDialog(HWND dialog) {
-        DWORD processId = 0; GetWindowThreadProcessId(dialog, &processId);
-        wchar_t className[16]{}, title[32]{}; GetClassNameW(dialog, className, ARRAYSIZE(className)); GetWindowTextW(dialog, title, ARRAYSIZE(title));
-        bool textMatched = false; EnumChildWindows(dialog, DialogTextMatches, reinterpret_cast<LPARAM>(&textMatched));
-        return processId == GetCurrentProcessId() && wcscmp(className, L"#32770") == 0 && wcscmp(title, L"Rotation") == 0 && textMatched;
-    }
-    void QueueShellRotationDialogValidation(HWND dialog) {
-        if (!shellRotationDialogHook_ || (!shellRotationPending_ && GetTickCount64() > shellRotationDialogGraceUntil_)) return;
-        DWORD processId = 0; GetWindowThreadProcessId(dialog, &processId);
-        wchar_t className[16]{}, title[32]{}; GetClassNameW(dialog, className, ARRAYSIZE(className)); GetWindowTextW(dialog, title, ARRAYSIZE(title));
-        if (processId != GetCurrentProcessId() || wcscmp(className, L"#32770") != 0 || wcscmp(title, L"Rotation") != 0) return;
-        shellRotationDialogCandidate_ = dialog; shellRotationDialogValidationAttempts_ = 0;
-        AppendHeicDiagnostic(L"Rotation dialog candidate accepted; deferred validation scheduled.");
-        SetTimer(window_, kShellRotationDialogValidateTimer, 30, nullptr);
-    }
-    void ValidateShellRotationDialogCandidate() {
-        if (!shellRotationDialogCandidate_) return;
-        ++shellRotationDialogValidationAttempts_;
-        const bool matched = IsWindow(shellRotationDialogCandidate_) && IsKnownShellRotationDialog(shellRotationDialogCandidate_);
-        AppendHeicDiagnostic(L"Rotation dialog validation attempt " + std::to_wstring(shellRotationDialogValidationAttempts_) + L": exact text match " + (matched ? L"yes" : L"no"));
-        if (matched) { PostMessageW(shellRotationDialogCandidate_, WM_CLOSE, 0, 0); AppendHeicDiagnostic(L"Bogus Shell Rotation dialog dismissal posted."); shellRotationDialogCandidate_ = nullptr; KillTimer(window_, kShellRotationDialogValidateTimer); return; }
-        if (shellRotationDialogValidationAttempts_ >= 5) { shellRotationDialogCandidate_ = nullptr; KillTimer(window_, kShellRotationDialogValidateTimer); }
-    }
-    void ArmShellRotationDialogSuppression() {
-        if (shellRotationDialogHook_) return;
-        ShellRotationDialogOwner() = this;
-        shellRotationDialogHook_ = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_NAMECHANGE, nullptr, ShellRotationDialogEvent,
-            GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
-        AppendHeicDiagnostic(shellRotationDialogHook_ ? L"Shell Rotation dialog suppression armed." : L"Shell Rotation dialog suppression hook failed.");
-    }
-    void DisarmShellRotationDialogSuppression() {
-        KillTimer(window_, kShellRotationDialogGraceTimer);
-        KillTimer(window_, kShellRotationDialogValidateTimer);
-        if (shellRotationDialogHook_) UnhookWinEvent(shellRotationDialogHook_);
-        shellRotationDialogHook_ = nullptr; ShellRotationDialogOwner() = nullptr; shellRotationDialogGraceUntil_ = 0; shellRotationDialogCandidate_ = nullptr;
-    }
-
     void BeginShellRotationRefresh() {
         ++decodeRequestGeneration_;
         pendingFullDecode_.reset();
         imageDecodePending_ = false;
         KillTimer(window_, kNavigationDecodeDebounceTimer);
-        thumbnailCache_.erase(std::remove_if(thumbnailCache_.begin(), thumbnailCache_.end(), [this](const FilmstripThumbnail& thumbnail) {
-            return PathsEqual(thumbnail.path, fs::path(currentPath_));
-        }), thumbnailCache_.end());
-        const size_t current = CurrentNavigationIndex();
-        if (current < filmstripThumbnailAspects_.size()) filmstripThumbnailAspects_[current] = 1.0f;
-        RebuildFilmstripLayout(false);
         shellRotationPath_ = currentPath_;
         shellRotationStarted_ = GetTickCount64();
         shellRotationInitialStateValid_ = ReadShellRotationFileState(shellRotationPath_, shellRotationInitialState_);
-        AppendHeicDiagnostic(L"Readiness monitoring started; initial state: " +
-            std::wstring(shellRotationInitialStateValid_ ? HeicFileState(shellRotationInitialState_) : L"unavailable"));
         shellRotationPending_ = true;
-        ArmShellRotationDialogSuppression();
         shellRotationStableChecks_ = 0;
-        shellRotationWicAttempts_ = 0;
         shellRotationLastStateValid_ = false;
         SetTimer(window_, kShellRotationCheckTimer, kShellRotationCheckIntervalMs, nullptr);
+    }
+
+    bool IsHeifRotationGateActive() const {
+        return shellRotationPending_ || GetTickCount64() < heifRotationCooldownUntil_;
+    }
+
+    void BeginHeifRotationCooldown() {
+        heifRotationCooldownUntil_ = GetTickCount64() + kHeifRotationCooldownMs;
+    }
+
+    void RefreshHeifRotationContextMenu() {
+        if (!contextMenuOpen_ || !heifRotationMenuLocked_ || !IsHeifPath(currentPath_)) {
+            KillTimer(window_, kHeifRotationMenuRefreshTimer);
+            return;
+        }
+        if (IsHeifRotationGateActive()) return;
+        heifRotationMenuLocked_ = false;
+        KillTimer(window_, kHeifRotationMenuRefreshTimer);
+        InvalidateRect(window_, nullptr, FALSE);
+        UpdateWindow(window_);
+    }
+
+    void FailShellRotationRefresh() {
+        KillTimer(window_, kShellRotationCheckTimer);
+        shellRotationPending_ = false;
+        BeginHeifRotationCooldown();
+        ShowActionError(L"HEIC rotation did not complete.");
     }
 
     void CompleteShellRotationRefresh() {
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationPending_ = false;
-        shellRotationContextMenu_.Reset();
+        BeginHeifRotationCooldown();
         if (!PathsEqual(fs::path(shellRotationPath_), fs::path(currentPath_))) return;
         currentFileIdentity_ = ReadFileIdentity(fs::path(currentPath_));
         fileSizeText_ = FormatFileSize(currentPath_);
         imageDecodePending_ = true;
         pendingFullDecode_ = DecodeRequest{ currentPath_, decodeRequestGeneration_, navigationFolderGeneration_ };
         QueueLatestFullDecode();
-        QueueFilmstripPopulate();
-        WIN32_FILE_ATTRIBUTE_DATA finalState{};
-        if (ReadShellRotationFileState(shellRotationPath_, finalState)) AppendHeicDiagnostic(L"Verified ready @ " + std::to_wstring(GetTickCount64() - shellRotationStarted_) + L" ms; probes " + std::to_wstring(shellRotationProbeCount_) + L"; final: " + HeicFileState(finalState));
-        FinishHeicDiagnostics(L"verified ready", false);
-        shellRotationDialogGraceUntil_ = GetTickCount64() + 1500;
-        SetTimer(window_, kShellRotationDialogGraceTimer, 1500, nullptr);
-        RevealFilmstripForNavigation();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -2790,13 +2387,9 @@ private:
         if (!shellRotationPending_) { KillTimer(window_, kShellRotationCheckTimer); return; }
         WIN32_FILE_ATTRIBUTE_DATA state{};
         ++shellRotationProbeCount_;
-        const ULONGLONG elapsed = GetTickCount64() - shellRotationStarted_;
         const bool changed = ReadShellRotationFileState(shellRotationPath_, state) && (!shellRotationInitialStateValid_ ||
             CompareFileTime(&state.ftLastWriteTime, &shellRotationInitialState_.ftLastWriteTime) != 0 ||
             state.nFileSizeHigh != shellRotationInitialState_.nFileSizeHigh || state.nFileSizeLow != shellRotationInitialState_.nFileSizeLow);
-        AppendHeicDiagnostic(L"Probe " + std::to_wstring(shellRotationProbeCount_) + L" @ " + std::to_wstring(elapsed) + L" ms: " +
-            (ReadShellRotationFileState(shellRotationPath_, state) ? HeicFileState(state) : L"file state unavailable") +
-            L"; differs from original: " + (changed ? L"yes" : L"no"));
         if (changed) {
             const bool stable = shellRotationLastStateValid_ &&
                 CompareFileTime(&state.ftLastWriteTime, &shellRotationLastState_.ftLastWriteTime) == 0 &&
@@ -2804,12 +2397,9 @@ private:
             shellRotationLastState_ = state;
             shellRotationLastStateValid_ = true;
             shellRotationStableChecks_ = stable ? shellRotationStableChecks_ + 1 : 0;
-            AppendHeicDiagnostic(L"Matches previous observation: " + std::wstring(stable ? L"yes" : L"no") + L"; consecutive stable observations: " + std::to_wstring(shellRotationStableChecks_ + 1));
             if (shellRotationStableChecks_ >= 2) {
-                ++shellRotationWicAttempts_;
                 ComPtr<IWICBitmapDecoder> decoder;
                 const HRESULT reopen = wicFactory_->CreateDecoderFromFilename(shellRotationPath_.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
-                AppendHeicDiagnostic(L"WIC verification attempt " + std::to_wstring(shellRotationWicAttempts_) + L" @ " + std::to_wstring(elapsed) + L" ms: HRESULT 0x" + std::to_wstring(static_cast<unsigned long>(reopen)) + (SUCCEEDED(reopen) ? L"; success" : L"; failure; monitoring continues"));
                 if (SUCCEEDED(reopen)) { CompleteShellRotationRefresh(); return; }
             }
         } else {
@@ -2817,24 +2407,20 @@ private:
         shellRotationLastStateValid_ = false;
         }
         if (GetTickCount64() - shellRotationStarted_ >= kShellRotationTimeoutMs) {
-            KillTimer(window_, kShellRotationCheckTimer);
-            shellRotationPending_ = false;
-            shellRotationContextMenu_.Reset();
-            DisarmShellRotationDialogSuppression();
-            FinishHeicDiagnostics(L"timeout: file change/readiness was not verified", true);
+            FailShellRotationRefresh();
         }
     }
 
     HRESULT RotateHeifWithShell(bool clockwise) {
-        BeginHeicDiagnostics(clockwise);
+        if (IsHeifRotationGateActive()) return HRESULT_FROM_WIN32(ERROR_BUSY);
+        shellRotationPending_ = true;
         RefreshHeifShellRotationCapability();
         const bool available = clockwise ? heifShellRotateRightAvailable_ : heifShellRotateLeftAvailable_;
-        if (!available) { FinishHeicDiagnostics(L"requested Shell verb unavailable", true); return E_NOTIMPL; }
+        if (!available) { FailShellRotationRefresh(); return E_NOTIMPL; }
         ComPtr<IContextMenu> contextMenu;
         UINT commandCount = 0;
         HRESULT hr = GetShellContextMenu(currentPath_, contextMenu, commandCount);
-        AppendHeicDiagnostic(L"Context menu acquisition HRESULT: 0x" + std::to_wstring(static_cast<unsigned long>(hr)) + L"; command count: " + std::to_wstring(commandCount));
-        if (FAILED(hr)) { FinishHeicDiagnostics(L"context menu acquisition failed", true); return hr; }
+        if (FAILED(hr)) { FailShellRotationRefresh(); return hr; }
         const wchar_t* verb = clockwise ? L"rotate90" : L"rotate270";
         bool found = false;
         for (UINT offset = 0; offset < commandCount; ++offset) {
@@ -2845,29 +2431,22 @@ private:
                 break;
             }
         }
-        AppendHeicDiagnostic(L"Shell verb selected: " + std::wstring(verb) + L"; exposed: " + (found ? L"yes" : L"no"));
-        if (!found) { FinishHeicDiagnostics(L"requested Shell verb was not exposed", true); return HRESULT_FROM_WIN32(ERROR_NOT_FOUND); }
+        if (!found) { FailShellRotationRefresh(); return HRESULT_FROM_WIN32(ERROR_NOT_FOUND); }
         hr = DetachDisplayedImageForShellWrite();
-        if (FAILED(hr)) { FinishHeicDiagnostics(L"Viewtrious could not prepare the image for Shell rotation", true); return hr; }
-        FinishThumbnailDecodeForShellWrite();
+        if (FAILED(hr)) { FailShellRotationRefresh(); return hr; }
         BeginShellRotationRefresh();
         CMINVOKECOMMANDINFOEX invoke{ sizeof(invoke) };
         // Do not authorize asynchronous execution here. The Shell handler may otherwise
         // report a timestamp change before its own HEIC writer has released the file.
         // CMINVOKECOMMANDINFOEX is accepted through its CMINVOKECOMMANDINFO base.
-        // Suppress handler-owned UI; post-operation file/readiness verification remains authoritative.
-        invoke.fMask = CMIC_MASK_UNICODE | CMIC_MASK_FLAG_NO_UI;
+        invoke.fMask = CMIC_MASK_UNICODE;
         invoke.hwnd = window_;
         invoke.lpVerb = clockwise ? "rotate90" : "rotate270";
         invoke.lpVerbW = verb;
         invoke.nShow = SW_SHOWNORMAL;
-        const ULONGLONG invokeStarted = GetTickCount64();
         hr = contextMenu->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&invoke));
-        AppendHeicDiagnostic(L"InvokeCommand flags: CMIC_MASK_UNICODE | CMIC_MASK_FLAG_NO_UI; HRESULT: 0x" + std::to_wstring(static_cast<unsigned long>(hr)) + L"; duration: " + std::to_wstring(GetTickCount64() - invokeStarted) + L" ms; returned synchronously: yes");
         if (FAILED(hr)) {
-            KillTimer(window_, kShellRotationCheckTimer);
-            shellRotationPending_ = false;
-            FinishHeicDiagnostics(L"Shell invocation failed", true);
+            FailShellRotationRefresh();
             return hr;
         }
         // InvokeCommand has returned; retaining the handler can keep handler-owned state
@@ -3129,7 +2708,7 @@ private:
         return RotatePngWithGdiPlus(clockwise, failedStage, failedWin32Error);
     }
 
-    void RotateImage(bool clockwise) {
+    void ExecuteRotationBackend(bool clockwise) {
         if (currentPath_.empty()) return;
         if (IsHeifPath(currentPath_)) {
             RotateHeifWithShell(clockwise);
@@ -3144,11 +2723,19 @@ private:
             if (IsJpegPath(currentPath_) || IsPngPath(currentPath_))
                 ShowRotationFailure(failedStage ? failedStage : L"unknown rotation stage", hr, failedWin32Error);
             else ShowActionError(L"Viewtrious could not safely rotate this image. The original file was not replaced.");
+            InvalidateRect(window_, nullptr, FALSE);
             return;
         }
         const HRESULT reload = ReloadCurrentImage();
         if (IsJpegPath(currentPath_) || IsPngPath(currentPath_)) LogRotationStage(L"reload: DecodeImage", reload, FAILED(reload) ? GetLastError() : ERROR_SUCCESS);
         if (FAILED(reload) && (IsJpegPath(currentPath_) || IsPngPath(currentPath_))) ShowRotationFailure(L"reload: DecodeImage", reload, GetLastError());
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void RotateImage(bool clockwise) {
+        if (currentPath_.empty()) return;
+        if (IsHeifPath(currentPath_) && IsHeifRotationGateActive()) return;
+        ExecuteRotationBackend(clockwise);
     }
 
     void ClearDeletedImage() {
@@ -3156,7 +2743,6 @@ private:
         StopDirectoryWatcher();
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationPending_ = false;
-        shellRotationContextMenu_.Reset();
         ++decodeRequestGeneration_;
         ++navigationFolderGeneration_;
         pendingFullDecode_.reset(); imageDecodePending_ = false;
@@ -3164,7 +2750,7 @@ private:
         source_.Reset(); bitmap_.Reset(); imageWidth_ = imageHeight_ = 0;
         displayedPixels_.reset();
         currentPath_.clear(); displayedPath_.clear(); currentFileIdentity_ = {}; resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
-        navigationFiles_.clear(); thumbnailCache_.clear(); filmstripThumbnailAspects_.clear(); filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
+        navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
         error_ = L"Drop an image here, or launch Viewtrious with an image path.";
         InvalidateRect(window_, nullptr, FALSE);
@@ -3219,7 +2805,7 @@ private:
         const FrameMetrics frame = GetFrameMetrics(window_);
         const LONG margin = MulDiv(4, dpi, 96);
         const LONG width = std::min<LONG>(MulDiv(236, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
-        const LONG height = MulDiv(339, dpi, 96);
+        const LONG height = MulDiv(301, dpi, 96);
         const LONG left = std::clamp<LONG>(frame.hamburger.left + margin, margin,
             std::max<LONG>(margin, client.right - width - margin));
         const LONG top = frame.hamburger.bottom + margin;
@@ -3628,6 +3214,7 @@ private:
     }
 
     bool NavigateFastRasterSynchronously(const std::wstring& path, int direction) {
+        (void)direction;
         if (!IsFastNavigationPath(path)) return false;
 
         // This is the accepted pre-0.4.4 path: present each inexpensive raster image
@@ -3642,9 +3229,7 @@ private:
         UINT height = 0;
         if (FAILED(DecodeImage(path, source, width, height))) return false;
 
-        filmstripNavigationDirection_ = direction >= 0 ? 1 : -1;
         CommitImage(path, source, width, height, false);
-        RevealFilmstripForNavigation();
         InvalidateRect(window_, nullptr, FALSE);
         UpdateWindow(window_);
         return true;
@@ -3664,18 +3249,15 @@ private:
         RECT client{};
         GetClientRect(window_, &client);
         RECT title{ 0, 0, client.right, frame.titleBarHeight };
-        RECT strip = GetFilmstripBounds();
         RedrawWindow(window_, &title, nullptr, RDW_INVALIDATE);
-        if (strip.right > strip.left && strip.bottom > strip.top) RedrawWindow(window_, &strip, nullptr, RDW_INVALIDATE);
         if (immediate) UpdateWindow(window_);
     }
 
     void SelectNavigationTarget(const std::wstring& path, int direction = 0, bool immediatePaint = true) {
+        (void)direction;
         if (path.empty()) return;
         if (IsGifPath(path)) {
             LoadImage(path, false);
-            if (direction != 0) filmstripNavigationDirection_ = direction > 0 ? 1 : -1;
-            RevealFilmstripForNavigation(false);
             PresentNavigationUpdate(immediatePaint);
             return;
         }
@@ -3686,11 +3268,9 @@ private:
         resolutionText_.clear();
         error_.clear();
         imageDecodePending_ = true;
-        if (direction != 0) filmstripNavigationDirection_ = direction > 0 ? 1 : -1;
         ++decodeRequestGeneration_;
         pendingFullDecode_ = DecodeRequest{ path, decodeRequestGeneration_, navigationFolderGeneration_ };
         QueueLatestFullDecode();
-        RevealFilmstripForNavigation(false);
         PresentNavigationUpdate(immediatePaint);
     }
 
@@ -3740,7 +3320,6 @@ private:
         CompleteFullDecodeWorker(finished->workerId);
         delete finished;
         StartPendingFullDecode();
-        QueueFilmstripPopulate();
     }
 
     void HandleFullDecodeResult(FullDecodeResult* result) {
@@ -3768,7 +3347,6 @@ private:
         if (!result->deliveredSynchronously) {
             delete result;
             StartPendingFullDecode();
-            QueueFilmstripPopulate();
         }
     }
 
@@ -3796,22 +3374,8 @@ private:
         if (lanczosSelected_ && !gifPlaying_) QueueLanczosRefinement();
         if (resetNavigation) {
             navigationFiles_.clear();
-            thumbnailCache_.clear();
-            filmstripThumbnailAspects_.clear();
-            filmstripItemWidths_.clear();
-            filmstripItemOffsets_.clear();
-            filmstripScroll_ = 0.0f;
-            filmstripOpacity_ = 0.0f;
-            filmstripPanelHovered_ = false;
-            filmstripRevealHovered_ = false;
-            filmstripHintHovered_ = false;
-            filmstripRevealStartOpacity_ = 0.0f;
-            filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
-            filmstripInitialPresentationPending_ = true;
-            StopFilmstripVisibilityTimer();
             navigationBuilt_ = false;
             navigationBuildQueued_ = false;
-            filmstripPopulateQueued_ = false;
         }
     }
 
@@ -3960,180 +3524,6 @@ private:
         else renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
-    HRESULT DecodeFilmstripThumbnailPixels(const fs::path& path, UINT targetHeight, PixelBuffer& thumbnail) const {
-        ComPtr<IWICImagingFactory> factory;
-        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
-        ComPtr<IWICBitmapDecoder> decoder;
-        if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
-        ComPtr<IWICBitmapFrameDecode> frame;
-        if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
-        ComPtr<IWICBitmapSource> input;
-        if (SUCCEEDED(hr)) {
-            hr = frame->GetThumbnail(&input);
-            if (FAILED(hr) || !input) hr = decoder->GetPreview(&input);
-            // A scaler on the frame is the last resort; it keeps the requested output small and
-            // lets codecs use their own reduced-resolution decode path where one is available.
-            if (FAILED(hr) || !input) { input = frame; hr = S_OK; }
-        }
-        UINT width = 0, height = 0;
-        if (SUCCEEDED(hr)) hr = input->GetSize(&width, &height);
-        if (FAILED(hr) || width == 0 || height == 0) return FAILED(hr) ? hr : E_FAIL;
-        ComPtr<IWICBitmapSource> oriented = input;
-        ComPtr<IWICBitmapFlipRotator> rotator;
-        const UINT orientation = ReadPhotoOrientation(frame.Get());
-        if (orientation != 1) {
-            hr = factory->CreateBitmapFlipRotator(&rotator);
-            if (SUCCEEDED(hr)) hr = rotator->Initialize(input.Get(), TransformForOrientation(orientation));
-            if (SUCCEEDED(hr)) oriented = rotator;
-        }
-        if (SUCCEEDED(hr)) hr = oriented->GetSize(&width, &height);
-        if (FAILED(hr) || width == 0 || height == 0) return FAILED(hr) ? hr : E_FAIL;
-        const float aspect = static_cast<float>(width) / static_cast<float>(height);
-        const float displayAspect = std::clamp(aspect, 2.0f / 3.0f, 16.0f / 9.0f);
-        const UINT cropWidth = aspect > displayAspect ? static_cast<UINT>(std::lround(static_cast<float>(height) * displayAspect)) : width;
-        const UINT cropHeight = aspect < displayAspect ? static_cast<UINT>(std::lround(static_cast<float>(width) / displayAspect)) : height;
-        ComPtr<IWICBitmapSource> cropped = oriented;
-        ComPtr<IWICBitmapClipper> clipper;
-        if (cropWidth != width || cropHeight != height) {
-            hr = factory->CreateBitmapClipper(&clipper);
-            const WICRect crop{ static_cast<INT>((width - cropWidth) / 2), static_cast<INT>((height - cropHeight) / 2), static_cast<INT>(cropWidth), static_cast<INT>(cropHeight) };
-            if (SUCCEEDED(hr)) hr = clipper->Initialize(oriented.Get(), &crop);
-            if (SUCCEEDED(hr)) cropped = clipper;
-        }
-        const UINT targetWidth = std::max(1u, static_cast<UINT>(std::lround(static_cast<float>(targetHeight) * displayAspect)));
-        ComPtr<IWICBitmapScaler> scaler;
-        if (SUCCEEDED(hr)) hr = factory->CreateBitmapScaler(&scaler);
-        if (SUCCEEDED(hr)) hr = scaler->Initialize(cropped.Get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant);
-        ComPtr<IWICFormatConverter> converter;
-        if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
-        if (SUCCEEDED(hr)) hr = converter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-        const UINT stride = targetWidth * 4;
-        auto pixels = std::make_shared<std::vector<BYTE>>(static_cast<size_t>(stride) * targetHeight);
-        if (SUCCEEDED(hr)) hr = converter->CopyPixels(nullptr, stride, static_cast<UINT>(pixels->size()), pixels->data());
-        if (SUCCEEDED(hr)) { thumbnail.width = targetWidth; thumbnail.height = targetHeight; thumbnail.stride = stride; thumbnail.pixels = std::move(pixels); }
-        return hr;
-    }
-
-    FilmstripThumbnail* FindFilmstripThumbnail(const fs::path& path) {
-        const auto found = std::find_if(thumbnailCache_.begin(), thumbnailCache_.end(), [&path](const FilmstripThumbnail& entry) { return PathsEqual(entry.path, path); });
-        return found == thumbnailCache_.end() ? nullptr : &*found;
-    }
-    void QueueFilmstripPopulate() {
-        if (!FilmstripVisible() || filmstripPopulateQueued_) return;
-        filmstripPopulateQueued_ = true;
-        PostMessageW(window_, kPopulateFilmstripMessage, 0, 0);
-    }
-    void PopulateFilmstripThumbnail() {
-        filmstripPopulateQueued_ = false;
-        if (!FilmstripVisible() || thumbnailDecodeInFlight_) return;
-        const size_t current = CurrentNavigationIndex();
-        std::vector<size_t> candidates;
-        const auto [first, last] = FilmstripVisibleRange();
-        const auto appendCandidate = [&](size_t index) {
-            if (index >= navigationFiles_.size() || FindFilmstripThumbnail(navigationFiles_[index]) ||
-                std::find(candidates.begin(), candidates.end(), index) != candidates.end()) return;
-            candidates.push_back(index);
-        };
-        appendCandidate(current);
-        if (filmstripNavigationDirection_ >= 0) {
-            for (size_t index = first; index < last; ++index) appendCandidate(index);
-            for (size_t distance = 0; distance < 10; ++distance) appendCandidate(last + distance);
-            for (size_t distance = 1; distance <= 3; ++distance) {
-                if (first >= distance) appendCandidate(first - distance);
-            }
-        } else {
-            for (size_t index = last; index > first; --index) appendCandidate(index - 1);
-            for (size_t distance = 1; distance <= 10; ++distance) {
-                if (first >= distance) appendCandidate(first - distance);
-            }
-            for (size_t distance = 0; distance < 3; ++distance) appendCandidate(last + distance);
-        }
-        if (candidates.empty()) return;
-        const size_t index = candidates.front();
-        const fs::path path = navigationFiles_[index];
-        const UINT height = static_cast<UINT>(FilmstripThumbnailHeight());
-        thumbnailDecodeInFlight_ = true;
-        thumbnailDecodeThread_ = std::thread([this, path, index, height, generation = navigationFolderGeneration_] {
-            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-            const HRESULT apartment = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            auto* result = new ThumbnailDecodeResult{};
-            result->path = path; result->index = index; result->folderGeneration = generation;
-            result->result = DecodeFilmstripThumbnailPixels(path, height, *result);
-            if (SUCCEEDED(apartment)) CoUninitialize();
-            if (!PostMessageW(window_, kThumbnailDecodeCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
-        });
-    }
-
-    void HandleThumbnailDecodeResult(ThumbnailDecodeResult* result) {
-        if (!result) return;
-        if (thumbnailDecodeThread_.joinable()) thumbnailDecodeThread_.join();
-        thumbnailDecodeInFlight_ = false;
-        if (result->folderGeneration == navigationFolderGeneration_ && result->index < navigationFiles_.size() &&
-            PathsEqual(navigationFiles_[result->index], result->path) && SUCCEEDED(result->result) && result->pixels) {
-            ComPtr<IWICBitmap> bitmap;
-            if (SUCCEEDED(wicFactory_->CreateBitmapFromMemory(result->width, result->height, GUID_WICPixelFormat32bppPBGRA,
-                    result->stride, static_cast<UINT>(result->pixels->size()), result->pixels->data(), &bitmap))) {
-                // Keep the tiny backing buffer in the cache source via a copy. It is only thumbnail-sized.
-                ComPtr<IWICBitmap> cached;
-                if (SUCCEEDED(wicFactory_->CreateBitmapFromSource(bitmap.Get(), WICBitmapCacheOnLoad, &cached))) {
-                    if (thumbnailCache_.size() >= 48) thumbnailCache_.erase(thumbnailCache_.begin());
-                    thumbnailCache_.push_back({ result->path, cached, nullptr });
-                    filmstripThumbnailAspects_[result->index] = static_cast<float>(result->width) / static_cast<float>(result->height);
-                    RebuildFilmstripLayout(false);
-                }
-            }
-        }
-        delete result;
-        QueueFilmstripPopulate();
-        InvalidateRect(window_, nullptr, FALSE);
-    }
-    void DrawFilmstrip() {
-        if (!FilmstripVisible()) return;
-        const RECT strip = GetFilmstripBounds();
-        const UINT dpi = GetDpiForWindow(window_);
-        const float scale = static_cast<float>(dpi) / 96.0f;
-        const float opacity = filmstripOpacity_;
-        ComPtr<ID2D1SolidColorBrush> surface, border, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, hintBacking, hintBorder, hintText;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(15.f / 255, 17.f / 255, 21.f / 255, 0.78f * opacity), &surface)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(91.f / 255, 102.f / 255, 120.f / 255, 0.70f * opacity), &border)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 90.f / 255, 160.f / 255, 0.22f * opacity), &selectedBacking)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255, 0.25f * opacity), &selectedGlow)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 150.f / 255, 255.f / 255, opacity), &selectedOutline)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.16f * opacity), &hover)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(24.f / 255, 26.f / 255, 30.f / 255, opacity), &placeholder)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.50f * opacity), &hintBacking)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(91.f / 255, 102.f / 255, 120.f / 255, 0.25f * opacity), &hintBorder)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.50f * opacity), &hintText))) return;
-        const D2D1_RECT_F surfaceRect = D2D1::RectF(static_cast<float>(strip.left), static_cast<float>(strip.top), static_cast<float>(strip.right), static_cast<float>(strip.bottom));
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(surfaceRect, 12.0f * scale, 12.0f * scale), surface.Get());
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(surfaceRect, 12.0f * scale, 12.0f * scale), border.Get(), 1.0f * scale);
-        const RECT hintBounds = GetFilmstripHintBounds();
-        const D2D1_RECT_F hintRect = D2D1::RectF(static_cast<float>(hintBounds.left), static_cast<float>(hintBounds.top), static_cast<float>(hintBounds.right), static_cast<float>(hintBounds.bottom));
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(hintRect, 6.0f * scale, 6.0f * scale), hintBacking.Get());
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(hintRect, 6.0f * scale, 6.0f * scale), hintBorder.Get(), 1.0f * scale);
-        DrawOverlayText(L"\u2039   Scroll to browse   \u203A", hintRect.left, hintRect.top,
-            hintRect.right - hintRect.left, hintRect.bottom - hintRect.top, 13.0f, DWRITE_FONT_WEIGHT_NORMAL, hintText.Get(), true, false, true);
-        renderTarget_->PushAxisAlignedClip(surfaceRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        const size_t current = CurrentNavigationIndex();
-        const auto [first, last] = FilmstripVisibleRange();
-        for (size_t index = first; index < last; ++index) {
-            const RECT bounds = GetFilmstripThumbnailBounds(index);
-            const D2D1_RECT_F box = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
-            const D2D1_RECT_F selection = D2D1::RectF(box.left - 4.0f * scale, box.top - 4.0f * scale, box.right + 4.0f * scale, box.bottom + 4.0f * scale);
-            if (index == current) {
-                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(selection, 8.0f * scale, 8.0f * scale), selectedBacking.Get());
-                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(selection, 8.0f * scale, 8.0f * scale), selectedGlow.Get(), 4.0f * scale);
-            } else if (index == static_cast<size_t>(filmstripHoveredIndex_)) {
-                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), hover.Get(), 1.0f * scale);
-            }
-            FilmstripThumbnail* thumbnail = FindFilmstripThumbnail(navigationFiles_[index]);
-            if (thumbnail && thumbnail->source) {
-                if (!thumbnail->bitmap) renderTarget_->CreateBitmapFromWicBitmap(thumbnail->source.Get(), nullptr, &thumbnail->bitmap);
-                if (thumbnail->bitmap) {
-                    ComPtr<ID2D1RoundedRectangleGeometry> clip;
-                    if (SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), &clip))) {
-                        renderTarget_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clip.Get()), nullptr);
-                        renderTarget_->DrawBitmap(thumbnail->bitmap.Get(), box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                        renderTarget_->PopLayer();
-                    } else renderTarget_->DrawBitmap(thumbnail->bitmap.Get(), box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                }
-            } else renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), placeholder.Get());
-            if (index == current) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), selectedOutline.Get(), 2.0f * scale);
-        }
-        renderTarget_->PopAxisAlignedClip();
-        QueueFilmstripPopulate();
-    }
 
     bool EnsureZoomHudFormat() {
         const UINT dpi = GetDpiForWindow(window_);
@@ -4579,10 +3969,9 @@ private:
             drawToggle(3, ButtonKind::SettingsShowZoomHud, L"Show zoom percentage", showZoomPercentage_);
             drawToggle(4, ButtonKind::SettingsAnimations, L"Animations and fade effects", animationsEnabled_);
             drawToggle(5, ButtonKind::SettingsReverseWheelZoom, L"Reverse mouse wheel zoom direction", reverseMouseWheelZoom_);
-            drawToggle(6, ButtonKind::SettingsAlwaysShowFilmstrip, L"Always show filmstrip", alwaysShowFilmstrip_);
-            drawToggle(7, ButtonKind::SettingsSpaceMouse, L"Enable SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
+            drawToggle(6, ButtonKind::SettingsSpaceMouse, L"Enable SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
             if (!spaceMouseRuntimeAvailable_) {
-                const RECT spaceMouseBounds = GetSettingsOptionBounds(7);
+                const RECT spaceMouseBounds = GetSettingsOptionBounds(6);
                 DrawOverlayText(L"Requires 3Dconnexion 3DxWare software", settingsLeft + 30.0f * dpiScale,
                     static_cast<float>(spaceMouseBounds.top) + 18.0f * dpiScale, settingsWidth - 30.0f * dpiScale,
                     18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, borderBrush.Get(), true);
@@ -4819,7 +4208,6 @@ private:
         separator();
         drawItem(DropdownItem::About, top, L"About", L'\uE946'); top += rowHeight;
         drawItem(DropdownItem::Feedback, top, L"Feedback", L'\uE939'); top += rowHeight;
-        drawItem(DropdownItem::CopyHeicDiagnostics, top, L"Copy HEIC Rotation Diagnostics", L'\uE8A5'); top += rowHeight;
         separator();
         drawItem(DropdownItem::Close, top, L"Close", L'\uE8BB');
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
@@ -4862,7 +4250,9 @@ private:
             top += gap;
         };
         drawItem(ContextAction::Fullscreen, fullscreen_ ? L"Exit Fullscreen" : L"Fullscreen", fullscreen_ ? L'\uE73F' : L'\uE740'); separator();
-        drawItem(ContextAction::RotateLeft, L"Rotate Left", L'\uE7AD'); drawItem(ContextAction::RotateRight, L"Rotate Right", L'\uE7AD'); separator();
+        const bool heifRotationWorking = IsHeifPath(currentPath_) && heifRotationMenuLocked_;
+        drawItem(ContextAction::RotateLeft, heifRotationWorking ? L"Rotate Left (working...)" : L"Rotate Left", L'\uE7AD');
+        drawItem(ContextAction::RotateRight, heifRotationWorking ? L"Rotate Right (working...)" : L"Rotate Right", L'\uE7AD'); separator();
         const int openWithTop = top;
         drawItem(ContextAction::OpenWith, L"Open With", L'\uE8A7');
         DrawOverlayText(L">", static_cast<float>(bounds.right - MulDiv(28, dpi, 96)), static_cast<float>(openWithTop), static_cast<float>(MulDiv(16, dpi, 96)),
@@ -5218,7 +4608,6 @@ private:
     void DiscardRenderResources() {
         bitmap_.Reset();
         lanczosBitmap_.Reset();
-        for (FilmstripThumbnail& thumbnail : thumbnailCache_) thumbnail.bitmap.Reset();
         aboutLogo_.Reset();
         checkerboardBrush_.Reset();
         checkerboardBitmap_.Reset();
@@ -5274,10 +4663,6 @@ private:
     std::wstring rotationDiagnosticDetail_;
     std::wstring feedbackText_ = L"Copied to Clipboard";
     std::vector<fs::path> navigationFiles_;
-    std::vector<FilmstripThumbnail> thumbnailCache_;
-    std::vector<float> filmstripThumbnailAspects_;
-    std::vector<float> filmstripItemWidths_;
-    std::vector<float> filmstripItemOffsets_;
     D2D1_POINT_2F pan_ = D2D1::Point2F();
     POINT lastDragPoint_{};
     float zoom_ = 1.0f;
@@ -5306,25 +4691,10 @@ private:
     std::optional<LanczosRequest> pendingLanczosRequest_;
     std::shared_ptr<std::atomic_bool> lanczosCancellation_;
     std::thread lanczosThread_;
-    std::thread thumbnailDecodeThread_;
-    bool thumbnailDecodeInFlight_ = false;
     HANDLE directoryWatcherHandle_ = INVALID_HANDLE_VALUE;
     std::wstring directoryWatcherFolder_;
     std::thread directoryWatcherThread_;
     std::atomic<bool> directoryWatcherStopping_{ false };
-    bool filmstripPopulateQueued_ = false;
-    bool filmstripInitialPresentationPending_ = false;
-    bool filmstripPanelHovered_ = false;
-    bool filmstripRevealHovered_ = false;
-    bool filmstripHintHovered_ = false;
-    float filmstripScroll_ = 0.0f;
-    float filmstripOpacity_ = 0.0f;
-    float filmstripRevealStartOpacity_ = 0.0f;
-    int filmstripNavigationDirection_ = 1;
-    ULONGLONG filmstripVisibilityStart_ = 0;
-    UINT filmstripHoldDurationMs_ = 2000;
-    FilmstripVisibilityState filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
-    int filmstripHoveredIndex_ = -1;
     bool rememberWindowPlacement_ = true;
     bool includeHiddenImages_ = true;
     bool confirmBeforeDeleting_ = true;
@@ -5332,7 +4702,6 @@ private:
     bool showZoomPercentage_ = true;
     bool animationsEnabled_ = true;
     bool reverseMouseWheelZoom_ = false;
-    bool alwaysShowFilmstrip_ = false;
     bool spaceMouseEnabled_ = true;
     bool spaceMouseRuntimeAvailable_ = false;
     bool spaceMouseMotionActive_ = false;
@@ -5352,10 +4721,6 @@ private:
     float tutorialZoom_ = 1.0f;
     D2D1_POINT_2F tutorialPan_ = D2D1::Point2F();
     bool tutorialFitToWindow_ = true;
-    float tutorialFilmstripScroll_ = 0.0f;
-    float tutorialFilmstripOpacity_ = 0.0f;
-    FilmstripVisibilityState tutorialFilmstripState_ = FilmstripVisibilityState::Hidden;
-    UINT tutorialFilmstripHoldDurationMs_ = 2000;
     bool fullscreen_ = false;
     CaptionButton hoveredCaptionButton_ = CaptionButton::None;
     CaptionButton pressedCaptionButton_ = CaptionButton::None;
@@ -5373,6 +4738,8 @@ private:
     bool heifShellRotateLeftAvailable_ = false;
     bool heifShellRotateRightAvailable_ = false;
     bool shellRotationPending_ = false;
+    ULONGLONG heifRotationCooldownUntil_ = 0;
+    bool heifRotationMenuLocked_ = false;
     std::wstring shellRotationPath_;
     WIN32_FILE_ATTRIBUTE_DATA shellRotationInitialState_{};
     bool shellRotationInitialStateValid_ = false;
@@ -5380,17 +4747,7 @@ private:
     bool shellRotationLastStateValid_ = false;
     UINT shellRotationStableChecks_ = 0;
     UINT shellRotationProbeCount_ = 0;
-    UINT shellRotationWicAttempts_ = 0;
     ULONGLONG shellRotationStarted_ = 0;
-    HWINEVENTHOOK shellRotationDialogHook_ = nullptr;
-    ULONGLONG shellRotationDialogGraceUntil_ = 0;
-    HWND shellRotationDialogCandidate_ = nullptr;
-    UINT shellRotationDialogValidationAttempts_ = 0;
-    ULONGLONG lastHeicRotationRequest_ = 0;
-    std::wstring heicRotationDiagnostics_;
-    std::wstring latestHeicRotationDiagnostics_;
-    std::wstring previousHeicRotationDiagnostics_;
-    ComPtr<IContextMenu> shellRotationContextMenu_;
     bool openWithSubmenuOpen_ = false;
     int openWithHovered_ = -1;
     std::wstring openWithExtension_;
@@ -5502,14 +4859,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
-        if (viewer->FilmstripContains(point)) viewer->ScrollFilmstrip(-wheelUnits * (viewer->FilmstripThumbnailHeight() + viewer->FilmstripGap()));
-        else viewer->ZoomAt(point, viewer->WheelZoomFactor(wheelUnits));
+        viewer->ZoomAt(point, viewer->WheelZoomFactor(wheelUnits));
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        if (viewer->FilmstripContains(point)) return 0;
         const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point);
         if (navigation != ButtonKind::None) {
             viewer->BeginCanvasNavigationClick(navigation, point);
@@ -5592,10 +4947,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetCapture(window);
             return 0;
         }
-        if (viewer->FilmstripContains(point)) {
-            viewer->SelectFilmstripItem(viewer->FilmstripItemAt(point));
-            return 0;
-        }
         const FrameMetrics frame = GetFrameMetrics(window);
         if (const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point); navigation != ButtonKind::None) {
             viewer->BeginCanvasNavigationClick(navigation, point);
@@ -5646,14 +4997,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const FrameMetrics frame = GetFrameMetrics(window);
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         viewer->SetButtonHover(viewer->ButtonAt(point));
-        viewer->SetFilmstripPointerState(point);
-        if (viewer->FilmstripContains(point)) {
-            viewer->SetFilmstripHover(point);
-            viewer->SetCanvasNavigationHover(ButtonKind::None);
-            viewer->SetHamburgerHover(false);
-            return 0;
-        }
-        viewer->SetFilmstripHover({ -1, -1 });
         viewer->SetCanvasNavigationHover(viewer->CanvasNavigationZoneAt(point));
         viewer->SetHamburgerHover(!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point));
         TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE, window, 0 };
@@ -5665,7 +5008,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) viewer->PanTo(point);
         return 0;
     }
-    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
+    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
     case WM_LBUTTONUP: {
         if (viewer->CanvasNavigationPressed()) {
             const ButtonKind navigation = viewer->FinishCanvasNavigationClick({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
@@ -5721,19 +5064,17 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->EndPan(); viewer->CancelCanvasNavigationClick(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        if (!viewer->TutorialActive() && !viewer->FilmstripContains(point)) viewer->OpenContextMenu(point);
+        if (!viewer->TutorialActive()) viewer->OpenContextMenu(point);
         return 0;
     }
     case WM_TIMER:
         if (wParam == kGifPlaybackTimer) { viewer->GifPlaybackTimerMessage(); return 0; }
         if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; }
         if (wParam == kCanvasNavigationFadeTimer) { viewer->UpdateCanvasNavigationFade(); return 0; }
-        if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }
         if (wParam == kDirectoryChangeDebounceTimer) { KillTimer(window, kDirectoryChangeDebounceTimer); viewer->RefreshNavigationFromFileSystem(); return 0; }
         if (wParam == kNavigationDecodeDebounceTimer) { viewer->NavigationDecodeTimer(); return 0; }
         if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
-        if (wParam == kShellRotationDialogGraceTimer) { viewer->ShellRotationDialogGraceTimer(); return 0; }
-        if (wParam == kShellRotationDialogValidateTimer) { viewer->ShellRotationDialogValidateTimer(); return 0; }
+        if (wParam == kHeifRotationMenuRefreshTimer) { viewer->HeifRotationMenuRefreshTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
         break;
     case WM_ACTIVATE:
@@ -5747,13 +5088,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         break;
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
-    case kPopulateFilmstripMessage: viewer->PopulateFilmstripThumbnailMessage(); return 0;
     case kDirectoryChangedMessage: viewer->QueueDirectoryRefreshFromWatcher(); return 0;
     case kFullDecodeCompleteMessage: viewer->FullDecodeCompleteMessage(reinterpret_cast<FullDecodeResult*>(lParam)); return 0;
     case kLanczosCompleteMessage: viewer->LanczosCompleteMessage(reinterpret_cast<LanczosResult*>(lParam)); return 0;
-    case kShellRotationDialogCandidateMessage: viewer->ShellRotationDialogCandidate(reinterpret_cast<HWND>(lParam)); return 0;
     case kDecodeWorkerFinishedMessage: viewer->DecodeWorkerFinishedMessage(reinterpret_cast<DecodeWorkerFinished*>(lParam)); return 0;
-    case kThumbnailDecodeCompleteMessage: viewer->ThumbnailDecodeCompleteMessage(reinterpret_cast<ThumbnailDecodeResult*>(lParam)); return 0;
     case WM_KEYDOWN:
         if (viewer->TutorialActive()) { if (wParam == VK_ESCAPE) viewer->StopTutorial(); return 0; }
         if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <windows.h>
 
 namespace {
 constexpr float kPi = 3.1415926535f;
@@ -24,8 +25,11 @@ Quaternion Normalize(Quaternion value) {
     return length > 1e-12f ? Quaternion{ value.x / length, value.y / length, value.z / length, value.w / length } : Quaternion{ 0, 0, 0, 1 };
 }
 Quaternion OrientationQuaternion(Float3 forward, Float3 up) {
-    const Float3 right = Normalize(Cross(up, forward));
-    up = Normalize(Cross(forward, right));
+    // The renderer's view matrix stores a reflected horizontal axis, so do not feed that
+    // basis directly to quaternion math. Build the equivalent proper rotation from the
+    // camera's forward/up axes; SetLocalOrientation restores the renderer's convention.
+    const Float3 right = Normalize(Cross(forward, up));
+    up = Normalize(Cross(right, forward));
     const float m00 = right.x, m01 = up.x, m02 = -forward.x;
     const float m10 = right.y, m11 = up.y, m12 = -forward.y;
     const float m20 = right.z, m21 = up.z, m22 = -forward.z;
@@ -56,6 +60,21 @@ void QuaternionOrientation(Quaternion rotation, Float3& forward, Float3& up) {
     up = Normalize(Float3{ 2.0f * (xy - zw), 1.0f - 2.0f * (xx + zz), 2.0f * (yz + xw) });
     forward = Normalize(Float3{ -2.0f * (xz + yw), -2.0f * (yz - xw), -(1.0f - 2.0f * (xx + yy)) });
 }
+#if defined(_DEBUG)
+Float3 AnimationEye(const OrbitCamera::AnimationState& state) {
+    const Float3 right = Normalize(Cross(state.forward, state.up));
+    const Float3 up = Normalize(Cross(right, state.forward));
+    return Add(Add(Sub(state.pivot, Mul(state.forward, state.distance)), Mul(right, state.framingRight)), Mul(up, state.framingUp));
+}
+void TraceAnimationState(const wchar_t* label, const OrbitCamera::AnimationState& state, Quaternion orientation) {
+    const Float3 eye = AnimationEye(state);
+    wchar_t message[512]{};
+    swprintf_s(message, L"Viewtrious animated Home %s eye=(%.5f,%.5f,%.5f) forward=(%.5f,%.5f,%.5f) up=(%.5f,%.5f,%.5f) pivot=(%.5f,%.5f,%.5f) frame=(%.5f,%.5f) distance=%.5f q=(%.5f,%.5f,%.5f,%.5f)\\n",
+        label, eye.x, eye.y, eye.z, state.forward.x, state.forward.y, state.forward.z, state.up.x, state.up.y, state.up.z,
+        state.pivot.x, state.pivot.y, state.pivot.z, state.framingRight, state.framingUp, state.distance, orientation.x, orientation.y, orientation.z, orientation.w);
+    OutputDebugStringW(message);
+}
+#endif
 }
 
 void OrbitCamera::Fit(const ModelBounds& bounds, float aspectRatio) {
@@ -160,8 +179,11 @@ OrbitCamera::AnimationState OrbitCamera::CaptureAnimationState() {
 }
 void OrbitCamera::ApplyInterpolatedAnimationState(const AnimationState& start, const AnimationState& target, float progress) {
     progress = std::clamp(progress, 0.0f, 1.0f);
+    const Quaternion startOrientation = OrientationQuaternion(start.forward, start.up);
+    const Quaternion targetOrientation = OrientationQuaternion(target.forward, target.up);
     Float3 forward{}, up{};
-    QuaternionOrientation(Slerp(OrientationQuaternion(start.forward, start.up), OrientationQuaternion(target.forward, target.up), progress), forward, up);
+    const Quaternion orientation = Slerp(startOrientation, targetOrientation, progress);
+    QuaternionOrientation(orientation, forward, up);
     navLibStateActive_ = false;
     pivot_ = Lerp(start.pivot, target.pivot, progress);
     framingRight_ = Lerp(start.framingRight, target.framingRight, progress);
@@ -172,6 +194,16 @@ void OrbitCamera::ApplyInterpolatedAnimationState(const AnimationState& start, c
     fieldOfView_ = Lerp(start.fieldOfView, target.fieldOfView, progress);
     SetLocalOrientation(forward, up);
     Update();
+#if defined(_DEBUG)
+    if (progress <= 0.1f) {
+        TraceAnimationState(L"start", start, startOrientation);
+        TraceAnimationState(L"target", target, targetOrientation);
+        AnimationState atZero = start;
+        QuaternionOrientation(Slerp(startOrientation, targetOrientation, 0.0f), atZero.forward, atZero.up);
+        TraceAnimationState(L"applied t=0", atZero, startOrientation);
+        TraceAnimationState(L"first nonzero frame", CaptureAnimationState(), orientation);
+    }
+#endif
 }
 Float3 OrbitCamera::Position() const {
     if (navLibStateActive_) return navLibState_.position;

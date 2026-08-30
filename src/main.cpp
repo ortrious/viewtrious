@@ -5237,7 +5237,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) {
-            if (viewer->ModelActive()) viewer->ContinueModelDrag(point); else viewer->PanTo(point);
+            if (viewer->ModelActive()) {
+                if (wParam & (MK_LBUTTON | MK_MBUTTON)) viewer->ContinueModelDrag(point);
+                else viewer->EndModelDrag();
+            } else viewer->PanTo(point);
         }
         return 0;
     }
@@ -5293,6 +5296,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (pressed == released) SendMessageW(window, WM_SYSCOMMAND, SystemCommandForCaptionButton(window, released), 0);
         return 0;
     }
+    case WM_MBUTTONUP:
+        if (viewer->ModelActive()) {
+            viewer->EndModelDrag();
+            if (GetCapture() == window) ReleaseCapture();
+            return 0;
+        }
+        break;
     case WM_CAPTURECHANGED:
         viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelCanvasNavigationClick(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {

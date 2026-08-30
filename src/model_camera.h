@@ -9,6 +9,7 @@ public:
     void SetAspectRatio(float aspectRatio);
     void Orbit(float deltaX, float deltaY);
     void Pan(float deltaX, float deltaY);
+    void PanPixels(float deltaX, float deltaY, unsigned int viewportWidth, unsigned int viewportHeight);
     void Dolly(float wheelUnits);
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);
     bool SetFromNavLibState(const State& state);

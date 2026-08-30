@@ -49,6 +49,13 @@ void OrbitCamera::Pan(float dx, float dy) {
     framingUp_ += dy * distance_;
     Update();
 }
+void OrbitCamera::PanPixels(float dx, float dy, unsigned int viewportWidth, unsigned int viewportHeight) {
+    MaterializeNavLibState();
+    const float halfHeight = distance_ * std::tan(fieldOfView_ * 0.5f);
+    framingRight_ += dx * (2.0f * halfHeight * aspect_ / std::max(1u, viewportWidth));
+    framingUp_ += dy * (2.0f * halfHeight / std::max(1u, viewportHeight));
+    Update();
+}
 void OrbitCamera::Dolly(float wheelUnits) { MaterializeNavLibState(); distance_ = std::clamp(distance_ * std::exp(-wheelUnits * 0.14f), radius_ * 0.02f, radius_ * 10000.0f); Update(); }
 void OrbitCamera::ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll) {
     MaterializeNavLibState();

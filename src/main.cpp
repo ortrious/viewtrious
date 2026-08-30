@@ -777,12 +777,12 @@ public:
     }
     bool HasImage() const { return source_ != nullptr; }
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
-    void FitModel() { if (ModelActive()) { modelViewport_.Fit(); InvalidateRect(window_, nullptr, FALSE); } }
+    void FitModel() { if (ModelActive()) { modelViewport_.Fit(); RebaseSpaceMouseModelCamera(); InvalidateRect(window_, nullptr, FALSE); } }
     void BeginModelOrbit(POINT point) { if (ModelActive()) modelViewport_.BeginOrbit(point); }
     void BeginModelPan(POINT point) { if (ModelActive()) modelViewport_.BeginPan(point); }
-    void ContinueModelDrag(POINT point) { if (!ModelActive()) return; const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); InvalidateRect(window_, nullptr, FALSE); }
+    void ContinueModelDrag(POINT point) { if (!ModelActive()) return; const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); RebaseSpaceMouseModelCamera(); InvalidateRect(window_, nullptr, FALSE); }
     void EndModelDrag() { modelViewport_.EndDrag(); }
-    void DollyModel(float steps) { if (ModelActive()) { modelViewport_.Dolly(steps); InvalidateRect(window_, nullptr, FALSE); } }
+    void DollyModel(float steps) { if (ModelActive()) { modelViewport_.Dolly(steps); RebaseSpaceMouseModelCamera(); InvalidateRect(window_, nullptr, FALSE); } }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
@@ -1943,6 +1943,20 @@ private:
         if (!ModelActive()) return {};
         const Float3 pivot = modelViewport_.Camera().Pivot();
         return { pivot.x, pivot.y, pivot.z };
+    }
+    void RebaseSpaceMouseModelCamera() {
+        if (!ModelActive() || !spaceMouse_ || !spaceMouse_->IsEnabled() || spaceMouseMotionActive_) return;
+        // view.affine is NavLib's documented read/write camera property.  Publishing the
+        // locally rendered pose updates NavLib's action baseline before the next 3D-mouse
+        // transaction, so mouse navigation and reset cannot leave an old cached pose behind.
+        const long result = spaceMouse_->Write(navlib::view_affine_k, navlib::value_t(SpaceMouseCameraMatrix()));
+#if defined(_DEBUG)
+        wchar_t message[128]{};
+        swprintf_s(message, L"Viewtrious SpaceMouse: rebased local Model3D view.affine result=%ld\\n", result);
+        OutputDebugStringW(message);
+#else
+        (void)result;
+#endif
     }
     static navlib::matrix_t NavLibCameraToWorld(const OrbitCamera::State& state) {
         // NavLib consumes a right-handed, row-major camera-to-world matrix.  The camera's

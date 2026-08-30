@@ -21,6 +21,7 @@ public:
     void Render(GraphicsHost& host, const RECT& bounds);
     void Fit();
     bool BeginAnimatedHome();
+    bool BeginAnimatedOrientation(Float3 forward, Float3 up);
     bool AdvanceAnimatedHome(float progress);
     void CancelAnimatedHome() { homeAnimationActive_ = false; }
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);

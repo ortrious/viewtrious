@@ -84,7 +84,7 @@ const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.
 
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
-enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete };
+enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsSpaceMouse, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
@@ -785,6 +785,7 @@ public:
     void CancelAnimatedModelHome() { KillTimer(window_, kModelHomeAnimationTimer); modelViewport_.CancelAnimatedHome(); }
     void FitModel() { if (ModelActive()) { CancelAnimatedModelHome(); modelViewport_.Fit(); InvalidateRect(window_, nullptr, FALSE); } }
     void BeginAnimatedModelHome() { if (!ModelActive() || !modelViewport_.BeginAnimatedHome()) return; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
+    void BeginAnimatedModelOrientation(Float3 forward, Float3 up) { if (!ModelActive() || !modelViewport_.BeginAnimatedOrientation(forward, up)) return; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
     void UpdateAnimatedModelHome() {
         if (!ModelActive()) { CancelAnimatedModelHome(); return; }
         const float progress = std::clamp(static_cast<float>(GetTickCount64() - modelHomeAnimationStartMs_) / static_cast<float>(kModelHomeAnimationDurationMs), 0.0f, 1.0f);
@@ -797,10 +798,11 @@ public:
     void ContinueModelDrag(POINT point) { if (!ModelActive()) return; CancelAnimatedModelHome(); const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); InvalidateRect(window_, nullptr, FALSE); }
     void EndModelDrag() { modelViewport_.EndDrag(); }
     void DollyModel(float steps) { if (ModelActive()) { CancelAnimatedModelHome(); modelViewport_.Dolly(steps); InvalidateRect(window_, nullptr, FALSE); } }
+    bool SelectModelFace(POINT point) { if(!ModelActive()||!modelViewport_.Document()||modelViewport_.Document()->geometries.empty())return false;const RECT bounds=ModelCanvasBounds();if(point.x<bounds.left||point.x>=bounds.right||point.y<bounds.top||point.y>=bounds.bottom)return false;const auto state=modelViewport_.Camera().NavLibState();const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};const auto normalize=[&](Float3 v){const float l=std::sqrt(dot(v,v));return l>1e-6f?Float3{v.x/l,v.y/l,v.z/l}:Float3{0,0,1};};const Float3 forward=normalize(state.forward),right=normalize(cross(state.up,forward)),up=normalize(cross(forward,right));const float aspect=float(bounds.right-bounds.left)/std::max(1L,bounds.bottom-bounds.top),t=std::tan(modelViewport_.Camera().FieldOfView()*.5f),nx=(2.f*(point.x-bounds.left)/float(bounds.right-bounds.left)-1.f)*aspect*t,ny=(1.f-2.f*(point.y-bounds.top)/float(bounds.bottom-bounds.top))*t;const Float3 ray=normalize({forward.x+right.x*nx+up.x*ny,forward.y+right.y*nx+up.y*ny,forward.z+right.z*nx+up.z*ny});const auto& mesh=modelViewport_.Document()->geometries.front();float best=FLT_MAX;bool hit=false;for(size_t i=0;i+2<mesh.indices.size();i+=3){const Float3 a=mesh.positions[mesh.indices[i]],b=mesh.positions[mesh.indices[i+1]],c=mesh.positions[mesh.indices[i+2]],e1{b.x-a.x,b.y-a.y,b.z-a.z},e2{c.x-a.x,c.y-a.y,c.z-a.z},p=cross(ray,e2);const float det=dot(e1,p);if(std::fabs(det)<1e-7f)continue;const float inv=1.f/det;const Float3 s{state.position.x-a.x,state.position.y-a.y,state.position.z-a.z};const float u=dot(s,p)*inv;if(u<0||u>1)continue;const Float3 q=cross(s,e1);const float v=dot(ray,q)*inv;if(v<0||u+v>1)continue;const float d=dot(e2,q)*inv;if(d>0&&d<best){best=d;selectedFaceNormal_=mesh.normals[mesh.indices[i]];hit=true;}}modelFaceSelected_=hit;return hit; }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
-        if (!HasImage()) return;
+        if (!HasImage() && !(ModelActive() && modelFaceSelected_)) return;
         RefreshHeifShellRotationCapability();
         DismissDropdown();
         DismissOverlay();
@@ -815,7 +817,7 @@ public:
     void DismissContextMenu() {
         if (!contextMenuOpen_) return;
         KillTimer(window_, kHeifRotationMenuRefreshTimer);
-        contextMenuOpen_ = false;
+        contextMenuOpen_ = false; if (ModelActive()) modelFaceSelected_ = false;
         heifRotationMenuLocked_ = false;
         openWithSubmenuOpen_ = false;
         contextHovered_ = ContextAction::None;
@@ -826,7 +828,7 @@ public:
         if (!contextMenuOpen_) return ContextAction::None;
         const RECT bounds = GetContextMenuBounds();
         if (!PtInRect(&bounds, point)) return ContextAction::None;
-        const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
+        if (ModelActive()) return point.y >= bounds.top && point.y < bounds.bottom ? ContextAction::SnapViewToFace : ContextAction::None; const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
         const int separatorGap = MulDiv(9, GetDpiForWindow(window_), 96);
         int top = bounds.top + MulDiv(kContextMenuPaddingDip, GetDpiForWindow(window_), 96);
         const auto hit = [&](ContextAction action) {
@@ -848,6 +850,7 @@ public:
         return hit(ContextAction::Delete);
     }
     bool ContextActionEnabled(ContextAction action) const {
+        if (action == ContextAction::SnapViewToFace) return ModelActive() && modelFaceSelected_;
         if (tutorialStep_ == TutorialStep::ContextMenu && !HasImage()) return false;
         if (action == ContextAction::Copy || action == ContextAction::Print) return HasImage() && DisplayedImageMatchesTarget();
         if (action == ContextAction::Fullscreen || action == ContextAction::OpenWith ||
@@ -872,6 +875,7 @@ public:
     ContextAction PressedContextAction() const { return contextPressed_; }
     void ClearContextPressed() { SetContextPressed(ContextAction::None); }
     void InvokeContextAction(ContextAction action) {
+        if(action==ContextAction::SnapViewToFace){const Float3 normal=selectedFaceNormal_;const OrbitCamera::State state=modelViewport_.Camera().NavLibState();const float side=normal.x*state.forward.x+normal.y*state.forward.y+normal.z*state.forward.z;const Float3 forward=side>0?Float3{-normal.x,-normal.y,-normal.z}:normal;Float3 up=state.up;if(std::fabs(forward.x*up.x+forward.y*up.y+forward.z*up.z)>.95f)up=std::fabs(forward.y)<.95f?Float3{0,1,0}:Float3{0,0,1};DismissContextMenu();BeginAnimatedModelOrientation(forward,up);return;}
         if (action == ContextAction::OpenWith) { ToggleOpenWithSubmenu(); return; }
         DismissContextMenu();
         if (action == ContextAction::Fullscreen) ToggleFullscreen();
@@ -1995,12 +1999,12 @@ public:
 private:
     void DrawModelAxisIndicator() {
         const RECT canvas = ModelCanvasBounds(); const float dpi = GetDpiForWindow(window_) / 96.0f;
-        const float originX = canvas.right - 38.0f * dpi, originY = canvas.top + 42.0f * dpi;
+        const float originX = canvas.right - 152.0f * dpi, originY = canvas.top + 168.0f * dpi;
         const OrbitCamera::State state = modelViewport_.Camera().NavLibState();
         const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}; const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
         const float forwardLength=std::sqrt(dot(state.forward,state.forward)); if(forwardLength<1e-5f)return; const Float3 forward{state.forward.x/forwardLength,state.forward.y/forwardLength,state.forward.z/forwardLength}; Float3 right=cross(state.up,forward); const float rightLength=std::sqrt(dot(right,right)); if(rightLength<1e-5f)return; right={right.x/rightLength,right.y/rightLength,right.z/rightLength}; const Float3 up=cross(forward,right);
         ComPtr<ID2D1SolidColorBrush> x,y,z,junction; if(FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.88f,.30f,.30f),&x))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.35f,.78f,.42f),&y))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.35f,.55f,.95f),&z))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.90f,.92f,.96f,.9f),&junction)))return;
-        const auto axis=[&](Float3 world,ID2D1Brush* brush,const wchar_t* label){const D2D1_POINT_2F end=D2D1::Point2F(originX+dot(world,right)*22*dpi,originY-dot(world,up)*22*dpi);renderTarget_->DrawLine(D2D1::Point2F(originX,originY),end,brush,2*dpi);DrawOverlayText(label,end.x-5*dpi,end.y-8*dpi,12*dpi,16*dpi,11,DWRITE_FONT_WEIGHT_SEMI_BOLD,brush,true);}; axis({1,0,0},x.Get(),L"X");axis({0,1,0},y.Get(),L"Y");axis({0,0,1},z.Get(),L"Z");renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(originX,originY),2*dpi,2*dpi),junction.Get());
+        const auto axis=[&](Float3 world,ID2D1Brush* brush,const wchar_t* label){const D2D1_POINT_2F end=D2D1::Point2F(originX+dot(world,right)*88*dpi,originY-dot(world,up)*88*dpi);renderTarget_->DrawLine(D2D1::Point2F(originX,originY),end,brush,8*dpi);DrawOverlayText(label,end.x-20*dpi,end.y-32*dpi,48*dpi,64*dpi,44,DWRITE_FONT_WEIGHT_SEMI_BOLD,brush,true);}; axis({1,0,0},x.Get(),L"X");axis({0,1,0},y.Get(),L"Y");axis({0,0,1},z.Get(),L"Z");renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(originX,originY),8*dpi,8*dpi),junction.Get());
     }
     RECT ModelCanvasBounds() const {
         RECT client{}; GetClientRect(window_, &client);
@@ -2187,7 +2191,7 @@ private:
         const LONG rowHeight = MulDiv(38, dpi, 96);
         const LONG separatorGap = MulDiv(9, dpi, 96);
         const LONG padding = MulDiv(kContextMenuPaddingDip, dpi, 96);
-        const LONG height = padding * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
+        const LONG height = ModelActive() ? padding * 2 + rowHeight : padding * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
         if (tutorialContextMenu_) {
             const LONG canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
             const LONG rightInset = MulDiv(24, dpi, 96);
@@ -4486,6 +4490,7 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(hover, &hoverBrush)) || FAILED(renderTarget_->CreateSolidColorBrush(pressed, &pressedBrush))) return;
         const D2D1_RECT_F menu = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), surfaceBrush.Get());
+        if (ModelActive()) { const UINT dpi = GetDpiForWindow(window_); const int rowHeight = MulDiv(38, dpi, 96), labelLeft = bounds.left + MulDiv(18, dpi, 96), top = bounds.top + MulDiv(kContextMenuPaddingDip,dpi,96); if (contextPressed_ == ContextAction::SnapViewToFace) renderTarget_->FillRectangle(D2D1::RectF((float)bounds.left+1,(float)top,(float)bounds.right-1,(float)(top+rowHeight)),pressedBrush.Get()); else if(contextHovered_ == ContextAction::SnapViewToFace)renderTarget_->FillRectangle(D2D1::RectF((float)bounds.left+1,(float)top,(float)bounds.right-1,(float)(top+rowHeight)),hoverBrush.Get()); DrawOverlayText(L"Snap View to Face",(float)labelLeft,(float)top,(float)(bounds.right-labelLeft-MulDiv(12,dpi,96)),(float)rowHeight,13,DWRITE_FONT_WEIGHT_NORMAL,textBrush.Get(),true); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu,7,7),borderBrush.Get(),1); return; }
         const UINT dpi = GetDpiForWindow(window_); const int rowHeight = MulDiv(38, dpi, 96); const int gap = MulDiv(9, dpi, 96);
         int top = bounds.top + MulDiv(kContextMenuPaddingDip, dpi, 96);
         const int iconLeft = bounds.left + MulDiv(14, dpi, 96), iconWidth = MulDiv(18, dpi, 96), labelLeft = iconLeft + MulDiv(28, dpi, 96);
@@ -5007,6 +5012,8 @@ private:
     ContextAction contextHovered_ = ContextAction::None;
     ContextAction contextPressed_ = ContextAction::None;
     POINT contextMenuAnchor_{};
+    Float3 selectedFaceNormal_{};
+    bool modelFaceSelected_ = false;
     std::wstring heifShellRotationCapabilityPath_;
     bool heifShellRotateLeftAvailable_ = false;
     bool heifShellRotateRightAvailable_ = false;
@@ -5364,7 +5371,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelCanvasNavigationClick(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        if (!viewer->TutorialActive()) viewer->OpenContextMenu(point);
+        if (!viewer->TutorialActive()) { if (viewer->ModelActive()) viewer->SelectModelFace(point); viewer->OpenContextMenu(point); }
         return 0;
     }
     case WM_TIMER:

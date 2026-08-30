@@ -777,12 +777,12 @@ public:
     }
     bool HasImage() const { return source_ != nullptr; }
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
-    void FitModel() { if (ModelActive()) { modelViewport_.Fit(); RebaseSpaceMouseModelCamera(); InvalidateRect(window_, nullptr, FALSE); } }
-    void BeginModelOrbit(POINT point) { if (ModelActive()) { modelMouseCameraChanged_ = false; modelViewport_.BeginOrbit(point); } }
-    void BeginModelPan(POINT point) { if (ModelActive()) { modelMouseCameraChanged_ = false; modelViewport_.BeginPan(point); } }
-    void ContinueModelDrag(POINT point) { if (!ModelActive()) return; const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); modelMouseCameraChanged_ = true; InvalidateRect(window_, nullptr, FALSE); }
-    void EndModelDrag() { modelViewport_.EndDrag(); if (std::exchange(modelMouseCameraChanged_, false)) RebaseSpaceMouseModelCamera(); }
-    void DollyModel(float steps) { if (ModelActive()) { modelViewport_.Dolly(steps); RebaseSpaceMouseModelCamera(); InvalidateRect(window_, nullptr, FALSE); } }
+    void FitModel() { if (ModelActive()) { modelViewport_.Fit(); InvalidateRect(window_, nullptr, FALSE); } }
+    void BeginModelOrbit(POINT point) { if (ModelActive()) modelViewport_.BeginOrbit(point); }
+    void BeginModelPan(POINT point) { if (ModelActive()) modelViewport_.BeginPan(point); }
+    void ContinueModelDrag(POINT point) { if (!ModelActive()) return; const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); InvalidateRect(window_, nullptr, FALSE); }
+    void EndModelDrag() { modelViewport_.EndDrag(); }
+    void DollyModel(float steps) { if (ModelActive()) { modelViewport_.Dolly(steps); InvalidateRect(window_, nullptr, FALSE); } }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
@@ -1943,21 +1943,6 @@ private:
         if (!ModelActive()) return {};
         const Float3 pivot = modelViewport_.Camera().Pivot();
         return { pivot.x, pivot.y, pivot.z };
-    }
-    void RebaseSpaceMouseModelCamera() {
-        if (!ModelActive() || !spaceMouse_ || !spaceMouse_->IsEnabled() || spaceMouseMotionActive_) return;
-        // NavLib exposes view.affine through application callbacks; it has no public
-        // application-side transaction-invalidation operation. Reopening the documented
-        // navigation session discards its prior action state, so the next action obtains the
-        // current rendered pose through the unchanged GetCameraMatrix callback.
-        std::error_code error;
-        spaceMouse_->EnableNavigation(false, error);
-        if (!error) spaceMouse_->EnableNavigation(true, error);
-#if defined(_DEBUG)
-        wchar_t message[160]{};
-        swprintf_s(message, L"Viewtrious SpaceMouse: local Model3D NavLib session rebase error=%ld\\n", static_cast<long>(error.value()));
-        OutputDebugStringW(message);
-#endif
     }
     static navlib::matrix_t NavLibCameraToWorld(const OrbitCamera::State& state) {
         // NavLib consumes a right-handed, row-major camera-to-world matrix.  The camera's
@@ -4900,7 +4885,6 @@ private:
     bool spaceMouseEnabled_ = true;
     bool spaceMouseRuntimeAvailable_ = false;
     bool spaceMouseMotionActive_ = false;
-    bool modelMouseCameraChanged_ = false;
     std::wstring startupPath_;
 #if defined(_DEBUG)
     LONGLONG lastModelNavLibTraceQpc_ = 0;

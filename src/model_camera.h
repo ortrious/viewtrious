@@ -26,9 +26,11 @@ public:
 
 private:
     void MaterializeNavLibState();
+    void SetLocalOrientation(Float3 forward, Float3 up);
     void Update();
     Float3 pivot_{};
-    float yaw_ = 0.62f, pitch_ = -0.42f, roll_ = 0.0f;
+    Float3 forward_{ 0.0f, 0.0f, -1.0f };
+    Float3 up_{ 0.0f, 1.0f, 0.0f };
     float distance_ = 5.0f, radius_ = 1.0f, aspect_ = 1.0f;
     float fieldOfView_ = 0.785398163f;
     State navLibState_{};

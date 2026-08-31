@@ -82,7 +82,9 @@ constexpr float kModelSettingsToggleHeightDips = 25.0f;
 constexpr float kModelSettingsChoiceHeightDips = 28.0f;
 constexpr float kModelSettingsOrientationHeadingTopDips = kModelSettingsInputHeadingTopDips + kModelSettingsControlOffsetDips + kModelSettingsToggleHeightDips + kSettingsMajorSectionGapDips;
 constexpr float kModelSettingsOrientationControlTopDips = kModelSettingsOrientationHeadingTopDips + kModelSettingsControlOffsetDips;
-constexpr float kModelSettingsProjectionHeadingTopDips = kModelSettingsOrientationControlTopDips + kModelSettingsChoiceHeightDips + kSettingsMajorSectionGapDips;
+constexpr float kModelSettingsBuildPlateLabelTopDips = kModelSettingsOrientationControlTopDips + 40.0f;
+constexpr float kModelSettingsBuildPlateControlTopDips = kModelSettingsBuildPlateLabelTopDips + 22.0f;
+constexpr float kModelSettingsProjectionHeadingTopDips = kModelSettingsBuildPlateControlTopDips + kModelSettingsChoiceHeightDips + kSettingsMajorSectionGapDips;
 constexpr float kModelSettingsProjectionControlTopDips = kModelSettingsProjectionHeadingTopDips + kModelSettingsControlOffsetDips;
 constexpr float kModelSettingsRenderHeadingTopDips = kModelSettingsProjectionControlTopDips + kModelSettingsChoiceHeightDips + kSettingsMajorSectionGapDips;
 constexpr float kModelSettingsRenderingApiRowTopDips = kModelSettingsRenderHeadingTopDips + kModelSettingsControlOffsetDips;
@@ -108,7 +110,7 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsSpaceMouse, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    SettingsSpaceMouse, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
@@ -589,6 +591,9 @@ public:
         DWORD upAxis = static_cast<DWORD>(ModelUpAxis::ZUp);
         ReadSetting(L"ModelUpAxis", upAxis);
         modelUpAxis_ = upAxis <= static_cast<DWORD>(ModelUpAxis::ZUp) ? static_cast<ModelUpAxis>(upAxis) : ModelUpAxis::ZUp;
+        DWORD buildPlate = static_cast<DWORD>(ModelBuildPlate::Auto);
+        ReadSetting(L"ModelBuildPlate", buildPlate);
+        modelBuildPlate_ = buildPlate <= static_cast<DWORD>(ModelBuildPlate::Off) ? static_cast<ModelBuildPlate>(buildPlate) : ModelBuildPlate::Auto;
         DWORD renderingApi = static_cast<DWORD>(ModelRenderingApi::Direct3D11); ReadSetting(L"ModelRenderingApi", renderingApi); modelRenderingApi_ = ModelRenderingApi::Direct3D11;
         DWORD antiAliasing = static_cast<DWORD>(ModelAntiAliasing::Msaa4x); ReadSetting(L"ModelAntiAliasing", antiAliasing); modelAntiAliasing_ = antiAliasing <= static_cast<DWORD>(ModelAntiAliasing::Ssaa2x) ? static_cast<ModelAntiAliasing>(antiAliasing) : ModelAntiAliasing::Msaa4x;
         DWORD imageScaling = static_cast<DWORD>(ImageScaling::Quality);
@@ -663,6 +668,7 @@ public:
         modelViewport_.SetVisualStyle(modelVisualStyle_);
         modelViewport_.SetAntiAliasing(modelAntiAliasing_);
         contentKind_ = ContentKind::Model3D;
+        modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector());
         resolutionText_ = std::to_wstring(modelDocument_->geometries.front().indices.size() / 3) + L" triangles";
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
     }
@@ -822,6 +828,7 @@ public:
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
     void CancelAnimatedModelHome() { KillTimer(window_, kModelHomeAnimationTimer); modelViewport_.CancelAnimatedHome(); }
     Float3 ModelUpVector() const { switch (modelUpAxis_) { case ModelUpAxis::XUp: return { 1, 0, 0 }; case ModelUpAxis::YUp: return { 0, 1, 0 }; case ModelUpAxis::ZUp: return { 0, 0, 1 }; } return { 0, 0, 1 }; }
+    bool BuildPlateVisible() const { const ModelDocument* document=modelViewport_.Document(); return modelBuildPlate_ == ModelBuildPlate::On || (modelBuildPlate_ == ModelBuildPlate::Auto && document && document->sourceFormat == ModelSourceFormat::ThreeMf); }
     void FitModel() { if (ModelActive()) { ClearModelFaceSelection(); CancelAnimatedModelHome(); modelViewport_.Fit(ModelUpVector()); InvalidateRect(window_, nullptr, FALSE); } }
     void BeginAnimatedModelHome() { if (!ModelActive()) return; ClearModelFaceSelection(); if (!modelViewport_.BeginAnimatedHome(ModelUpVector())) return; modelAnimationDurationMs_=kModelHomeAnimationDurationMs; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
     void BeginAnimatedModelFramingRecovery() { if (!ModelActive() || !modelViewport_.BeginAnimatedFramingRecovery()) return; modelAnimationDurationMs_=200; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
@@ -1076,7 +1083,7 @@ public:
         if (overlay_ != OverlayKind::Settings) return 0.0f;
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 504 : settingsPage_ == SettingsPage::Image2D ? 350 : 724, dpi, 96));
+        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 504 : settingsPage_ == SettingsPage::Image2D ? 350 : 794, dpi, 96));
         const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
         return std::max(0.0f, contentBottom - viewportBottom);
     }
@@ -1158,6 +1165,13 @@ public:
         const int index = axis == ModelUpAxis::ZUp ? 0 : axis == ModelUpAxis::YUp ? 1 : 2;
         const int left = SettingsContentLeft() + index * (width + gap);
         const int top = bounds.top + MulDiv(static_cast<int>(kModelSettingsOrientationControlTopDips), dpi, 96);
+        return { left, top, left + width, top + MulDiv(28, dpi, 96) };
+    }
+    RECT GetSettingsBuildPlateBounds(ModelBuildPlate mode) const {
+        const RECT bounds = GetOverlayBounds(); const UINT dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(76, dpi, 96), gap = MulDiv(8, dpi, 96);
+        const int left = SettingsContentLeft() + static_cast<int>(mode) * (width + gap);
+        const int top = bounds.top + MulDiv(static_cast<int>(kModelSettingsBuildPlateControlTopDips), dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     RECT GetSettingsSpaceMouseBounds() const { const RECT bounds=GetOverlayBounds();const UINT dpi=GetDpiForWindow(window_);const int top=bounds.top+MulDiv(static_cast<int>(kModelSettingsInputHeadingTopDips+kModelSettingsControlOffsetDips),dpi,96);return {SettingsContentLeft(),top,bounds.right-MulDiv(18,dpi,96),top+MulDiv(static_cast<int>(kModelSettingsToggleHeightDips),dpi,96)}; }
@@ -1246,7 +1260,8 @@ public:
         if (ModelActive()) modelViewport_.SetProjectionMode(mode);
         InvalidateRect(window_, nullptr, FALSE);
     }
-    void SetModelUpAxis(ModelUpAxis axis) { if (modelUpAxis_ == axis) return; modelUpAxis_ = axis; WriteSetting(L"ModelUpAxis", static_cast<DWORD>(axis)); InvalidateRect(window_, nullptr, FALSE); }
+    void SetModelUpAxis(ModelUpAxis axis) { if (modelUpAxis_ == axis) return; modelUpAxis_ = axis; WriteSetting(L"ModelUpAxis", static_cast<DWORD>(axis)); if (ModelActive()) modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector()); InvalidateRect(window_, nullptr, FALSE); }
+    void SetModelBuildPlate(ModelBuildPlate mode) { if (modelBuildPlate_ == mode) return; modelBuildPlate_ = mode; WriteSetting(L"ModelBuildPlate", static_cast<DWORD>(mode)); if (ModelActive()) modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector()); InvalidateRect(window_, nullptr, FALSE); }
     void SetModelVisualStyle(ModelVisualStyle style) { if(modelVisualStyle_==style)return;modelVisualStyle_=style;WriteSetting(L"ModelVisualStyle",static_cast<DWORD>(style));if(ModelActive())modelViewport_.SetVisualStyle(style);InvalidateRect(window_,nullptr,FALSE); }
     void SetModelAntiAliasing(ModelAntiAliasing mode) { if(modelAntiAliasing_==mode){antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE);return;}modelAntiAliasing_=mode;WriteSetting(L"ModelAntiAliasing",static_cast<DWORD>(mode));if(ModelActive())modelViewport_.SetAntiAliasing(mode);antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); }
     RECT GetSettingsResetButtonBounds() const {
@@ -1410,6 +1425,9 @@ public:
                 if (settingsContains(GetSettingsUpAxisBounds(ModelUpAxis::ZUp))) return ButtonKind::SettingsUpAxisZ;
                 if (settingsContains(GetSettingsUpAxisBounds(ModelUpAxis::YUp))) return ButtonKind::SettingsUpAxisY;
                 if (settingsContains(GetSettingsUpAxisBounds(ModelUpAxis::XUp))) return ButtonKind::SettingsUpAxisX;
+                if (settingsContains(GetSettingsBuildPlateBounds(ModelBuildPlate::Auto))) return ButtonKind::SettingsBuildPlateAuto;
+                if (settingsContains(GetSettingsBuildPlateBounds(ModelBuildPlate::On))) return ButtonKind::SettingsBuildPlateOn;
+                if (settingsContains(GetSettingsBuildPlateBounds(ModelBuildPlate::Off))) return ButtonKind::SettingsBuildPlateOff;
                 if (settingsContains(GetSettingsProjectionBounds(ModelProjectionMode::Perspective))) return ButtonKind::SettingsProjectionPerspective;
                 if (settingsContains(GetSettingsProjectionBounds(ModelProjectionMode::Orthographic))) return ButtonKind::SettingsProjectionOrthographic;
                 if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsSpaceMouseBounds())) return ButtonKind::SettingsSpaceMouse;
@@ -1549,6 +1567,9 @@ public:
         else if (button == ButtonKind::SettingsUpAxisZ) SetModelUpAxis(ModelUpAxis::ZUp);
         else if (button == ButtonKind::SettingsUpAxisY) SetModelUpAxis(ModelUpAxis::YUp);
         else if (button == ButtonKind::SettingsUpAxisX) SetModelUpAxis(ModelUpAxis::XUp);
+        else if (button == ButtonKind::SettingsBuildPlateAuto) SetModelBuildPlate(ModelBuildPlate::Auto);
+        else if (button == ButtonKind::SettingsBuildPlateOn) SetModelBuildPlate(ModelBuildPlate::On);
+        else if (button == ButtonKind::SettingsBuildPlateOff) SetModelBuildPlate(ModelBuildPlate::Off);
         else if (button == ButtonKind::SettingsProjectionPerspective) SetModelProjectionMode(ModelProjectionMode::Perspective);
         else if (button == ButtonKind::SettingsProjectionOrthographic) SetModelProjectionMode(ModelProjectionMode::Orthographic);
         else if (button == ButtonKind::SettingsAntiAliasingToggle) { antiAliasingMenuOpen_=!antiAliasingMenuOpen_; InvalidateRect(window_,nullptr,FALSE); }
@@ -3869,7 +3890,7 @@ private:
             contentKind_ = ContentKind::None;
             error_ = error;
         }
-        if (contentKind_ == ContentKind::Model3D && modelViewport_.Active()) modelViewport_.SetProjectionMode(modelProjectionMode_);
+        if (contentKind_ == ContentKind::Model3D && modelViewport_.Active()) { modelViewport_.SetProjectionMode(modelProjectionMode_); modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector()); }
         timer_.Log(L"shared graphics/window initialization complete");
     }
 
@@ -4533,6 +4554,16 @@ private:
             drawUpAxis(ModelUpAxis::ZUp, ButtonKind::SettingsUpAxisZ, L"Z Up");
             drawUpAxis(ModelUpAxis::YUp, ButtonKind::SettingsUpAxisY, L"Y Up");
             drawUpAxis(ModelUpAxis::XUp, ButtonKind::SettingsUpAxisX, L"X Up");
+            DrawOverlayText(L"Build Plate",settingsLeft,static_cast<float>(bounds.top)+kModelSettingsBuildPlateLabelTopDips*dpiScale,settingsWidth,20.0f*dpiScale,16.0f,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get());
+            const auto drawBuildPlate = [&](ModelBuildPlate mode, ButtonKind button, const wchar_t* label) {
+                const RECT segmentBounds = GetSettingsBuildPlateBounds(mode); const D2D1_RECT_F segment = D2D1::RectF((float)segmentBounds.left,(float)segmentBounds.top,(float)segmentBounds.right,(float)segmentBounds.bottom);
+                const bool selected = modelBuildPlate_ == mode; ID2D1Brush* fill = selected ? accent.Get() : (hoveredButton_ == button || pressedButton_ == button ? segmentHover.Get() : segmentIdle.Get());
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(segment,4.0f*dpiScale,4.0f*dpiScale),fill); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(segment,4.0f*dpiScale,4.0f*dpiScale),selected?accent.Get():borderBrush.Get(),1.0f);
+                DrawOverlayText(label,segment.left,segment.top,segment.right-segment.left,segment.bottom-segment.top,14.0f,DWRITE_FONT_WEIGHT_SEMI_BOLD,selected?checkmark.Get():primaryBrush.Get(),true,false,true);
+            };
+            drawBuildPlate(ModelBuildPlate::Auto, ButtonKind::SettingsBuildPlateAuto, L"Auto");
+            drawBuildPlate(ModelBuildPlate::On, ButtonKind::SettingsBuildPlateOn, L"On");
+            drawBuildPlate(ModelBuildPlate::Off, ButtonKind::SettingsBuildPlateOff, L"Off");
             group(L"PROJECTION", kModelSettingsProjectionHeadingTopDips);
             const auto drawProjection = [&](ModelProjectionMode mode, ButtonKind button, const wchar_t* label) {
                 const RECT segmentBounds = GetSettingsProjectionBounds(mode); const D2D1_RECT_F segment = D2D1::RectF((float)segmentBounds.left,(float)segmentBounds.top,(float)segmentBounds.right,(float)segmentBounds.bottom);
@@ -5257,6 +5288,7 @@ private:
     ModelProjectionMode modelProjectionMode_ = ModelProjectionMode::Perspective;
     ModelVisualStyle modelVisualStyle_ = ModelVisualStyle::Shaded;
     ModelUpAxis modelUpAxis_ = ModelUpAxis::ZUp;
+    ModelBuildPlate modelBuildPlate_ = ModelBuildPlate::Auto;
     ModelRenderingApi modelRenderingApi_ = ModelRenderingApi::Direct3D11;
     ModelAntiAliasing modelAntiAliasing_ = ModelAntiAliasing::Msaa4x;
     bool antiAliasingMenuOpen_ = false;

@@ -35,6 +35,7 @@ public:
     void SetNavLibFieldOfView(float radians) { camera_.SetFieldOfView(radians); NotifyCameraChanged(); }
     void SetProjectionMode(ModelProjectionMode mode) { camera_.SetProjectionMode(mode); }
     void SetVisualStyle(ModelVisualStyle style) { visualStyle_ = style; }
+    void SetBuildPlate(bool visible, Float3 upAxis) { if (buildPlateVisible_ != visible || buildPlateUpAxis_.x != upAxis.x || buildPlateUpAxis_.y != upAxis.y || buildPlateUpAxis_.z != upAxis.z) { buildPlateVisible_ = visible; buildPlateUpAxis_ = upAxis; buildPlateDirty_ = true; } }
     void SetAntiAliasing(ModelAntiAliasing mode) { if (antiAliasing_ != mode) { antiAliasing_ = mode; width_ = height_ = 0; } }
     ModelAntiAliasing EffectiveAntiAliasing() const { return effectiveAntiAliasing_; }
     void SetOrthographicHalfHeight(float halfHeight) { camera_.SetOrthographicHalfHeight(halfHeight); }
@@ -62,6 +63,7 @@ private:
     void ResizeDepth(GraphicsHost& host, UINT width, UINT height);
     void NotifyCameraChanged();
     bool UploadSelectedSnapPlane();
+    bool UploadBuildPlate();
 
     std::shared_ptr<ModelDocument> document_;
     OrbitCamera camera_;
@@ -77,6 +79,9 @@ private:
     D3D11_VIEWPORT renderViewport_{};
     int selectedSnapPlane_ = -1;
     ModelVisualStyle visualStyle_ = ModelVisualStyle::Shaded;
+    bool buildPlateVisible_ = false;
+    bool buildPlateDirty_ = true;
+    Float3 buildPlateUpAxis_{ 0, 0, 1 };
     ModelAntiAliasing antiAliasing_ = ModelAntiAliasing::Msaa4x;
     ModelAntiAliasing effectiveAntiAliasing_ = ModelAntiAliasing::Off;
     int uploadedSnapPlane_ = -2;

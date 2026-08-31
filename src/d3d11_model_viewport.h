@@ -34,7 +34,7 @@ public:
     bool SetNavLibPivot(Float3 pivot);
     void SetNavLibFieldOfView(float radians) { camera_.SetFieldOfView(radians); NotifyCameraChanged(); }
     void SetProjectionMode(ModelProjectionMode mode) { camera_.SetProjectionMode(mode); }
-    void SetVisualStyle(ModelVisualStyle style) { visualStyle_ = style; }
+    void SetVisualStyle(ModelVisualStyle style) { if (visualStyle_ != style) { visualStyle_ = style; width_ = height_ = 0; } }
     void SetBuildPlate(bool visible, Float3 upAxis) { if (buildPlateVisible_ != visible || buildPlateUpAxis_.x != upAxis.x || buildPlateUpAxis_.y != upAxis.y || buildPlateUpAxis_.z != upAxis.z) { buildPlateVisible_ = visible; buildPlateUpAxis_ = upAxis; buildPlateDirty_ = true; } }
     void SetAntiAliasing(ModelAntiAliasing mode) { if (antiAliasing_ != mode) { antiAliasing_ = mode; width_ = height_ = 0; } }
     ModelAntiAliasing EffectiveAntiAliasing() const { return effectiveAntiAliasing_; }

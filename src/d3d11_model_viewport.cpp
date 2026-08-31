@@ -79,6 +79,7 @@ bool D3D11ModelViewport::BeginAnimatedSnapView(Float3 forward,Float3 up,Float3 h
 #endif
     return true;
 }
+bool D3D11ModelViewport::BeginAnimatedFramingRecovery(){if(!document_)return false;homeAnimationStart_=camera_.CaptureAnimationState();homeAnimationTarget_=homeAnimationStart_;const Float3 center=Mul(Add(document_->bounds.minimum,document_->bounds.maximum),.5f),toCenter=Sub(center,homeAnimationTarget_.pivot),right=Normalize(Cross(homeAnimationTarget_.forward,homeAnimationTarget_.up));homeAnimationTarget_.framingRight=Dot(toCenter,right);homeAnimationTarget_.framingUp=Dot(toCenter,homeAnimationTarget_.up);homeAnimationActive_=true;return true;}
 bool D3D11ModelViewport::AdvanceAnimatedHome(float progress){if(!homeAnimationActive_)return false;if(progress>=1.0f){camera_.ApplyInterpolatedAnimationState(homeAnimationStart_,homeAnimationTarget_,1.0f);homeAnimationActive_=false;NotifyCameraChanged();return false;}camera_.ApplyInterpolatedAnimationState(homeAnimationStart_,homeAnimationTarget_,progress);NotifyCameraChanged();return true;}
 void D3D11ModelViewport::ApplySpaceMouse(float x,float y,float z,float pitch,float yaw,float roll){homeAnimationActive_=false;camera_.ApplySpaceMouse(x,y,z,pitch,yaw,roll);NotifyCameraChanged();}
 bool D3D11ModelViewport::SetNavLibCameraState(const OrbitCamera::State& state){homeAnimationActive_=false;if(!camera_.SetFromNavLibState(state))return false;NotifyCameraChanged();return true;}

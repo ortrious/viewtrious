@@ -23,6 +23,7 @@ public:
     bool BeginAnimatedHome();
     bool BeginAnimatedOrientation(Float3 forward, Float3 up);
     bool BeginAnimatedSnapView(Float3 forward, Float3 up, Float3 hitPoint);
+    bool BeginAnimatedFramingRecovery();
     bool AdvanceAnimatedHome(float progress);
     void CancelAnimatedHome() { homeAnimationActive_ = false; }
     void ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll);

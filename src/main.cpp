@@ -105,7 +105,7 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsSpaceMouse, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    SettingsSpaceMouse, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
@@ -814,12 +814,13 @@ public:
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
     void CancelAnimatedModelHome() { KillTimer(window_, kModelHomeAnimationTimer); modelViewport_.CancelAnimatedHome(); }
     void FitModel() { if (ModelActive()) { ClearModelFaceSelection(); CancelAnimatedModelHome(); modelViewport_.Fit(); InvalidateRect(window_, nullptr, FALSE); } }
-    void BeginAnimatedModelHome() { if (!ModelActive()) return; ClearModelFaceSelection(); if (!modelViewport_.BeginAnimatedHome()) return; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
-    void BeginAnimatedModelOrientation(Float3 forward, Float3 up) { if (!ModelActive() || !modelViewport_.BeginAnimatedOrientation(forward, up)) return; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
-    void BeginAnimatedModelSnapView(Float3 forward, Float3 up, Float3 hitPoint) { if (!ModelActive() || !modelViewport_.BeginAnimatedSnapView(forward, up, hitPoint)) return; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
+    void BeginAnimatedModelHome() { if (!ModelActive()) return; ClearModelFaceSelection(); if (!modelViewport_.BeginAnimatedHome()) return; modelAnimationDurationMs_=kModelHomeAnimationDurationMs; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
+    void BeginAnimatedModelFramingRecovery() { if (!ModelActive() || !modelViewport_.BeginAnimatedFramingRecovery()) return; modelAnimationDurationMs_=200; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
+    void BeginAnimatedModelOrientation(Float3 forward, Float3 up) { if (!ModelActive() || !modelViewport_.BeginAnimatedOrientation(forward, up)) return; modelAnimationDurationMs_=kModelHomeAnimationDurationMs; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
+    void BeginAnimatedModelSnapView(Float3 forward, Float3 up, Float3 hitPoint) { if (!ModelActive() || !modelViewport_.BeginAnimatedSnapView(forward, up, hitPoint)) return; modelAnimationDurationMs_=kModelHomeAnimationDurationMs; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
     void UpdateAnimatedModelHome() {
         if (!ModelActive()) { CancelAnimatedModelHome(); return; }
-        const float progress = std::clamp(static_cast<float>(GetTickCount64() - modelHomeAnimationStartMs_) / static_cast<float>(kModelHomeAnimationDurationMs), 0.0f, 1.0f);
+        const float progress = std::clamp(static_cast<float>(GetTickCount64() - modelHomeAnimationStartMs_) / static_cast<float>(modelAnimationDurationMs_), 0.0f, 1.0f);
         const float eased = progress * progress * (3.0f - 2.0f * progress);
         if (!modelViewport_.AdvanceAnimatedHome(eased)) KillTimer(window_, kModelHomeAnimationTimer);
         InvalidateRect(window_, nullptr, FALSE);
@@ -1395,6 +1396,7 @@ public:
             }
         }
         if (ModelActive()) {
+            if (OffscreenModelIndicatorContains(point)) return ButtonKind::ModelOffscreenIndicator;
             if (viewBarProjectionMenuOpen_) { const RECT menu = GetModelViewBarProjectionMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top + row ? ButtonKind::ViewBarProjectionPerspective : ButtonKind::ViewBarProjectionOrthographic; }
             if (viewBarVisualStyleMenuOpen_) { const RECT menu = GetModelViewBarStyleMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top+row ? ButtonKind::ViewBarVisualStyleShaded : point.y < menu.top+row*2 ? ButtonKind::ViewBarVisualStyleVisibleEdges : ButtonKind::ViewBarVisualStyleWireframe; }
             const RECT projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();if(PtInRect(&projection,point))return ButtonKind::ViewBarProjectionToggle;if(PtInRect(&style,point))return ButtonKind::ViewBarVisualStyleToggle;
@@ -1532,6 +1534,7 @@ public:
         else if (button == ButtonKind::SettingsAntiAliasing8x) SetModelAntiAliasing(ModelAntiAliasing::Msaa8x);
         else if (button == ButtonKind::SettingsAntiAliasingSsaa1_5x) SetModelAntiAliasing(ModelAntiAliasing::Ssaa1_5x);
         else if (button == ButtonKind::SettingsAntiAliasingSsaa2x) SetModelAntiAliasing(ModelAntiAliasing::Ssaa2x);
+        else if (button == ButtonKind::ModelOffscreenIndicator) BeginAnimatedModelFramingRecovery();
         else if (button == ButtonKind::ViewBarProjectionToggle) { viewBarProjectionMenuOpen_ = !viewBarProjectionMenuOpen_; viewBarVisualStyleMenuOpen_=false; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::ViewBarProjectionPerspective) { SetModelProjectionMode(ModelProjectionMode::Perspective); DismissModelViewBarMenu(); }
         else if (button == ButtonKind::ViewBarProjectionOrthographic) { SetModelProjectionMode(ModelProjectionMode::Orthographic); DismissModelViewBarMenu(); }
@@ -1658,7 +1661,7 @@ public:
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
             } else if (EmptyStateActive()) DrawEmptyState();
-            if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); DrawModelViewBar(); }
+            if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); }
             if (!tutorialPresentation_) DrawRevisionLabel();
             DrawTitleBar();
             DrawDropdown();
@@ -2119,6 +2122,39 @@ public:
     void QueueDirectoryRefreshFromWatcher() { QueueDirectoryRefresh(); }
 
 private:
+    struct OffscreenModelIndicator { bool visible=false; D2D1_POINT_2F position{}, direction{}; RECT hit{}; };
+    OffscreenModelIndicator GetOffscreenModelIndicator() const {
+        if (!ModelActive() || HasOverlay()) return {};
+        const RECT canvas=ModelCanvasBounds(); const ModelBounds bounds=modelViewport_.ModelBoundsForNavLib(); const Matrix4& matrix=modelViewport_.Camera().ViewProjection();
+        const auto project=[&](Float3 p,float& x,float& y,float& w){x=p.x*matrix.m[0]+p.y*matrix.m[4]+p.z*matrix.m[8]+matrix.m[12];y=p.x*matrix.m[1]+p.y*matrix.m[5]+p.z*matrix.m[9]+matrix.m[13];w=p.x*matrix.m[3]+p.y*matrix.m[7]+p.z*matrix.m[11]+matrix.m[15];};
+        float minX=FLT_MAX,minY=FLT_MAX,maxX=-FLT_MAX,maxY=-FLT_MAX; bool front=false,behind=false;
+        for(int i=0;i<8;++i){Float3 p{(i&1)?bounds.maximum.x:bounds.minimum.x,(i&2)?bounds.maximum.y:bounds.minimum.y,(i&4)?bounds.maximum.z:bounds.minimum.z};float x,y,w;project(p,x,y,w);if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(w)||w<=1e-5f){behind=true;continue;}front=true;x/=w;y/=w;minX=std::min(minX,x);maxX=std::max(maxX,x);minY=std::min(minY,y);maxY=std::max(maxY,y);}
+        if(front&&behind)return {};
+        if(front&&!behind&&minX<=1&&maxX>=-1&&minY<=1&&maxY>=-1)return {};
+        const Float3 center{(bounds.minimum.x+bounds.maximum.x)*.5f,(bounds.minimum.y+bounds.maximum.y)*.5f,(bounds.minimum.z+bounds.maximum.z)*.5f};float cx,cy,cw;project(center,cx,cy,cw);float dx=0,dy=0;
+        if(front&&!behind&&std::isfinite(cw)&&cw>1e-5f){dx=cx/cw;dy=-cy/cw;}else{const OrbitCamera::State state=modelViewport_.Camera().NavLibState();const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};Float3 forward=state.forward;const float fl=std::sqrt(dot(forward,forward));if(fl<1e-5f)return {};forward={forward.x/fl,forward.y/fl,forward.z/fl};Float3 right=cross(state.up,forward);const float rl=std::sqrt(dot(right,right));if(rl<1e-5f)return {};right={right.x/rl,right.y/rl,right.z/rl};const Float3 up=cross(forward,right),delta{center.x-modelViewport_.Camera().CameraTarget().x,center.y-modelViewport_.Camera().CameraTarget().y,center.z-modelViewport_.Camera().CameraTarget().z};dx=dot(delta,right);dy=-dot(delta,up);}
+        const float length=std::sqrt(dx*dx+dy*dy);if(!std::isfinite(length)||length<1e-5f)return {};dx/=length;dy/=length;
+        const float dpi=GetDpiForWindow(window_)/96.f,inset=18*dpi,halfW=std::max(1.f,(canvas.right-canvas.left)*.5f-inset),halfH=std::max(1.f,(canvas.bottom-canvas.top)*.5f-inset),t=std::min(halfW/std::max(std::fabs(dx),1e-5f),halfH/std::max(std::fabs(dy),1e-5f));
+        const float mx=(canvas.left+canvas.right)*.5f,my=(canvas.top+canvas.bottom)*.5f;D2D1_POINT_2F point=D2D1::Point2F(mx+dx*t,my+dy*t);
+        const float compassRadius=46*dpi,compassMargin=12*dpi,compassX=canvas.right-compassMargin-compassRadius,compassY=canvas.bottom-compassMargin-compassRadius,safeX=compassX-compassRadius-inset,safeY=compassY-compassRadius-inset;
+        if(dx>0&&dy>0&&std::hypot(point.x-compassX,point.y-compassY)<compassRadius+18*dpi){if(std::fabs(point.y-safeY)<std::fabs(point.x-safeX))point.y=std::min(point.y,safeY);else point.x=std::min(point.x,safeX);}
+        const int hit=MulDiv(28,GetDpiForWindow(window_),96);return {true,point,D2D1::Point2F(dx,dy),{(LONG)point.x-hit,(LONG)point.y-hit,(LONG)point.x+hit,(LONG)point.y+hit}};
+    }
+    bool OffscreenModelIndicatorContains(POINT point) const { const OffscreenModelIndicator indicator=GetOffscreenModelIndicator();return indicator.visible&&PtInRect(&indicator.hit,point); }
+    void TraceOffscreenModelIndicatorState() {
+#if defined(_DEBUG)
+        const OffscreenModelIndicator indicator=GetOffscreenModelIndicator();
+        if(!indicator.visible){if(offscreenIndicatorWasVisible_)OutputDebugStringW(L"Viewtrious offscreen indicator: visible=0\n");offscreenIndicatorWasVisible_=false;offscreenIndicatorSector_=-1;return;}
+        const int sector=static_cast<int>(std::floor((std::atan2(indicator.direction.y,indicator.direction.x)+3.14159265f)*4.f/3.14159265f))%8;
+        if(!offscreenIndicatorWasVisible_||sector!=offscreenIndicatorSector_){wchar_t message[256]{};swprintf_s(message,L"Viewtrious offscreen indicator: visible=1 sector=%d direction=(%.3f,%.3f) position=(%.1f,%.1f)\n",sector,indicator.direction.x,indicator.direction.y,indicator.position.x,indicator.position.y);OutputDebugStringW(message);offscreenIndicatorSector_=sector;}
+        offscreenIndicatorWasVisible_=true;
+#endif
+    }
+    void DrawOffscreenModelIndicator() { const OffscreenModelIndicator indicator=GetOffscreenModelIndicator(); if(!indicator.visible)return;const float dpi=GetDpiForWindow(window_)/96.f;ComPtr<ID2D1SolidColorBrush> brush;if(FAILED(renderTarget_->CreateSolidColorBrush(hoveredButton_==ButtonKind::ModelOffscreenIndicator?D2D1::ColorF(0.f/255,120.f/255,212.f/255):D2D1::ColorF(.9f,.92f,.96f,.9f),&brush)))return;const D2D1_POINT_2F perp=D2D1::Point2F(-indicator.direction.y,indicator.direction.x),tip=D2D1::Point2F(indicator.position.x+indicator.direction.x*10*dpi,indicator.position.y+indicator.direction.y*10*dpi),left=D2D1::Point2F(indicator.position.x-indicator.direction.x*8*dpi+perp.x*7*dpi,indicator.position.y-indicator.direction.y*8*dpi+perp.y*7*dpi),right=D2D1::Point2F(indicator.position.x-indicator.direction.x*8*dpi-perp.x*7*dpi,indicator.position.y-indicator.direction.y*8*dpi-perp.y*7*dpi);ComPtr<ID2D1PathGeometry> geometry;ComPtr<ID2D1GeometrySink> sink;if(SUCCEEDED(d2dFactory_->CreatePathGeometry(&geometry))&&SUCCEEDED(geometry->Open(&sink))){sink->BeginFigure(tip,D2D1_FIGURE_BEGIN_FILLED);sink->AddLine(left);sink->AddLine(right);sink->EndFigure(D2D1_FIGURE_END_CLOSED);sink->Close();renderTarget_->FillGeometry(geometry.Get(),brush.Get());}
+#if defined(_DEBUG)
+        const int sector=static_cast<int>(std::floor((std::atan2(indicator.direction.y,indicator.direction.x)+3.14159265f)*4.f/3.14159265f))%8;if(!offscreenIndicatorWasVisible_||sector!=offscreenIndicatorSector_){wchar_t message[256]{};swprintf_s(message,L"Viewtrious offscreen indicator: visible=1 sector=%d direction=(%.3f,%.3f) position=(%.1f,%.1f)\\n",sector,indicator.direction.x,indicator.direction.y,indicator.position.x,indicator.position.y);OutputDebugStringW(message);offscreenIndicatorSector_=sector;}offscreenIndicatorWasVisible_=true;
+#endif
+    }
     void DrawModelAxisIndicator() {
         const RECT canvas = ModelCanvasBounds(); const float dpi = GetDpiForWindow(window_) / 96.0f;
         const float radius = 46.0f * dpi, margin = 12.0f * dpi;
@@ -5168,6 +5204,7 @@ private:
     bool spaceMouseRuntimeAvailable_ = false;
     bool spaceMouseMotionActive_ = false;
     ULONGLONG modelHomeAnimationStartMs_ = 0;
+    ULONGLONG modelAnimationDurationMs_ = kModelHomeAnimationDurationMs;
     std::wstring startupPath_;
 #if defined(_DEBUG)
     LONGLONG lastModelNavLibTraceQpc_ = 0;
@@ -5180,6 +5217,10 @@ private:
     std::atomic<uint64_t> modelLoadGeneration_{ 0 };
     std::atomic<bool> shuttingDown_{ false };
     bool modelLoading_ = false;
+#if defined(_DEBUG)
+    bool offscreenIndicatorWasVisible_ = false;
+    int offscreenIndicatorSector_ = -1;
+#endif
     ThemePreference themePreference_ = ThemePreference::System;
     ImageScaling imageScaling_ = ImageScaling::Quality;
     ModelProjectionMode modelProjectionMode_ = ModelProjectionMode::Perspective;

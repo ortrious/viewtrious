@@ -50,6 +50,7 @@ public:
     bool SetSelectedObjectRange(uint32_t range);
     void ClearSelectedObjectRange();
     bool HasSelectedObjectRange() const { return selectedObjectRange_ >= 0; }
+    bool IsSelectedObjectRange(uint32_t range) const { return selectedObjectRange_ == static_cast<int>(range); }
     bool FitSelected(Float3 upAxis);
     OrbitCamera& Camera() { return camera_; }
     const OrbitCamera& Camera() const { return camera_; }

@@ -90,6 +90,7 @@ constexpr int kDropdownChevronReserveDips = 28;
 constexpr int kDropdownChevronHalfWidthDips = 4;
 constexpr int kDropdownChevronHalfHeightDips = 2;
 constexpr std::array<const wchar_t*, 6> kAntiAliasingOptions{ L"Off", L"2x MSAA", L"4x MSAA", L"8x MSAA", L"1.5x SSAA", L"2x SSAA" };
+constexpr std::array<const wchar_t*, 1> kRenderingApiOptions{ L"Direct3D 11" };
 constexpr std::array<const wchar_t*, 2> kProjectionOptions{ L"Perspective", L"Orthographic" };
 constexpr std::array<const wchar_t*, 3> kVisualStyleOptions{ L"Shaded", L"Shaded with Visible Edges", L"Wireframe" };
 constexpr wchar_t kSettingsKey[] = L"Software\\Viewtrious";
@@ -1142,8 +1143,12 @@ public:
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     RECT GetSettingsSpaceMouseBounds() const { const RECT bounds=GetOverlayBounds();const UINT dpi=GetDpiForWindow(window_);const int top=bounds.top+MulDiv(static_cast<int>(kModelSettingsInputHeadingTopDips+kModelSettingsControlOffsetDips),dpi,96);return {SettingsContentLeft(),top,bounds.right-MulDiv(18,dpi,96),top+MulDiv(static_cast<int>(kModelSettingsToggleHeightDips),dpi,96)}; }
+    RECT GetSettingsRenderingApiBounds() const { const RECT bounds=GetOverlayBounds();const UINT dpi=GetDpiForWindow(window_);const int left=SettingsContentLeft()+MulDiv(150,dpi,96);const int top=bounds.top+MulDiv(static_cast<int>(kModelSettingsRenderingApiRowTopDips),dpi,96);const int width=DropdownWidth(kRenderingApiOptions,14.0f,DWRITE_FONT_WEIGHT_NORMAL);return {left,top,left+width,top+MulDiv(32,dpi,96)}; }
     RECT GetSettingsAntiAliasingBounds() const { const RECT bounds=GetOverlayBounds();const UINT dpi=GetDpiForWindow(window_);const int top=bounds.top+MulDiv(static_cast<int>(kModelSettingsAntiAliasingControlTopDips),dpi,96);const int width=DropdownWidth(kAntiAliasingOptions,14.0f,DWRITE_FONT_WEIGHT_SEMI_BOLD);return {SettingsContentLeft(),top,SettingsContentLeft()+width,top+MulDiv(32,dpi,96)}; }
     RECT GetSettingsAntiAliasingMenuBounds() const { RECT result=GetSettingsAntiAliasingBounds();const int row=MulDiv(30,GetDpiForWindow(window_),96);result.top=result.bottom+MulDiv(4,GetDpiForWindow(window_),96);result.bottom=result.top+row*6;return result; }
+    bool SettingsAntiAliasingMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Model3D && antiAliasingMenuOpen_; }
+    bool SettingsAntiAliasingMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=GetSettingsAntiAliasingMenuBounds(); return PtInRect(&menu,point) != FALSE; }
+    void DismissSettingsAntiAliasingMenu() { if (antiAliasingMenuOpen_) { antiAliasingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
     int ModelViewBarProjectionWidth() const { return DropdownWidth(kProjectionOptions, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD); }
     int ModelViewBarStyleWidth() const { return DropdownWidth(kVisualStyleOptions, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD); }
     RECT GetModelViewBarBounds() const {
@@ -4472,11 +4477,11 @@ private:
             drawProjection(ModelProjectionMode::Orthographic, ButtonKind::SettingsProjectionOrthographic, L"Orthographic");
             group(L"RENDER", kModelSettingsRenderHeadingTopDips);
             const float renderingApiTop=static_cast<float>(bounds.top)+kModelSettingsRenderingApiRowTopDips*dpiScale;
-            DrawOverlayText(L"Rendering API", settingsLeft, renderingApiTop, 138.0f*dpiScale,22.0f*dpiScale,16.0f,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),true);
-            DrawOverlayText(L"Direct3D 11", settingsLeft+150.0f*dpiScale, renderingApiTop,settingsWidth-150.0f*dpiScale,22.0f*dpiScale,14.0f,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),true);
+            DrawOverlayText(L"Rendering API", settingsLeft, renderingApiTop, 138.0f*dpiScale,32.0f*dpiScale,16.0f,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),true);
+            const RECT renderingApiBounds=GetSettingsRenderingApiBounds();const D2D1_RECT_F renderingApi=D2D1::RectF((float)renderingApiBounds.left,(float)renderingApiBounds.top,(float)renderingApiBounds.right,(float)renderingApiBounds.bottom);renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(renderingApi,4*dpiScale,4*dpiScale),segmentIdle.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(renderingApi,4*dpiScale,4*dpiScale),borderBrush.Get(),1);DrawOverlayText(L"Direct3D 11",renderingApi.left+static_cast<float>(kDropdownLeftPaddingDips)*dpiScale,renderingApi.top,renderingApi.right-renderingApi.left-static_cast<float>(kDropdownLeftPaddingDips)*dpiScale,renderingApi.bottom-renderingApi.top,14,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),true);
             DrawOverlayText(L"Anti-Aliasing",settingsLeft,static_cast<float>(bounds.top)+kModelSettingsAntiAliasingLabelTopDips*dpiScale,settingsWidth,20.0f*dpiScale,16.0f,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get());
             const RECT aaBounds=GetSettingsAntiAliasingBounds();const D2D1_RECT_F aa=D2D1::RectF((float)aaBounds.left,(float)aaBounds.top,(float)aaBounds.right,(float)aaBounds.bottom);const wchar_t* aaLabel=modelAntiAliasing_==ModelAntiAliasing::Off?L"Off":modelAntiAliasing_==ModelAntiAliasing::Msaa2x?L"2x MSAA":modelAntiAliasing_==ModelAntiAliasing::Msaa4x?L"4x MSAA":modelAntiAliasing_==ModelAntiAliasing::Msaa8x?L"8x MSAA":modelAntiAliasing_==ModelAntiAliasing::Ssaa1_5x?L"1.5x SSAA":L"2x SSAA";renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(aa,4*dpiScale,4*dpiScale),hoveredButton_==ButtonKind::SettingsAntiAliasingToggle?segmentHover.Get():segmentIdle.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(aa,4*dpiScale,4*dpiScale),borderBrush.Get(),1);DrawOverlayText(aaLabel,aa.left+static_cast<float>(kDropdownLeftPaddingDips)*dpiScale,aa.top,aa.right-aa.left-static_cast<float>(kDropdownLeftPaddingDips+kDropdownChevronReserveDips)*dpiScale,aa.bottom-aa.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,primaryBrush.Get(),true);DrawDropdownChevron(aa,primaryBrush.Get(),dpiScale);
-            if(antiAliasingMenuOpen_){const RECT menu=GetSettingsAntiAliasingMenuBounds();const D2D1_RECT_F r=D2D1::RectF((float)menu.left,(float)menu.top,(float)menu.right,(float)menu.bottom);renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),panelBrush.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),borderBrush.Get(),1);const int row=MulDiv(30,GetDpiForWindow(window_),96);for(int i=0;i<static_cast<int>(kAntiAliasingOptions.size());++i)DrawOverlayText(kAntiAliasingOptions[i],(float)menu.left+static_cast<float>(kDropdownLeftPaddingDips)*dpiScale,(float)(menu.top+i*row),(float)(menu.right-menu.left)-static_cast<float>(kDropdownLeftPaddingDips)*dpiScale,(float)row,13,DWRITE_FONT_WEIGHT_NORMAL,primaryBrush.Get(),true);}
+            if(antiAliasingMenuOpen_){const RECT menu=GetSettingsAntiAliasingMenuBounds();const D2D1_RECT_F r=D2D1::RectF((float)menu.left,(float)menu.top,(float)menu.right,(float)menu.bottom);renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),panelBrush.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),borderBrush.Get(),1);const int row=MulDiv(30,GetDpiForWindow(window_),96);const ButtonKind buttons[]={ButtonKind::SettingsAntiAliasingOff,ButtonKind::SettingsAntiAliasing2x,ButtonKind::SettingsAntiAliasing4x,ButtonKind::SettingsAntiAliasing8x,ButtonKind::SettingsAntiAliasingSsaa1_5x,ButtonKind::SettingsAntiAliasingSsaa2x};for(int i=0;i<static_cast<int>(kAntiAliasingOptions.size());++i){const D2D1_RECT_F option=D2D1::RectF((float)menu.left,(float)(menu.top+i*row),(float)menu.right,(float)(menu.top+(i+1)*row));if(hoveredButton_==buttons[i]||pressedButton_==buttons[i])renderTarget_->FillRectangle(option,rowHover.Get());DrawOverlayText(kAntiAliasingOptions[i],(float)menu.left+static_cast<float>(kDropdownLeftPaddingDips)*dpiScale,option.top,option.right-option.left-static_cast<float>(kDropdownLeftPaddingDips)*dpiScale,option.bottom-option.top,13,DWRITE_FONT_WEIGHT_NORMAL,primaryBrush.Get(),true);}}
             }
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
             renderTarget_->PopAxisAlignedClip();
@@ -5418,6 +5423,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->HasOverlay()) {
+            if (viewer->SettingsAntiAliasingMenuOpen() && !viewer->SettingsAntiAliasingMenuContains(point)) {
+                viewer->DismissSettingsAntiAliasingMenu();
+                return 0;
+            }
             const ButtonKind button = viewer->ButtonAt(point);
             if (button != ButtonKind::None) { viewer->SetButtonPressed(button); SetCapture(window); return 0; }
             if (!viewer->OverlayContains(point) && !viewer->WelcomeOpen()) viewer->DismissOverlay();

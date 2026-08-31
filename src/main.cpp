@@ -5789,19 +5789,21 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (releasedOnHamburger) viewer->ToggleDropdown();
             return 0;
         }
+        const CaptionButton pressed = viewer->PressedCaptionButton();
+        if (pressed != CaptionButton::None) {
+            const FrameMetrics frame = GetFrameMetrics(window);
+            const CaptionButton released = CaptionButtonAt(frame, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            viewer->ClearCaptionButtonPressed();
+            if (GetCapture() == window) ReleaseCapture();
+            if (pressed == released) SendMessageW(window, WM_SYSCOMMAND, SystemCommandForCaptionButton(window, released), 0);
+            return 0;
+        }
         if (viewer->ModelActive()) {
             viewer->FinishModelSelectionClick({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
             if (GetCapture() == window) ReleaseCapture();
             return 0;
         }
-        const CaptionButton pressed = viewer->PressedCaptionButton();
-        if (pressed == CaptionButton::None) { viewer->EndPan(); viewer->EndModelDrag(); if (GetCapture() == window) ReleaseCapture(); return 0; }
-        const FrameMetrics frame = GetFrameMetrics(window);
-        const CaptionButton released = CaptionButtonAt(frame, { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
-        viewer->ClearCaptionButtonPressed();
-        if (GetCapture() == window) ReleaseCapture();
-        if (pressed == released) SendMessageW(window, WM_SYSCOMMAND, SystemCommandForCaptionButton(window, released), 0);
-        return 0;
+        viewer->EndPan(); viewer->EndModelDrag(); if (GetCapture() == window) ReleaseCapture(); return 0;
     }
     case WM_MBUTTONUP:
         if (viewer->ModelActive()) {

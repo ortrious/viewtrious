@@ -28,7 +28,7 @@ float4 PSHighlight(VSOut i) : SV_TARGET { return float4(float3(214.0/255.0,90.0/
 float4 PSEdge(VSOut i) : SV_TARGET { return float4(.10,.12,.15,1); }
 Texture2D sourceTexture : register(t0); SamplerState sourceSampler : register(s0);
 struct FullscreenOut { float4 position : SV_POSITION; float2 uv : TEXCOORD; };
-FullscreenOut VSDownsample(uint vertexId : SV_VertexID) { FullscreenOut o; float2 p=float2((vertexId==2)?3:-1,(vertexId==1)?3:-1); o.position=float4(p,0,1); o.uv=float2((p.x+1)*.5,(p.y+1)*.5); return o; }
+FullscreenOut VSDownsample(uint vertexId : SV_VertexID) { FullscreenOut o; float2 p=float2((vertexId==2)?3:-1,(vertexId==1)?3:-1); o.position=float4(p,0,1); o.uv=float2((p.x+1)*.5,1-(p.y+1)*.5); return o; }
 cbuffer DownsampleConstants : register(b1) { float2 sourceTexel; float2 downsamplePadding; };
 float4 PSDownsample(FullscreenOut i) : SV_TARGET { float2 d=sourceTexel*.75; return (sourceTexture.Sample(sourceSampler,i.uv+float2(-d.x,-d.y))+sourceTexture.Sample(sourceSampler,i.uv+float2(d.x,-d.y))+sourceTexture.Sample(sourceSampler,i.uv+float2(-d.x,d.y))+sourceTexture.Sample(sourceSampler,i.uv+float2(d.x,d.y)))*.25; }
 )";

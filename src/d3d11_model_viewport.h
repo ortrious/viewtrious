@@ -21,6 +21,7 @@ public:
     void Render(GraphicsHost& host, const RECT& bounds);
     void Fit(Float3 upAxis);
     bool BeginAnimatedHome(Float3 upAxis);
+    bool BeginAnimatedFitSelected(Float3 upAxis);
     bool BeginAnimatedOrientation(Float3 forward, Float3 up);
     bool BeginAnimatedSnapView(Float3 forward, Float3 up, Float3 hitPoint);
     bool BeginAnimatedFramingRecovery();

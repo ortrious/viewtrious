@@ -85,6 +85,7 @@ void OrbitCamera::Fit(const ModelBounds& bounds, float aspectRatio) {
     radius_ = std::max(1e-5f, 0.5f * std::sqrt(Dot(diagonal, diagonal)));
     aspect_ = std::max(0.01f, aspectRatio);
     distance_ = std::max(radius_ * 2.8f, radius_ / std::tan(fieldOfView_ * 0.5f));
+    orthographicHalfHeight_ = std::max(radius_ * 1.2f, 1e-5f);
     const float yaw = 0.62f, pitch = -0.42f, cosPitch = std::cos(pitch);
     const Float3 eye = Add(pivot_, { distance_ * std::sin(yaw) * cosPitch, distance_ * std::sin(pitch), distance_ * std::cos(yaw) * cosPitch });
     SetLocalOrientation(Normalize(Sub(pivot_, eye)), { 0.0f, 1.0f, 0.0f });
@@ -110,12 +111,12 @@ void OrbitCamera::Pan(float dx, float dy) {
 }
 void OrbitCamera::PanPixels(float dx, float dy, unsigned int viewportWidth, unsigned int viewportHeight) {
     MaterializeNavLibState();
-    const float halfHeight = distance_ * std::tan(fieldOfView_ * 0.5f);
+    const float halfHeight = ViewHalfHeight();
     framingRight_ += dx * (2.0f * halfHeight * aspect_ / std::max(1u, viewportWidth));
     framingUp_ += dy * (2.0f * halfHeight / std::max(1u, viewportHeight));
     Update();
 }
-void OrbitCamera::Dolly(float wheelUnits) { MaterializeNavLibState(); distance_ = std::clamp(distance_ * std::exp(-wheelUnits * 0.14f), radius_ * 0.02f, radius_ * 10000.0f); Update(); }
+void OrbitCamera::Dolly(float wheelUnits) { MaterializeNavLibState(); if(projectionMode_==ModelProjectionMode::Orthographic) orthographicHalfHeight_=std::clamp(orthographicHalfHeight_*std::exp(-wheelUnits*.14f),radius_*.0002f,radius_*10000.0f); else distance_=std::clamp(distance_*std::exp(-wheelUnits*.14f),radius_*.02f,radius_*10000.0f); Update(); }
 void OrbitCamera::ApplySpaceMouse(float x, float y, float z, float pitch, float yaw, float roll) {
     MaterializeNavLibState();
     Pan(x * 0.06f, y * 0.06f); Dolly(-z * 0.45f); Orbit(yaw * 0.025f, pitch * 0.025f);
@@ -128,14 +129,24 @@ OrbitCamera::State OrbitCamera::NavLibState() const {
 }
 void OrbitCamera::SetPivot(Float3 pivot) { if (std::isfinite(pivot.x) && std::isfinite(pivot.y) && std::isfinite(pivot.z)) { MaterializeNavLibState(); pivot_ = pivot; Update(); } }
 void OrbitCamera::SetFieldOfView(float radians) { if (std::isfinite(radians)) { fieldOfView_ = std::clamp(radians, 0.17f, 2.6f); Update(); } }
+void OrbitCamera::SetProjectionMode(ModelProjectionMode mode) { if(projectionMode_==mode)return; MaterializeNavLibState(); const float halfHeight=ViewHalfHeight(); projectionMode_=mode; if(mode==ModelProjectionMode::Orthographic) orthographicHalfHeight_=halfHeight; else distance_=std::clamp(halfHeight/std::tan(fieldOfView_*.5f),radius_*.02f,radius_*10000.0f); Update(); }
+void OrbitCamera::SetOrthographicHalfHeight(float halfHeight) { if(projectionMode_!=ModelProjectionMode::Orthographic||!std::isfinite(halfHeight))return; orthographicHalfHeight_=std::clamp(halfHeight,radius_*.0002f,radius_*10000.0f); Update(); }
 bool OrbitCamera::SetFromNavLibState(const State& state) {
     if (!std::isfinite(state.position.x) || !std::isfinite(state.position.y) || !std::isfinite(state.position.z) ||
         !std::isfinite(state.forward.x) || !std::isfinite(state.forward.y) || !std::isfinite(state.forward.z) ||
         !std::isfinite(state.up.x) || !std::isfinite(state.up.y) || !std::isfinite(state.up.z) ||
         std::sqrt(Dot(state.forward, state.forward)) <= 1e-8f || std::sqrt(Dot(state.up, state.up)) <= 1e-8f) return false;
-    // NavLib camera matrices are absolute. Keep the exact accepted pose active so the
-    // next GetCameraMatrix returns the same baseline at the next motion session.
-    navLibState_ = { state.position, Normalize(state.forward), Normalize(state.up) };
+    // NavLib camera matrices are absolute. Perspective retains the validated exact-pose
+    // contract; orthographic maps forward travel into view extent and keeps only lateral
+    // translation, so push/pull zoom does not introduce perspective camera motion.
+    if (projectionMode_ == ModelProjectionMode::Orthographic) {
+        const State current = NavLibState(); const Float3 forward = Normalize(state.forward);
+        const Float3 right = Normalize(Cross(state.up, forward)), up = Normalize(Cross(forward, right));
+        const Float3 delta = Sub(state.position, current.position);
+        const float forwardTravel = Dot(delta, forward);
+        orthographicHalfHeight_ = std::clamp(orthographicHalfHeight_ * std::exp(-forwardTravel / std::max(radius_, 1e-5f)), radius_ * 0.0002f, radius_ * 10000.0f);
+        navLibState_ = { Add(current.position, Add(Mul(right, Dot(delta, right)), Mul(up, Dot(delta, up)))), forward, up };
+    } else navLibState_ = { state.position, Normalize(state.forward), Normalize(state.up) };
     navLibStateActive_ = true;
     Update();
     return true;
@@ -175,7 +186,7 @@ bool OrbitCamera::SetPivotFromNavLib(Float3 pivot) {
 }
 OrbitCamera::AnimationState OrbitCamera::CaptureAnimationState() {
     MaterializeNavLibState();
-    return { pivot_, forward_, up_, framingRight_, framingUp_, distance_, radius_, aspect_, fieldOfView_ };
+    return { pivot_, forward_, up_, framingRight_, framingUp_, distance_, radius_, aspect_, fieldOfView_, orthographicHalfHeight_, projectionMode_ };
 }
 void OrbitCamera::ApplyInterpolatedAnimationState(const AnimationState& start, const AnimationState& target, float progress) {
     progress = std::clamp(progress, 0.0f, 1.0f);
@@ -192,6 +203,8 @@ void OrbitCamera::ApplyInterpolatedAnimationState(const AnimationState& start, c
     radius_ = Lerp(start.radius, target.radius, progress);
     aspect_ = Lerp(start.aspect, target.aspect, progress);
     fieldOfView_ = Lerp(start.fieldOfView, target.fieldOfView, progress);
+    orthographicHalfHeight_ = Lerp(start.orthographicHalfHeight, target.orthographicHalfHeight, progress);
+    projectionMode_ = start.projectionMode;
     SetLocalOrientation(forward, up);
     Update();
 #if defined(_DEBUG)
@@ -222,6 +235,7 @@ float OrbitCamera::Distance() const {
     const float distance = Dot(eyeToPivot, Normalize(navLibState_.forward));
     return std::isfinite(distance) && distance > 1e-8f ? distance : distance_;
 }
+float OrbitCamera::ViewHalfHeight() const { return projectionMode_==ModelProjectionMode::Orthographic ? orthographicHalfHeight_ : Distance()*std::tan(fieldOfView_*.5f); }
 OrbitCamera::ClipPlanes OrbitCamera::CurrentClipPlanes() const {
     const float distance = Distance();
     const float nearPlane = std::max(radius_ * 0.001f, distance * 0.001f);
@@ -270,7 +284,8 @@ void OrbitCamera::Update() {
         up = Normalize(Cross(forward, right));
     }
     Matrix4 view{}; view.m[0]=right.x; view.m[4]=right.y; view.m[8]=right.z; view.m[1]=up.x; view.m[5]=up.y; view.m[9]=up.z; view.m[2]=-forward.x; view.m[6]=-forward.y; view.m[10]=-forward.z; view.m[12]=-Dot(right,eye); view.m[13]=-Dot(up,eye); view.m[14]=Dot(forward,eye); view.m[15]=1;
-    const ClipPlanes clips = CurrentClipPlanes(); const float nearPlane = clips.nearPlane, farPlane = clips.farPlane; const float f = 1.0f / std::tan(fieldOfView_ * 0.5f);
-    Matrix4 projection{}; projection.m[0]=f/aspect_; projection.m[5]=f; projection.m[10]=farPlane/(nearPlane-farPlane); projection.m[11]=-1; projection.m[14]=(nearPlane*farPlane)/(nearPlane-farPlane);
+    const ClipPlanes clips = CurrentClipPlanes(); const float nearPlane = clips.nearPlane, farPlane = clips.farPlane; Matrix4 projection{};
+    if(projectionMode_==ModelProjectionMode::Orthographic){const float halfHeight=std::max(orthographicHalfHeight_,1e-5f),halfWidth=halfHeight*aspect_;projection.m[0]=1.0f/halfWidth;projection.m[5]=1.0f/halfHeight;projection.m[10]=1.0f/(nearPlane-farPlane);projection.m[14]=nearPlane/(nearPlane-farPlane);projection.m[15]=1.0f;}
+    else {const float f=1.0f/std::tan(fieldOfView_*.5f);projection.m[0]=f/aspect_;projection.m[5]=f;projection.m[10]=farPlane/(nearPlane-farPlane);projection.m[11]=-1;projection.m[14]=(nearPlane*farPlane)/(nearPlane-farPlane);}
     Matrix4 result{}; for (int r=0;r<4;++r) for (int col=0;col<4;++col) for (int k=0;k<4;++k) result.m[r*4+col] += view.m[r*4+k]*projection.m[k*4+col]; viewProjection_=result;
 }

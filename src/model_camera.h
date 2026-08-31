@@ -2,6 +2,8 @@
 
 #include "model_document.h"
 
+enum class ModelProjectionMode { Perspective, Orthographic };
+
 class OrbitCamera {
 public:
     struct State { Float3 position; Float3 forward; Float3 up; };
@@ -15,6 +17,8 @@ public:
         float radius;
         float aspect;
         float fieldOfView;
+        float orthographicHalfHeight;
+        ModelProjectionMode projectionMode;
     };
     void Fit(const ModelBounds& bounds, float aspectRatio);
     void SetAspectRatio(float aspectRatio);
@@ -31,6 +35,8 @@ public:
     State NavLibState() const;
     void SetPivot(Float3 pivot);
     void SetFieldOfView(float radians);
+    void SetProjectionMode(ModelProjectionMode mode);
+    void SetOrthographicHalfHeight(float halfHeight);
     const Matrix4& ViewProjection() const;
     Float3 Position() const;
     Float3 Pivot() const;
@@ -41,6 +47,8 @@ public:
     ClipPlanes CurrentClipPlanes() const;
     float Radius() const { return radius_; }
     float AspectRatio() const { return aspect_; }
+    ModelProjectionMode ProjectionMode() const { return projectionMode_; }
+    float ViewHalfHeight() const;
 
 private:
     void MaterializeNavLibState();
@@ -53,6 +61,8 @@ private:
     float framingRight_ = 0.0f, framingUp_ = 0.0f;
     float distance_ = 5.0f, radius_ = 1.0f, aspect_ = 1.0f;
     float fieldOfView_ = 0.785398163f;
+    float orthographicHalfHeight_ = 1.0f;
+    ModelProjectionMode projectionMode_ = ModelProjectionMode::Perspective;
     State navLibState_{};
     bool navLibStateActive_ = false;
     Matrix4 viewProjection_ = Matrix4::Identity();

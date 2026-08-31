@@ -87,7 +87,7 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsSpaceMouse, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    SettingsSpaceMouse, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
@@ -556,6 +556,9 @@ public:
         DWORD theme = static_cast<DWORD>(ThemePreference::System);
         ReadSetting(L"Theme", theme);
         themePreference_ = theme <= static_cast<DWORD>(ThemePreference::Dark) ? static_cast<ThemePreference>(theme) : ThemePreference::System;
+        DWORD projectionMode = static_cast<DWORD>(ModelProjectionMode::Perspective);
+        ReadSetting(L"ModelProjectionMode", projectionMode);
+        modelProjectionMode_ = projectionMode == static_cast<DWORD>(ModelProjectionMode::Orthographic) ? ModelProjectionMode::Orthographic : ModelProjectionMode::Perspective;
         DWORD imageScaling = static_cast<DWORD>(ImageScaling::Quality);
         ReadSetting(L"ImageScaling", imageScaling);
         imageScaling_ = imageScaling == static_cast<DWORD>(ImageScaling::Performance) ? ImageScaling::Performance : ImageScaling::Quality;
@@ -624,6 +627,7 @@ public:
         if (!graphicsHost_.Ready() || (!modelViewport_.Active() && !modelViewport_.Create(graphicsHost_, modelDocument_, viewportError))) {
             modelDocument_.reset(); contentKind_ = ContentKind::None; error_ = viewportError; InvalidateRect(window_, nullptr, FALSE); return;
         }
+        modelViewport_.SetProjectionMode(modelProjectionMode_);
         contentKind_ = ContentKind::Model3D;
         resolutionText_ = std::to_wstring(modelDocument_->geometries.front().indices.size() / 3) + L" triangles";
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
@@ -645,7 +649,7 @@ public:
         spaceMouse_->setViewExtents = [this](const navlib::box_t& extents) { SetSpaceMouseViewExtents(extents); };
         spaceMouse_->getViewFov = [this] { return ModelActive() ? static_cast<double>(modelViewport_.Camera().FieldOfView()) : 0.0; };
         spaceMouse_->setViewFov = [this](double fov) { if (ModelActive()) modelViewport_.SetNavLibFieldOfView(static_cast<float>(fov)); };
-        spaceMouse_->getPerspective = [this] { return ModelActive(); };
+        spaceMouse_->getPerspective = [this] { return ModelActive() && modelViewport_.Camera().ProjectionMode() == ModelProjectionMode::Perspective; };
         spaceMouse_->getRotatable = [this] { return ModelActive(); };
         spaceMouse_->getCameraTarget = [this] { return SpaceMouseModelCameraTarget(); };
         spaceMouse_->setCameraTarget = [this](const navlib::point_t& point) { SetSpaceMouseModelCameraTarget(point); };
@@ -799,7 +803,7 @@ public:
     void ContinueModelDrag(POINT point) { if (!ModelActive()) return; CancelAnimatedModelHome(); const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); InvalidateRect(window_, nullptr, FALSE); }
     void EndModelDrag() { modelViewport_.EndDrag(); }
     void DollyModel(float steps) { if (ModelActive()) { ClearModelFaceSelection(); CancelAnimatedModelHome(); modelViewport_.Dolly(steps); InvalidateRect(window_, nullptr, FALSE); } }
-    bool SelectModelFace(POINT point) { if(!ModelActive()||!modelViewport_.Document()||modelViewport_.Document()->geometries.empty())return false;const D3D11_VIEWPORT viewport=modelViewport_.SceneViewport();const float localX=float(point.x)-viewport.TopLeftX,localY=float(point.y)-viewport.TopLeftY;if(viewport.Width<=0||viewport.Height<=0||localX<0||localX>=viewport.Width||localY<0||localY>=viewport.Height){ClearModelFaceSelection();TraceModelPick(point,viewport,localX,localY,0,0,{}, {},-1,-1);return false;}const auto state=modelViewport_.Camera().NavLibState();const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};const auto normalize=[&](Float3 v){const float l=std::sqrt(v.x*v.x+v.y*v.y+v.z*v.z);return l>1e-6f?Float3{v.x/l,v.y/l,v.z/l}:Float3{0,0,1};};const Float3 forward=normalize(state.forward),right=normalize(cross(state.up,forward)),up=normalize(cross(forward,right));const float ndcX=2.f*localX/viewport.Width-1.f,ndcY=1.f-2.f*localY/viewport.Height;const float t=std::tan(modelViewport_.Camera().FieldOfView()*.5f),nx=ndcX*modelViewport_.Camera().AspectRatio()*t,ny=ndcY*t;const Float3 ray=normalize({forward.x+right.x*nx+up.x*ny,forward.y+right.y*nx+up.y*ny,forward.z+right.z*nx+up.z*ny});const auto& document=*modelViewport_.Document();const auto& mesh=document.geometries.front();float best=FLT_MAX;int selectedPlane=-1;ptrdiff_t selectedTriangle=-1;for(size_t i=0;i+2<mesh.indices.size();i+=3){const Float3 a=mesh.positions[mesh.indices[i]],b=mesh.positions[mesh.indices[i+1]],c=mesh.positions[mesh.indices[i+2]],e1{b.x-a.x,b.y-a.y,b.z-a.z},e2{c.x-a.x,c.y-a.y,c.z-a.z},p=cross(ray,e2);const float det=dot(e1,p);if(std::fabs(det)<1e-7f)continue;const float inv=1.f/det;const Float3 s{state.position.x-a.x,state.position.y-a.y,state.position.z-a.z};const float u=dot(s,p)*inv;if(u<0||u>1)continue;const Float3 q=cross(s,e1);const float v=dot(ray,q)*inv;if(v<0||u+v>1)continue;const float d=dot(e2,q)*inv;if(d>0&&d<best){best=d;const size_t triangle=i/3;if(triangle<document.triangleSnapPlanes.size()){selectedTriangle=static_cast<ptrdiff_t>(triangle);selectedPlane=static_cast<int>(document.triangleSnapPlanes[triangle]);}}}TraceModelPick(point,viewport,localX,localY,ndcX,ndcY,state.position,ray,selectedTriangle,selectedPlane);if(selectedPlane<0||!modelViewport_.SetSelectedSnapPlane(static_cast<uint32_t>(selectedPlane))){ClearModelFaceSelection();return false;}selectedFaceNormal_=document.snapPlanes[static_cast<size_t>(selectedPlane)].normal;selectedFaceHit_={state.position.x+ray.x*best,state.position.y+ray.y*best,state.position.z+ray.z*best};selectedFacePlane_=selectedPlane;modelFaceSelected_=true;InvalidateRect(window_,nullptr,FALSE);return true; }
+    bool SelectModelFace(POINT point) { if(!ModelActive()||!modelViewport_.Document()||modelViewport_.Document()->geometries.empty())return false;const D3D11_VIEWPORT viewport=modelViewport_.SceneViewport();const float localX=float(point.x)-viewport.TopLeftX,localY=float(point.y)-viewport.TopLeftY;if(viewport.Width<=0||viewport.Height<=0||localX<0||localX>=viewport.Width||localY<0||localY>=viewport.Height){ClearModelFaceSelection();TraceModelPick(point,viewport,localX,localY,0,0,{}, {},-1,-1);return false;}const auto state=modelViewport_.Camera().NavLibState();const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};const auto normalize=[&](Float3 v){const float l=std::sqrt(v.x*v.x+v.y*v.y+v.z*v.z);return l>1e-6f?Float3{v.x/l,v.y/l,v.z/l}:Float3{0,0,1};};const Float3 forward=normalize(state.forward),right=normalize(cross(state.up,forward)),up=normalize(cross(forward,right));const float ndcX=2.f*localX/viewport.Width-1.f,ndcY=1.f-2.f*localY/viewport.Height;Float3 rayOrigin=state.position,ray{};if(modelViewport_.Camera().ProjectionMode()==ModelProjectionMode::Orthographic){const float halfHeight=modelViewport_.Camera().ViewHalfHeight();rayOrigin={state.position.x+right.x*ndcX*halfHeight*modelViewport_.Camera().AspectRatio()+up.x*ndcY*halfHeight,state.position.y+right.y*ndcX*halfHeight*modelViewport_.Camera().AspectRatio()+up.y*ndcY*halfHeight,state.position.z+right.z*ndcX*halfHeight*modelViewport_.Camera().AspectRatio()+up.z*ndcY*halfHeight};ray=forward;}else{const float t=std::tan(modelViewport_.Camera().FieldOfView()*.5f),nx=ndcX*modelViewport_.Camera().AspectRatio()*t,ny=ndcY*t;ray=normalize({forward.x+right.x*nx+up.x*ny,forward.y+right.y*nx+up.y*ny,forward.z+right.z*nx+up.z*ny});}const auto& document=*modelViewport_.Document();const auto& mesh=document.geometries.front();float best=FLT_MAX;int selectedPlane=-1;ptrdiff_t selectedTriangle=-1;for(size_t i=0;i+2<mesh.indices.size();i+=3){const Float3 a=mesh.positions[mesh.indices[i]],b=mesh.positions[mesh.indices[i+1]],c=mesh.positions[mesh.indices[i+2]],e1{b.x-a.x,b.y-a.y,b.z-a.z},e2{c.x-a.x,c.y-a.y,c.z-a.z},p=cross(ray,e2);const float det=dot(e1,p);if(std::fabs(det)<1e-7f)continue;const float inv=1.f/det;const Float3 s{rayOrigin.x-a.x,rayOrigin.y-a.y,rayOrigin.z-a.z};const float u=dot(s,p)*inv;if(u<0||u>1)continue;const Float3 q=cross(s,e1);const float v=dot(ray,q)*inv;if(v<0||u+v>1)continue;const float d=dot(e2,q)*inv;if(d>0&&d<best){best=d;const size_t triangle=i/3;if(triangle<document.triangleSnapPlanes.size()){selectedTriangle=static_cast<ptrdiff_t>(triangle);selectedPlane=static_cast<int>(document.triangleSnapPlanes[triangle]);}}}TraceModelPick(point,viewport,localX,localY,ndcX,ndcY,rayOrigin,ray,selectedTriangle,selectedPlane);if(selectedPlane<0||!modelViewport_.SetSelectedSnapPlane(static_cast<uint32_t>(selectedPlane))){ClearModelFaceSelection();return false;}selectedFaceNormal_=document.snapPlanes[static_cast<size_t>(selectedPlane)].normal;selectedFaceHit_={rayOrigin.x+ray.x*best,rayOrigin.y+ray.y*best,rayOrigin.z+ray.z*best};selectedFacePlane_=selectedPlane;modelFaceSelected_=true;InvalidateRect(window_,nullptr,FALSE);return true; }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
@@ -1036,7 +1040,7 @@ public:
         if (overlay_ != OverlayKind::Settings) return 0.0f;
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 504 : settingsPage_ == SettingsPage::Image2D ? 350 : 160, dpi, 96));
+        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 504 : settingsPage_ == SettingsPage::Image2D ? 350 : 274, dpi, 96));
         const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
         return std::max(0.0f, contentBottom - viewportBottom);
     }
@@ -1064,7 +1068,7 @@ public:
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         static constexpr int kRowTops[] = { 106, 106, 132, 132, 158, 184, 158 };
-        const int top = bounds.top + MulDiv(option == 6 && settingsPage_ == SettingsPage::Model3D ? 106 : kRowTops[option], dpi, 96);
+        const int top = bounds.top + MulDiv(option == 6 && settingsPage_ == SettingsPage::Model3D ? 226 : kRowTops[option], dpi, 96);
         return { SettingsContentLeft(), top, bounds.right - MulDiv(18, dpi, 96), top + MulDiv(25, dpi, 96) };
     }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
@@ -1082,6 +1086,13 @@ public:
         const int width = MulDiv(112, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int left = SettingsContentLeft() + static_cast<int>(scaling) * (width + gap);
         const int top = bounds.top + MulDiv(252, dpi, 96);
+        return { left, top, left + width, top + MulDiv(28, dpi, 96) };
+    }
+    RECT GetSettingsProjectionBounds(ModelProjectionMode mode) const {
+        const RECT bounds = GetOverlayBounds(); const UINT dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(112, dpi, 96), gap = MulDiv(8, dpi, 96);
+        const int left = SettingsContentLeft() + static_cast<int>(mode) * (width + gap);
+        const int top = bounds.top + MulDiv(132, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     void ToggleIncludeHiddenImages() {
@@ -1140,6 +1151,13 @@ public:
         lanczosSelected_ = imageScaling_ == ImageScaling::Quality;
         InvalidateLanczosVariant(true);
         if (imageScaling_ == ImageScaling::Quality) QueueLanczosRefinement();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void SetModelProjectionMode(ModelProjectionMode mode) {
+        if (modelProjectionMode_ == mode) return;
+        modelProjectionMode_ = mode;
+        WriteSetting(L"ModelProjectionMode", static_cast<DWORD>(mode));
+        if (ModelActive()) modelViewport_.SetProjectionMode(mode);
         InvalidateRect(window_, nullptr, FALSE);
     }
     RECT GetSettingsResetButtonBounds() const {
@@ -1299,6 +1317,8 @@ public:
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Performance))) return ButtonKind::SettingsScalingPerformance;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
             } else if (settingsPage_ == SettingsPage::Model3D) {
+                if (settingsContains(GetSettingsProjectionBounds(ModelProjectionMode::Perspective))) return ButtonKind::SettingsProjectionPerspective;
+                if (settingsContains(GetSettingsProjectionBounds(ModelProjectionMode::Orthographic))) return ButtonKind::SettingsProjectionOrthographic;
                 if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsSpaceMouse;
             }
         }
@@ -1426,6 +1446,8 @@ public:
         else if (button == ButtonKind::SettingsAnimations) ToggleAnimationsAndFadeEffects();
         else if (button == ButtonKind::SettingsReverseWheelZoom) ToggleReverseMouseWheelZoom();
         else if (button == ButtonKind::SettingsSpaceMouse) ToggleSpaceMouse();
+        else if (button == ButtonKind::SettingsProjectionPerspective) SetModelProjectionMode(ModelProjectionMode::Perspective);
+        else if (button == ButtonKind::SettingsProjectionOrthographic) SetModelProjectionMode(ModelProjectionMode::Orthographic);
         else if (button == ButtonKind::SettingsThemeSystem) SetThemePreference(ThemePreference::System);
         else if (button == ButtonKind::SettingsThemeLight) SetThemePreference(ThemePreference::Light);
         else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
@@ -1803,7 +1825,7 @@ public:
     navlib::box_t SpaceMouseViewExtents() const {
         if (ModelActive()) {
             const OrbitCamera& camera = modelViewport_.Camera();
-            const double halfHeight = camera.Distance() * std::tan(camera.FieldOfView() * 0.5f);
+            const double halfHeight = camera.ViewHalfHeight();
             const double halfWidth = halfHeight * camera.AspectRatio();
             const double depth = std::max<double>(camera.Distance() + camera.Radius() * 8.0f, 1.0e-5);
             return { { -halfWidth, -halfHeight, -depth }, { halfWidth, halfHeight, depth } };
@@ -1899,7 +1921,7 @@ public:
     }
     void SetSpaceMouseViewExtents(const navlib::box_t& extents) {
         if (!CanAcceptSpaceMouseInput()) return;
-        if (ModelActive()) return;
+        if (ModelActive()) { if (modelViewport_.Camera().ProjectionMode() == ModelProjectionMode::Orthographic) { const double requestedHeight = extents.max.y - extents.min.y; if (requestedHeight > 0.0) { modelViewport_.SetOrthographicHalfHeight(static_cast<float>(requestedHeight * 0.5)); InvalidateRect(window_, nullptr, FALSE); } } return; }
         const double requestedWidth = extents.max.x - extents.min.x;
         const D2D1_SIZE_F canvas = ImageCanvasSize();
         if (requestedWidth <= 0.0 || canvas.width <= 0.0f) return;
@@ -3666,6 +3688,7 @@ private:
             contentKind_ = ContentKind::None;
             error_ = error;
         }
+        if (contentKind_ == ContentKind::Model3D && modelViewport_.Active()) modelViewport_.SetProjectionMode(modelProjectionMode_);
         timer_.Log(L"shared graphics/window initialization complete");
     }
 
@@ -4308,7 +4331,17 @@ private:
             drawScaling(ImageScaling::Performance, ButtonKind::SettingsScalingPerformance, L"Performance");
             drawScaling(ImageScaling::Quality, ButtonKind::SettingsScalingQuality, L"Quality");
             } else {
-            group(L"INPUT", 76.0f);
+            group(L"PROJECTION", 76.0f);
+            DrawOverlayText(L"Projection Mode", settingsLeft, static_cast<float>(bounds.top) + 104.0f * dpiScale, settingsWidth, 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const auto drawProjection = [&](ModelProjectionMode mode, ButtonKind button, const wchar_t* label) {
+                const RECT segmentBounds = GetSettingsProjectionBounds(mode); const D2D1_RECT_F segment = D2D1::RectF((float)segmentBounds.left,(float)segmentBounds.top,(float)segmentBounds.right,(float)segmentBounds.bottom);
+                const bool selected = modelProjectionMode_ == mode; ID2D1Brush* fill = selected ? accent.Get() : (hoveredButton_ == button || pressedButton_ == button ? segmentHover.Get() : segmentIdle.Get());
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(segment,4.0f*dpiScale,4.0f*dpiScale),fill); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(segment,4.0f*dpiScale,4.0f*dpiScale),selected?accent.Get():borderBrush.Get(),1.0f);
+                DrawOverlayText(label,segment.left,segment.top,segment.right-segment.left,segment.bottom-segment.top,14.0f,DWRITE_FONT_WEIGHT_SEMI_BOLD,selected?checkmark.Get():primaryBrush.Get(),true,false,true);
+            };
+            drawProjection(ModelProjectionMode::Perspective, ButtonKind::SettingsProjectionPerspective, L"Perspective");
+            drawProjection(ModelProjectionMode::Orthographic, ButtonKind::SettingsProjectionOrthographic, L"Orthographic");
+            group(L"INPUT", 196.0f);
             drawToggle(6, ButtonKind::SettingsSpaceMouse, L"Enable SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
             if (!spaceMouseRuntimeAvailable_) {
                 const RECT spaceMouseBounds = GetSettingsOptionBounds(6);
@@ -5004,6 +5037,7 @@ private:
     bool modelLoading_ = false;
     ThemePreference themePreference_ = ThemePreference::System;
     ImageScaling imageScaling_ = ImageScaling::Quality;
+    ModelProjectionMode modelProjectionMode_ = ModelProjectionMode::Perspective;
     SettingsPage settingsPage_ = SettingsPage::General;
     float settingsScroll_ = 0.0f;
     bool onboardingRequired_ = false;

@@ -32,6 +32,8 @@ public:
     ModelBounds ModelBoundsForNavLib() const { return document_ ? document_->bounds : ModelBounds{}; }
     bool SetNavLibPivot(Float3 pivot);
     void SetNavLibFieldOfView(float radians) { camera_.SetFieldOfView(radians); NotifyCameraChanged(); }
+    void SetProjectionMode(ModelProjectionMode mode) { camera_.SetProjectionMode(mode); }
+    void SetOrthographicHalfHeight(float halfHeight) { camera_.SetOrthographicHalfHeight(halfHeight); }
     bool Active() const { return resources_ != nullptr; }
     void BeginOrbit(POINT point);
     void BeginPan(POINT point);

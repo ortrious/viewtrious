@@ -3,12 +3,19 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
 namespace {
 struct Vertex { Float3 position; Float3 normal; };
 struct Constants { Matrix4 viewProjection; Float3 eye; float pad = 0; };
+Float3 Add(Float3 a,Float3 b){return {a.x+b.x,a.y+b.y,a.z+b.z};}
+Float3 Sub(Float3 a,Float3 b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
+Float3 Mul(Float3 a,float scalar){return {a.x*scalar,a.y*scalar,a.z*scalar};}
+float Dot(Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
+Float3 Cross(Float3 a,Float3 b){return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};}
+Float3 Normalize(Float3 value){const float length=std::sqrt(Dot(value,value));return length>1e-6f?Mul(value,1.0f/length):Float3{0,0,1};}
 const char kShader[] = R"(
 cbuffer Constants : register(b0) { row_major float4x4 viewProjection; float3 eye; float padding; };
 struct VSIn { float3 position : POSITION; float3 normal : NORMAL; };
@@ -52,6 +59,13 @@ void D3D11ModelViewport::Render(GraphicsHost& host,const RECT& bounds){if(!resou
 void D3D11ModelViewport::Fit(){homeAnimationActive_=false;if(document_){camera_.Fit(document_->bounds,height_?float(width_)/height_:1.0f);NotifyCameraChanged();}}
 bool D3D11ModelViewport::BeginAnimatedHome(){if(!document_)return false;homeAnimationStart_=camera_.CaptureAnimationState();OrbitCamera home;home.SetFieldOfView(camera_.FieldOfView());home.Fit(document_->bounds,camera_.AspectRatio());homeAnimationTarget_=home.CaptureAnimationState();homeAnimationActive_=true;return true;}
 bool D3D11ModelViewport::BeginAnimatedOrientation(Float3 forward,Float3 up){if(!document_)return false;homeAnimationStart_=camera_.CaptureAnimationState();homeAnimationTarget_=homeAnimationStart_;homeAnimationTarget_.forward=forward;homeAnimationTarget_.up=up;homeAnimationActive_=true;return true;}
+bool D3D11ModelViewport::BeginAnimatedSnapView(Float3 forward,Float3 up,Float3 hitPoint){
+    if(!document_)return false;homeAnimationStart_=camera_.CaptureAnimationState();homeAnimationTarget_=homeAnimationStart_;homeAnimationTarget_.forward=Normalize(forward);const Float3 right=Normalize(Cross(up,homeAnimationTarget_.forward));homeAnimationTarget_.up=Normalize(Cross(homeAnimationTarget_.forward,right));const Float3 hitFromPivot=Sub(hitPoint,homeAnimationTarget_.pivot);homeAnimationTarget_.framingRight=Dot(hitFromPivot,right);homeAnimationTarget_.framingUp=Dot(hitFromPivot,homeAnimationTarget_.up);homeAnimationActive_=true;
+#if defined(_DEBUG)
+    const Float3 centered=Sub(hitPoint,Add(homeAnimationTarget_.pivot,Add(Mul(right,homeAnimationTarget_.framingRight),Mul(homeAnimationTarget_.up,homeAnimationTarget_.framingUp))));wchar_t message[512]{};swprintf_s(message,L"Viewtrious Snap target: currentFrame=(%.5f,%.5f) targetFrame=(%.5f,%.5f) currentDistance=%.5f targetDistance=%.5f targetRight=(%.5f,%.5f,%.5f) targetUp=(%.5f,%.5f,%.5f) hitNdc=(%.6f,%.6f) basisDots=(%.6f,%.6f,%.6f)\\n",homeAnimationStart_.framingRight,homeAnimationStart_.framingUp,homeAnimationTarget_.framingRight,homeAnimationTarget_.framingUp,homeAnimationStart_.distance,homeAnimationTarget_.distance,right.x,right.y,right.z,homeAnimationTarget_.up.x,homeAnimationTarget_.up.y,homeAnimationTarget_.up.z,Dot(centered,right),Dot(centered,homeAnimationTarget_.up),Dot(homeAnimationTarget_.forward,right),Dot(homeAnimationTarget_.forward,homeAnimationTarget_.up),Dot(right,homeAnimationTarget_.up));OutputDebugStringW(message);
+#endif
+    return true;
+}
 bool D3D11ModelViewport::AdvanceAnimatedHome(float progress){if(!homeAnimationActive_)return false;if(progress>=1.0f){camera_.ApplyInterpolatedAnimationState(homeAnimationStart_,homeAnimationTarget_,1.0f);homeAnimationActive_=false;NotifyCameraChanged();return false;}camera_.ApplyInterpolatedAnimationState(homeAnimationStart_,homeAnimationTarget_,progress);NotifyCameraChanged();return true;}
 void D3D11ModelViewport::ApplySpaceMouse(float x,float y,float z,float pitch,float yaw,float roll){homeAnimationActive_=false;camera_.ApplySpaceMouse(x,y,z,pitch,yaw,roll);NotifyCameraChanged();}
 bool D3D11ModelViewport::SetNavLibCameraState(const OrbitCamera::State& state){homeAnimationActive_=false;if(!camera_.SetFromNavLibState(state))return false;NotifyCameraChanged();return true;}

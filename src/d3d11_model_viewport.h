@@ -48,7 +48,8 @@ public:
     OrbitCamera& Camera() { return camera_; }
     const OrbitCamera& Camera() const { return camera_; }
     const ModelDocument* Document() const { return document_.get(); }
-    D3D11_VIEWPORT SceneViewport() const { return sceneViewport_; }
+    D3D11_VIEWPORT LogicalViewport() const { return logicalViewport_; }
+    D3D11_VIEWPORT RenderViewport() const { return renderViewport_; }
     void SetCameraChangedCallback(CameraChanged callback, void* context) { cameraChanged_ = callback; cameraContext_ = context; }
 
 private:
@@ -71,7 +72,8 @@ private:
     POINT dragStart_{};
     enum class Drag { None, Orbit, Pan } drag_ = Drag::None;
     UINT width_ = 0, height_ = 0;
-    D3D11_VIEWPORT sceneViewport_{};
+    D3D11_VIEWPORT logicalViewport_{};
+    D3D11_VIEWPORT renderViewport_{};
     int selectedSnapPlane_ = -1;
     ModelVisualStyle visualStyle_ = ModelVisualStyle::Shaded;
     ModelAntiAliasing antiAliasing_ = ModelAntiAliasing::Msaa4x;

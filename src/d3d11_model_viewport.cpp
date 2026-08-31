@@ -22,8 +22,7 @@ struct VSIn { float3 position : POSITION; float3 normal : NORMAL; };
 struct VSOut { float4 position : SV_POSITION; float3 normal : NORMAL; };
 VSOut VSMain(VSIn i) { VSOut o; o.position=mul(float4(i.position,1),viewProjection); o.normal=i.normal; return o; }
 float4 PSMain(VSOut i) : SV_TARGET { float3 n=normalize(i.normal); float3 l0=normalize(float3(.45,.75,.55)); float3 l1=normalize(float3(-.55,.20,-.65)); float light=.22+.55*abs(dot(n,l0))+.23*abs(dot(n,l1)); return float4(float3(.72,.75,.80)*light,1); }
-const float3 kSnapPlaneSelectionColor = float3(214.0/255.0,90.0/255.0,31.0/255.0);
-float4 PSHighlight(VSOut i) : SV_TARGET { return float4(kSnapPlaneSelectionColor,.75); }
+float4 PSHighlight(VSOut i) : SV_TARGET { return float4(float3(214.0/255.0,90.0/255.0,31.0/255.0),.75); }
 )";
 }
 struct D3D11ModelViewport::Resources {

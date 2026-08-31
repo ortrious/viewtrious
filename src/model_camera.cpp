@@ -137,15 +137,22 @@ bool OrbitCamera::SetFromNavLibState(const State& state) {
         !std::isfinite(state.up.x) || !std::isfinite(state.up.y) || !std::isfinite(state.up.z) ||
         std::sqrt(Dot(state.forward, state.forward)) <= 1e-8f || std::sqrt(Dot(state.up, state.up)) <= 1e-8f) return false;
     // NavLib camera matrices are absolute. Perspective retains the validated exact-pose
-    // contract; orthographic maps forward travel into view extent and keeps only lateral
-    // translation, so push/pull zoom does not introduce perspective camera motion.
+    // contract. Orthographic retains its authoritative extent: forward eye travel in a
+    // NavLib matrix is an internal bridge detail, while explicit view-extents updates own zoom.
     if (projectionMode_ == ModelProjectionMode::Orthographic) {
         const State current = NavLibState(); const Float3 forward = Normalize(state.forward);
         const Float3 right = Normalize(Cross(state.up, forward)), up = Normalize(Cross(forward, right));
         const Float3 delta = Sub(state.position, current.position);
+#if defined(_DEBUG)
+        const float previousExtent = orthographicHalfHeight_;
         const float forwardTravel = Dot(delta, forward);
-        orthographicHalfHeight_ = std::clamp(orthographicHalfHeight_ * std::exp(-forwardTravel / std::max(radius_, 1e-5f)), radius_ * 0.0002f, radius_ * 10000.0f);
+#endif
         navLibState_ = { Add(current.position, Add(Mul(right, Dot(delta, right)), Mul(up, Dot(delta, up)))), forward, up };
+#if defined(_DEBUG)
+        wchar_t message[448]{};
+        swprintf_s(message, L"Viewtrious orthographic NavLib matrix: eye=(%.4f,%.4f,%.4f) forwardTravel=%.6f lateral=(%.6f,%.6f) rotation=%d extent=%.6f->%.6f\\n", state.position.x, state.position.y, state.position.z, forwardTravel, Dot(delta, right), Dot(delta, up), Dot(current.forward, forward) < 0.999999f || Dot(current.up, up) < 0.999999f, previousExtent, orthographicHalfHeight_);
+        OutputDebugStringW(message);
+#endif
     } else navLibState_ = { state.position, Normalize(state.forward), Normalize(state.up) };
     navLibStateActive_ = true;
     Update();

@@ -1900,7 +1900,7 @@ public:
         const ModelBounds bounds = modelViewport_.ModelBoundsForNavLib();
         const Float3 center{ (bounds.minimum.x + bounds.maximum.x) * 0.5f, (bounds.minimum.y + bounds.maximum.y) * 0.5f, (bounds.minimum.z + bounds.maximum.z) * 0.5f };
         const OrbitCamera::ClipPlanes clips = camera.CurrentClipPlanes();
-        const double halfHeight = camera.Distance() * std::tan(camera.FieldOfView() * 0.5f);
+        const double halfHeight = camera.ViewHalfHeight();
         const double halfWidth = halfHeight * camera.AspectRatio();
         const Matrix4& projection = camera.ViewProjection();
         float minimumDepth = 0.0f, maximumDepth = 0.0f, minimumW = 0.0f, maximumW = 0.0f;
@@ -1950,7 +1950,15 @@ public:
     }
     void SetSpaceMouseViewExtents(const navlib::box_t& extents) {
         if (!CanAcceptSpaceMouseInput()) return;
-        if (ModelActive()) { if (modelViewport_.Camera().ProjectionMode() == ModelProjectionMode::Orthographic) { const double requestedHeight = extents.max.y - extents.min.y; if (requestedHeight > 0.0) { modelViewport_.SetOrthographicHalfHeight(static_cast<float>(requestedHeight * 0.5)); InvalidateRect(window_, nullptr, FALSE); } } return; }
+        if (ModelActive()) { if (modelViewport_.Camera().ProjectionMode() == ModelProjectionMode::Orthographic) { const double requestedHeight = extents.max.y - extents.min.y; if (requestedHeight > 0.0) {
+#if defined(_DEBUG)
+                const float previousExtent=modelViewport_.Camera().ViewHalfHeight();
+#endif
+                modelViewport_.SetOrthographicHalfHeight(static_cast<float>(requestedHeight * 0.5));
+#if defined(_DEBUG)
+                wchar_t message[256]{};swprintf_s(message,L"Viewtrious orthographic NavLib extent: %.6f->%.6f requested=%.6f aspect=%.6f\\n",previousExtent,modelViewport_.Camera().ViewHalfHeight(),requestedHeight,modelViewport_.Camera().AspectRatio());OutputDebugStringW(message);
+#endif
+                InvalidateRect(window_, nullptr, FALSE); } } return; }
         const double requestedWidth = extents.max.x - extents.min.x;
         const D2D1_SIZE_F canvas = ImageCanvasSize();
         if (requestedWidth <= 0.0 || canvas.width <= 0.0f) return;

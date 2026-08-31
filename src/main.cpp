@@ -111,7 +111,7 @@ const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.
 
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
-enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
+enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace, FitSelection };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsSpaceMouse, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
@@ -849,16 +849,67 @@ public:
         if (!modelViewport_.AdvanceAnimatedHome(eased)) KillTimer(window_, kModelHomeAnimationTimer);
         InvalidateRect(window_, nullptr, FALSE);
     }
-    void BeginModelOrbit(POINT point) { if (ModelActive()) { ClearModelFaceSelection(); CancelAnimatedModelHome(); modelViewport_.BeginOrbit(point); } }
-    void BeginModelPan(POINT point) { if (ModelActive()) { ClearModelFaceSelection(); CancelAnimatedModelHome(); modelViewport_.BeginPan(point); } }
-    void ContinueModelDrag(POINT point) { if (!ModelActive()) return; CancelAnimatedModelHome(); const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); InvalidateRect(window_, nullptr, FALSE); }
-    void EndModelDrag() { modelViewport_.EndDrag(); }
+    void BeginModelOrbit(POINT point) { if (ModelActive()) { ClearModelFaceSelection(); modelClickStart_=point; modelClickCandidate_=true; CancelAnimatedModelHome(); modelViewport_.BeginOrbit(point); } }
+    void BeginModelPan(POINT point) { if (ModelActive()) { modelClickCandidate_=false; ClearModelFaceSelection(); CancelAnimatedModelHome(); modelViewport_.BeginPan(point); } }
+    void ContinueModelDrag(POINT point) { if (!ModelActive()) return; const LONG dx=point.x-modelClickStart_.x,dy=point.y-modelClickStart_.y;if(dx*dx+dy*dy>16)modelClickCandidate_=false; CancelAnimatedModelHome(); const RECT bounds = ModelCanvasBounds(); modelViewport_.ContinueDrag(point, std::max(1L, bounds.right - bounds.left), std::max(1L, bounds.bottom - bounds.top)); InvalidateRect(window_, nullptr, FALSE); }
+    void EndModelDrag() { modelClickCandidate_=false; modelViewport_.EndDrag(); }
+    bool FinishModelSelectionClick(POINT point) { const bool click=modelClickCandidate_;modelClickCandidate_=false;modelViewport_.EndDrag();if(click) return SelectModelObject(point);return false; }
     void DollyModel(float steps) { if (ModelActive()) { ClearModelFaceSelection(); CancelAnimatedModelHome(); modelViewport_.Dolly(steps); InvalidateRect(window_, nullptr, FALSE); } }
+    bool SelectModelObject(POINT point) {
+        if (!ModelActive() || !modelViewport_.Document() || modelViewport_.Document()->geometries.empty()) return false;
+        const D3D11_VIEWPORT viewport = modelViewport_.LogicalViewport();
+        const float localX = float(point.x) - viewport.TopLeftX, localY = float(point.y) - viewport.TopLeftY;
+        if (viewport.Width <= 0 || viewport.Height <= 0 || localX < 0 || localX >= viewport.Width || localY < 0 || localY >= viewport.Height) {
+            modelViewport_.ClearSelectedObjectRange(); InvalidateRect(window_, nullptr, FALSE); return false;
+        }
+        const auto state = modelViewport_.Camera().NavLibState();
+        const auto dot = [](Float3 a, Float3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; };
+        const auto cross = [](Float3 a, Float3 b) { return Float3{a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x}; };
+        const auto normalize = [](Float3 v) { const float length = std::sqrt(v.x*v.x + v.y*v.y + v.z*v.z); return length > 1e-6f ? Float3{v.x/length, v.y/length, v.z/length} : Float3{0,0,1}; };
+        const Float3 forward = normalize(state.forward), right = normalize(cross(forward, state.up)), up = normalize(cross(right, forward));
+        const float ndcX = 2.f * localX / viewport.Width - 1.f, ndcY = 1.f - 2.f * localY / viewport.Height;
+        Float3 rayOrigin = state.position, ray{};
+        if (modelViewport_.Camera().ProjectionMode() == ModelProjectionMode::Orthographic) {
+            const float halfHeight = modelViewport_.Camera().ViewHalfHeight();
+            rayOrigin = {state.position.x + right.x*ndcX*halfHeight*modelViewport_.Camera().AspectRatio() + up.x*ndcY*halfHeight,
+                         state.position.y + right.y*ndcX*halfHeight*modelViewport_.Camera().AspectRatio() + up.y*ndcY*halfHeight,
+                         state.position.z + right.z*ndcX*halfHeight*modelViewport_.Camera().AspectRatio() + up.z*ndcY*halfHeight};
+            ray = forward;
+        } else {
+            const float tangent = std::tan(modelViewport_.Camera().FieldOfView() * .5f);
+            ray = normalize({forward.x + right.x*ndcX*modelViewport_.Camera().AspectRatio()*tangent + up.x*ndcY*tangent,
+                             forward.y + right.y*ndcX*modelViewport_.Camera().AspectRatio()*tangent + up.y*ndcY*tangent,
+                             forward.z + right.z*ndcX*modelViewport_.Camera().AspectRatio()*tangent + up.z*ndcY*tangent});
+        }
+        const auto& document = *modelViewport_.Document();
+        const auto& mesh = document.geometries.front();
+        float nearest = FLT_MAX; ptrdiff_t selectedTriangle = -1;
+        for (size_t index = 0; index + 2 < mesh.indices.size(); index += 3) {
+            const Float3 a = mesh.positions[mesh.indices[index]], b = mesh.positions[mesh.indices[index + 1]], c = mesh.positions[mesh.indices[index + 2]];
+            const Float3 edge1{b.x-a.x,b.y-a.y,b.z-a.z}, edge2{c.x-a.x,c.y-a.y,c.z-a.z}, perpendicular = cross(ray, edge2);
+            const float determinant = dot(edge1, perpendicular); if (std::fabs(determinant) < 1e-7f) continue;
+            const float inverse = 1.f / determinant; const Float3 offset{rayOrigin.x-a.x,rayOrigin.y-a.y,rayOrigin.z-a.z};
+            const float u = dot(offset, perpendicular) * inverse; if (u < 0 || u > 1) continue;
+            const Float3 q = cross(offset, edge1); const float v = dot(ray, q) * inverse; if (v < 0 || u + v > 1) continue;
+            const float distance = dot(edge2, q) * inverse;
+            if (distance > 0 && distance < nearest) { nearest = distance; selectedTriangle = static_cast<ptrdiff_t>(index / 3); }
+        }
+        if (selectedTriangle >= 0) {
+            const uint32_t triangle = static_cast<uint32_t>(selectedTriangle);
+            for (uint32_t range = 0; range < document.instanceRanges.size(); ++range) {
+                const ModelInstanceRange& candidate = document.instanceRanges[range];
+                if (triangle >= candidate.firstTriangle && triangle - candidate.firstTriangle < candidate.triangleCount && modelViewport_.SetSelectedObjectRange(range)) {
+                    InvalidateRect(window_, nullptr, FALSE); return true;
+                }
+            }
+        }
+        modelViewport_.ClearSelectedObjectRange(); InvalidateRect(window_, nullptr, FALSE); return false;
+    }
     bool SelectModelFace(POINT point) { if(!ModelActive()||!modelViewport_.Document()||modelViewport_.Document()->geometries.empty())return false;const D3D11_VIEWPORT viewport=modelViewport_.LogicalViewport();const float localX=float(point.x)-viewport.TopLeftX,localY=float(point.y)-viewport.TopLeftY;if(viewport.Width<=0||viewport.Height<=0||localX<0||localX>=viewport.Width||localY<0||localY>=viewport.Height){ClearModelFaceSelection();TraceModelPick(point,viewport,localX,localY,0,0,{}, {},-1,-1);return false;}const auto state=modelViewport_.Camera().NavLibState();const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};const auto normalize=[&](Float3 v){const float l=std::sqrt(v.x*v.x+v.y*v.y+v.z*v.z);return l>1e-6f?Float3{v.x/l,v.y/l,v.z/l}:Float3{0,0,1};};const Float3 forward=normalize(state.forward),right=normalize(cross(forward,state.up)),up=normalize(cross(right,forward));const float ndcX=2.f*localX/viewport.Width-1.f,ndcY=1.f-2.f*localY/viewport.Height;Float3 rayOrigin=state.position,ray{};if(modelViewport_.Camera().ProjectionMode()==ModelProjectionMode::Orthographic){const float halfHeight=modelViewport_.Camera().ViewHalfHeight();rayOrigin={state.position.x+right.x*ndcX*halfHeight*modelViewport_.Camera().AspectRatio()+up.x*ndcY*halfHeight,state.position.y+right.y*ndcX*halfHeight*modelViewport_.Camera().AspectRatio()+up.y*ndcY*halfHeight,state.position.z+right.z*ndcX*halfHeight*modelViewport_.Camera().AspectRatio()+up.z*ndcY*halfHeight};ray=forward;}else{const float t=std::tan(modelViewport_.Camera().FieldOfView()*.5f),nx=ndcX*modelViewport_.Camera().AspectRatio()*t,ny=ndcY*t;ray=normalize({forward.x+right.x*nx+up.x*ny,forward.y+right.y*nx+up.y*ny,forward.z+right.z*nx+up.z*ny});}const auto& document=*modelViewport_.Document();const auto& mesh=document.geometries.front();float best=FLT_MAX;int selectedPlane=-1;ptrdiff_t selectedTriangle=-1;for(size_t i=0;i+2<mesh.indices.size();i+=3){const Float3 a=mesh.positions[mesh.indices[i]],b=mesh.positions[mesh.indices[i+1]],c=mesh.positions[mesh.indices[i+2]],e1{b.x-a.x,b.y-a.y,b.z-a.z},e2{c.x-a.x,c.y-a.y,c.z-a.z},p=cross(ray,e2);const float det=dot(e1,p);if(std::fabs(det)<1e-7f)continue;const float inv=1.f/det;const Float3 s{rayOrigin.x-a.x,rayOrigin.y-a.y,rayOrigin.z-a.z};const float u=dot(s,p)*inv;if(u<0||u>1)continue;const Float3 q=cross(s,e1);const float v=dot(ray,q)*inv;if(v<0||u+v>1)continue;const float d=dot(e2,q)*inv;if(d>0&&d<best){best=d;const size_t triangle=i/3;if(triangle<document.triangleSnapPlanes.size()){selectedTriangle=static_cast<ptrdiff_t>(triangle);selectedPlane=static_cast<int>(document.triangleSnapPlanes[triangle]);}}}TraceModelPick(point,viewport,localX,localY,ndcX,ndcY,rayOrigin,ray,selectedTriangle,selectedPlane);if(selectedPlane<0||!modelViewport_.SetSelectedSnapPlane(static_cast<uint32_t>(selectedPlane))){ClearModelFaceSelection();return false;}selectedFaceNormal_=document.snapPlanes[static_cast<size_t>(selectedPlane)].normal;selectedFaceHit_={rayOrigin.x+ray.x*best,rayOrigin.y+ray.y*best,rayOrigin.z+ray.z*best};selectedFacePlane_=selectedPlane;modelFaceSelected_=true;InvalidateRect(window_,nullptr,FALSE);return true; }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
-        if (!HasImage() && !(ModelActive() && modelFaceSelected_)) return;
+        if (!HasImage() && !(ModelActive() && (modelFaceSelected_ || modelViewport_.HasSelectedObjectRange()))) return;
         RefreshHeifShellRotationCapability();
         DismissDropdown();
         DismissOverlay();
@@ -884,7 +935,7 @@ public:
         if (!contextMenuOpen_) return ContextAction::None;
         const RECT bounds = GetContextMenuBounds();
         if (!PtInRect(&bounds, point)) return ContextAction::None;
-        if (ModelActive()) return point.y >= bounds.top && point.y < bounds.bottom ? ContextAction::SnapViewToFace : ContextAction::None; const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
+        if (ModelActive()) { const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96); const int top = bounds.top + MulDiv(kContextMenuPaddingDip, GetDpiForWindow(window_), 96); if (point.y >= top && point.y < top + rowHeight) return ContextAction::SnapViewToFace; return point.y >= top + rowHeight && point.y < top + rowHeight * 2 ? ContextAction::FitSelection : ContextAction::None; } const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
         const int separatorGap = MulDiv(9, GetDpiForWindow(window_), 96);
         int top = bounds.top + MulDiv(kContextMenuPaddingDip, GetDpiForWindow(window_), 96);
         const auto hit = [&](ContextAction action) {
@@ -907,6 +958,7 @@ public:
     }
     bool ContextActionEnabled(ContextAction action) const {
         if (action == ContextAction::SnapViewToFace) return ModelActive() && modelFaceSelected_;
+        if (action == ContextAction::FitSelection) return ModelActive() && modelViewport_.HasSelectedObjectRange();
         if (tutorialStep_ == TutorialStep::ContextMenu && !HasImage()) return false;
         if (action == ContextAction::Copy || action == ContextAction::Print) return HasImage() && DisplayedImageMatchesTarget();
         if (action == ContextAction::Fullscreen || action == ContextAction::OpenWith ||
@@ -932,6 +984,7 @@ public:
     void ClearContextPressed() { SetContextPressed(ContextAction::None); }
     void InvokeContextAction(ContextAction action) {
         if(action==ContextAction::SnapViewToFace){const Float3 normal=selectedFaceNormal_,hitPoint=selectedFaceHit_;const int plane=selectedFacePlane_;const OrbitCamera::State state=modelViewport_.Camera().NavLibState();const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const auto normalize=[&](Float3 v){const float length=std::sqrt(dot(v,v));return length>1e-6f?Float3{v.x/length,v.y/length,v.z/length}:Float3{0,1,0};};const Float3 forward=dot(normal,state.forward)<0?Float3{-normal.x,-normal.y,-normal.z}:normal;const auto projectUp=[&](Float3 axis){return Float3{axis.x-forward.x*dot(axis,forward),axis.y-forward.y*dot(axis,forward),axis.z-forward.z*dot(axis,forward)};};Float3 chosenAxis=ModelUpVector(),up=projectUp(chosenAxis);if(dot(up,up)<1e-8f){const Float3 fallbacks[]={{0,0,1},{0,1,0},{1,0,0}};for(const Float3 axis:fallbacks){up=projectUp(axis);if(dot(up,up)>=1e-8f){chosenAxis=axis;break;}}}up=normalize(up);TraceSnapView(plane,normal,hitPoint,state,forward,up,chosenAxis);DismissContextMenu();BeginAnimatedModelSnapView(forward,up,hitPoint);return;}
+        if (action == ContextAction::FitSelection) { DismissContextMenu(); CancelAnimatedModelHome(); if (modelViewport_.FitSelected(ModelUpVector())) InvalidateRect(window_, nullptr, FALSE); return; }
         if (action == ContextAction::OpenWith) { ToggleOpenWithSubmenu(); return; }
         DismissContextMenu();
         if (action == ContextAction::Fullscreen) ToggleFullscreen();
@@ -2468,7 +2521,7 @@ private:
         const LONG rowHeight = MulDiv(38, dpi, 96);
         const LONG separatorGap = MulDiv(9, dpi, 96);
         const LONG padding = MulDiv(kContextMenuPaddingDip, dpi, 96);
-        const LONG height = ModelActive() ? padding * 2 + rowHeight : padding * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
+        const LONG height = ModelActive() ? padding * 2 + rowHeight * 2 : padding * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
         if (tutorialContextMenu_) {
             const LONG canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
             const LONG rightInset = MulDiv(24, dpi, 96);
@@ -4811,7 +4864,22 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(hover, &hoverBrush)) || FAILED(renderTarget_->CreateSolidColorBrush(pressed, &pressedBrush))) return;
         const D2D1_RECT_F menu = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), surfaceBrush.Get());
-        if (ModelActive()) { const UINT dpi = GetDpiForWindow(window_); const int rowHeight = MulDiv(38, dpi, 96), labelLeft = bounds.left + MulDiv(18, dpi, 96), top = bounds.top + MulDiv(kContextMenuPaddingDip,dpi,96); if (contextPressed_ == ContextAction::SnapViewToFace) renderTarget_->FillRectangle(D2D1::RectF((float)bounds.left+1,(float)top,(float)bounds.right-1,(float)(top+rowHeight)),pressedBrush.Get()); else if(contextHovered_ == ContextAction::SnapViewToFace)renderTarget_->FillRectangle(D2D1::RectF((float)bounds.left+1,(float)top,(float)bounds.right-1,(float)(top+rowHeight)),hoverBrush.Get()); DrawOverlayText(L"Snap View to Face",(float)labelLeft,(float)top,(float)(bounds.right-labelLeft-MulDiv(12,dpi,96)),(float)rowHeight,13,DWRITE_FONT_WEIGHT_NORMAL,textBrush.Get(),true); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu,7,7),borderBrush.Get(),1); return; }
+        if (ModelActive()) {
+            const UINT dpi = GetDpiForWindow(window_); const int rowHeight = MulDiv(38, dpi, 96), labelLeft = bounds.left + MulDiv(18, dpi, 96);
+            int top = bounds.top + MulDiv(kContextMenuPaddingDip, dpi, 96);
+            const auto drawModelItem = [&](ContextAction action, const wchar_t* label) {
+                const bool enabled = ContextActionEnabled(action);
+                const D2D1_RECT_F row = D2D1::RectF(float(bounds.left + 1), float(top), float(bounds.right - 1), float(top + rowHeight));
+                if (enabled && contextPressed_ == action) renderTarget_->FillRectangle(row, pressedBrush.Get());
+                else if (enabled && contextHovered_ == action) renderTarget_->FillRectangle(row, hoverBrush.Get());
+                DrawOverlayText(label, float(labelLeft), float(top), float(bounds.right - labelLeft - MulDiv(12, dpi, 96)), float(rowHeight), 13,
+                    DWRITE_FONT_WEIGHT_NORMAL, enabled ? textBrush.Get() : disabledBrush.Get(), true);
+                top += rowHeight;
+            };
+            drawModelItem(ContextAction::SnapViewToFace, L"Snap View to Face");
+            drawModelItem(ContextAction::FitSelection, L"Fit Selection");
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu,7,7),borderBrush.Get(),1); return;
+        }
         const UINT dpi = GetDpiForWindow(window_); const int rowHeight = MulDiv(38, dpi, 96); const int gap = MulDiv(9, dpi, 96);
         int top = bounds.top + MulDiv(kContextMenuPaddingDip, dpi, 96);
         const int iconLeft = bounds.left + MulDiv(14, dpi, 96), iconWidth = MulDiv(18, dpi, 96), labelLeft = iconLeft + MulDiv(28, dpi, 96);
@@ -5368,6 +5436,8 @@ private:
     Float3 selectedFaceHit_{};
     int selectedFacePlane_ = -1;
     bool modelFaceSelected_ = false;
+    POINT modelClickStart_{};
+    bool modelClickCandidate_ = false;
     std::wstring heifShellRotationCapabilityPath_;
     bool heifShellRotateLeftAvailable_ = false;
     bool heifShellRotateRightAvailable_ = false;
@@ -5717,6 +5787,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->SetHamburgerPressed(false);
             if (GetCapture() == window) ReleaseCapture();
             if (releasedOnHamburger) viewer->ToggleDropdown();
+            return 0;
+        }
+        if (viewer->ModelActive()) {
+            viewer->FinishModelSelectionClick({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            if (GetCapture() == window) ReleaseCapture();
             return 0;
         }
         const CaptionButton pressed = viewer->PressedCaptionButton();

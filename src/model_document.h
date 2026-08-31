@@ -55,6 +55,7 @@ struct ModelInstanceRange {
     uint32_t vertexCount = 0;
     uint32_t firstTriangle = 0;
     uint32_t triangleCount = 0;
+    ModelBounds bounds{};
 };
 
 struct ModelDocument {

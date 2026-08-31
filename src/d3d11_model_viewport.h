@@ -47,6 +47,10 @@ public:
     void Dolly(float steps);
     bool SetSelectedSnapPlane(uint32_t plane);
     void ClearSelectedSnapPlane();
+    bool SetSelectedObjectRange(uint32_t range);
+    void ClearSelectedObjectRange();
+    bool HasSelectedObjectRange() const { return selectedObjectRange_ >= 0; }
+    bool FitSelected(Float3 upAxis);
     OrbitCamera& Camera() { return camera_; }
     const OrbitCamera& Camera() const { return camera_; }
     const ModelDocument* Document() const { return document_.get(); }
@@ -63,6 +67,7 @@ private:
     void ResizeDepth(GraphicsHost& host, UINT width, UINT height);
     void NotifyCameraChanged();
     bool UploadSelectedSnapPlane();
+    bool UploadSelectedObjectRange();
     bool UploadBuildPlate();
 
     std::shared_ptr<ModelDocument> document_;
@@ -78,6 +83,7 @@ private:
     D3D11_VIEWPORT logicalViewport_{};
     D3D11_VIEWPORT renderViewport_{};
     int selectedSnapPlane_ = -1;
+    int selectedObjectRange_ = -1;
     ModelVisualStyle visualStyle_ = ModelVisualStyle::Shaded;
     bool buildPlateVisible_ = false;
     bool buildPlateDirty_ = true;
@@ -85,6 +91,7 @@ private:
     ModelAntiAliasing antiAliasing_ = ModelAntiAliasing::Msaa4x;
     ModelAntiAliasing effectiveAntiAliasing_ = ModelAntiAliasing::Off;
     int uploadedSnapPlane_ = -2;
+    int uploadedObjectRange_ = -2;
     struct Resources;
     std::unique_ptr<Resources> resources_;
 };

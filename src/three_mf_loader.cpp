@@ -123,7 +123,7 @@ bool FlattenObject(const ParsedModel& source, uint32_t objectId, const Matrix4& 
 #if defined(_DEBUG)
     for(uint32_t triangle=firstTriangle;triangle<uint32_t(mesh.indices.size()/3);++triangle)for(uint32_t corner=0;corner<3;++corner){const uint32_t index=mesh.indices[size_t(triangle)*3+corner];if(index<firstVertex||index>=firstVertex+ownVertices){error=L"The 3MF flattening produced an invalid instance index.";stack.erase(objectId);return false;}}
 #endif
-    if(ownTriangles)ranges.push_back({rootObjectId,buildItemIndex,firstVertex,ownVertices,firstTriangle,ownTriangles});
+    if(ownTriangles){ModelBounds ownBounds{mesh.positions[firstVertex],mesh.positions[firstVertex]};for(uint32_t i=1;i<ownVertices;++i){const Float3 point=mesh.positions[firstVertex+i];ownBounds.minimum.x=std::min(ownBounds.minimum.x,point.x);ownBounds.minimum.y=std::min(ownBounds.minimum.y,point.y);ownBounds.minimum.z=std::min(ownBounds.minimum.z,point.z);ownBounds.maximum.x=std::max(ownBounds.maximum.x,point.x);ownBounds.maximum.y=std::max(ownBounds.maximum.y,point.y);ownBounds.maximum.z=std::max(ownBounds.maximum.z,point.z);}ranges.push_back({rootObjectId,buildItemIndex,firstVertex,ownVertices,firstTriangle,ownTriangles,ownBounds});}
     for(const SourceComponent& component:object.components)if(!FlattenObject(source,component.objectId,Multiply(component.transform,transform),buildItemIndex,rootObjectId,depth+1,stack,mesh,bounds,hasBounds,ranges,error)){stack.erase(objectId);return false;}
     stack.erase(objectId); return true;
 }

@@ -111,7 +111,7 @@ const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.
 
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
-enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace, FitSelection };
+enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsSpaceMouse, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
@@ -907,15 +907,6 @@ public:
         if (range >= 0 && modelViewport_.SetSelectedObjectRange(static_cast<uint32_t>(range))) { InvalidateRect(window_, nullptr, FALSE); return true; }
         modelViewport_.ClearSelectedObjectRange(); InvalidateRect(window_, nullptr, FALSE); return false;
     }
-    bool SelectModelFaceContext(POINT point) {
-        contextFaceRange_ = -1;
-        if (!SelectModelFace(point)) return false;
-        contextFaceRange_ = ModelObjectRangeAt(point);
-        return true;
-    }
-    bool ContextFaceBelongsToSelectedObject() const {
-        return contextFaceRange_ >= 0 && modelViewport_.IsSelectedObjectRange(static_cast<uint32_t>(contextFaceRange_));
-    }
     void SelectAndFitModelObject(POINT point) {
         if (!SelectModelObject(point)) return;
         CancelAnimatedModelHome();
@@ -951,7 +942,7 @@ public:
         if (!contextMenuOpen_) return ContextAction::None;
         const RECT bounds = GetContextMenuBounds();
         if (!PtInRect(&bounds, point)) return ContextAction::None;
-        if (ModelActive()) { const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96); const int gap = MulDiv(9, GetDpiForWindow(window_), 96); const int top = bounds.top + MulDiv(kContextMenuPaddingDip, GetDpiForWindow(window_), 96); if (!ContextFaceBelongsToSelectedObject()) return point.y >= top && point.y < top + rowHeight ? ContextAction::SnapViewToFace : ContextAction::None; if (point.y >= top && point.y < top + rowHeight) return ContextAction::FitSelection; return point.y >= top + rowHeight + gap && point.y < top + rowHeight * 2 + gap ? ContextAction::SnapViewToFace : ContextAction::None; } const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
+        if (ModelActive()) return point.y >= bounds.top && point.y < bounds.bottom ? ContextAction::SnapViewToFace : ContextAction::None; const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
         const int separatorGap = MulDiv(9, GetDpiForWindow(window_), 96);
         int top = bounds.top + MulDiv(kContextMenuPaddingDip, GetDpiForWindow(window_), 96);
         const auto hit = [&](ContextAction action) {
@@ -974,7 +965,6 @@ public:
     }
     bool ContextActionEnabled(ContextAction action) const {
         if (action == ContextAction::SnapViewToFace) return ModelActive() && modelFaceSelected_;
-        if (action == ContextAction::FitSelection) return ModelActive() && ContextFaceBelongsToSelectedObject();
         if (tutorialStep_ == TutorialStep::ContextMenu && !HasImage()) return false;
         if (action == ContextAction::Copy || action == ContextAction::Print) return HasImage() && DisplayedImageMatchesTarget();
         if (action == ContextAction::Fullscreen || action == ContextAction::OpenWith ||
@@ -1000,7 +990,6 @@ public:
     void ClearContextPressed() { SetContextPressed(ContextAction::None); }
     void InvokeContextAction(ContextAction action) {
         if(action==ContextAction::SnapViewToFace){const Float3 normal=selectedFaceNormal_,hitPoint=selectedFaceHit_;const int plane=selectedFacePlane_;const OrbitCamera::State state=modelViewport_.Camera().NavLibState();const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const auto normalize=[&](Float3 v){const float length=std::sqrt(dot(v,v));return length>1e-6f?Float3{v.x/length,v.y/length,v.z/length}:Float3{0,1,0};};const Float3 forward=dot(normal,state.forward)<0?Float3{-normal.x,-normal.y,-normal.z}:normal;const auto projectUp=[&](Float3 axis){return Float3{axis.x-forward.x*dot(axis,forward),axis.y-forward.y*dot(axis,forward),axis.z-forward.z*dot(axis,forward)};};Float3 chosenAxis=ModelUpVector(),up=projectUp(chosenAxis);if(dot(up,up)<1e-8f){const Float3 fallbacks[]={{0,0,1},{0,1,0},{1,0,0}};for(const Float3 axis:fallbacks){up=projectUp(axis);if(dot(up,up)>=1e-8f){chosenAxis=axis;break;}}}up=normalize(up);TraceSnapView(plane,normal,hitPoint,state,forward,up,chosenAxis);DismissContextMenu();BeginAnimatedModelSnapView(forward,up,hitPoint);return;}
-        if (action == ContextAction::FitSelection) { DismissContextMenu(); CancelAnimatedModelHome(); if (modelViewport_.FitSelected(ModelUpVector())) InvalidateRect(window_, nullptr, FALSE); return; }
         if (action == ContextAction::OpenWith) { ToggleOpenWithSubmenu(); return; }
         DismissContextMenu();
         if (action == ContextAction::Fullscreen) ToggleFullscreen();
@@ -2340,7 +2329,7 @@ private:
         const LONG top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         return { 0, top, client.right, std::max(top + 1L, client.bottom) };
     }
-    void ClearModelFaceSelection() { modelFaceSelected_=false; contextFaceRange_=-1; selectedFaceNormal_={}; selectedFaceHit_={}; selectedFacePlane_=-1; modelViewport_.ClearSelectedSnapPlane(); }
+    void ClearModelFaceSelection() { modelFaceSelected_=false; selectedFaceNormal_={}; selectedFaceHit_={}; selectedFacePlane_=-1; modelViewport_.ClearSelectedSnapPlane(); }
     void TraceSnapView(int plane, Float3 normal, Float3 hitPoint, const OrbitCamera::State& current, Float3 forward, Float3 up, Float3 chosenAxis) const {
 #if defined(_DEBUG)
         const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const Float3 right{forward.y*up.z-forward.z*up.y,forward.z*up.x-forward.x*up.z,forward.x*up.y-forward.y*up.x};wchar_t message[640]{};swprintf_s(message,L"Viewtrious Snap request: plane=%d normal=(%.5f,%.5f,%.5f) hit=(%.5f,%.5f,%.5f) currentForward=(%.5f,%.5f,%.5f) currentUp=(%.5f,%.5f,%.5f) targetForward=(%.5f,%.5f,%.5f) targetUp=(%.5f,%.5f,%.5f) targetRight=(%.5f,%.5f,%.5f) axis=(%.0f,%.0f,%.0f) distance=%.5f normalDot=%.6f basisDots=(%.6f,%.6f,%.6f)\\n",plane,normal.x,normal.y,normal.z,hitPoint.x,hitPoint.y,hitPoint.z,current.forward.x,current.forward.y,current.forward.z,current.up.x,current.up.y,current.up.z,forward.x,forward.y,forward.z,up.x,up.y,up.z,right.x,right.y,right.z,chosenAxis.x,chosenAxis.y,chosenAxis.z,modelViewport_.Camera().Distance(),dot(forward,normal),dot(forward,right),dot(forward,up),dot(right,up));OutputDebugStringW(message);
@@ -2537,7 +2526,7 @@ private:
         const LONG rowHeight = MulDiv(38, dpi, 96);
         const LONG separatorGap = MulDiv(9, dpi, 96);
         const LONG padding = MulDiv(kContextMenuPaddingDip, dpi, 96);
-        const LONG height = ModelActive() ? padding * 2 + rowHeight * (ContextFaceBelongsToSelectedObject() ? 2 : 1) + (ContextFaceBelongsToSelectedObject() ? separatorGap : 0) : padding * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
+        const LONG height = ModelActive() ? padding * 2 + rowHeight : padding * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
         if (tutorialContextMenu_) {
             const LONG canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
             const LONG rightInset = MulDiv(24, dpi, 96);
@@ -4892,13 +4881,6 @@ private:
                     DWRITE_FONT_WEIGHT_NORMAL, enabled ? textBrush.Get() : disabledBrush.Get(), true);
                 top += rowHeight;
             };
-            if (ContextFaceBelongsToSelectedObject()) {
-                drawModelItem(ContextAction::FitSelection, L"Fit Selection");
-                const int gap = MulDiv(9, dpi, 96);
-                const float y = float(top + gap / 2);
-                renderTarget_->DrawLine(D2D1::Point2F(float(bounds.left + MulDiv(12, dpi, 96)), y), D2D1::Point2F(float(bounds.right - MulDiv(12, dpi, 96)), y), borderBrush.Get());
-                top += gap;
-            }
             drawModelItem(ContextAction::SnapViewToFace, L"Face to View");
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu,7,7),borderBrush.Get(),1); return;
         }
@@ -5457,7 +5439,6 @@ private:
     Float3 selectedFaceNormal_{};
     Float3 selectedFaceHit_{};
     int selectedFacePlane_ = -1;
-    int contextFaceRange_ = -1;
     bool modelFaceSelected_ = false;
     POINT modelClickStart_{};
     bool modelClickCandidate_ = false;
@@ -5840,7 +5821,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelCanvasNavigationClick(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        if (!viewer->TutorialActive()) { if (viewer->ModelActive()) viewer->SelectModelFaceContext(point); viewer->OpenContextMenu(point); }
+        if (!viewer->TutorialActive()) { if (viewer->ModelActive()) viewer->SelectModelFace(point); viewer->OpenContextMenu(point); }
         return 0;
     }
     case WM_TIMER:

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.6.5.1 LANGUAGES CXX)
+project(Viewtrious VERSION 0.6.6.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -25,6 +25,8 @@ add_executable(Viewtrious WIN32
     src/lanczos_resampler.cpp
     src/model_camera.cpp
     src/stl_loader.cpp
+    src/three_mf_loader.cpp
+    src/three_mf_zip.cpp
     src/d3d11_model_viewport.cpp
     src/graphics_host.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc"
@@ -40,7 +42,8 @@ add_executable(ViewtriousLanczosBenchmark
 target_compile_features(Viewtrious PRIVATE cxx_std_20)
 target_compile_definitions(Viewtrious PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX VIEWTRIOUS_VERSION=L\"${PROJECT_VERSION}\")
 target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_3DXWARE_INCLUDE_DIR}")
-target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 d3d11 dxgi d3dcompiler "${VIEWTRIOUS_3DXWARE_LIBRARY}")
+target_include_directories(Viewtrious PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz")
+target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 d3d11 dxgi d3dcompiler xmllite ole32 "${VIEWTRIOUS_3DXWARE_LIBRARY}")
 target_compile_features(ViewtriousLanczosBenchmark PRIVATE cxx_std_20)
 target_compile_definitions(ViewtriousLanczosBenchmark PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(ViewtriousLanczosBenchmark PRIVATE windowscodecs ole32)
@@ -51,6 +54,9 @@ if(MSVC)
     target_compile_options(ViewtriousLanczosBenchmark PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(ViewtriousLanczosBenchmark PRIVATE $<$<CONFIG:Release>:/O2>)
 endif()
+
+set_source_files_properties(third_party/miniz/miniz_tinfl.c PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "/wd4334")
+target_sources(Viewtrious PRIVATE third_party/miniz/miniz_tinfl.c)
 
 
 

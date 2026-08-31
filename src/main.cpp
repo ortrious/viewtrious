@@ -18,6 +18,7 @@
 #include "lanczos_resampler.h"
 #include "d3d11_model_viewport.h"
 #include "stl_loader.h"
+#include "three_mf_loader.h"
 
 #include <algorithm>
 #include <atomic>
@@ -134,7 +135,7 @@ struct FullDecodeResult : PixelBuffer {
     bool deliveredSynchronously = false;
 };
 struct DecodeWorkerFinished { std::thread::id workerId{}; };
-struct ModelLoadResult { std::wstring path; uint64_t generation = 0; StlLoadResult result; };
+struct ModelLoadResult { std::wstring path; uint64_t generation = 0; std::shared_ptr<ModelDocument> document; std::wstring error; bool IsSuccess() const { return document != nullptr; } };
 struct LanczosRequest {
     std::shared_ptr<std::vector<BYTE>> sourcePixels;
     UINT sourceWidth = 0, sourceHeight = 0, targetWidth = 0, targetHeight = 0;
@@ -260,7 +261,7 @@ bool IsSupportedExtension(const fs::path& path) {
         extension == L".tiff" || extension == L".ico" || extension == L".webp" ||
         extension == L".heic" || extension == L".heif" || extension == L".avif" ||
         extension == L".dng" || extension == L".cr2" || extension == L".cr3" ||
-        extension == L".nef" || extension == L".arw" || extension == L".raf";
+        extension == L".nef" || extension == L".arw" || extension == L".raf" || extension == L".stl" || extension == L".3mf";
 }
 
 
@@ -272,6 +273,8 @@ std::wstring LowercaseExtension(const std::wstring& path) {
 }
 
 bool IsStlPath(const std::wstring& path) { return LowercaseExtension(path) == L".stl"; }
+bool IsThreeMfPath(const std::wstring& path) { return LowercaseExtension(path) == L".3mf"; }
+bool IsModelPath(const std::wstring& path) { return IsStlPath(path) || IsThreeMfPath(path); }
 
 bool IsJpegPath(const std::wstring& path) {
     const std::wstring extension = LowercaseExtension(path);
@@ -597,7 +600,7 @@ public:
     }
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
-        if (IsStlPath(path)) { BeginModelLoad(path); return S_OK; }
+        if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
         DeactivateModel();
         contentKind_ = ContentKind::Image2D;
         return LoadImage(path, resetNavigation);
@@ -644,8 +647,8 @@ public:
         if (!result || shuttingDown_ || result->generation != modelLoadGeneration_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_))) return;
         if (modelLoadThread_.joinable()) modelLoadThread_.join();
         modelLoading_ = false;
-        if (!result->result.IsSuccess()) { contentKind_ = ContentKind::None; error_ = result->result.error; InvalidateRect(window_, nullptr, FALSE); return; }
-        modelDocument_ = result->result.document;
+        if (!result->IsSuccess()) { contentKind_ = ContentKind::None; error_ = result->error; InvalidateRect(window_, nullptr, FALSE); return; }
+        modelDocument_ = result->document;
         std::wstring viewportError;
         EnsureRenderTarget();
         if (!graphicsHost_.Ready() || (!modelViewport_.Active() && !modelViewport_.Create(graphicsHost_, modelDocument_, viewportError))) {
@@ -794,7 +797,7 @@ public:
         ComPtr<IFileOpenDialog> dialog;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
         static const COMDLG_FILTERSPEC filters[] = {
-            { L"Supported files", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.stl" },
+            { L"Supported files", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.stl;*.3mf" },
             { L"All files", L"*.*" },
         };
         dialog->SetFileTypes(ARRAYSIZE(filters), filters);
@@ -2263,7 +2266,7 @@ private:
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
         navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; contentKind_ = ContentKind::Model3D;
         if (modelLoadThread_.joinable()) modelLoadThread_.join();
-        modelLoadThread_ = std::thread([this, path, generation] { auto* result = new ModelLoadResult{ path, generation, LoadStlDocument(path) }; if (shuttingDown_ || !PostMessageW(window_, kModelLoadCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result; });
+        modelLoadThread_ = std::thread([this, path, generation] { if (IsThreeMfPath(path)) { ThreeMfLoadResult loaded=LoadThreeMfDocument(path); auto* result=new ModelLoadResult{path,generation,std::move(loaded.document),std::move(loaded.error)}; if(shuttingDown_||!PostMessageW(window_,kModelLoadCompleteMessage,0,reinterpret_cast<LPARAM>(result)))delete result; } else { StlLoadResult loaded=LoadStlDocument(path); auto* result=new ModelLoadResult{path,generation,std::move(loaded.document),std::move(loaded.error)}; if(shuttingDown_||!PostMessageW(window_,kModelLoadCompleteMessage,0,reinterpret_cast<LPARAM>(result)))delete result; } });
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DeactivateModel() {
@@ -2331,6 +2334,7 @@ private:
             { L".heif", L"Viewtrious.heif", L"Viewtrious HEIF Image" },
             { L".dng", L"Viewtrious.dng", L"Viewtrious DNG Image" },
             { L".stl", L"Viewtrious.stl", L"Viewtrious STL Model" },
+            { L".3mf", L"Viewtrious.3mf", L"Viewtrious 3MF Model" },
         };
         for (const Association& association : associations) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;

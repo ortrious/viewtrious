@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 struct Float3 { float x = 0, y = 0, z = 0; };
@@ -39,11 +40,24 @@ struct SnapPlane {
     std::vector<uint32_t> triangles;
 };
 
+enum class ModelSourceFormat : uint32_t { Stl, ThreeMf };
+
+struct ModelInstanceRange {
+    uint32_t sourceObjectId = 0;
+    uint32_t buildItemIndex = 0;
+    uint32_t firstTriangle = 0;
+    uint32_t triangleCount = 0;
+};
+
 struct ModelDocument {
     std::vector<MeshGeometry> geometries;
     std::vector<MeshInstance> instances;
     std::vector<SnapPlane> snapPlanes;
     std::vector<uint32_t> triangleSnapPlanes;
     ModelBounds bounds{};
+    ModelSourceFormat sourceFormat = ModelSourceFormat::Stl;
+    std::wstring sourceUnit = L"unspecified";
+    double unitScaleMillimeters = 1.0;
+    std::vector<ModelInstanceRange> instanceRanges;
     std::optional<double> metersPerUnit; // STL does not define units.
 };

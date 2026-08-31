@@ -77,7 +77,7 @@ void TraceAnimationState(const wchar_t* label, const OrbitCamera::AnimationState
 #endif
 }
 
-void OrbitCamera::Fit(const ModelBounds& bounds, float aspectRatio) {
+void OrbitCamera::Fit(const ModelBounds& bounds, float aspectRatio, Float3 upAxis) {
     navLibStateActive_ = false;
     pivot_ = Mul(Add(bounds.minimum, bounds.maximum), 0.5f);
     framingRight_ = framingUp_ = 0.0f;
@@ -86,9 +86,13 @@ void OrbitCamera::Fit(const ModelBounds& bounds, float aspectRatio) {
     aspect_ = std::max(0.01f, aspectRatio);
     distance_ = std::max(radius_ * 2.8f, radius_ / std::tan(fieldOfView_ * 0.5f));
     orthographicHalfHeight_ = std::max(radius_ * 1.2f, 1e-5f);
+    upAxis = Normalize(upAxis);
+    const Float3 reference = std::fabs(upAxis.y) < .9f ? Float3{ 0, 1, 0 } : Float3{ 0, 0, 1 };
+    const Float3 right = Normalize(Cross(reference, upAxis));
+    const Float3 forwardBasis = Normalize(Cross(upAxis, right));
     const float yaw = 0.62f, pitch = -0.42f, cosPitch = std::cos(pitch);
-    const Float3 eye = Add(pivot_, { distance_ * std::sin(yaw) * cosPitch, distance_ * std::sin(pitch), distance_ * std::cos(yaw) * cosPitch });
-    SetLocalOrientation(Normalize(Sub(pivot_, eye)), { 0.0f, 1.0f, 0.0f });
+    const Float3 eye = Add(pivot_, Add(Mul(right, distance_ * std::sin(yaw) * cosPitch), Add(Mul(upAxis, distance_ * std::sin(pitch)), Mul(forwardBasis, distance_ * std::cos(yaw) * cosPitch))));
+    SetLocalOrientation(Normalize(Sub(pivot_, eye)), upAxis);
     Update();
 }
 void OrbitCamera::SetAspectRatio(float aspectRatio) { aspect_ = std::max(0.01f, aspectRatio); Update(); }

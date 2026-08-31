@@ -20,7 +20,7 @@ public:
         float orthographicHalfHeight;
         ModelProjectionMode projectionMode;
     };
-    void Fit(const ModelBounds& bounds, float aspectRatio);
+    void Fit(const ModelBounds& bounds, float aspectRatio, Float3 upAxis);
     void SetAspectRatio(float aspectRatio);
     void Orbit(float deltaX, float deltaY);
     void Pan(float deltaX, float deltaY);

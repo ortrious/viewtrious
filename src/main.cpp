@@ -80,7 +80,9 @@ constexpr float kModelSettingsInputHeadingTopDips = 76.0f;
 constexpr float kModelSettingsControlOffsetDips = 30.0f;
 constexpr float kModelSettingsToggleHeightDips = 25.0f;
 constexpr float kModelSettingsChoiceHeightDips = 28.0f;
-constexpr float kModelSettingsProjectionHeadingTopDips = kModelSettingsInputHeadingTopDips + kModelSettingsControlOffsetDips + kModelSettingsToggleHeightDips + kSettingsMajorSectionGapDips;
+constexpr float kModelSettingsOrientationHeadingTopDips = kModelSettingsInputHeadingTopDips + kModelSettingsControlOffsetDips + kModelSettingsToggleHeightDips + kSettingsMajorSectionGapDips;
+constexpr float kModelSettingsOrientationControlTopDips = kModelSettingsOrientationHeadingTopDips + kModelSettingsControlOffsetDips;
+constexpr float kModelSettingsProjectionHeadingTopDips = kModelSettingsOrientationControlTopDips + kModelSettingsChoiceHeightDips + kSettingsMajorSectionGapDips;
 constexpr float kModelSettingsProjectionControlTopDips = kModelSettingsProjectionHeadingTopDips + kModelSettingsControlOffsetDips;
 constexpr float kModelSettingsRenderHeadingTopDips = kModelSettingsProjectionControlTopDips + kModelSettingsChoiceHeightDips + kSettingsMajorSectionGapDips;
 constexpr float kModelSettingsRenderingApiRowTopDips = kModelSettingsRenderHeadingTopDips + kModelSettingsControlOffsetDips;
@@ -106,7 +108,7 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsSpaceMouse, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    SettingsSpaceMouse, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
@@ -584,6 +586,9 @@ public:
         DWORD visualStyle = static_cast<DWORD>(ModelVisualStyle::Shaded);
         ReadSetting(L"ModelVisualStyle", visualStyle);
         modelVisualStyle_ = visualStyle <= static_cast<DWORD>(ModelVisualStyle::Wireframe) ? static_cast<ModelVisualStyle>(visualStyle) : ModelVisualStyle::Shaded;
+        DWORD upAxis = static_cast<DWORD>(ModelUpAxis::ZUp);
+        ReadSetting(L"ModelUpAxis", upAxis);
+        modelUpAxis_ = upAxis <= static_cast<DWORD>(ModelUpAxis::ZUp) ? static_cast<ModelUpAxis>(upAxis) : ModelUpAxis::ZUp;
         DWORD renderingApi = static_cast<DWORD>(ModelRenderingApi::Direct3D11); ReadSetting(L"ModelRenderingApi", renderingApi); modelRenderingApi_ = ModelRenderingApi::Direct3D11;
         DWORD antiAliasing = static_cast<DWORD>(ModelAntiAliasing::Msaa4x); ReadSetting(L"ModelAntiAliasing", antiAliasing); modelAntiAliasing_ = antiAliasing <= static_cast<DWORD>(ModelAntiAliasing::Ssaa2x) ? static_cast<ModelAntiAliasing>(antiAliasing) : ModelAntiAliasing::Msaa4x;
         DWORD imageScaling = static_cast<DWORD>(ImageScaling::Quality);
@@ -651,7 +656,7 @@ public:
         modelDocument_ = result->document;
         std::wstring viewportError;
         EnsureRenderTarget();
-        if (!graphicsHost_.Ready() || (!modelViewport_.Active() && !modelViewport_.Create(graphicsHost_, modelDocument_, viewportError))) {
+        if (!graphicsHost_.Ready() || (!modelViewport_.Active() && !modelViewport_.Create(graphicsHost_, modelDocument_, viewportError, ModelUpVector()))) {
             modelDocument_.reset(); contentKind_ = ContentKind::None; error_ = viewportError; InvalidateRect(window_, nullptr, FALSE); return;
         }
         modelViewport_.SetProjectionMode(modelProjectionMode_);
@@ -816,8 +821,9 @@ public:
     bool HasImage() const { return source_ != nullptr; }
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
     void CancelAnimatedModelHome() { KillTimer(window_, kModelHomeAnimationTimer); modelViewport_.CancelAnimatedHome(); }
-    void FitModel() { if (ModelActive()) { ClearModelFaceSelection(); CancelAnimatedModelHome(); modelViewport_.Fit(); InvalidateRect(window_, nullptr, FALSE); } }
-    void BeginAnimatedModelHome() { if (!ModelActive()) return; ClearModelFaceSelection(); if (!modelViewport_.BeginAnimatedHome()) return; modelAnimationDurationMs_=kModelHomeAnimationDurationMs; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
+    Float3 ModelUpVector() const { switch (modelUpAxis_) { case ModelUpAxis::XUp: return { 1, 0, 0 }; case ModelUpAxis::YUp: return { 0, 1, 0 }; case ModelUpAxis::ZUp: return { 0, 0, 1 }; } return { 0, 0, 1 }; }
+    void FitModel() { if (ModelActive()) { ClearModelFaceSelection(); CancelAnimatedModelHome(); modelViewport_.Fit(ModelUpVector()); InvalidateRect(window_, nullptr, FALSE); } }
+    void BeginAnimatedModelHome() { if (!ModelActive()) return; ClearModelFaceSelection(); if (!modelViewport_.BeginAnimatedHome(ModelUpVector())) return; modelAnimationDurationMs_=kModelHomeAnimationDurationMs; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
     void BeginAnimatedModelFramingRecovery() { if (!ModelActive() || !modelViewport_.BeginAnimatedFramingRecovery()) return; modelAnimationDurationMs_=200; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
     void BeginAnimatedModelOrientation(Float3 forward, Float3 up) { if (!ModelActive() || !modelViewport_.BeginAnimatedOrientation(forward, up)) return; modelAnimationDurationMs_=kModelHomeAnimationDurationMs; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
     void BeginAnimatedModelSnapView(Float3 forward, Float3 up, Float3 hitPoint) { if (!ModelActive() || !modelViewport_.BeginAnimatedSnapView(forward, up, hitPoint)) return; modelAnimationDurationMs_=kModelHomeAnimationDurationMs; modelHomeAnimationStartMs_ = GetTickCount64(); SetTimer(window_, kModelHomeAnimationTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); }
@@ -910,7 +916,7 @@ public:
     ContextAction PressedContextAction() const { return contextPressed_; }
     void ClearContextPressed() { SetContextPressed(ContextAction::None); }
     void InvokeContextAction(ContextAction action) {
-        if(action==ContextAction::SnapViewToFace){const Float3 normal=selectedFaceNormal_,hitPoint=selectedFaceHit_;const int plane=selectedFacePlane_;const OrbitCamera::State state=modelViewport_.Camera().NavLibState();const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const auto normalize=[&](Float3 v){const float length=std::sqrt(dot(v,v));return length>1e-6f?Float3{v.x/length,v.y/length,v.z/length}:Float3{0,1,0};};const Float3 forward=dot(normal,state.forward)<0?Float3{-normal.x,-normal.y,-normal.z}:normal;const Float3 axes[]={{1,0,0},{0,1,0},{0,0,1}};Float3 chosenAxis{},up{};float bestScore=-FLT_MAX;for(const Float3 axis:axes){Float3 projected{axis.x-forward.x*dot(axis,forward),axis.y-forward.y*dot(axis,forward),axis.z-forward.z*dot(axis,forward)};const float strength=std::sqrt(dot(projected,projected));if(strength<1e-4f)continue;projected={projected.x/strength,projected.y/strength,projected.z/strength};const float alignment=dot(projected,state.up);if(alignment<0){projected={-projected.x,-projected.y,-projected.z};}const float score=strength*10.0f+std::fabs(alignment);if(score>bestScore){bestScore=score;chosenAxis=axis;up=projected;}}if(bestScore<=-FLT_MAX/2){const Float3 fallback=std::fabs(forward.y)<.95f?Float3{0,1,0}:Float3{1,0,0};up=normalize({fallback.x-forward.x*dot(fallback,forward),fallback.y-forward.y*dot(fallback,forward),fallback.z-forward.z*dot(fallback,forward)});chosenAxis=fallback;}TraceSnapView(plane,normal,hitPoint,state,forward,up,chosenAxis);DismissContextMenu();BeginAnimatedModelSnapView(forward,up,hitPoint);return;}
+        if(action==ContextAction::SnapViewToFace){const Float3 normal=selectedFaceNormal_,hitPoint=selectedFaceHit_;const int plane=selectedFacePlane_;const OrbitCamera::State state=modelViewport_.Camera().NavLibState();const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const auto normalize=[&](Float3 v){const float length=std::sqrt(dot(v,v));return length>1e-6f?Float3{v.x/length,v.y/length,v.z/length}:Float3{0,1,0};};const Float3 forward=dot(normal,state.forward)<0?Float3{-normal.x,-normal.y,-normal.z}:normal;const auto projectUp=[&](Float3 axis){return Float3{axis.x-forward.x*dot(axis,forward),axis.y-forward.y*dot(axis,forward),axis.z-forward.z*dot(axis,forward)};};Float3 chosenAxis=ModelUpVector(),up=projectUp(chosenAxis);if(dot(up,up)<1e-8f){const Float3 fallbacks[]={{0,0,1},{0,1,0},{1,0,0}};for(const Float3 axis:fallbacks){up=projectUp(axis);if(dot(up,up)>=1e-8f){chosenAxis=axis;break;}}}up=normalize(up);TraceSnapView(plane,normal,hitPoint,state,forward,up,chosenAxis);DismissContextMenu();BeginAnimatedModelSnapView(forward,up,hitPoint);return;}
         if (action == ContextAction::OpenWith) { ToggleOpenWithSubmenu(); return; }
         DismissContextMenu();
         if (action == ContextAction::Fullscreen) ToggleFullscreen();
@@ -1070,7 +1076,7 @@ public:
         if (overlay_ != OverlayKind::Settings) return 0.0f;
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 504 : settingsPage_ == SettingsPage::Image2D ? 350 : 650, dpi, 96));
+        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 504 : settingsPage_ == SettingsPage::Image2D ? 350 : 724, dpi, 96));
         const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
         return std::max(0.0f, contentBottom - viewportBottom);
     }
@@ -1144,6 +1150,14 @@ public:
         const int width = MulDiv(112, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int left = SettingsContentLeft() + static_cast<int>(mode) * (width + gap);
         const int top = bounds.top + MulDiv(static_cast<int>(kModelSettingsProjectionControlTopDips), dpi, 96);
+        return { left, top, left + width, top + MulDiv(28, dpi, 96) };
+    }
+    RECT GetSettingsUpAxisBounds(ModelUpAxis axis) const {
+        const RECT bounds = GetOverlayBounds(); const UINT dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(76, dpi, 96), gap = MulDiv(8, dpi, 96);
+        const int index = axis == ModelUpAxis::ZUp ? 0 : axis == ModelUpAxis::YUp ? 1 : 2;
+        const int left = SettingsContentLeft() + index * (width + gap);
+        const int top = bounds.top + MulDiv(static_cast<int>(kModelSettingsOrientationControlTopDips), dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
     RECT GetSettingsSpaceMouseBounds() const { const RECT bounds=GetOverlayBounds();const UINT dpi=GetDpiForWindow(window_);const int top=bounds.top+MulDiv(static_cast<int>(kModelSettingsInputHeadingTopDips+kModelSettingsControlOffsetDips),dpi,96);return {SettingsContentLeft(),top,bounds.right-MulDiv(18,dpi,96),top+MulDiv(static_cast<int>(kModelSettingsToggleHeightDips),dpi,96)}; }
@@ -1232,6 +1246,7 @@ public:
         if (ModelActive()) modelViewport_.SetProjectionMode(mode);
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void SetModelUpAxis(ModelUpAxis axis) { if (modelUpAxis_ == axis) return; modelUpAxis_ = axis; WriteSetting(L"ModelUpAxis", static_cast<DWORD>(axis)); InvalidateRect(window_, nullptr, FALSE); }
     void SetModelVisualStyle(ModelVisualStyle style) { if(modelVisualStyle_==style)return;modelVisualStyle_=style;WriteSetting(L"ModelVisualStyle",static_cast<DWORD>(style));if(ModelActive())modelViewport_.SetVisualStyle(style);InvalidateRect(window_,nullptr,FALSE); }
     void SetModelAntiAliasing(ModelAntiAliasing mode) { if(modelAntiAliasing_==mode){antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE);return;}modelAntiAliasing_=mode;WriteSetting(L"ModelAntiAliasing",static_cast<DWORD>(mode));if(ModelActive())modelViewport_.SetAntiAliasing(mode);antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); }
     RECT GetSettingsResetButtonBounds() const {
@@ -1392,6 +1407,9 @@ public:
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
             } else if (settingsPage_ == SettingsPage::Model3D) {
                 if (antiAliasingMenuOpen_) { const RECT menu=GetSettingsAntiAliasingMenuBounds();const int row=MulDiv(30,GetDpiForWindow(window_),96);if(PtInRect(&menu,settingsPoint)) { const int index=(settingsPoint.y-menu.top)/row;return index==0?ButtonKind::SettingsAntiAliasingOff:index==1?ButtonKind::SettingsAntiAliasing2x:index==2?ButtonKind::SettingsAntiAliasing4x:index==3?ButtonKind::SettingsAntiAliasing8x:index==4?ButtonKind::SettingsAntiAliasingSsaa1_5x:ButtonKind::SettingsAntiAliasingSsaa2x; } }
+                if (settingsContains(GetSettingsUpAxisBounds(ModelUpAxis::ZUp))) return ButtonKind::SettingsUpAxisZ;
+                if (settingsContains(GetSettingsUpAxisBounds(ModelUpAxis::YUp))) return ButtonKind::SettingsUpAxisY;
+                if (settingsContains(GetSettingsUpAxisBounds(ModelUpAxis::XUp))) return ButtonKind::SettingsUpAxisX;
                 if (settingsContains(GetSettingsProjectionBounds(ModelProjectionMode::Perspective))) return ButtonKind::SettingsProjectionPerspective;
                 if (settingsContains(GetSettingsProjectionBounds(ModelProjectionMode::Orthographic))) return ButtonKind::SettingsProjectionOrthographic;
                 if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsSpaceMouseBounds())) return ButtonKind::SettingsSpaceMouse;
@@ -1528,6 +1546,9 @@ public:
         else if (button == ButtonKind::SettingsAnimations) ToggleAnimationsAndFadeEffects();
         else if (button == ButtonKind::SettingsReverseWheelZoom) ToggleReverseMouseWheelZoom();
         else if (button == ButtonKind::SettingsSpaceMouse) ToggleSpaceMouse();
+        else if (button == ButtonKind::SettingsUpAxisZ) SetModelUpAxis(ModelUpAxis::ZUp);
+        else if (button == ButtonKind::SettingsUpAxisY) SetModelUpAxis(ModelUpAxis::YUp);
+        else if (button == ButtonKind::SettingsUpAxisX) SetModelUpAxis(ModelUpAxis::XUp);
         else if (button == ButtonKind::SettingsProjectionPerspective) SetModelProjectionMode(ModelProjectionMode::Perspective);
         else if (button == ButtonKind::SettingsProjectionOrthographic) SetModelProjectionMode(ModelProjectionMode::Orthographic);
         else if (button == ButtonKind::SettingsAntiAliasingToggle) { antiAliasingMenuOpen_=!antiAliasingMenuOpen_; InvalidateRect(window_,nullptr,FALSE); }
@@ -2139,7 +2160,7 @@ private:
         const float length=std::sqrt(dx*dx+dy*dy);if(!std::isfinite(length)||length<1e-5f)return {};dx/=length;dy/=length;
         const float dpi=GetDpiForWindow(window_)/96.f,inset=18*dpi,halfW=std::max(1.f,(canvas.right-canvas.left)*.5f-inset),halfH=std::max(1.f,(canvas.bottom-canvas.top)*.5f-inset),t=std::min(halfW/std::max(std::fabs(dx),1e-5f),halfH/std::max(std::fabs(dy),1e-5f));
         const float mx=(canvas.left+canvas.right)*.5f,my=(canvas.top+canvas.bottom)*.5f;D2D1_POINT_2F point=D2D1::Point2F(mx+dx*t,my+dy*t);
-        const float compassRadius=46*dpi,compassMargin=12*dpi,compassX=canvas.right-compassMargin-compassRadius,compassY=canvas.bottom-compassMargin-compassRadius,safeX=compassX-compassRadius-inset,safeY=compassY-compassRadius-inset;
+        const float compassRadius=46*dpi,compassMargin=12*dpi,compassLegendHeight=16*dpi,compassX=canvas.right-compassMargin-compassRadius,compassY=canvas.bottom-compassMargin-compassLegendHeight-compassRadius,safeX=compassX-compassRadius-inset,safeY=compassY-compassRadius-inset;
         if(dx>0&&dy>0&&std::hypot(point.x-compassX,point.y-compassY)<compassRadius+18*dpi){if(std::fabs(point.y-safeY)<std::fabs(point.x-safeX))point.y=std::min(point.y,safeY);else point.x=std::min(point.x,safeX);}
         const int hit=MulDiv(56,GetDpiForWindow(window_),96);return {true,point,D2D1::Point2F(dx,dy),{(LONG)point.x-hit,(LONG)point.y-hit,(LONG)point.x+hit,(LONG)point.y+hit}};
     }
@@ -2160,39 +2181,35 @@ private:
     }
     void DrawModelAxisIndicator() {
         const RECT canvas = ModelCanvasBounds(); const float dpi = GetDpiForWindow(window_) / 96.0f;
-        const float radius = 46.0f * dpi, margin = 12.0f * dpi;
-        const D2D1_POINT_2F origin = D2D1::Point2F(canvas.right - margin - radius, canvas.bottom - margin - radius);
+        const float radius = 46.0f * dpi, margin = 12.0f * dpi, legendHeight = 16.0f * dpi;
+        const D2D1_POINT_2F origin = D2D1::Point2F(canvas.right - margin - radius, canvas.bottom - margin - legendHeight - radius);
         const OrbitCamera::State state = modelViewport_.Camera().NavLibState();
         const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}; const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
         const float forwardLength=std::sqrt(dot(state.forward,state.forward)); if(forwardLength<1e-5f)return; const Float3 forward{state.forward.x/forwardLength,state.forward.y/forwardLength,state.forward.z/forwardLength}; Float3 right=cross(state.up,forward); const float rightLength=std::sqrt(dot(right,right)); if(rightLength<1e-5f)return; right={right.x/rightLength,right.y/rightLength,right.z/rightLength}; const Float3 up=cross(forward,right);
         ComPtr<ID2D1SolidColorBrush> x,y,z,ring,junction; if(FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.88f,.30f,.30f),&x))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.35f,.78f,.42f),&y))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.35f,.55f,.95f),&z))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.90f,.92f,.96f,.26f),&ring))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.90f,.92f,.96f,.9f),&junction)))return;
         renderTarget_->DrawEllipse(D2D1::Ellipse(origin,radius,radius),ring.Get(),1.0f*dpi);
         renderTarget_->FillEllipse(D2D1::Ellipse(origin,3.5f*dpi,3.5f*dpi),junction.Get());
-        struct AxisPresentation { Float3 world; ID2D1Brush* brush; const wchar_t* label; D2D1_POINT_2F labelCenter; bool depthAxis; bool towardViewer; };
+        struct AxisPresentation { Float3 world; ID2D1Brush* brush; bool depthAxis; bool towardViewer; };
         std::array<AxisPresentation, 3> axes{{
-            {{1,0,0}, x.Get(), L"X", {}, false, false}, {{0,1,0}, y.Get(), L"Y", {}, false, false}, {{0,0,1}, z.Get(), L"Z", {}, false, false}
+            {{1,0,0}, x.Get(), false, false}, {{0,1,0}, y.Get(), false, false}, {{0,0,1}, z.Get(), false, false}
         }};
         constexpr float kDepthAxisThreshold = .94f;
-        const std::array<D2D1_POINT_2F, 3> depthLabelOffsets{{ D2D1::Point2F(13, -17), D2D1::Point2F(15, 14), D2D1::Point2F(-25, 14) }};
-        for (size_t i = 0; i < axes.size(); ++i) {
-            AxisPresentation& axis = axes[i]; const float screenX=dot(axis.world,right), screenY=-dot(axis.world,up), viewAlignment=dot(axis.world,forward), depth=-viewAlignment, length=std::sqrt(screenX*screenX+screenY*screenY);
+        for (AxisPresentation& axis : axes) {
+            const float screenX=dot(axis.world,right), screenY=-dot(axis.world,up), viewAlignment=dot(axis.world,forward), depth=-viewAlignment;
             axis.depthAxis = std::fabs(viewAlignment) >= kDepthAxisThreshold; axis.towardViewer = viewAlignment < 0.0f;
-            if (axis.depthAxis) { axis.labelCenter = D2D1::Point2F(origin.x + depthLabelOffsets[i].x*dpi, origin.y + depthLabelOffsets[i].y*dpi); continue; }
+            if (axis.depthAxis) continue;
             const D2D1_POINT_2F end=D2D1::Point2F(origin.x+screenX*(radius-24*dpi),origin.y+screenY*(radius-24*dpi)); const float marker=std::clamp(2.9f+1.6f*(depth+1.f)*.5f,2.9f,4.5f)*dpi;
-            const D2D1_POINT_2F direction=length>.001f ? D2D1::Point2F(screenX/length,screenY/length) : D2D1::Point2F(1,0);
-            axis.labelCenter=D2D1::Point2F(origin.x+direction.x*(radius-12*dpi),origin.y+direction.y*(radius-12*dpi));
             renderTarget_->DrawLine(origin,end,axis.brush,2.4f*dpi); renderTarget_->FillEllipse(D2D1::Ellipse(end,marker,marker),axis.brush);
-        }
-        for (size_t i = 0; i < axes.size(); ++i) for (size_t prior = 0; prior < i; ++prior) {
-            const float dx=axes[i].labelCenter.x-axes[prior].labelCenter.x, dy=axes[i].labelCenter.y-axes[prior].labelCenter.y;
-            if (std::fabs(dx) < 19*dpi && std::fabs(dy) < 20*dpi) { const float sx=dx>=0 ? 1.0f : -1.0f, sy=dy>=0 ? 1.0f : -1.0f; axes[i].labelCenter.x += sx*10*dpi; axes[i].labelCenter.y += sy*8*dpi; }
         }
         for (const AxisPresentation& axis : axes) if (axis.depthAxis) {
             const float markerRadius=5.5f*dpi, arm=2.5f*dpi; renderTarget_->DrawEllipse(D2D1::Ellipse(origin,markerRadius,markerRadius),axis.brush,1.8f*dpi);
             if (axis.towardViewer) renderTarget_->FillEllipse(D2D1::Ellipse(origin,1.8f*dpi,1.8f*dpi),axis.brush);
             else { renderTarget_->DrawLine(D2D1::Point2F(origin.x-arm,origin.y-arm),D2D1::Point2F(origin.x+arm,origin.y+arm),axis.brush,1.6f*dpi); renderTarget_->DrawLine(D2D1::Point2F(origin.x-arm,origin.y+arm),D2D1::Point2F(origin.x+arm,origin.y-arm),axis.brush,1.6f*dpi); }
         }
-        for (const AxisPresentation& axis : axes) DrawOverlayText(axis.label,axis.labelCenter.x-10*dpi,axis.labelCenter.y-12*dpi,20*dpi,24*dpi,15,DWRITE_FONT_WEIGHT_SEMI_BOLD,axis.brush,true);
+        const float legendTop = origin.y + radius + 1.0f*dpi;
+        DrawOverlayText(L"X",origin.x-26*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,x.Get(),true);
+        DrawOverlayText(L"Y",origin.x-8*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,y.Get(),true);
+        DrawOverlayText(L"Z",origin.x+10*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,z.Get(),true);
     }
     RECT ModelCanvasBounds() const {
         RECT client{}; GetClientRect(window_, &client);
@@ -3848,7 +3865,7 @@ private:
         if (!graphicsHost_.Create(window_, d2dFactory_.Get(), error)) { error_ = error; return; }
         renderTarget_ = graphicsHost_.D2DContext();
         if (contentKind_ == ContentKind::Model3D && modelDocument_ && !modelViewport_.Active() &&
-            !modelViewport_.Create(graphicsHost_, modelDocument_, error)) {
+            !modelViewport_.Create(graphicsHost_, modelDocument_, error, ModelUpVector())) {
             contentKind_ = ContentKind::None;
             error_ = error;
         }
@@ -4506,6 +4523,16 @@ private:
             } else {
             group(L"INPUT", kModelSettingsInputHeadingTopDips);
             drawToggle(6, ButtonKind::SettingsSpaceMouse, L"Enable SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
+            group(L"ORIENTATION", kModelSettingsOrientationHeadingTopDips);
+            const auto drawUpAxis = [&](ModelUpAxis axis, ButtonKind button, const wchar_t* label) {
+                const RECT segmentBounds = GetSettingsUpAxisBounds(axis); const D2D1_RECT_F segment = D2D1::RectF((float)segmentBounds.left,(float)segmentBounds.top,(float)segmentBounds.right,(float)segmentBounds.bottom);
+                const bool selected = modelUpAxis_ == axis; ID2D1Brush* fill = selected ? accent.Get() : (hoveredButton_ == button || pressedButton_ == button ? segmentHover.Get() : segmentIdle.Get());
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(segment,4.0f*dpiScale,4.0f*dpiScale),fill); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(segment,4.0f*dpiScale,4.0f*dpiScale),selected?accent.Get():borderBrush.Get(),1.0f);
+                DrawOverlayText(label,segment.left,segment.top,segment.right-segment.left,segment.bottom-segment.top,14.0f,DWRITE_FONT_WEIGHT_SEMI_BOLD,selected?checkmark.Get():primaryBrush.Get(),true,false,true);
+            };
+            drawUpAxis(ModelUpAxis::ZUp, ButtonKind::SettingsUpAxisZ, L"Z Up");
+            drawUpAxis(ModelUpAxis::YUp, ButtonKind::SettingsUpAxisY, L"Y Up");
+            drawUpAxis(ModelUpAxis::XUp, ButtonKind::SettingsUpAxisX, L"X Up");
             group(L"PROJECTION", kModelSettingsProjectionHeadingTopDips);
             const auto drawProjection = [&](ModelProjectionMode mode, ButtonKind button, const wchar_t* label) {
                 const RECT segmentBounds = GetSettingsProjectionBounds(mode); const D2D1_RECT_F segment = D2D1::RectF((float)segmentBounds.left,(float)segmentBounds.top,(float)segmentBounds.right,(float)segmentBounds.bottom);
@@ -5229,6 +5256,7 @@ private:
     ImageScaling imageScaling_ = ImageScaling::Quality;
     ModelProjectionMode modelProjectionMode_ = ModelProjectionMode::Perspective;
     ModelVisualStyle modelVisualStyle_ = ModelVisualStyle::Shaded;
+    ModelUpAxis modelUpAxis_ = ModelUpAxis::ZUp;
     ModelRenderingApi modelRenderingApi_ = ModelRenderingApi::Direct3D11;
     ModelAntiAliasing modelAntiAliasing_ = ModelAntiAliasing::Msaa4x;
     bool antiAliasingMenuOpen_ = false;

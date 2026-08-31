@@ -15,12 +15,12 @@ public:
     D3D11ModelViewport(const D3D11ModelViewport&) = delete;
     D3D11ModelViewport& operator=(const D3D11ModelViewport&) = delete;
 
-    bool Create(GraphicsHost& host, std::shared_ptr<ModelDocument> document, std::wstring& error);
+    bool Create(GraphicsHost& host, std::shared_ptr<ModelDocument> document, std::wstring& error, Float3 upAxis);
     void Destroy();
     void Resize(GraphicsHost& host, const RECT& bounds);
     void Render(GraphicsHost& host, const RECT& bounds);
-    void Fit();
-    bool BeginAnimatedHome();
+    void Fit(Float3 upAxis);
+    bool BeginAnimatedHome(Float3 upAxis);
     bool BeginAnimatedOrientation(Float3 forward, Float3 up);
     bool BeginAnimatedSnapView(Float3 forward, Float3 up, Float3 hitPoint);
     bool BeginAnimatedFramingRecovery();

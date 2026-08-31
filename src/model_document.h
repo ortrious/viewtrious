@@ -8,6 +8,7 @@
 struct Float3 { float x = 0, y = 0, z = 0; };
 enum class ModelVisualStyle : uint32_t { Shaded = 0, ShadedWithVisibleEdges = 1, Wireframe = 2 };
 enum class ModelAntiAliasing : uint32_t { Off = 0, Msaa2x = 1, Msaa4x = 2, Msaa8x = 3, Ssaa1_5x = 4, Ssaa2x = 5 };
+enum class ModelUpAxis : uint32_t { XUp = 0, YUp = 1, ZUp = 2 };
 
 struct Matrix4 {
     float m[16]{};

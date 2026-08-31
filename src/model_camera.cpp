@@ -19,6 +19,10 @@ Float3 RotateAroundAxis(Float3 value, Float3 axis, float radians) {
 }
 float Lerp(float start, float target, float progress) { return start + (target - start) * progress; }
 Float3 Lerp(Float3 start, Float3 target, float progress) { return Add(Mul(start, 1.0f - progress), Mul(target, progress)); }
+Float3 CanonicalForward(Float3 upAxis) {
+    if (std::fabs(upAxis.z) > .9f) return { 0.0f, 1.0f, 0.0f };
+    return { 0.0f, 0.0f, -1.0f };
+}
 struct Quaternion { float x, y, z, w; };
 Quaternion Normalize(Quaternion value) {
     const float length = std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z + value.w * value.w);
@@ -74,6 +78,22 @@ void TraceAnimationState(const wchar_t* label, const OrbitCamera::AnimationState
         state.pivot.x, state.pivot.y, state.pivot.z, state.framingRight, state.framingUp, state.distance, orientation.x, orientation.y, orientation.z, orientation.w);
     OutputDebugStringW(message);
 }
+void TraceHomeBasis(const OrbitCamera& camera, Float3 upAxis) {
+    const OrbitCamera::State state = camera.NavLibState();
+    const Float3 forward = Normalize(state.forward), right = Normalize(Cross(forward, state.up)), up = Normalize(Cross(right, forward));
+    const Matrix4& matrix = camera.ViewProjection();
+    const auto project = [&matrix](Float3 point) {
+        const float x=point.x*matrix.m[0]+point.y*matrix.m[4]+point.z*matrix.m[8]+matrix.m[12];
+        const float y=point.x*matrix.m[1]+point.y*matrix.m[5]+point.z*matrix.m[9]+matrix.m[13];
+        const float w=point.x*matrix.m[3]+point.y*matrix.m[7]+point.z*matrix.m[11]+matrix.m[15];
+        return Float3{ x/w, y/w, w };
+    };
+    const Float3 center = camera.Pivot(); const float probe = std::max(camera.Radius()*.1f, 1e-4f);
+    const Float3 origin = project(center), plusX = project(Add(center,{probe,0,0})), plusZ = project(Add(center,{0,0,probe}));
+    wchar_t message[1024]{};
+    swprintf_s(message,L"Viewtrious Home basis: preferredUp=(%.0f,%.0f,%.0f) eye=(%.5f,%.5f,%.5f) forward=(%.5f,%.5f,%.5f) up=(%.5f,%.5f,%.5f) right=(%.5f,%.5f,%.5f) handedness=%.6f ndcCenter=(%.5f,%.5f) plusX=(%.5f,%.5f) plusZ=(%.5f,%.5f)\\n",upAxis.x,upAxis.y,upAxis.z,state.position.x,state.position.y,state.position.z,forward.x,forward.y,forward.z,up.x,up.y,up.z,right.x,right.y,right.z,Dot(Cross(right,up),Mul(forward,-1)),origin.x,origin.y,plusX.x,plusX.y,plusZ.x,plusZ.y);
+    OutputDebugStringW(message);
+}
 #endif
 }
 
@@ -87,13 +107,15 @@ void OrbitCamera::Fit(const ModelBounds& bounds, float aspectRatio, Float3 upAxi
     distance_ = std::max(radius_ * 2.8f, radius_ / std::tan(fieldOfView_ * 0.5f));
     orthographicHalfHeight_ = std::max(radius_ * 1.2f, 1e-5f);
     upAxis = Normalize(upAxis);
-    const Float3 reference = std::fabs(upAxis.y) < .9f ? Float3{ 0, 1, 0 } : Float3{ 0, 0, 1 };
-    const Float3 right = Normalize(Cross(reference, upAxis));
-    const Float3 forwardBasis = Normalize(Cross(upAxis, right));
+    const Float3 forwardBasis = CanonicalForward(upAxis);
+    const Float3 right = Normalize(Cross(forwardBasis, upAxis));
     const float yaw = 0.62f, pitch = -0.42f, cosPitch = std::cos(pitch);
-    const Float3 eye = Add(pivot_, Add(Mul(right, distance_ * std::sin(yaw) * cosPitch), Add(Mul(upAxis, distance_ * std::sin(pitch)), Mul(forwardBasis, distance_ * std::cos(yaw) * cosPitch))));
+    const Float3 eye = Add(pivot_, Add(Mul(right, distance_ * std::sin(yaw) * cosPitch), Add(Mul(upAxis, -distance_ * std::sin(pitch)), Mul(forwardBasis, -distance_ * std::cos(yaw) * cosPitch))));
     SetLocalOrientation(Normalize(Sub(pivot_, eye)), upAxis);
     Update();
+#if defined(_DEBUG)
+    TraceHomeBasis(*this, upAxis);
+#endif
 }
 void OrbitCamera::SetAspectRatio(float aspectRatio) { aspect_ = std::max(0.01f, aspectRatio); Update(); }
 void OrbitCamera::Orbit(float dx, float dy) {
@@ -101,7 +123,7 @@ void OrbitCamera::Orbit(float dx, float dy) {
     // Rotate about the live view axes, rather than a bounded world-up Euler pitch.
     // This remains continuous through every pole and when returning from SpaceMouse.
     forward_ = Normalize(RotateAroundAxis(forward_, up_, dx));
-    const Float3 right = Normalize(Cross(up_, forward_));
+    const Float3 right = Normalize(Cross(forward_, up_));
     forward_ = Normalize(RotateAroundAxis(forward_, right, dy));
     up_ = Normalize(RotateAroundAxis(up_, right, dy));
     SetLocalOrientation(forward_, up_);
@@ -145,7 +167,7 @@ bool OrbitCamera::SetFromNavLibState(const State& state) {
     // NavLib matrix is an internal bridge detail, while explicit view-extents updates own zoom.
     if (projectionMode_ == ModelProjectionMode::Orthographic) {
         const State current = NavLibState(); const Float3 forward = Normalize(state.forward);
-        const Float3 right = Normalize(Cross(state.up, forward)), up = Normalize(Cross(forward, right));
+        const Float3 right = Normalize(Cross(forward, state.up)), up = Normalize(Cross(right, forward));
         const Float3 delta = Sub(state.position, current.position);
 #if defined(_DEBUG)
         const float previousExtent = orthographicHalfHeight_;
@@ -269,13 +291,13 @@ void OrbitCamera::MaterializeNavLibState() {
 }
 void OrbitCamera::SetLocalOrientation(Float3 forward, Float3 up) {
     forward_ = Normalize(forward);
-    Float3 right = Cross(up, forward_);
+    Float3 right = Cross(forward_, up);
     if (Dot(right, right) <= 1e-12f) {
         const Float3 fallback = std::fabs(forward_.y) < 0.9f ? Float3{ 0.0f, 1.0f, 0.0f } : Float3{ 1.0f, 0.0f, 0.0f };
-        right = Cross(fallback, forward_);
+        right = Cross(forward_, fallback);
     }
     right = Normalize(right);
-    up_ = Normalize(Cross(forward_, right));
+    up_ = Normalize(Cross(right, forward_));
 }
 Float3 OrbitCamera::LocalFramingOffset() const {
     const Float3 right = Normalize(Cross(forward_, up_));
@@ -288,11 +310,11 @@ void OrbitCamera::Update() {
     const Float3 forward = navLibStateActive_ ? Normalize(navLibState_.forward) : forward_;
     Float3 right{}; Float3 up{};
     if (navLibStateActive_) {
-        right = Normalize(Cross(navLibState_.up, forward));
-        up = Normalize(Cross(forward, right));
+        right = Normalize(Cross(forward, navLibState_.up));
+        up = Normalize(Cross(right, forward));
     } else {
-        right = Normalize(Cross(up_, forward));
-        up = Normalize(Cross(forward, right));
+        right = Normalize(Cross(forward, up_));
+        up = Normalize(Cross(right, forward));
     }
     Matrix4 view{}; view.m[0]=right.x; view.m[4]=right.y; view.m[8]=right.z; view.m[1]=up.x; view.m[5]=up.y; view.m[9]=up.z; view.m[2]=-forward.x; view.m[6]=-forward.y; view.m[10]=-forward.z; view.m[12]=-Dot(right,eye); view.m[13]=-Dot(up,eye); view.m[14]=Dot(forward,eye); view.m[15]=1;
     const ClipPlanes clips = CurrentClipPlanes(); const float nearPlane = clips.nearPlane, farPlane = clips.farPlane; Matrix4 projection{};

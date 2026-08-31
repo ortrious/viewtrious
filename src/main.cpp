@@ -2045,7 +2045,32 @@ private:
         const float forwardLength=std::sqrt(dot(state.forward,state.forward)); if(forwardLength<1e-5f)return; const Float3 forward{state.forward.x/forwardLength,state.forward.y/forwardLength,state.forward.z/forwardLength}; Float3 right=cross(state.up,forward); const float rightLength=std::sqrt(dot(right,right)); if(rightLength<1e-5f)return; right={right.x/rightLength,right.y/rightLength,right.z/rightLength}; const Float3 up=cross(forward,right);
         ComPtr<ID2D1SolidColorBrush> x,y,z,ring,junction; if(FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.88f,.30f,.30f),&x))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.35f,.78f,.42f),&y))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.35f,.55f,.95f),&z))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.90f,.92f,.96f,.26f),&ring))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(.90f,.92f,.96f,.9f),&junction)))return;
         renderTarget_->DrawEllipse(D2D1::Ellipse(origin,radius,radius),ring.Get(),1.0f*dpi);
-        const auto axis=[&](Float3 world,ID2D1Brush* brush,const wchar_t* label,D2D1_POINT_2F fallback){const float screenX=dot(world,right),screenY=-dot(world,up),depth=-dot(world,forward),length=std::sqrt(screenX*screenX+screenY*screenY);const D2D1_POINT_2F end=D2D1::Point2F(origin.x+screenX*(radius-24*dpi),origin.y+screenY*(radius-24*dpi));const float marker=std::clamp(2.9f+1.6f*(depth+1.f)*.5f,2.9f,4.5f)*dpi;const D2D1_POINT_2F labelDirection=length>.14f?D2D1::Point2F(screenX/length,screenY/length):fallback;const D2D1_POINT_2F labelCenter=D2D1::Point2F(origin.x+labelDirection.x*(radius-12*dpi),origin.y+labelDirection.y*(radius-12*dpi));renderTarget_->DrawLine(origin,end,brush,2.4f*dpi);renderTarget_->FillEllipse(D2D1::Ellipse(end,marker,marker),brush);DrawOverlayText(label,labelCenter.x-10*dpi,labelCenter.y-12*dpi,20*dpi,24*dpi,15,DWRITE_FONT_WEIGHT_SEMI_BOLD,brush,true);}; axis({1,0,0},x.Get(),L"X",D2D1::Point2F(1,0));axis({0,1,0},y.Get(),L"Y",D2D1::Point2F(0,-1));axis({0,0,1},z.Get(),L"Z",D2D1::Point2F(-1,0));renderTarget_->FillEllipse(D2D1::Ellipse(origin,3.5f*dpi,3.5f*dpi),junction.Get());
+        renderTarget_->FillEllipse(D2D1::Ellipse(origin,3.5f*dpi,3.5f*dpi),junction.Get());
+        struct AxisPresentation { Float3 world; ID2D1Brush* brush; const wchar_t* label; D2D1_POINT_2F labelCenter; bool depthAxis; bool towardViewer; };
+        std::array<AxisPresentation, 3> axes{{
+            {{1,0,0}, x.Get(), L"X", {}, false, false}, {{0,1,0}, y.Get(), L"Y", {}, false, false}, {{0,0,1}, z.Get(), L"Z", {}, false, false}
+        }};
+        constexpr float kDepthAxisThreshold = .94f;
+        const std::array<D2D1_POINT_2F, 3> depthLabelOffsets{{ D2D1::Point2F(13, -17), D2D1::Point2F(15, 14), D2D1::Point2F(-25, 14) }};
+        for (size_t i = 0; i < axes.size(); ++i) {
+            AxisPresentation& axis = axes[i]; const float screenX=dot(axis.world,right), screenY=-dot(axis.world,up), viewAlignment=dot(axis.world,forward), depth=-viewAlignment, length=std::sqrt(screenX*screenX+screenY*screenY);
+            axis.depthAxis = std::fabs(viewAlignment) >= kDepthAxisThreshold; axis.towardViewer = viewAlignment < 0.0f;
+            if (axis.depthAxis) { axis.labelCenter = D2D1::Point2F(origin.x + depthLabelOffsets[i].x*dpi, origin.y + depthLabelOffsets[i].y*dpi); continue; }
+            const D2D1_POINT_2F end=D2D1::Point2F(origin.x+screenX*(radius-24*dpi),origin.y+screenY*(radius-24*dpi)); const float marker=std::clamp(2.9f+1.6f*(depth+1.f)*.5f,2.9f,4.5f)*dpi;
+            const D2D1_POINT_2F direction=length>.001f ? D2D1::Point2F(screenX/length,screenY/length) : D2D1::Point2F(1,0);
+            axis.labelCenter=D2D1::Point2F(origin.x+direction.x*(radius-12*dpi),origin.y+direction.y*(radius-12*dpi));
+            renderTarget_->DrawLine(origin,end,axis.brush,2.4f*dpi); renderTarget_->FillEllipse(D2D1::Ellipse(end,marker,marker),axis.brush);
+        }
+        for (size_t i = 0; i < axes.size(); ++i) for (size_t prior = 0; prior < i; ++prior) {
+            const float dx=axes[i].labelCenter.x-axes[prior].labelCenter.x, dy=axes[i].labelCenter.y-axes[prior].labelCenter.y;
+            if (std::fabs(dx) < 19*dpi && std::fabs(dy) < 20*dpi) { const float sx=dx>=0 ? 1.0f : -1.0f, sy=dy>=0 ? 1.0f : -1.0f; axes[i].labelCenter.x += sx*10*dpi; axes[i].labelCenter.y += sy*8*dpi; }
+        }
+        for (const AxisPresentation& axis : axes) if (axis.depthAxis) {
+            const float markerRadius=5.5f*dpi, arm=2.5f*dpi; renderTarget_->DrawEllipse(D2D1::Ellipse(origin,markerRadius,markerRadius),axis.brush,1.8f*dpi);
+            if (axis.towardViewer) renderTarget_->FillEllipse(D2D1::Ellipse(origin,1.8f*dpi,1.8f*dpi),axis.brush);
+            else { renderTarget_->DrawLine(D2D1::Point2F(origin.x-arm,origin.y-arm),D2D1::Point2F(origin.x+arm,origin.y+arm),axis.brush,1.6f*dpi); renderTarget_->DrawLine(D2D1::Point2F(origin.x-arm,origin.y+arm),D2D1::Point2F(origin.x+arm,origin.y-arm),axis.brush,1.6f*dpi); }
+        }
+        for (const AxisPresentation& axis : axes) DrawOverlayText(axis.label,axis.labelCenter.x-10*dpi,axis.labelCenter.y-12*dpi,20*dpi,24*dpi,15,DWRITE_FONT_WEIGHT_SEMI_BOLD,axis.brush,true);
     }
     RECT ModelCanvasBounds() const {
         RECT client{}; GetClientRect(window_, &client);
@@ -4845,7 +4870,10 @@ private:
         const bool over=hoveredButton_==ButtonKind::ViewBarProjectionToggle||pressedButton_==ButtonKind::ViewBarProjectionToggle||viewBarProjectionMenuOpen_;
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bar,6*dpi,6*dpi),over?hover.Get():surface.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(bar,6*dpi,6*dpi),border.Get(),1);
         const wchar_t* label=modelProjectionMode_==ModelProjectionMode::Perspective?L"Perspective":L"Orthographic";
-        DrawOverlayText(label,bar.left+12*dpi,bar.top,bar.right-bar.left-34*dpi,bar.bottom-bar.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,text.Get(),true); DrawOverlayText(L"⌄",bar.right-23*dpi,bar.top,16*dpi,bar.bottom-bar.top,16,DWRITE_FONT_WEIGHT_SEMI_BOLD,text.Get(),true,true);
+        DrawOverlayText(label,bar.left+12*dpi,bar.top,bar.right-bar.left-34*dpi,bar.bottom-bar.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,text.Get(),true);
+        const float chevronX=bar.right-18*dpi, chevronY=(bar.top+bar.bottom)*.5f;
+        renderTarget_->DrawLine(D2D1::Point2F(chevronX-4*dpi,chevronY-2*dpi),D2D1::Point2F(chevronX,chevronY+2*dpi),text.Get(),1.5f*dpi);
+        renderTarget_->DrawLine(D2D1::Point2F(chevronX,chevronY+2*dpi),D2D1::Point2F(chevronX+4*dpi,chevronY-2*dpi),text.Get(),1.5f*dpi);
         if(!viewBarProjectionMenuOpen_)return;
         const RECT menuBounds=GetModelViewBarMenuBounds(); const int row=MulDiv(32,GetDpiForWindow(window_),96); const D2D1_RECT_F menu=D2D1::RectF((float)menuBounds.left,(float)menuBounds.top,(float)menuBounds.right,(float)menuBounds.bottom);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(menu,6*dpi,6*dpi),surface.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu,6*dpi,6*dpi),border.Get(),1);

@@ -7,6 +7,7 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <unordered_map>
 
 namespace {
 constexpr uint64_t kMaxFileBytes = 1024ull * 1024ull * 1024ull;
@@ -15,6 +16,8 @@ bool Finite(const Float3& value) { return std::isfinite(value.x) && std::isfinit
 Float3 Sub(Float3 a, Float3 b) { return {a.x-b.x,a.y-b.y,a.z-b.z}; }
 Float3 Cross(Float3 a, Float3 b) { return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x}; }
 float Length(Float3 a) { return std::sqrt(a.x*a.x+a.y*a.y+a.z*a.z); }
+float Dot(Float3 a, Float3 b) { return a.x*b.x+a.y*b.y+a.z*b.z; }
+void BuildSnapPlanes(ModelDocument& document) { const auto& mesh=document.geometries.front(); const Float3 span=Sub(document.bounds.maximum,document.bounds.minimum); const float scale=std::max(1e-5f,Length(span)), normalStep=.002f, offsetStep=scale*1e-4f; std::unordered_map<std::string,uint32_t> ids; const size_t count=mesh.indices.size()/3; document.triangleSnapPlanes.resize(count); for(size_t triangle=0;triangle<count;++triangle){const Float3 normal=mesh.normals[mesh.indices[triangle*3]];const float offset=Dot(normal,mesh.positions[mesh.indices[triangle*3]]);const auto q=[](float v,float step){return int(std::lround(v/step));};const std::string key=std::to_string(q(normal.x,normalStep))+":"+std::to_string(q(normal.y,normalStep))+":"+std::to_string(q(normal.z,normalStep))+":"+std::to_string(q(offset,offsetStep));auto [entry,added]=ids.emplace(key,uint32_t(document.snapPlanes.size()));if(added)document.snapPlanes.push_back({normal,offset,{}});entry->second;document.triangleSnapPlanes[triangle]=entry->second;document.snapPlanes[entry->second].triangles.push_back(uint32_t(triangle));} }
 bool AppendTriangle(MeshGeometry& mesh, ModelBounds& bounds, bool& hasBounds, Float3 a, Float3 b, Float3 c) {
     if (!Finite(a) || !Finite(b) || !Finite(c)) return false;
     Float3 normal = Cross(Sub(b,a), Sub(c,a)); const float length = Length(normal); if (!std::isfinite(length) || length <= 1e-20f) return true;
@@ -27,7 +30,7 @@ bool AppendTriangle(MeshGeometry& mesh, ModelBounds& bounds, bool& hasBounds, Fl
 }
 float ReadFloat(const unsigned char* bytes) { float value; std::memcpy(&value, bytes, sizeof(value)); return value; }
 uint32_t ReadU32(const unsigned char* bytes) { return uint32_t(bytes[0]) | (uint32_t(bytes[1])<<8) | (uint32_t(bytes[2])<<16) | (uint32_t(bytes[3])<<24); }
-StlLoadResult MakeDocument(MeshGeometry&& mesh, ModelBounds bounds, bool hasBounds) { if (mesh.indices.empty() || !hasBounds) return {nullptr,L"The STL contains no usable triangles."}; auto document=std::make_shared<ModelDocument>(); document->bounds=bounds; document->geometries.push_back(std::move(mesh)); document->instances.push_back({0,Matrix4::Identity()}); return {std::move(document),L""}; }
+StlLoadResult MakeDocument(MeshGeometry&& mesh, ModelBounds bounds, bool hasBounds) { if (mesh.indices.empty() || !hasBounds) return {nullptr,L"The STL contains no usable triangles."}; auto document=std::make_shared<ModelDocument>(); document->bounds=bounds; document->geometries.push_back(std::move(mesh)); document->instances.push_back({0,Matrix4::Identity()}); BuildSnapPlanes(*document); return {std::move(document),L""}; }
 StlLoadResult ParseBinary(const std::vector<unsigned char>& data) { const uint32_t count=ReadU32(data.data()+80); MeshGeometry mesh; ModelBounds bounds{}; bool hasBounds=false; for(uint32_t i=0;i<count;++i){const unsigned char* p=data.data()+84+size_t(i)*50; Float3 a{ReadFloat(p+12),ReadFloat(p+16),ReadFloat(p+20)},b{ReadFloat(p+24),ReadFloat(p+28),ReadFloat(p+32)},c{ReadFloat(p+36),ReadFloat(p+40),ReadFloat(p+44)}; if(!AppendTriangle(mesh,bounds,hasBounds,a,b,c)) return {nullptr,L"The binary STL contains invalid coordinates or exceeds the model limit."};} return MakeDocument(std::move(mesh),bounds,hasBounds); }
 StlLoadResult ParseAscii(const std::string& text) { std::istringstream input(text); std::string word; MeshGeometry mesh; ModelBounds bounds{}; bool hasBounds=false, sawSolid=false; while(input>>word){if(word=="solid"){sawSolid=true; std::getline(input,word);} else if(word=="facet"){std::string normal,outer,loop,vertex,endloop,endfacet; Float3 vertices[3]; if(!(input>>normal) || normal!="normal") return {nullptr,L"Malformed ASCII STL facet."}; std::getline(input,word); if(!(input>>outer>>loop) || outer!="outer" || loop!="loop") return {nullptr,L"Malformed ASCII STL loop."}; for(auto& v:vertices) if(!(input>>vertex>>v.x>>v.y>>v.z) || vertex!="vertex") return {nullptr,L"Malformed ASCII STL vertex."}; if(!(input>>endloop) || endloop!="endloop" || !(input>>endfacet) || endfacet!="endfacet") return {nullptr,L"Malformed ASCII STL facet."}; if(!AppendTriangle(mesh,bounds,hasBounds,vertices[0],vertices[1],vertices[2])) return {nullptr,L"The ASCII STL contains invalid coordinates or exceeds the model limit."};} else if(word=="endsolid") break; else { std::getline(input,word); }} if(!sawSolid) return {nullptr,L"The file is not a valid ASCII STL."}; return MakeDocument(std::move(mesh),bounds,hasBounds); }
 }

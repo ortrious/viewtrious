@@ -31,9 +31,17 @@ struct MeshInstance {
     Matrix4 transform = Matrix4::Identity();
 };
 
+struct SnapPlane {
+    Float3 normal{};
+    float offset = 0.0f;
+    std::vector<uint32_t> triangles;
+};
+
 struct ModelDocument {
     std::vector<MeshGeometry> geometries;
     std::vector<MeshInstance> instances;
+    std::vector<SnapPlane> snapPlanes;
+    std::vector<uint32_t> triangleSnapPlanes;
     ModelBounds bounds{};
     std::optional<double> metersPerUnit; // STL does not define units.
 };

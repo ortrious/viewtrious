@@ -65,9 +65,12 @@ bool ParseTransform(const std::wstring& text, Matrix4& transform) {
     double values[12]{}; const wchar_t* cursor = text.c_str();
     for (double& value : values) { while (*cursor && std::iswspace(*cursor)) ++cursor; wchar_t* end = nullptr; errno = 0; value = std::wcstod(cursor, &end); if (end == cursor || errno || !std::isfinite(value)) return false; cursor = end; }
     while (*cursor && std::iswspace(*cursor)) ++cursor; if (*cursor) return false;
-    transform.m[0]=float(values[0]); transform.m[1]=float(values[1]); transform.m[2]=float(values[2]); transform.m[12]=float(values[3]);
-    transform.m[4]=float(values[4]); transform.m[5]=float(values[5]); transform.m[6]=float(values[6]); transform.m[13]=float(values[7]);
-    transform.m[8]=float(values[8]); transform.m[9]=float(values[9]); transform.m[10]=float(values[10]); transform.m[14]=float(values[11]);
+    // 3MF serializes row-major affine values as m00 m01 m02 m10 m11 m12 m20 m21 m22 m30 m31 m32.
+    // Viewtrious uses row vectors, so m30/m31/m32 occupy the Matrix4 translation row.
+    transform.m[0]=float(values[0]); transform.m[1]=float(values[1]); transform.m[2]=float(values[2]);
+    transform.m[4]=float(values[3]); transform.m[5]=float(values[4]); transform.m[6]=float(values[5]);
+    transform.m[8]=float(values[6]); transform.m[9]=float(values[7]); transform.m[10]=float(values[8]);
+    transform.m[12]=float(values[9]); transform.m[13]=float(values[10]); transform.m[14]=float(values[11]);
     return true;
 }
 
@@ -105,6 +108,7 @@ bool ParseModelXml(IStream* stream, ParsedModel& model, std::wstring& error) {
 bool AppendTriangle(MeshGeometry& mesh, ModelBounds& bounds, bool& hasBounds, Float3 a, Float3 b, Float3 c) {
     if (!Finite(a)||!Finite(b)||!Finite(c)||mesh.indices.size()/3>=kMaxTriangles||mesh.positions.size()>std::numeric_limits<uint32_t>::max()-3) return false;
     Float3 normal=Cross(Sub(b,a),Sub(c,a)); const float length=Length(normal); if (!std::isfinite(length)) return false; if (length<=1e-20f) return true; normal={normal.x/length,normal.y/length,normal.z/length}; const uint32_t first=uint32_t(mesh.positions.size());
+    // Flattening duplicates the three transformed positions, so every generated index is local to this emitted triangle span.
     for (const Float3 point : {a,b,c}) { mesh.positions.push_back(point); mesh.normals.push_back(normal); mesh.indices.push_back(uint32_t(mesh.indices.size())); if(!hasBounds){bounds.minimum=bounds.maximum=point;hasBounds=true;}else{bounds.minimum.x=std::min(bounds.minimum.x,point.x);bounds.minimum.y=std::min(bounds.minimum.y,point.y);bounds.minimum.z=std::min(bounds.minimum.z,point.z);bounds.maximum.x=std::max(bounds.maximum.x,point.x);bounds.maximum.y=std::max(bounds.maximum.y,point.y);bounds.maximum.z=std::max(bounds.maximum.z,point.z);} }
     (void)first; return true;
 }
@@ -113,9 +117,13 @@ void BuildSnapPlanes(ModelDocument& document) { const auto& mesh=document.geomet
 bool FlattenObject(const ParsedModel& source, uint32_t objectId, const Matrix4& transform, uint32_t buildItemIndex, uint32_t rootObjectId, uint32_t depth, std::unordered_set<uint32_t>& stack, MeshGeometry& mesh, ModelBounds& bounds, bool& hasBounds, std::vector<ModelInstanceRange>& ranges, std::wstring& error) {
     if (depth>kMaxComponentDepth || stack.contains(objectId)) { error=L"The 3MF contains cyclic or excessively nested components."; return false; }
     const auto found=source.objects.find(objectId); if(found==source.objects.end()) { error=L"The 3MF references a missing object."; return false; }
-    stack.insert(objectId); const SourceObject& object=found->second; const uint32_t firstTriangle=uint32_t(mesh.indices.size()/3);
+    stack.insert(objectId); const SourceObject& object=found->second; const uint32_t firstVertex=uint32_t(mesh.positions.size()),firstTriangle=uint32_t(mesh.indices.size()/3);
     for(const SourceTriangle& triangle:object.triangles){const auto point=[&](uint32_t index){Float3 p=TransformPoint(object.vertices[index],transform);return Float3{float(p.x*source.scaleMillimeters),float(p.y*source.scaleMillimeters),float(p.z*source.scaleMillimeters)};};if(!AppendTriangle(mesh,bounds,hasBounds,point(triangle.first),point(triangle.second),point(triangle.third))){error=L"The 3MF geometry is invalid or exceeds the model limit.";stack.erase(objectId);return false;}}
-    const uint32_t ownTriangles=uint32_t(mesh.indices.size()/3)-firstTriangle; if(ownTriangles)ranges.push_back({rootObjectId,buildItemIndex,firstTriangle,ownTriangles});
+    const uint32_t ownVertices=uint32_t(mesh.positions.size())-firstVertex,ownTriangles=uint32_t(mesh.indices.size()/3)-firstTriangle;
+#if defined(_DEBUG)
+    for(uint32_t triangle=firstTriangle;triangle<uint32_t(mesh.indices.size()/3);++triangle)for(uint32_t corner=0;corner<3;++corner){const uint32_t index=mesh.indices[size_t(triangle)*3+corner];if(index<firstVertex||index>=firstVertex+ownVertices){error=L"The 3MF flattening produced an invalid instance index.";stack.erase(objectId);return false;}}
+#endif
+    if(ownTriangles)ranges.push_back({rootObjectId,buildItemIndex,firstVertex,ownVertices,firstTriangle,ownTriangles});
     for(const SourceComponent& component:object.components)if(!FlattenObject(source,component.objectId,Multiply(component.transform,transform),buildItemIndex,rootObjectId,depth+1,stack,mesh,bounds,hasBounds,ranges,error)){stack.erase(objectId);return false;}
     stack.erase(objectId); return true;
 }
@@ -123,6 +131,9 @@ bool FlattenObject(const ParsedModel& source, uint32_t objectId, const Matrix4& 
 }
 
 ThreeMfLoadResult LoadThreeMfDocument(const std::wstring& path) {
+#if defined(_DEBUG)
+    Matrix4 translationCheck{}; if(!ParseTransform(L"1 0 0 0 1 0 0 0 1 10 20 30",translationCheck) || TransformPoint({0,0,0},translationCheck).x!=10 || TransformPoint({0,0,0},translationCheck).y!=20 || TransformPoint({0,0,0},translationCheck).z!=30) return {nullptr,L"The 3MF transform convention check failed."};
+#endif
     std::vector<unsigned char> xml; std::wstring partPath,error; if(!ReadThreeMfModelXml(path,xml,partPath,error))return {nullptr,std::move(error)}; ComPtr<IStream> stream=SHCreateMemStream(xml.data(),static_cast<UINT>(xml.size())); if(!stream)return {nullptr,L"The 3MF model part could not be read."};
     ParsedModel source; if(!ParseModelXml(stream.Get(),source,error)) return {nullptr,std::move(error)};
     MeshGeometry mesh; ModelBounds bounds{}; bool hasBounds=false; std::vector<ModelInstanceRange> ranges; for(uint32_t index=0;index<source.buildItems.size();++index){std::unordered_set<uint32_t> stack;if(!FlattenObject(source,source.buildItems[index].objectId,source.buildItems[index].transform,index,source.buildItems[index].objectId,0,stack,mesh,bounds,hasBounds,ranges,error))return {nullptr,std::move(error)};}

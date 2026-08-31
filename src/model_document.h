@@ -45,6 +45,8 @@ enum class ModelSourceFormat : uint32_t { Stl, ThreeMf };
 struct ModelInstanceRange {
     uint32_t sourceObjectId = 0;
     uint32_t buildItemIndex = 0;
+    uint32_t firstVertex = 0;
+    uint32_t vertexCount = 0;
     uint32_t firstTriangle = 0;
     uint32_t triangleCount = 0;
 };

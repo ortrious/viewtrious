@@ -21,11 +21,11 @@ bool GraphicsHost::Create(HWND window, ID2D1Factory1* factory, std::wstring& err
     return Resize(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top), static_cast<float>(GetDpiForWindow(window_)), error);
 }
 
-void GraphicsHost::DiscardTargets() { if (context_) context_->OMSetRenderTargets(0, nullptr, nullptr); if (d2dContext_) d2dContext_->SetTarget(nullptr); d2dTarget_.Reset(); renderTarget_.Reset(); }
+void GraphicsHost::DiscardTargets() { if (context_) context_->OMSetRenderTargets(0, nullptr, nullptr); if (d2dContext_) d2dContext_->SetTarget(nullptr); d2dTarget_.Reset(); renderTarget_.Reset(); backBuffer_.Reset(); }
 void GraphicsHost::Destroy() { DiscardTargets(); d2dContext_.Reset(); d2dDevice_.Reset(); swapChain_.Reset(); context_.Reset(); device_.Reset(); window_ = nullptr; width_ = height_ = 0; }
 bool GraphicsHost::CreateTargets(float dpi, std::wstring& error) {
-    ComPtr<ID3D11Texture2D> backBuffer; ComPtr<IDXGISurface> surface;
-    if (FAILED(swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer))) || FAILED(device_->CreateRenderTargetView(backBuffer.Get(), nullptr, &renderTarget_)) || FAILED(backBuffer.As(&surface))) { error = L"The graphics back buffer could not initialize."; return false; }
+    ComPtr<IDXGISurface> surface;
+    if (FAILED(swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer_))) || FAILED(device_->CreateRenderTargetView(backBuffer_.Get(), nullptr, &renderTarget_)) || FAILED(backBuffer_.As(&surface))) { error = L"The graphics back buffer could not initialize."; return false; }
     const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), dpi, dpi);
     if (FAILED(d2dContext_->CreateBitmapFromDxgiSurface(surface.Get(), &properties, &d2dTarget_))) { error = L"The Direct2D display surface could not initialize."; return false; }
     d2dContext_->SetTarget(d2dTarget_.Get()); return true;

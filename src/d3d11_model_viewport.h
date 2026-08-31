@@ -34,6 +34,8 @@ public:
     void SetNavLibFieldOfView(float radians) { camera_.SetFieldOfView(radians); NotifyCameraChanged(); }
     void SetProjectionMode(ModelProjectionMode mode) { camera_.SetProjectionMode(mode); }
     void SetVisualStyle(ModelVisualStyle style) { visualStyle_ = style; }
+    void SetAntiAliasing(ModelAntiAliasing mode) { if (antiAliasing_ != mode) { antiAliasing_ = mode; width_ = height_ = 0; } }
+    ModelAntiAliasing EffectiveAntiAliasing() const { return effectiveAntiAliasing_; }
     void SetOrthographicHalfHeight(float halfHeight) { camera_.SetOrthographicHalfHeight(halfHeight); }
     bool Active() const { return resources_ != nullptr; }
     void BeginOrbit(POINT point);
@@ -72,6 +74,8 @@ private:
     D3D11_VIEWPORT sceneViewport_{};
     int selectedSnapPlane_ = -1;
     ModelVisualStyle visualStyle_ = ModelVisualStyle::Shaded;
+    ModelAntiAliasing antiAliasing_ = ModelAntiAliasing::Msaa4x;
+    ModelAntiAliasing effectiveAntiAliasing_ = ModelAntiAliasing::Off;
     int uploadedSnapPlane_ = -2;
     struct Resources;
     std::unique_ptr<Resources> resources_;

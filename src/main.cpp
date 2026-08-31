@@ -87,11 +87,12 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsSpaceMouse, SettingsProjectionPerspective, SettingsProjectionOrthographic, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    SettingsSpaceMouse, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
+enum class ModelRenderingApi : DWORD { Direct3D11 = 0 };
 enum class SettingsPage { General, Image2D, Model3D };
 enum class ContentKind { None, Image2D, Model3D };
 
@@ -562,6 +563,8 @@ public:
         DWORD visualStyle = static_cast<DWORD>(ModelVisualStyle::Shaded);
         ReadSetting(L"ModelVisualStyle", visualStyle);
         modelVisualStyle_ = visualStyle <= static_cast<DWORD>(ModelVisualStyle::Wireframe) ? static_cast<ModelVisualStyle>(visualStyle) : ModelVisualStyle::Shaded;
+        DWORD renderingApi = static_cast<DWORD>(ModelRenderingApi::Direct3D11); ReadSetting(L"ModelRenderingApi", renderingApi); modelRenderingApi_ = ModelRenderingApi::Direct3D11;
+        DWORD antiAliasing = static_cast<DWORD>(ModelAntiAliasing::Msaa4x); ReadSetting(L"ModelAntiAliasing", antiAliasing); modelAntiAliasing_ = antiAliasing <= static_cast<DWORD>(ModelAntiAliasing::Ssaa2x) ? static_cast<ModelAntiAliasing>(antiAliasing) : ModelAntiAliasing::Msaa4x;
         DWORD imageScaling = static_cast<DWORD>(ImageScaling::Quality);
         ReadSetting(L"ImageScaling", imageScaling);
         imageScaling_ = imageScaling == static_cast<DWORD>(ImageScaling::Performance) ? ImageScaling::Performance : ImageScaling::Quality;
@@ -632,6 +635,7 @@ public:
         }
         modelViewport_.SetProjectionMode(modelProjectionMode_);
         modelViewport_.SetVisualStyle(modelVisualStyle_);
+        modelViewport_.SetAntiAliasing(modelAntiAliasing_);
         contentKind_ = ContentKind::Model3D;
         resolutionText_ = std::to_wstring(modelDocument_->geometries.front().indices.size() / 3) + L" triangles";
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
@@ -1044,7 +1048,7 @@ public:
         if (overlay_ != OverlayKind::Settings) return 0.0f;
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 504 : settingsPage_ == SettingsPage::Image2D ? 350 : 274, dpi, 96));
+        const float contentBottom = static_cast<float>(MulDiv(settingsPage_ == SettingsPage::General ? 504 : settingsPage_ == SettingsPage::Image2D ? 350 : 650, dpi, 96));
         const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
         return std::max(0.0f, contentBottom - viewportBottom);
     }
@@ -1072,7 +1076,7 @@ public:
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
         static constexpr int kRowTops[] = { 106, 106, 132, 132, 158, 184, 158 };
-        const int top = bounds.top + MulDiv(option == 6 && settingsPage_ == SettingsPage::Model3D ? 226 : kRowTops[option], dpi, 96);
+        const int top = bounds.top + MulDiv(option == 6 && settingsPage_ == SettingsPage::Model3D ? 106 : kRowTops[option], dpi, 96);
         return { SettingsContentLeft(), top, bounds.right - MulDiv(18, dpi, 96), top + MulDiv(25, dpi, 96) };
     }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
@@ -1096,16 +1100,19 @@ public:
         const RECT bounds = GetOverlayBounds(); const UINT dpi = GetDpiForWindow(window_);
         const int width = MulDiv(112, dpi, 96), gap = MulDiv(8, dpi, 96);
         const int left = SettingsContentLeft() + static_cast<int>(mode) * (width + gap);
-        const int top = bounds.top + MulDiv(132, dpi, 96);
+        const int top = bounds.top + MulDiv(230, dpi, 96);
         return { left, top, left + width, top + MulDiv(28, dpi, 96) };
     }
+    RECT GetSettingsSpaceMouseBounds() const { const RECT bounds=GetOverlayBounds();const UINT dpi=GetDpiForWindow(window_);const int top=bounds.top+MulDiv(106,dpi,96);return {SettingsContentLeft(),top,bounds.right-MulDiv(18,dpi,96),top+MulDiv(25,dpi,96)}; }
+    RECT GetSettingsAntiAliasingBounds() const { const RECT bounds=GetOverlayBounds();const UINT dpi=GetDpiForWindow(window_);const int top=bounds.top+MulDiv(396,dpi,96);return {SettingsContentLeft(),top,bounds.right-MulDiv(18,dpi,96),top+MulDiv(32,dpi,96)}; }
+    RECT GetSettingsAntiAliasingMenuBounds() const { RECT result=GetSettingsAntiAliasingBounds();const int row=MulDiv(30,GetDpiForWindow(window_),96);result.top=result.bottom+MulDiv(4,GetDpiForWindow(window_),96);result.bottom=result.top+row*6;return result; }
     RECT GetModelViewBarBounds() const {
         const RECT canvas = ModelCanvasBounds(); const int dpi = GetDpiForWindow(window_);
-        const int width = MulDiv(340, dpi, 96), height = MulDiv(32, dpi, 96), top = canvas.top + MulDiv(12, dpi, 96);
+        const int width = MulDiv(500, dpi, 96), height = MulDiv(32, dpi, 96), top = canvas.top + MulDiv(12, dpi, 96);
         const int left = canvas.left + ((canvas.right - canvas.left) - width) / 2;
         return { left, top, left + width, top + height };
     }
-    RECT GetModelViewBarProjectionBounds() const { RECT result=GetModelViewBarBounds(); result.right=result.left+MulDiv(154,GetDpiForWindow(window_),96); return result; }
+    RECT GetModelViewBarProjectionBounds() const { RECT result=GetModelViewBarBounds(); result.right=result.left+MulDiv(170,GetDpiForWindow(window_),96); return result; }
     RECT GetModelViewBarStyleBounds() const { RECT result=GetModelViewBarBounds(); result.left=GetModelViewBarProjectionBounds().right+1; return result; }
     RECT GetModelViewBarProjectionMenuBounds() const { const RECT bar=GetModelViewBarProjectionBounds();const int row=MulDiv(32,GetDpiForWindow(window_),96),gap=MulDiv(4,GetDpiForWindow(window_),96);return {bar.left,bar.bottom+gap,bar.right,bar.bottom+gap+row*2}; }
     RECT GetModelViewBarStyleMenuBounds() const { const RECT bar=GetModelViewBarStyleBounds();const int row=MulDiv(32,GetDpiForWindow(window_),96),gap=MulDiv(4,GetDpiForWindow(window_),96);return {bar.left,bar.bottom+gap,bar.right,bar.bottom+gap+row*3}; }
@@ -1177,6 +1184,7 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void SetModelVisualStyle(ModelVisualStyle style) { if(modelVisualStyle_==style)return;modelVisualStyle_=style;WriteSetting(L"ModelVisualStyle",static_cast<DWORD>(style));if(ModelActive())modelViewport_.SetVisualStyle(style);InvalidateRect(window_,nullptr,FALSE); }
+    void SetModelAntiAliasing(ModelAntiAliasing mode) { if(modelAntiAliasing_==mode){antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE);return;}modelAntiAliasing_=mode;WriteSetting(L"ModelAntiAliasing",static_cast<DWORD>(mode));if(ModelActive())modelViewport_.SetAntiAliasing(mode);antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); }
     RECT GetSettingsResetButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
@@ -1334,9 +1342,11 @@ public:
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Performance))) return ButtonKind::SettingsScalingPerformance;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
             } else if (settingsPage_ == SettingsPage::Model3D) {
+                if (antiAliasingMenuOpen_) { const RECT menu=GetSettingsAntiAliasingMenuBounds();const int row=MulDiv(30,GetDpiForWindow(window_),96);if(PtInRect(&menu,settingsPoint)) { const int index=(settingsPoint.y-menu.top)/row;return index==0?ButtonKind::SettingsAntiAliasingOff:index==1?ButtonKind::SettingsAntiAliasing2x:index==2?ButtonKind::SettingsAntiAliasing4x:index==3?ButtonKind::SettingsAntiAliasing8x:index==4?ButtonKind::SettingsAntiAliasingSsaa1_5x:ButtonKind::SettingsAntiAliasingSsaa2x; } }
                 if (settingsContains(GetSettingsProjectionBounds(ModelProjectionMode::Perspective))) return ButtonKind::SettingsProjectionPerspective;
                 if (settingsContains(GetSettingsProjectionBounds(ModelProjectionMode::Orthographic))) return ButtonKind::SettingsProjectionOrthographic;
-                if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsSpaceMouse;
+                if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsSpaceMouseBounds())) return ButtonKind::SettingsSpaceMouse;
+                if (settingsContains(GetSettingsAntiAliasingBounds())) return ButtonKind::SettingsAntiAliasingToggle;
             }
         }
         if (ModelActive()) {
@@ -1470,6 +1480,13 @@ public:
         else if (button == ButtonKind::SettingsSpaceMouse) ToggleSpaceMouse();
         else if (button == ButtonKind::SettingsProjectionPerspective) SetModelProjectionMode(ModelProjectionMode::Perspective);
         else if (button == ButtonKind::SettingsProjectionOrthographic) SetModelProjectionMode(ModelProjectionMode::Orthographic);
+        else if (button == ButtonKind::SettingsAntiAliasingToggle) { antiAliasingMenuOpen_=!antiAliasingMenuOpen_; InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::SettingsAntiAliasingOff) SetModelAntiAliasing(ModelAntiAliasing::Off);
+        else if (button == ButtonKind::SettingsAntiAliasing2x) SetModelAntiAliasing(ModelAntiAliasing::Msaa2x);
+        else if (button == ButtonKind::SettingsAntiAliasing4x) SetModelAntiAliasing(ModelAntiAliasing::Msaa4x);
+        else if (button == ButtonKind::SettingsAntiAliasing8x) SetModelAntiAliasing(ModelAntiAliasing::Msaa8x);
+        else if (button == ButtonKind::SettingsAntiAliasingSsaa1_5x) SetModelAntiAliasing(ModelAntiAliasing::Ssaa1_5x);
+        else if (button == ButtonKind::SettingsAntiAliasingSsaa2x) SetModelAntiAliasing(ModelAntiAliasing::Ssaa2x);
         else if (button == ButtonKind::ViewBarProjectionToggle) { viewBarProjectionMenuOpen_ = !viewBarProjectionMenuOpen_; viewBarVisualStyleMenuOpen_=false; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::ViewBarProjectionPerspective) { SetModelProjectionMode(ModelProjectionMode::Perspective); DismissModelViewBarMenu(); }
         else if (button == ButtonKind::ViewBarProjectionOrthographic) { SetModelProjectionMode(ModelProjectionMode::Orthographic); DismissModelViewBarMenu(); }
@@ -4066,7 +4083,7 @@ private:
             overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
-            : overlay_ == OverlayKind::Settings ? MulDiv(560, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
+            : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
             overlay_ == OverlayKind::Welcome ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(344, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
@@ -4393,8 +4410,10 @@ private:
             drawScaling(ImageScaling::Performance, ButtonKind::SettingsScalingPerformance, L"Performance");
             drawScaling(ImageScaling::Quality, ButtonKind::SettingsScalingQuality, L"Quality");
             } else {
-            group(L"PROJECTION", 76.0f);
-            DrawOverlayText(L"Projection Mode", settingsLeft, static_cast<float>(bounds.top) + 104.0f * dpiScale, settingsWidth, 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            group(L"INPUT", 76.0f);
+            drawToggle(6, ButtonKind::SettingsSpaceMouse, L"Enable SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
+            group(L"PROJECTION", 174.0f);
+            DrawOverlayText(L"Projection Mode", settingsLeft, static_cast<float>(bounds.top) + 202.0f * dpiScale, settingsWidth, 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const auto drawProjection = [&](ModelProjectionMode mode, ButtonKind button, const wchar_t* label) {
                 const RECT segmentBounds = GetSettingsProjectionBounds(mode); const D2D1_RECT_F segment = D2D1::RectF((float)segmentBounds.left,(float)segmentBounds.top,(float)segmentBounds.right,(float)segmentBounds.bottom);
                 const bool selected = modelProjectionMode_ == mode; ID2D1Brush* fill = selected ? accent.Get() : (hoveredButton_ == button || pressedButton_ == button ? segmentHover.Get() : segmentIdle.Get());
@@ -4403,14 +4422,12 @@ private:
             };
             drawProjection(ModelProjectionMode::Perspective, ButtonKind::SettingsProjectionPerspective, L"Perspective");
             drawProjection(ModelProjectionMode::Orthographic, ButtonKind::SettingsProjectionOrthographic, L"Orthographic");
-            group(L"INPUT", 196.0f);
-            drawToggle(6, ButtonKind::SettingsSpaceMouse, L"Enable SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
-            if (!spaceMouseRuntimeAvailable_) {
-                const RECT spaceMouseBounds = GetSettingsOptionBounds(6);
-                DrawOverlayText(L"Requires 3Dconnexion 3DxWare software", settingsLeft + 30.0f * dpiScale,
-                    static_cast<float>(spaceMouseBounds.top) + 18.0f * dpiScale, settingsWidth - 30.0f * dpiScale,
-                    18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, borderBrush.Get(), true);
-            }
+            group(L"RENDER", 330.0f);
+            DrawOverlayText(L"Rendering API", settingsLeft, static_cast<float>(bounds.top) + 358.0f * dpiScale, settingsWidth,22.0f*dpiScale,16.0f,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get());
+            DrawOverlayText(L"Direct3D 11", settingsLeft, static_cast<float>(bounds.top) + 378.0f * dpiScale,settingsWidth,20.0f*dpiScale,14.0f,DWRITE_FONT_WEIGHT_SEMI_BOLD,primaryBrush.Get());
+            DrawOverlayText(L"Anti-Aliasing",settingsLeft,static_cast<float>(bounds.top)+412.0f*dpiScale,settingsWidth,20.0f*dpiScale,16.0f,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get());
+            const RECT aaBounds=GetSettingsAntiAliasingBounds();const D2D1_RECT_F aa=D2D1::RectF((float)aaBounds.left,(float)aaBounds.top,(float)aaBounds.right,(float)aaBounds.bottom);const wchar_t* aaLabel=modelAntiAliasing_==ModelAntiAliasing::Off?L"Off":modelAntiAliasing_==ModelAntiAliasing::Msaa2x?L"2x MSAA":modelAntiAliasing_==ModelAntiAliasing::Msaa4x?L"4x MSAA":modelAntiAliasing_==ModelAntiAliasing::Msaa8x?L"8x MSAA":modelAntiAliasing_==ModelAntiAliasing::Ssaa1_5x?L"1.5x SSAA":L"2x SSAA";renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(aa,4*dpiScale,4*dpiScale),hoveredButton_==ButtonKind::SettingsAntiAliasingToggle?segmentHover.Get():segmentIdle.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(aa,4*dpiScale,4*dpiScale),borderBrush.Get(),1);DrawOverlayText(aaLabel,aa.left+10*dpiScale,aa.top,aa.right-aa.left-32*dpiScale,aa.bottom-aa.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,primaryBrush.Get(),false,false,true);DrawOverlayText(L"⌄",aa.right-24*dpiScale,aa.top,20*dpiScale,aa.bottom-aa.top,16,DWRITE_FONT_WEIGHT_SEMI_BOLD,primaryBrush.Get(),true,false,true);
+            if(antiAliasingMenuOpen_){const RECT menu=GetSettingsAntiAliasingMenuBounds();const D2D1_RECT_F r=D2D1::RectF((float)menu.left,(float)menu.top,(float)menu.right,(float)menu.bottom);renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),panelBrush.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),borderBrush.Get(),1);const wchar_t* labels[]={L"Off",L"2x MSAA",L"4x MSAA",L"8x MSAA",L"1.5x SSAA",L"2x SSAA"};const int row=MulDiv(30,GetDpiForWindow(window_),96);for(int i=0;i<6;++i)DrawOverlayText(labels[i],(float)menu.left+10*dpiScale,(float)(menu.top+i*row),(float)(menu.right-menu.left)-20*dpiScale,(float)row,13,DWRITE_FONT_WEIGHT_NORMAL,primaryBrush.Get(),false,false,true);}
             }
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
             renderTarget_->PopAxisAlignedClip();
@@ -5114,6 +5131,9 @@ private:
     ImageScaling imageScaling_ = ImageScaling::Quality;
     ModelProjectionMode modelProjectionMode_ = ModelProjectionMode::Perspective;
     ModelVisualStyle modelVisualStyle_ = ModelVisualStyle::Shaded;
+    ModelRenderingApi modelRenderingApi_ = ModelRenderingApi::Direct3D11;
+    ModelAntiAliasing modelAntiAliasing_ = ModelAntiAliasing::Msaa4x;
+    bool antiAliasingMenuOpen_ = false;
     bool viewBarProjectionMenuOpen_ = false;
     bool viewBarVisualStyleMenuOpen_ = false;
     SettingsPage settingsPage_ = SettingsPage::General;

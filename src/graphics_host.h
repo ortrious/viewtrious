@@ -23,6 +23,7 @@ public:
     ID3D11DeviceContext* Context() const { return context_.Get(); }
     ID3D11RenderTargetView* RenderTarget() const { return renderTarget_.Get(); }
     ID3D11RenderTargetView* const* RenderTargetAddress() const { return renderTarget_.GetAddressOf(); }
+    ID3D11Texture2D* BackBuffer() const { return backBuffer_.Get(); }
     UINT Width() const { return width_; }
     UINT Height() const { return height_; }
 
@@ -33,6 +34,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer_;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTarget_;
     Microsoft::WRL::ComPtr<ID2D1Device> d2dDevice_;
     Microsoft::WRL::ComPtr<ID2D1DeviceContext> d2dContext_;

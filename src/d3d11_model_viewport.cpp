@@ -87,7 +87,7 @@ bool D3D11ModelViewport::SetNavLibCameraTarget(Float3 target){homeAnimationActiv
 bool D3D11ModelViewport::SetNavLibPivot(Float3 pivot){homeAnimationActive_=false;if(!camera_.SetPivotFromNavLib(pivot))return false;NotifyCameraChanged();return true;}
 void D3D11ModelViewport::BeginOrbit(POINT point){homeAnimationActive_=false;drag_=Drag::Orbit;dragStart_=point;}
 void D3D11ModelViewport::BeginPan(POINT point){homeAnimationActive_=false;drag_=Drag::Pan;dragStart_=point;}
-void D3D11ModelViewport::ContinueDrag(POINT point,UINT width,UINT height){if(drag_==Drag::None)return;homeAnimationActive_=false;const float pixelDx=float(point.x-dragStart_.x),pixelDy=float(point.y-dragStart_.y);if(pixelDx==0.0f&&pixelDy==0.0f)return;if(drag_==Drag::Orbit)camera_.Orbit(-pixelDx/std::max(1u,width)*4,-pixelDy/std::max(1u,height)*4);else camera_.PanPixels(-pixelDx,-pixelDy,width,height);dragStart_=point;NotifyCameraChanged();}
+void D3D11ModelViewport::ContinueDrag(POINT point,UINT width,UINT height){if(drag_==Drag::None)return;homeAnimationActive_=false;const float pixelDx=float(point.x-dragStart_.x),pixelDy=float(point.y-dragStart_.y);if(pixelDx==0.0f&&pixelDy==0.0f)return;if(drag_==Drag::Orbit)camera_.Orbit(-pixelDx/std::max(1u,width)*4,-pixelDy/std::max(1u,height)*4);else camera_.PanPixels(-pixelDx,pixelDy,width,height);dragStart_=point;NotifyCameraChanged();}
 void D3D11ModelViewport::EndDrag(){drag_=Drag::None;}
 void D3D11ModelViewport::Dolly(float steps){homeAnimationActive_=false;camera_.Dolly(steps);NotifyCameraChanged();}
 bool D3D11ModelViewport::SetSelectedSnapPlane(uint32_t plane){if(!document_||plane>=document_->snapPlanes.size())return false;selectedSnapPlane_=static_cast<int>(plane);return true;}

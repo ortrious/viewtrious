@@ -37,6 +37,8 @@ public:
     void ContinueDrag(POINT point, UINT width, UINT height);
     void EndDrag();
     void Dolly(float steps);
+    bool SetSelectedSnapPlane(uint32_t plane);
+    void ClearSelectedSnapPlane();
     OrbitCamera& Camera() { return camera_; }
     const OrbitCamera& Camera() const { return camera_; }
     const ModelDocument* Document() const { return document_.get(); }
@@ -50,6 +52,7 @@ private:
     void DiscardD3D();
     void ResizeDepth(GraphicsHost& host, UINT width, UINT height);
     void NotifyCameraChanged();
+    bool UploadSelectedSnapPlane();
 
     std::shared_ptr<ModelDocument> document_;
     OrbitCamera camera_;
@@ -61,6 +64,8 @@ private:
     POINT dragStart_{};
     enum class Drag { None, Orbit, Pan } drag_ = Drag::None;
     UINT width_ = 0, height_ = 0;
+    int selectedSnapPlane_ = -1;
+    int uploadedSnapPlane_ = -2;
     struct Resources;
     std::unique_ptr<Resources> resources_;
 };

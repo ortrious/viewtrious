@@ -87,7 +87,7 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsSpaceMouse, SettingsProjectionPerspective, SettingsProjectionOrthographic, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    SettingsSpaceMouse, SettingsProjectionPerspective, SettingsProjectionOrthographic, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
@@ -559,6 +559,9 @@ public:
         DWORD projectionMode = static_cast<DWORD>(ModelProjectionMode::Perspective);
         ReadSetting(L"ModelProjectionMode", projectionMode);
         modelProjectionMode_ = projectionMode == static_cast<DWORD>(ModelProjectionMode::Orthographic) ? ModelProjectionMode::Orthographic : ModelProjectionMode::Perspective;
+        DWORD visualStyle = static_cast<DWORD>(ModelVisualStyle::Shaded);
+        ReadSetting(L"ModelVisualStyle", visualStyle);
+        modelVisualStyle_ = visualStyle <= static_cast<DWORD>(ModelVisualStyle::Wireframe) ? static_cast<ModelVisualStyle>(visualStyle) : ModelVisualStyle::Shaded;
         DWORD imageScaling = static_cast<DWORD>(ImageScaling::Quality);
         ReadSetting(L"ImageScaling", imageScaling);
         imageScaling_ = imageScaling == static_cast<DWORD>(ImageScaling::Performance) ? ImageScaling::Performance : ImageScaling::Quality;
@@ -628,6 +631,7 @@ public:
             modelDocument_.reset(); contentKind_ = ContentKind::None; error_ = viewportError; InvalidateRect(window_, nullptr, FALSE); return;
         }
         modelViewport_.SetProjectionMode(modelProjectionMode_);
+        modelViewport_.SetVisualStyle(modelVisualStyle_);
         contentKind_ = ContentKind::Model3D;
         resolutionText_ = std::to_wstring(modelDocument_->geometries.front().indices.size() / 3) + L" triangles";
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
@@ -1097,13 +1101,16 @@ public:
     }
     RECT GetModelViewBarBounds() const {
         const RECT canvas = ModelCanvasBounds(); const int dpi = GetDpiForWindow(window_);
-        const int width = MulDiv(154, dpi, 96), height = MulDiv(32, dpi, 96), top = canvas.top + MulDiv(12, dpi, 96);
+        const int width = MulDiv(340, dpi, 96), height = MulDiv(32, dpi, 96), top = canvas.top + MulDiv(12, dpi, 96);
         const int left = canvas.left + ((canvas.right - canvas.left) - width) / 2;
         return { left, top, left + width, top + height };
     }
-    RECT GetModelViewBarMenuBounds() const { const RECT bar = GetModelViewBarBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96), gap = MulDiv(4, GetDpiForWindow(window_), 96); return { bar.left, bar.bottom + gap, bar.right, bar.bottom + gap + row * 2 }; }
-    void DismissModelViewBarMenu() { if (viewBarProjectionMenuOpen_) { viewBarProjectionMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); } }
-    bool ModelViewBarMenuOpen() const { return viewBarProjectionMenuOpen_; }
+    RECT GetModelViewBarProjectionBounds() const { RECT result=GetModelViewBarBounds(); result.right=result.left+MulDiv(154,GetDpiForWindow(window_),96); return result; }
+    RECT GetModelViewBarStyleBounds() const { RECT result=GetModelViewBarBounds(); result.left=GetModelViewBarProjectionBounds().right+1; return result; }
+    RECT GetModelViewBarProjectionMenuBounds() const { const RECT bar=GetModelViewBarProjectionBounds();const int row=MulDiv(32,GetDpiForWindow(window_),96),gap=MulDiv(4,GetDpiForWindow(window_),96);return {bar.left,bar.bottom+gap,bar.right,bar.bottom+gap+row*2}; }
+    RECT GetModelViewBarStyleMenuBounds() const { const RECT bar=GetModelViewBarStyleBounds();const int row=MulDiv(32,GetDpiForWindow(window_),96),gap=MulDiv(4,GetDpiForWindow(window_),96);return {bar.left,bar.bottom+gap,bar.right,bar.bottom+gap+row*3}; }
+    void DismissModelViewBarMenu() { if (viewBarProjectionMenuOpen_||viewBarVisualStyleMenuOpen_) { viewBarProjectionMenuOpen_=false;viewBarVisualStyleMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); } }
+    bool ModelViewBarMenuOpen() const { return viewBarProjectionMenuOpen_||viewBarVisualStyleMenuOpen_; }
     void ToggleIncludeHiddenImages() {
         includeHiddenImages_ = !includeHiddenImages_;
         WriteSetting(L"IncludeHiddenImages", includeHiddenImages_ ? 1 : 0);
@@ -1169,6 +1176,7 @@ public:
         if (ModelActive()) modelViewport_.SetProjectionMode(mode);
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void SetModelVisualStyle(ModelVisualStyle style) { if(modelVisualStyle_==style)return;modelVisualStyle_=style;WriteSetting(L"ModelVisualStyle",static_cast<DWORD>(style));if(ModelActive())modelViewport_.SetVisualStyle(style);InvalidateRect(window_,nullptr,FALSE); }
     RECT GetSettingsResetButtonBounds() const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
@@ -1332,8 +1340,9 @@ public:
             }
         }
         if (ModelActive()) {
-            if (viewBarProjectionMenuOpen_) { const RECT menu = GetModelViewBarMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top + row ? ButtonKind::ViewBarProjectionPerspective : ButtonKind::ViewBarProjectionOrthographic; }
-            const RECT bar = GetModelViewBarBounds(); if (PtInRect(&bar, point)) return ButtonKind::ViewBarProjectionToggle;
+            if (viewBarProjectionMenuOpen_) { const RECT menu = GetModelViewBarProjectionMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top + row ? ButtonKind::ViewBarProjectionPerspective : ButtonKind::ViewBarProjectionOrthographic; }
+            if (viewBarVisualStyleMenuOpen_) { const RECT menu = GetModelViewBarStyleMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top+row ? ButtonKind::ViewBarVisualStyleShaded : point.y < menu.top+row*2 ? ButtonKind::ViewBarVisualStyleVisibleEdges : ButtonKind::ViewBarVisualStyleWireframe; }
+            const RECT projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();if(PtInRect(&projection,point))return ButtonKind::ViewBarProjectionToggle;if(PtInRect(&style,point))return ButtonKind::ViewBarVisualStyleToggle;
         }
         if (settingsPage_ == SettingsPage::General && SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
         if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
@@ -1461,9 +1470,13 @@ public:
         else if (button == ButtonKind::SettingsSpaceMouse) ToggleSpaceMouse();
         else if (button == ButtonKind::SettingsProjectionPerspective) SetModelProjectionMode(ModelProjectionMode::Perspective);
         else if (button == ButtonKind::SettingsProjectionOrthographic) SetModelProjectionMode(ModelProjectionMode::Orthographic);
-        else if (button == ButtonKind::ViewBarProjectionToggle) { viewBarProjectionMenuOpen_ = !viewBarProjectionMenuOpen_; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::ViewBarProjectionToggle) { viewBarProjectionMenuOpen_ = !viewBarProjectionMenuOpen_; viewBarVisualStyleMenuOpen_=false; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::ViewBarProjectionPerspective) { SetModelProjectionMode(ModelProjectionMode::Perspective); DismissModelViewBarMenu(); }
         else if (button == ButtonKind::ViewBarProjectionOrthographic) { SetModelProjectionMode(ModelProjectionMode::Orthographic); DismissModelViewBarMenu(); }
+        else if (button == ButtonKind::ViewBarVisualStyleToggle) { viewBarVisualStyleMenuOpen_=!viewBarVisualStyleMenuOpen_;viewBarProjectionMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::ViewBarVisualStyleShaded) { SetModelVisualStyle(ModelVisualStyle::Shaded);DismissModelViewBarMenu(); }
+        else if (button == ButtonKind::ViewBarVisualStyleVisibleEdges) { SetModelVisualStyle(ModelVisualStyle::ShadedWithVisibleEdges);DismissModelViewBarMenu(); }
+        else if (button == ButtonKind::ViewBarVisualStyleWireframe) { SetModelVisualStyle(ModelVisualStyle::Wireframe);DismissModelViewBarMenu(); }
         else if (button == ButtonKind::SettingsThemeSystem) SetThemePreference(ThemePreference::System);
         else if (button == ButtonKind::SettingsThemeLight) SetThemePreference(ThemePreference::Light);
         else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
@@ -4867,18 +4880,13 @@ private:
         const D2D1_RECT_F bar = D2D1::RectF((float)bounds.left,(float)bounds.top,(float)bounds.right,(float)bounds.bottom);
         ComPtr<ID2D1SolidColorBrush> surface,border,text,hover,selected;
         if(FAILED(renderTarget_->CreateSolidColorBrush(dark?D2D1::ColorF(36.f/255,39.f/255,46.f/255,.94f):D2D1::ColorF(250.f/255,250.f/255,250.f/255,.94f),&surface))||FAILED(renderTarget_->CreateSolidColorBrush(dark?D2D1::ColorF(76.f/255,80.f/255,91.f/255):D2D1::ColorF(185.f/255,185.f/255,185.f/255),&border))||FAILED(renderTarget_->CreateSolidColorBrush(dark?D2D1::ColorF(D2D1::ColorF::White):D2D1::ColorF(28.f/255,28.f/255,28.f/255),&text))||FAILED(renderTarget_->CreateSolidColorBrush(dark?D2D1::ColorF(55.f/255,59.f/255,70.f/255):D2D1::ColorF(226.f/255,226.f/255,226.f/255),&hover))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,120.f/255,212.f/255),&selected)))return;
-        const bool over=hoveredButton_==ButtonKind::ViewBarProjectionToggle||pressedButton_==ButtonKind::ViewBarProjectionToggle||viewBarProjectionMenuOpen_;
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bar,6*dpi,6*dpi),over?hover.Get():surface.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(bar,6*dpi,6*dpi),border.Get(),1);
-        const wchar_t* label=modelProjectionMode_==ModelProjectionMode::Perspective?L"Perspective":L"Orthographic";
-        DrawOverlayText(label,bar.left+12*dpi,bar.top,bar.right-bar.left-34*dpi,bar.bottom-bar.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,text.Get(),true);
-        const float chevronX=bar.right-18*dpi, chevronY=(bar.top+bar.bottom)*.5f;
-        renderTarget_->DrawLine(D2D1::Point2F(chevronX-4*dpi,chevronY-2*dpi),D2D1::Point2F(chevronX,chevronY+2*dpi),text.Get(),1.5f*dpi);
-        renderTarget_->DrawLine(D2D1::Point2F(chevronX,chevronY+2*dpi),D2D1::Point2F(chevronX+4*dpi,chevronY-2*dpi),text.Get(),1.5f*dpi);
-        if(!viewBarProjectionMenuOpen_)return;
-        const RECT menuBounds=GetModelViewBarMenuBounds(); const int row=MulDiv(32,GetDpiForWindow(window_),96); const D2D1_RECT_F menu=D2D1::RectF((float)menuBounds.left,(float)menuBounds.top,(float)menuBounds.right,(float)menuBounds.bottom);
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(menu,6*dpi,6*dpi),surface.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu,6*dpi,6*dpi),border.Get(),1);
-        const auto item=[&](ModelProjectionMode mode,ButtonKind button,const wchar_t* value,int top){const D2D1_RECT_F r=D2D1::RectF(menu.left,(float)top,menu.right,(float)(top+row));if(modelProjectionMode_==mode)renderTarget_->FillRectangle(r,selected.Get());else if(hoveredButton_==button||pressedButton_==button)renderTarget_->FillRectangle(r,hover.Get());DrawOverlayText(value,r.left+12*dpi,r.top,r.right-r.left-24*dpi,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_NORMAL,text.Get(),true);};
-        item(ModelProjectionMode::Perspective,ButtonKind::ViewBarProjectionPerspective,L"Perspective",menuBounds.top); item(ModelProjectionMode::Orthographic,ButtonKind::ViewBarProjectionOrthographic,L"Orthographic",menuBounds.top+row);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bar,6*dpi,6*dpi),surface.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(bar,6*dpi,6*dpi),border.Get(),1);
+        const auto chevron=[&](D2D1_RECT_F r){const float cx=r.right-18*dpi,cy=(r.top+r.bottom)*.5f;renderTarget_->DrawLine(D2D1::Point2F(cx-4*dpi,cy-2*dpi),D2D1::Point2F(cx,cy+2*dpi),text.Get(),1.5f*dpi);renderTarget_->DrawLine(D2D1::Point2F(cx,cy+2*dpi),D2D1::Point2F(cx+4*dpi,cy-2*dpi),text.Get(),1.5f*dpi);};
+        const auto control=[&](RECT rect,ButtonKind button,const wchar_t* label,bool open){const D2D1_RECT_F r=D2D1::RectF((float)rect.left,(float)rect.top,(float)rect.right,(float)rect.bottom);if(hoveredButton_==button||pressedButton_==button||open)renderTarget_->FillRectangle(r,hover.Get());DrawOverlayText(label,r.left+12*dpi,r.top,r.right-r.left-34*dpi,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,text.Get(),true);chevron(r);};
+        const RECT projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();control(projection,ButtonKind::ViewBarProjectionToggle,modelProjectionMode_==ModelProjectionMode::Perspective?L"Perspective":L"Orthographic",viewBarProjectionMenuOpen_);renderTarget_->DrawLine(D2D1::Point2F((float)style.left,(float)style.top+7*dpi),D2D1::Point2F((float)style.left,(float)style.bottom-7*dpi),border.Get(),1);const wchar_t* styleLabel=modelVisualStyle_==ModelVisualStyle::Shaded?L"Shaded":modelVisualStyle_==ModelVisualStyle::ShadedWithVisibleEdges?L"Shaded with Visible Edges":L"Wireframe";control(style,ButtonKind::ViewBarVisualStyleToggle,styleLabel,viewBarVisualStyleMenuOpen_);
+        const auto menuItem=[&](RECT bounds,ButtonKind button,const wchar_t* value,bool active,int top){const int row=MulDiv(32,GetDpiForWindow(window_),96);const D2D1_RECT_F r=D2D1::RectF((float)bounds.left,(float)top,(float)bounds.right,(float)(top+row));if(active)renderTarget_->FillRectangle(r,selected.Get());else if(hoveredButton_==button||pressedButton_==button)renderTarget_->FillRectangle(r,hover.Get());DrawOverlayText(value,r.left+12*dpi,r.top,r.right-r.left-24*dpi,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_NORMAL,text.Get(),true);};
+        if(viewBarProjectionMenuOpen_){const RECT menu=GetModelViewBarProjectionMenuBounds();const D2D1_RECT_F r=D2D1::RectF((float)menu.left,(float)menu.top,(float)menu.right,(float)menu.bottom);renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,6*dpi,6*dpi),surface.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,6*dpi,6*dpi),border.Get(),1);const int row=MulDiv(32,GetDpiForWindow(window_),96);menuItem(menu,ButtonKind::ViewBarProjectionPerspective,L"Perspective",modelProjectionMode_==ModelProjectionMode::Perspective,menu.top);menuItem(menu,ButtonKind::ViewBarProjectionOrthographic,L"Orthographic",modelProjectionMode_==ModelProjectionMode::Orthographic,menu.top+row);}
+        if(viewBarVisualStyleMenuOpen_){const RECT menu=GetModelViewBarStyleMenuBounds();const D2D1_RECT_F r=D2D1::RectF((float)menu.left,(float)menu.top,(float)menu.right,(float)menu.bottom);renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,6*dpi,6*dpi),surface.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,6*dpi,6*dpi),border.Get(),1);const int row=MulDiv(32,GetDpiForWindow(window_),96);menuItem(menu,ButtonKind::ViewBarVisualStyleShaded,L"Shaded",modelVisualStyle_==ModelVisualStyle::Shaded,menu.top);menuItem(menu,ButtonKind::ViewBarVisualStyleVisibleEdges,L"Shaded with Visible Edges",modelVisualStyle_==ModelVisualStyle::ShadedWithVisibleEdges,menu.top+row);menuItem(menu,ButtonKind::ViewBarVisualStyleWireframe,L"Wireframe",modelVisualStyle_==ModelVisualStyle::Wireframe,menu.top+row*2);}
     }
     void DrawTitleBar() {
         if (fullscreen_) return;
@@ -5097,7 +5105,9 @@ private:
     ThemePreference themePreference_ = ThemePreference::System;
     ImageScaling imageScaling_ = ImageScaling::Quality;
     ModelProjectionMode modelProjectionMode_ = ModelProjectionMode::Perspective;
+    ModelVisualStyle modelVisualStyle_ = ModelVisualStyle::Shaded;
     bool viewBarProjectionMenuOpen_ = false;
+    bool viewBarVisualStyleMenuOpen_ = false;
     SettingsPage settingsPage_ = SettingsPage::General;
     float settingsScroll_ = 0.0f;
     bool onboardingRequired_ = false;
@@ -5339,7 +5349,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (viewer->ModelViewBarMenuOpen()) {
             const ButtonKind button = viewer->ButtonAt(point);
-            if (button == ButtonKind::ViewBarProjectionPerspective || button == ButtonKind::ViewBarProjectionOrthographic || button == ButtonKind::ViewBarProjectionToggle) { viewer->SetButtonPressed(button); SetCapture(window); }
+            if (button == ButtonKind::ViewBarProjectionPerspective || button == ButtonKind::ViewBarProjectionOrthographic || button == ButtonKind::ViewBarProjectionToggle || button == ButtonKind::ViewBarVisualStyleToggle || button == ButtonKind::ViewBarVisualStyleShaded || button == ButtonKind::ViewBarVisualStyleVisibleEdges || button == ButtonKind::ViewBarVisualStyleWireframe) { viewer->SetButtonPressed(button); SetCapture(window); }
             else viewer->DismissModelViewBarMenu();
             return 0;
         }

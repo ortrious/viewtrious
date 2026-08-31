@@ -5,6 +5,7 @@
 #include <vector>
 
 struct Float3 { float x = 0, y = 0, z = 0; };
+enum class ModelVisualStyle : uint32_t { Shaded = 0, ShadedWithVisibleEdges = 1, Wireframe = 2 };
 
 struct Matrix4 {
     float m[16]{};

@@ -33,6 +33,7 @@ public:
     bool SetNavLibPivot(Float3 pivot);
     void SetNavLibFieldOfView(float radians) { camera_.SetFieldOfView(radians); NotifyCameraChanged(); }
     void SetProjectionMode(ModelProjectionMode mode) { camera_.SetProjectionMode(mode); }
+    void SetVisualStyle(ModelVisualStyle style) { visualStyle_ = style; }
     void SetOrthographicHalfHeight(float halfHeight) { camera_.SetOrthographicHalfHeight(halfHeight); }
     bool Active() const { return resources_ != nullptr; }
     void BeginOrbit(POINT point);
@@ -70,6 +71,7 @@ private:
     UINT width_ = 0, height_ = 0;
     D3D11_VIEWPORT sceneViewport_{};
     int selectedSnapPlane_ = -1;
+    ModelVisualStyle visualStyle_ = ModelVisualStyle::Shaded;
     int uploadedSnapPlane_ = -2;
     struct Resources;
     std::unique_ptr<Resources> resources_;

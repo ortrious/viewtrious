@@ -2251,6 +2251,7 @@ public:
     void LanczosRefinementTimer() { RequestLanczosVariant(); }
     void ShellRotationTimer() { UpdateShellRotation(); }
     void HeifRotationMenuRefreshTimer() { RefreshHeifRotationContextMenu(); }
+    void ModelLoadingAnimationTimerMessage() { UpdateModelLoadingAnimation(); }
     void FullDecodeCompleteMessage(FullDecodeResult* result) { HandleFullDecodeResult(result); }
     void LanczosCompleteMessage(LanczosResult* result) { HandleLanczosResult(result); }
     void DecodeWorkerFinishedMessage(DecodeWorkerFinished* finished) { HandleDecodeWorkerFinished(finished); }
@@ -5913,7 +5914,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kHeifRotationMenuRefreshTimer) { viewer->HeifRotationMenuRefreshTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
         if (wParam == kModelHomeAnimationTimer) { viewer->UpdateAnimatedModelHome(); return 0; }
-        if (wParam == kModelLoadingAnimationTimer) { viewer->UpdateModelLoadingAnimation(); return 0; }
+        if (wParam == kModelLoadingAnimationTimer) { viewer->ModelLoadingAnimationTimerMessage(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {

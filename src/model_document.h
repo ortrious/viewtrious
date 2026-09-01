@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -46,7 +47,7 @@ struct SnapPlane {
     std::vector<uint32_t> triangles;
 };
 
-enum class ModelSourceFormat : uint32_t { Stl, ThreeMf };
+enum class ModelSourceFormat : uint32_t { Stl, ThreeMf, Step };
 
 struct ModelInstanceRange {
     uint32_t sourceObjectId = 0;
@@ -69,4 +70,8 @@ struct ModelDocument {
     double unitScaleMillimeters = 1.0;
     std::vector<ModelInstanceRange> instanceRanges;
     std::optional<double> metersPerUnit; // STL does not define units.
+    // STEP retains the XDE document behind this opaque owner so future CAD-aware
+    // inspection can resolve triangleCadFaceIds back to B-Rep topology.
+    std::shared_ptr<void> cadTopology;
+    std::vector<uint32_t> triangleCadFaceIds;
 };

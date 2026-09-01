@@ -19,6 +19,7 @@
 #include "d3d11_model_viewport.h"
 #include "stl_loader.h"
 #include "three_mf_loader.h"
+#include "step_loader.h"
 
 #include <algorithm>
 #include <atomic>
@@ -272,7 +273,7 @@ bool IsSupportedExtension(const fs::path& path) {
         extension == L".tiff" || extension == L".ico" || extension == L".webp" ||
         extension == L".heic" || extension == L".heif" || extension == L".avif" ||
         extension == L".dng" || extension == L".cr2" || extension == L".cr3" ||
-        extension == L".nef" || extension == L".arw" || extension == L".raf" || extension == L".stl" || extension == L".3mf";
+        extension == L".nef" || extension == L".arw" || extension == L".raf" || extension == L".stl" || extension == L".3mf" || extension == L".step" || extension == L".stp";
 }
 
 
@@ -285,7 +286,8 @@ std::wstring LowercaseExtension(const std::wstring& path) {
 
 bool IsStlPath(const std::wstring& path) { return LowercaseExtension(path) == L".stl"; }
 bool IsThreeMfPath(const std::wstring& path) { return LowercaseExtension(path) == L".3mf"; }
-bool IsModelPath(const std::wstring& path) { return IsStlPath(path) || IsThreeMfPath(path); }
+bool IsStepPath(const std::wstring& path) { const std::wstring extension=LowercaseExtension(path); return extension == L".step" || extension == L".stp"; }
+bool IsModelPath(const std::wstring& path) { return IsStlPath(path) || IsThreeMfPath(path) || IsStepPath(path); }
 
 bool IsJpegPath(const std::wstring& path) {
     const std::wstring extension = LowercaseExtension(path);
@@ -821,7 +823,7 @@ public:
         ComPtr<IFileOpenDialog> dialog;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
         static const COMDLG_FILTERSPEC filters[] = {
-            { L"Supported files", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.stl;*.3mf" },
+            { L"Supported files", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.stl;*.3mf;*.step;*.stp" },
             { L"All files", L"*.*" },
         };
         dialog->SetFileTypes(ARRAYSIZE(filters), filters);
@@ -2464,6 +2466,9 @@ private:
                 if (IsThreeMfPath(path)) {
                     ThreeMfLoadResult result = LoadThreeMfDocument(path);
                     loaded.document = std::move(result.document); loaded.error = std::move(result.error);
+                } else if (IsStepPath(path)) {
+                    StepLoadResult result = LoadStepDocument(path);
+                    loaded.document = std::move(result.document); loaded.error = std::move(result.error);
                 } else {
                     StlLoadResult result = LoadStlDocument(path);
                     loaded.document = std::move(result.document); loaded.error = std::move(result.error);
@@ -2544,6 +2549,8 @@ private:
             { L".dng", L"Viewtrious.dng", L"Viewtrious DNG Image" },
             { L".stl", L"Viewtrious.stl", L"Viewtrious STL Model" },
             { L".3mf", L"Viewtrious.3mf", L"Viewtrious 3MF Model" },
+            { L".step", L"Viewtrious.step", L"Viewtrious STEP Model" },
+            { L".stp", L"Viewtrious.stp", L"Viewtrious STP Model" },
         };
         for (const Association& association : associations) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;

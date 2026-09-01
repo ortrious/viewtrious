@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.7.0.1 LANGUAGES CXX)
+project(Viewtrious VERSION 0.7.1.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -42,6 +42,16 @@ add_executable(ViewtriousLanczosBenchmark
     src/lanczos_resampler.cpp
 )
 
+add_library(ViewtriousStlThumbnail SHARED
+    shell/stl_thumbnail_provider.cpp
+    shell/ViewtriousStlThumbnail.rc
+)
+set_target_properties(ViewtriousStlThumbnail PROPERTIES OUTPUT_NAME ViewtriousStlThumbnail)
+add_custom_command(TARGET ViewtriousStlThumbnail POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/shell/Register-ViewtriousStlThumbnail.ps1" "$<TARGET_FILE_DIR:ViewtriousStlThumbnail>/Register-ViewtriousStlThumbnail.ps1")
+target_compile_features(ViewtriousStlThumbnail PRIVATE cxx_std_20)
+target_compile_definitions(ViewtriousStlThumbnail PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX VIEWTRIOUS_VERSION=L"${PROJECT_VERSION}")
+target_link_libraries(ViewtriousStlThumbnail PRIVATE ole32 uuid gdi32)
+
 target_compile_features(Viewtrious PRIVATE cxx_std_20)
 target_compile_definitions(Viewtrious PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX VIEWTRIOUS_VERSION=L\"${PROJECT_VERSION}\")
 target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_3DXWARE_INCLUDE_DIR}")
@@ -79,6 +89,7 @@ if(MSVC)
     target_compile_options(Viewtrious PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(Viewtrious PRIVATE $<$<CONFIG:Release>:/O2>)
     target_compile_options(ViewtriousLanczosBenchmark PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(ViewtriousStlThumbnail PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(ViewtriousLanczosBenchmark PRIVATE $<$<CONFIG:Release>:/O2>)
 endif()
 

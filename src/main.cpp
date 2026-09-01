@@ -65,6 +65,7 @@ constexpr UINT_PTR kLanczosSettleTimer = 7;
 constexpr UINT_PTR kHeifRotationMenuRefreshTimer = 8;
 constexpr UINT_PTR kGifPlaybackTimer = 10;
 constexpr UINT_PTR kModelHomeAnimationTimer = 11;
+constexpr UINT_PTR kModelLoadingAnimationTimer = 12;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
@@ -75,6 +76,7 @@ constexpr int kContextMenuPaddingDip = 8;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kWheelZoomStep = 1.11f;
 constexpr ULONGLONG kModelHomeAnimationDurationMs = 240;
+constexpr ULONGLONG kModelLoadingOverlayDelayMs = 150;
 constexpr float kSettingsMajorSectionGapDips = 40.0f;
 constexpr float kModelSettingsInputHeadingTopDips = 76.0f;
 constexpr float kModelSettingsControlOffsetDips = 30.0f;
@@ -144,6 +146,7 @@ struct FullDecodeResult : PixelBuffer {
 };
 struct DecodeWorkerFinished { std::thread::id workerId{}; };
 struct ModelLoadResult { std::wstring path; uint64_t generation = 0; std::shared_ptr<ModelDocument> document; std::wstring error; bool IsSuccess() const { return document != nullptr; } };
+struct ModelLoadWorker { uint64_t generation = 0; std::thread thread; };
 struct LanczosRequest {
     std::shared_ptr<std::vector<BYTE>> sourcePixels;
     UINT sourceWidth = 0, sourceHeight = 0, targetWidth = 0, targetHeight = 0;
@@ -662,8 +665,10 @@ public:
 
     void ModelLoadCompleteMessage(ModelLoadResult* result) {
         std::unique_ptr<ModelLoadResult> owned(result);
-        if (!result || shuttingDown_ || result->generation != modelLoadGeneration_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_))) return;
-        if (modelLoadThread_.joinable()) modelLoadThread_.join();
+        if (!result) return;
+        ReapModelLoadWorker(result->generation);
+        if (shuttingDown_ || result->generation != modelLoadGeneration_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_))) return;
+        StopModelLoadingAnimation();
         modelLoading_ = false;
         if (!result->IsSuccess()) { contentKind_ = ContentKind::None; error_ = result->error; InvalidateRect(window_, nullptr, FALSE); return; }
         modelDocument_ = result->document;
@@ -1793,12 +1798,13 @@ public:
         if (renderTarget_ && graphicsHost_.Ready()) {
             if (ModelActive() && !TutorialActive()) modelViewport_.Render(graphicsHost_, ModelCanvasBounds());
             graphicsHost_.BeginDraw();
-            if (contentKind_ != ContentKind::Model3D || TutorialActive()) renderTarget_->Clear(kViewerBackground);
+            if (contentKind_ != ContentKind::Model3D || !ModelActive() || TutorialActive()) renderTarget_->Clear(kViewerBackground);
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
             } else if (EmptyStateActive()) DrawEmptyState();
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); }
+            if (!tutorialPresentation_) DrawModelLoadingOverlay();
             if (!tutorialPresentation_) DrawRevisionLabel();
             DrawTitleBar();
             DrawDropdown();
@@ -2208,8 +2214,13 @@ public:
     void Shutdown() {
         shuttingDown_ = true;
         KillTimer(window_, kModelHomeAnimationTimer);
+        StopModelLoadingAnimation();
         ++modelLoadGeneration_;
-        if (modelLoadThread_.joinable()) modelLoadThread_.join();
+        for (ModelLoadWorker& worker : modelLoadWorkers_) if (worker.thread.joinable()) worker.thread.join();
+        modelLoadWorkers_.clear();
+        MSG modelLoadMessage{};
+        while (PeekMessageW(&modelLoadMessage, window_, kModelLoadCompleteMessage, kModelLoadCompleteMessage, PM_REMOVE))
+            delete reinterpret_cast<ModelLoadResult*>(modelLoadMessage.lParam);
         DeactivateModel();
         graphicsHost_.Destroy();
         if (spaceMouse_) {
@@ -2291,6 +2302,37 @@ private:
 #if defined(_DEBUG)
         const int sector=static_cast<int>(std::floor((std::atan2(indicator.direction.y,indicator.direction.x)+3.14159265f)*4.f/3.14159265f))%8;if(!offscreenIndicatorWasVisible_||sector!=offscreenIndicatorSector_){wchar_t message[256]{};swprintf_s(message,L"Viewtrious offscreen indicator: visible=1 sector=%d direction=(%.3f,%.3f) position=(%.1f,%.1f)\\n",sector,indicator.direction.x,indicator.direction.y,indicator.position.x,indicator.position.y);OutputDebugStringW(message);offscreenIndicatorSector_=sector;}offscreenIndicatorWasVisible_=true;
 #endif
+    }
+    void DrawModelLoadingOverlay() {
+        if (!ModelLoadingOverlayVisible()) return;
+        const RECT canvas = ModelCanvasBounds();
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const float width = std::min(380.0f * scale, std::max(220.0f * scale, float(canvas.right - canvas.left) - 32.0f * scale));
+        const float height = 156.0f * scale;
+        const float left = (canvas.left + canvas.right - width) * 0.5f;
+        const float top = (canvas.top + canvas.bottom - height) * 0.5f;
+        const bool dark = UseDarkAppMode();
+        ComPtr<ID2D1SolidColorBrush> panel, border, primary, secondary, spinner;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(41.f / 255, 44.f / 255, 52.f / 255, .97f) : D2D1::ColorF(250.f / 255, 250.f / 255, 250.f / 255, .97f), &panel)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(83.f / 255, 88.f / 255, 102.f / 255) : D2D1::ColorF(190.f / 255, 190.f / 255, 190.f / 255), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(.95f, .96f, .98f) : D2D1::ColorF(.12f, .12f, .12f), &primary)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(.70f, .73f, .79f) : D2D1::ColorF(.36f, .36f, .36f), &secondary)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &spinner))) return;
+        const D2D1_ROUNDED_RECT bounds = D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 8.0f * scale, 8.0f * scale);
+        renderTarget_->FillRoundedRectangle(bounds, panel.Get());
+        renderTarget_->DrawRoundedRectangle(bounds, border.Get(), 1.0f);
+        DrawOverlayText(L"Opening model...", left + 20.0f * scale, top + 20.0f * scale, width - 40.0f * scale, 28.0f * scale, 18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primary.Get(), true);
+        DrawOverlayText(filenameText_.c_str(), left + 20.0f * scale, top + 51.0f * scale, width - 40.0f * scale, 24.0f * scale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true);
+        const D2D1_POINT_2F center = D2D1::Point2F(left + width * .5f, top + 113.0f * scale);
+        const unsigned phase = static_cast<unsigned>((GetTickCount64() - modelLoadingStartedAtMs_) / 80) % 12;
+        for (unsigned index = 0; index < 12; ++index) {
+            const float angle = (static_cast<float>(index) / 12.0f) * 6.2831853f - 1.5707963f;
+            const unsigned distance = (index + 12 - phase) % 12;
+            const float opacity = .20f + .80f * (1.0f - static_cast<float>(distance) / 12.0f);
+            spinner->SetOpacity(opacity);
+            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(center.x + std::cos(angle) * 16.0f * scale, center.y + std::sin(angle) * 16.0f * scale), 3.0f * scale, 3.0f * scale), spinner.Get());
+        }
+        spinner->SetOpacity(1.0f);
     }
     void DrawModelAxisIndicator() {
         const RECT canvas = ModelCanvasBounds(); const float dpi = GetDpiForWindow(window_) / 96.0f;
@@ -2389,18 +2431,54 @@ private:
             InvalidateRect(window_, nullptr, FALSE);
         }
     }
+    void ReapModelLoadWorker(uint64_t generation) {
+        const auto worker = std::find_if(modelLoadWorkers_.begin(), modelLoadWorkers_.end(), [generation](const ModelLoadWorker& entry) {
+            return entry.generation == generation;
+        });
+        if (worker == modelLoadWorkers_.end()) return;
+        if (worker->thread.joinable()) worker->thread.join();
+        modelLoadWorkers_.erase(worker);
+    }
+    void StopModelLoadingAnimation() { KillTimer(window_, kModelLoadingAnimationTimer); }
+    bool ModelLoadingOverlayVisible() const {
+        return modelLoading_ && GetTickCount64() - modelLoadingStartedAtMs_ >= kModelLoadingOverlayDelayMs;
+    }
+    void UpdateModelLoadingAnimation() {
+        if (!modelLoading_) { StopModelLoadingAnimation(); return; }
+        if (ModelLoadingOverlayVisible()) InvalidateRect(window_, nullptr, FALSE);
+    }
     void BeginModelLoad(const std::wstring& path) {
         DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         ++decodeRequestGeneration_; ++modelLoadGeneration_; const uint64_t generation = modelLoadGeneration_;
         currentPath_ = path; displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
-        navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; contentKind_ = ContentKind::Model3D;
-        if (modelLoadThread_.joinable()) modelLoadThread_.join();
-        modelLoadThread_ = std::thread([this, path, generation] { if (IsThreeMfPath(path)) { ThreeMfLoadResult loaded=LoadThreeMfDocument(path); auto* result=new ModelLoadResult{path,generation,std::move(loaded.document),std::move(loaded.error)}; if(shuttingDown_||!PostMessageW(window_,kModelLoadCompleteMessage,0,reinterpret_cast<LPARAM>(result)))delete result; } else { StlLoadResult loaded=LoadStlDocument(path); auto* result=new ModelLoadResult{path,generation,std::move(loaded.document),std::move(loaded.error)}; if(shuttingDown_||!PostMessageW(window_,kModelLoadCompleteMessage,0,reinterpret_cast<LPARAM>(result)))delete result; } });
+        navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; modelLoadingStartedAtMs_ = GetTickCount64(); contentKind_ = ContentKind::Model3D;
+        ClearModelFaceSelection(); modelClickCandidate_ = false;
+        SetTimer(window_, kModelLoadingAnimationTimer, 16, nullptr);
+        const HWND window = window_;
+        modelLoadWorkers_.push_back({ generation, std::thread([path, generation, window, shuttingDown = &shuttingDown_] {
+            const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            ModelLoadResult loaded{ path, generation };
+            if (SUCCEEDED(com) || com == RPC_E_CHANGED_MODE) {
+                if (IsThreeMfPath(path)) {
+                    ThreeMfLoadResult result = LoadThreeMfDocument(path);
+                    loaded.document = std::move(result.document); loaded.error = std::move(result.error);
+                } else {
+                    StlLoadResult result = LoadStlDocument(path);
+                    loaded.document = std::move(result.document); loaded.error = std::move(result.error);
+                }
+            } else {
+                loaded.error = L"Viewtrious could not initialize the model loading worker.";
+            }
+            if (SUCCEEDED(com)) CoUninitialize();
+            auto* result = new ModelLoadResult(std::move(loaded));
+            if (shuttingDown->load() || !PostMessageW(window, kModelLoadCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
+        }) });
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DeactivateModel() {
         CancelAnimatedModelHome();
+        StopModelLoadingAnimation(); ClearModelFaceSelection(); modelClickCandidate_ = false;
         modelViewport_.Destroy(); modelDocument_.reset(); modelLoading_ = false;
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
@@ -5388,10 +5466,11 @@ private:
     ContentKind contentKind_ = ContentKind::None;
     std::shared_ptr<ModelDocument> modelDocument_;
     D3D11ModelViewport modelViewport_;
-    std::thread modelLoadThread_;
+    std::vector<ModelLoadWorker> modelLoadWorkers_;
     std::atomic<uint64_t> modelLoadGeneration_{ 0 };
     std::atomic<bool> shuttingDown_{ false };
     bool modelLoading_ = false;
+    ULONGLONG modelLoadingStartedAtMs_ = 0;
 #if defined(_DEBUG)
     bool offscreenIndicatorWasVisible_ = false;
     int offscreenIndicatorSector_ = -1;
@@ -5834,6 +5913,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kHeifRotationMenuRefreshTimer) { viewer->HeifRotationMenuRefreshTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
         if (wParam == kModelHomeAnimationTimer) { viewer->UpdateAnimatedModelHome(); return 0; }
+        if (wParam == kModelLoadingAnimationTimer) { viewer->UpdateModelLoadingAnimation(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {

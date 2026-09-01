@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.7.1.1 LANGUAGES CXX)
+project(Viewtrious VERSION 0.7.1.2 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -45,6 +45,7 @@ add_executable(ViewtriousLanczosBenchmark
 add_library(ViewtriousStlThumbnail SHARED
     shell/stl_thumbnail_provider.cpp
     shell/ViewtriousStlThumbnail.rc
+    shell/ViewtriousStlThumbnail.def
 )
 set_target_properties(ViewtriousStlThumbnail PROPERTIES OUTPUT_NAME ViewtriousStlThumbnail)
 add_custom_command(TARGET ViewtriousStlThumbnail POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/shell/Register-ViewtriousStlThumbnail.ps1" "$<TARGET_FILE_DIR:ViewtriousStlThumbnail>/Register-ViewtriousStlThumbnail.ps1")

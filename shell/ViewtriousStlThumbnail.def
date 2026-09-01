@@ -1,0 +1,4 @@
+LIBRARY ViewtriousStlThumbnail
+EXPORTS
+    DllCanUnloadNow
+    DllGetClassObject

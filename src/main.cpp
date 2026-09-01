@@ -19,7 +19,7 @@
 #include "d3d11_model_viewport.h"
 #include "stl_loader.h"
 #include "three_mf_loader.h"
-#include "step_loader.h"
+#include "model_importer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -823,7 +823,7 @@ public:
         ComPtr<IFileOpenDialog> dialog;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
         static const COMDLG_FILTERSPEC filters[] = {
-            { L"Supported files", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.stl;*.3mf;*.step;*.stp" },
+            { L"Supported files", StepAddonPresent() ? L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.stl;*.3mf;*.step;*.stp" : L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.stl;*.3mf" },
             { L"All files", L"*.*" },
         };
         dialog->SetFileTypes(ARRAYSIZE(filters), filters);
@@ -2467,8 +2467,7 @@ private:
                     ThreeMfLoadResult result = LoadThreeMfDocument(path);
                     loaded.document = std::move(result.document); loaded.error = std::move(result.error);
                 } else if (IsStepPath(path)) {
-                    StepLoadResult result = LoadStepDocument(path);
-                    loaded.document = std::move(result.document); loaded.error = std::move(result.error);
+                    loaded.document = LoadStepDocumentFromAddon(path, loaded.error);
                 } else {
                     StlLoadResult result = LoadStlDocument(path);
                     loaded.document = std::move(result.document); loaded.error = std::move(result.error);
@@ -2549,9 +2548,14 @@ private:
             { L".dng", L"Viewtrious.dng", L"Viewtrious DNG Image" },
             { L".stl", L"Viewtrious.stl", L"Viewtrious STL Model" },
             { L".3mf", L"Viewtrious.3mf", L"Viewtrious 3MF Model" },
-            { L".step", L"Viewtrious.step", L"Viewtrious STEP Model" },
-            { L".stp", L"Viewtrious.stp", L"Viewtrious STP Model" },
         };
+        if (StepAddonPresent()) {
+            const Association stepAssociations[] = { { L".step", L"Viewtrious.step", L"Viewtrious STEP Model" }, { L".stp", L"Viewtrious.stp", L"Viewtrious STP Model" } };
+            for (const Association& association : stepAssociations) {
+                const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
+                WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description); WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\DefaultIcon").c_str(), L"", executable + L",0"); WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\shell\\open\\command").c_str(), L"", command); WriteRegistryString(HKEY_CURRENT_USER, (std::wstring(kCapabilitiesPath) + L"\\FileAssociations").c_str(), association.extension, association.progId);
+            }
+        }
         for (const Association& association : associations) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
             WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description);

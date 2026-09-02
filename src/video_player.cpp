@@ -2,6 +2,7 @@
 
 #include <shlwapi.h>
 
+#include <algorithm>
 #include <cmath>
 
 using Microsoft::WRL::ComPtr;
@@ -234,8 +235,43 @@ void VideoPlayer::TogglePlayPause() {
     if (!engine_ || failed_) return;
     Trace(window_, L"play/pause request");
     if (playing_) { const HRESULT pause = engine_->Pause(); Trace(window_, L"pause request end", pause); if (SUCCEEDED(pause)) playing_ = false; }
-    else { const HRESULT play = engine_->Play(); Trace(window_, L"play request end", play); if (SUCCEEDED(play)) playing_ = true; }
+    else {
+        if (engine_->IsEnded()) {
+            const HRESULT restart = engine_->SetCurrentTime(0.0);
+            Trace(window_, L"restart at EOF", restart);
+            if (FAILED(restart)) return;
+        }
+        const HRESULT play = engine_->Play(); Trace(window_, L"play request end", play); if (SUCCEEDED(play)) playing_ = true;
+    }
 }
+
+bool VideoPlayer::GetPlaybackTimes(double& currentSeconds, double& durationSeconds) const {
+    currentSeconds = durationSeconds = 0.0;
+    if (!engine_) return false;
+    const double current = engine_->GetCurrentTime();
+    const double duration = engine_->GetDuration();
+    if (!std::isfinite(current) || !std::isfinite(duration) || current < 0.0 || duration <= 0.0) return false;
+    currentSeconds = std::clamp(current, 0.0, duration);
+    durationSeconds = duration;
+    return true;
+}
+
+bool VideoPlayer::Seek(double seconds) {
+    double current = 0.0, duration = 0.0;
+    if (!GetPlaybackTimes(current, duration)) return false;
+    const HRESULT result = engine_->SetCurrentTime(std::clamp(seconds, 0.0, duration));
+    Trace(window_, L"MediaEngine seek", result);
+    return SUCCEEDED(result);
+}
+
+bool VideoPlayer::ToggleMute() {
+    if (!engine_) return false;
+    const HRESULT result = engine_->SetMuted(engine_->GetMuted() ? FALSE : TRUE);
+    Trace(window_, L"MediaEngine mute toggle", result);
+    return SUCCEEDED(result);
+}
+
+bool VideoPlayer::Muted() const { return engine_ && engine_->GetMuted() != FALSE; }
 
 bool VideoPlayer::GetNativeVideoSize(DWORD& width, DWORD& height) const {
     width = videoWidth_; height = videoHeight_;

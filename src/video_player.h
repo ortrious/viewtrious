@@ -23,6 +23,10 @@ public:
     bool HandleMediaEvent(DWORD event, std::wstring& error);
     bool Draw(ID2D1DeviceContext* context, const RECT& canvas);
     void TogglePlayPause();
+    bool GetPlaybackTimes(double& currentSeconds, double& durationSeconds) const;
+    bool Seek(double seconds);
+    bool ToggleMute();
+    bool Muted() const;
     bool GetNativeVideoSize(DWORD& width, DWORD& height) const;
     bool TryGetFramesPerSecond(float& framesPerSecond);
     bool Playing() const { return playing_; }

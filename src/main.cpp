@@ -5117,8 +5117,8 @@ private:
         const int width = MulDiv(132, dpi, 96);
         const int height = MulDiv(38, dpi, 96);
         const int groupTop = (fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight) +
-            std::max(0L, (client.bottom - (fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight) - MulDiv(300, dpi, 96)) / 2);
-        const int top = groupTop + MulDiv(245, dpi, 96);
+            std::max(0L, (client.bottom - (fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight) - MulDiv(86, dpi, 96)) / 2);
+        const int top = groupTop + MulDiv(48, dpi, 96);
         const int left = (client.right - width) / 2;
         return { left, top, left + width, top + height };
     }
@@ -5137,17 +5137,9 @@ private:
         const float scale = static_cast<float>(dpi) / 96.0f;
         const D2D1_SIZE_F target = ClientSize();
         const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
-        const float groupTop = top + std::max(0.0f, (target.height - top - 300.0f * scale) / 2.0f);
-        if (EnsureAboutLogo()) {
-            const D2D1_SIZE_F logo = aboutLogo_->GetSize();
-            const float width = std::min(440.0f * scale, target.width - 48.0f * scale);
-            const float height = width * logo.height / logo.width;
-            const float left = (target.width - width) / 2.0f - 16.0f * scale;
-            renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(left, groupTop, left + width, groupTop + height), 1.0f,
-                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        }
+        const float groupTop = top + std::max(0.0f, (target.height - top - 86.0f * scale) / 2.0f);
         DrawOverlayText(error_.empty() ? L"Drag and drop an image here or open a file" : error_.c_str(), 24.0f * scale,
-            groupTop + 190.0f * scale, target.width - 48.0f * scale, 24.0f * scale, 16.0f,
+            groupTop, target.width - 48.0f * scale, 24.0f * scale, 16.0f,
             DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true, false, true);
         const RECT buttonBounds = GetEmptyOpenFileButtonBounds();
         const D2D1_RECT_F buttonRect = D2D1::RectF(static_cast<float>(buttonBounds.left), static_cast<float>(buttonBounds.top),
@@ -6007,6 +5999,16 @@ private:
             tutorialMetadata ? tutorialMetadataBrush.Get() : filenameBrush.Get(), true, false);
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        if (EmptyStateActive() && EnsureAboutLogo()) {
+            const D2D1_SIZE_F logoSource = aboutLogo_->GetSize();
+            const float logoHeight = std::min(18.0f * dpiScale, static_cast<float>(frame.titleBarHeight) - 12.0f * dpiScale);
+            const float logoWidth = logoHeight * logoSource.width / logoSource.height;
+            const float logoLeft = (renderTarget_->GetSize().width - logoWidth) * 0.5f;
+            const float logoTop = (static_cast<float>(frame.titleBarHeight) - logoHeight) * 0.5f;
+            renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight),
+                1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+
         const float stroke = 1.0f;
         const auto pixelCenter = [](float value) { return std::floor(value) + 0.5f; };
         renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);

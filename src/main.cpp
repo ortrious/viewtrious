@@ -291,6 +291,7 @@ bool IsThreeMfPath(const std::wstring& path) { return LowercaseExtension(path) =
 bool IsStepPath(const std::wstring& path) { const std::wstring extension=LowercaseExtension(path); return extension == L".step" || extension == L".stp"; }
 bool IsModelPath(const std::wstring& path) { return IsStlPath(path) || IsThreeMfPath(path) || IsStepPath(path); }
 bool IsVideoPath(const std::wstring& path) { return LowercaseExtension(path) == L".mp4"; }
+bool IsTwoDimensionalMediaPath(const fs::path& path) { return IsSupportedExtension(path) && !IsModelPath(path.wstring()); }
 
 bool IsJpegPath(const std::wstring& path) {
     const std::wstring extension = LowercaseExtension(path);
@@ -2065,7 +2066,7 @@ public:
             std::error_code typeError;
             const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
             const bool hidden = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_HIDDEN) != 0;
-            if (iterator->is_regular_file(typeError) && !typeError && IsSupportedExtension(iterator->path()) &&
+            if (iterator->is_regular_file(typeError) && !typeError && IsTwoDimensionalMediaPath(iterator->path()) &&
                 (includeHiddenImages_ || !hidden)) {
                 scannedFiles.push_back(iterator->path());
             }
@@ -2097,7 +2098,7 @@ public:
             ClearDeletedImage();
             return;
         }
-        if (fs::exists(current, currentError) && std::none_of(scannedFiles.begin(), scannedFiles.end(),
+        if (IsTwoDimensionalMediaPath(current) && fs::exists(current, currentError) && std::none_of(scannedFiles.begin(), scannedFiles.end(),
                 [&current](const fs::path& path) { return PathsEqual(path, current); })) {
             scannedFiles.push_back(current);
             sortNaturally(scannedFiles);
@@ -2122,7 +2123,7 @@ public:
     }
 
     void Navigate(int direction, bool immediatePaint = true) {
-        if (currentPath_.empty()) return;
+        if (currentPath_.empty() || ModelActive()) return;
         BuildNavigation(true);
         if (navigationFiles_.size() < 2) return;
 
@@ -2135,8 +2136,8 @@ public:
         ptrdiff_t index = (start + direction) % count;
         if (index < 0) index += count;
         const std::wstring path = navigationFiles_[index].wstring();
-        if (NavigateFastRasterSynchronously(path, direction)) return;
-        SelectNavigationTarget(path, direction, immediatePaint);
+        LoadContent(path, false);
+        if (immediatePaint) UpdateWindow(window_);
     }
 
     void SetScaleAt(POINT cursor, float requestedScale) {
@@ -2691,6 +2692,7 @@ private:
         ++decodeRequestGeneration_; ++modelLoadGeneration_; pendingFullDecode_.reset(); imageDecodePending_ = false;
         source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         currentPath_ = path; displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
+        currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         fileSizeText_ = FormatFileSize(path); resolutionText_ = L"Video"; error_.clear();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false; contentKind_ = ContentKind::Video2D;
         EnsureRenderTarget();

@@ -31,6 +31,7 @@ public:
 
 private:
     bool CreateFrameTexture(std::wstring& error);
+    bool ReadNominalFrameRate(const std::wstring& path);
     bool SetSourceFromPath(const std::wstring& path, std::wstring& error);
     bool EnsureMultithreadProtection(ID3D11Device* device, std::wstring& error);
 

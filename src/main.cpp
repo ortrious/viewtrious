@@ -67,6 +67,7 @@ constexpr UINT_PTR kHeifRotationMenuRefreshTimer = 8;
 constexpr UINT_PTR kGifPlaybackTimer = 10;
 constexpr UINT_PTR kModelHomeAnimationTimer = 11;
 constexpr UINT_PTR kModelLoadingAnimationTimer = 12;
+constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
@@ -78,6 +79,7 @@ constexpr float kMaximumZoom = 16.0f;
 constexpr float kWheelZoomStep = 1.11f;
 constexpr ULONGLONG kModelHomeAnimationDurationMs = 240;
 constexpr ULONGLONG kModelLoadingOverlayDelayMs = 150;
+constexpr UINT kTriangleCountTooltipDelayMs = 450;
 // Shared Settings grid geometry. Every page uses these values for section and control placement.
 constexpr float kSettingsContentLeftPaddingDips = 206.0f;
 constexpr float kSettingsContentRightPaddingDips = 18.0f;
@@ -687,7 +689,8 @@ public:
         modelViewport_.SetAntiAliasing(modelAntiAliasing_);
         contentKind_ = ContentKind::Model3D;
         modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector());
-        resolutionText_ = std::to_wstring(modelDocument_->geometries.front().indices.size() / 3) + L" triangles";
+        modelTriangleCount_ = modelDocument_->geometries.front().indices.size() / 3;
+        resolutionText_ = FormatCompactTriangleCount(modelTriangleCount_) + L" triangles";
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -761,7 +764,7 @@ public:
     void ToggleDropdown() {
         if (fullscreen_) return;
         dropdownOpen_ = !dropdownOpen_;
-        if (dropdownOpen_) { DismissOverlay(); DismissContextMenu(); }
+        if (dropdownOpen_) { DismissTriangleCountTooltip(false); DismissOverlay(); DismissContextMenu(); }
         dropdownHovered_ = DropdownItem::None;
         dropdownPressed_ = DropdownItem::None;
         InvalidateRect(window_, nullptr, FALSE);
@@ -844,6 +847,23 @@ public:
     }
     bool HasImage() const { return source_ != nullptr; }
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
+    void UpdateTriangleCountTooltipHover(POINT point) {
+        const RECT textBounds = TriangleCountTitleTextBounds();
+        const bool hovering = TriangleCountTooltipAvailable() && PtInRect(&textBounds, point);
+        if (triangleCountTooltipHovering_ == hovering) return;
+        triangleCountTooltipHovering_ = hovering;
+        if (!hovering) {
+            DismissTriangleCountTooltip();
+            return;
+        }
+        SetTimer(window_, kTriangleCountTooltipTimer, kTriangleCountTooltipDelayMs, nullptr);
+    }
+    void TriangleCountTooltipTimerMessage() {
+        KillTimer(window_, kTriangleCountTooltipTimer);
+        if (!triangleCountTooltipHovering_ || !TriangleCountTooltipAvailable()) return;
+        triangleCountTooltipVisible_ = true;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void CancelAnimatedModelHome() { KillTimer(window_, kModelHomeAnimationTimer); modelViewport_.CancelAnimatedHome(); }
     Float3 ModelUpVector() const { switch (modelUpAxis_) { case ModelUpAxis::XUp: return { 1, 0, 0 }; case ModelUpAxis::YUp: return { 0, 1, 0 }; case ModelUpAxis::ZUp: return { 0, 0, 1 }; } return { 0, 0, 1 }; }
     bool BuildPlateVisible() const { const ModelDocument* document=modelViewport_.Document(); return modelBuildPlate_ == ModelBuildPlate::On || (modelBuildPlate_ == ModelBuildPlate::Auto && document && document->sourceFormat == ModelSourceFormat::ThreeMf); }
@@ -928,6 +948,7 @@ public:
         if (WelcomeOpen() || TutorialActive()) return;
         if (!HasImage() && !(ModelActive() && modelFaceSelected_)) return;
         RefreshHeifShellRotationCapability();
+        DismissTriangleCountTooltip(false);
         DismissDropdown();
         DismissOverlay();
         contextMenuAnchor_ = point;
@@ -1131,6 +1152,7 @@ public:
         else StopTutorial();
     }
     void ShowOverlay(OverlayKind overlay) {
+        DismissTriangleCountTooltip(false);
         DismissDropdown();
         DismissContextMenu();
         if (overlay == OverlayKind::DeleteConfirm) deleteWarningSuppressOnConfirm_ = false;
@@ -1954,6 +1976,7 @@ public:
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
             if (!tutorialPresentation_) DrawRevisionLabel();
             DrawTitleBar();
+            DrawTriangleCountTooltip();
             DrawDropdown();
             DrawContextMenu();
             DrawOpenWithSubmenu();
@@ -2361,6 +2384,7 @@ public:
     void Shutdown() {
         shuttingDown_ = true;
         KillTimer(window_, kModelHomeAnimationTimer);
+        KillTimer(window_, kTriangleCountTooltipTimer);
         StopModelLoadingAnimation();
         ++modelLoadGeneration_;
         for (ModelLoadWorker& worker : modelLoadWorkers_) if (worker.thread.joinable()) worker.thread.join();
@@ -2513,10 +2537,11 @@ private:
             if (axis.towardViewer) renderTarget_->FillEllipse(D2D1::Ellipse(origin,1.8f*dpi,1.8f*dpi),axis.brush);
             else { renderTarget_->DrawLine(D2D1::Point2F(origin.x-arm,origin.y-arm),D2D1::Point2F(origin.x+arm,origin.y+arm),axis.brush,1.6f*dpi); renderTarget_->DrawLine(D2D1::Point2F(origin.x-arm,origin.y+arm),D2D1::Point2F(origin.x+arm,origin.y-arm),axis.brush,1.6f*dpi); }
         }
-        const float legendTop = origin.y + radius + 1.0f*dpi;
-        DrawOverlayText(L"X",origin.x-26*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,x.Get(),true);
-        DrawOverlayText(L"Y",origin.x-8*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,y.Get(),true);
-        DrawOverlayText(L"Z",origin.x+10*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,z.Get(),true);
+        const bool topPosition = axisIndicatorPosition_ == AxisIndicatorPosition::TopLeft || axisIndicatorPosition_ == AxisIndicatorPosition::TopRight;
+        const float legendTop = topPosition ? origin.y - radius - 1.0f * dpi - 15.0f * dpi : origin.y + radius + 1.0f * dpi;
+        DrawOverlayText(L"X",origin.x-24*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,x.Get(),true,false,true);
+        DrawOverlayText(L"Y",origin.x-8*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,y.Get(),true,false,true);
+        DrawOverlayText(L"Z",origin.x+8*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,z.Get(),true,false,true);
     }
     RECT ModelCanvasBounds() const {
         RECT client{}; GetClientRect(window_, &client);
@@ -2634,6 +2659,8 @@ private:
         CancelAnimatedModelHome();
         StopModelLoadingAnimation(); ClearModelFaceSelection(); modelClickCandidate_ = false;
         modelViewport_.Destroy(); modelDocument_.reset(); modelLoading_ = false;
+        modelTriangleCount_ = 0;
+        DismissTriangleCountTooltip(false);
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
     void StopDirectoryWatcher() {
@@ -4387,7 +4414,8 @@ private:
         const bool left = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::TopLeft;
         const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
         const float leftEdge = left ? margin : target.width - margin - width;
-        const float topEdge = top ? margin : target.height - margin - height;
+        const float canvasTop = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
+        const float topEdge = top ? canvasTop + margin : target.height - margin - height;
         const D2D1_RECT_F bounds = D2D1::RectF(leftEdge, topEdge, leftEdge + width, topEdge + height);
         ComPtr<ID2D1SolidColorBrush> backing, text;
         if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f), &backing)) ||
@@ -4512,6 +4540,109 @@ private:
         const float top = std::max(0.0f, (static_cast<float>(GetFrameMetrics(window_).titleBarHeight) - metrics.height) / 2.0f);
         const float textLeft = center ? left + std::max(0.0f, (width - metrics.width) / 2.0f) : left;
         renderTarget_->DrawTextLayout(D2D1::Point2F(textLeft, top), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    static std::wstring FormatExactTriangleCount(uint64_t count) {
+        std::wstring text = std::to_wstring(count);
+        for (size_t position = text.size(); position > 3; position -= 3) text.insert(position - 3, 1, L',');
+        return text;
+    }
+
+    static std::wstring FormatCompactTriangleCount(uint64_t count) {
+        if (count < 1000) return std::to_wstring(count);
+        uint64_t unit = count >= 1000000 ? 1000000 : 1000;
+        wchar_t suffix = unit == 1000000 ? L'M' : L'k';
+        double value = static_cast<double>(count) / static_cast<double>(unit);
+        int decimals = value >= 100.0 ? 0 : value >= 10.0 ? 1 : 2;
+        double scale = decimals == 2 ? 100.0 : decimals == 1 ? 10.0 : 1.0;
+        uint64_t scaled = static_cast<uint64_t>(std::llround(value * scale));
+        if (unit == 1000 && scaled >= 1000 * static_cast<uint64_t>(scale)) {
+            unit = 1000000;
+            suffix = L'M';
+            value = static_cast<double>(count) / static_cast<double>(unit);
+            decimals = value >= 100.0 ? 0 : value >= 10.0 ? 1 : 2;
+            scale = decimals == 2 ? 100.0 : decimals == 1 ? 10.0 : 1.0;
+            scaled = static_cast<uint64_t>(std::llround(value * scale));
+        }
+        std::wstring text = std::to_wstring(scaled);
+        if (decimals != 0) {
+            while (text.size() <= static_cast<size_t>(decimals)) text.insert(text.begin(), L'0');
+            text.insert(text.size() - static_cast<size_t>(decimals), 1, L'.');
+            while (!text.empty() && text.back() == L'0') text.pop_back();
+            if (!text.empty() && text.back() == L'.') text.pop_back();
+        }
+        return text + suffix;
+    }
+
+    bool TriangleCountTooltipAvailable() const {
+        return !fullscreen_ && ModelActive() && modelTriangleCount_ != 0 && !tutorialPresentation_ &&
+            !HasOverlay() && !dropdownOpen_ && !contextMenuOpen_;
+    }
+
+    RECT TriangleCountTitleTextBounds() {
+        if (!ModelActive() || modelTriangleCount_ == 0 || !EnsureTitleTextFormat()) return {};
+        const FrameMetrics frame = GetFrameMetrics(window_);
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(resolutionText_.c_str(), static_cast<UINT32>(resolutionText_.size()),
+                titleTextFormat_.Get(), static_cast<float>(frame.resolutionWidth), static_cast<float>(frame.titleBarHeight), &layout))) return {};
+        DWRITE_TEXT_METRICS metrics{};
+        layout->GetMetrics(&metrics);
+        const float left = static_cast<float>(frame.resolutionLeft) + std::max(0.0f, (static_cast<float>(frame.resolutionWidth) - metrics.width) / 2.0f);
+        const float top = std::max(0.0f, (static_cast<float>(frame.titleBarHeight) - metrics.height) / 2.0f);
+        return { static_cast<LONG>(std::floor(left)), static_cast<LONG>(std::floor(top)),
+            static_cast<LONG>(std::ceil(left + metrics.width)), static_cast<LONG>(std::ceil(top + metrics.height)) };
+    }
+
+    void DismissTriangleCountTooltip(bool invalidate = true) {
+        KillTimer(window_, kTriangleCountTooltipTimer);
+        const bool visible = triangleCountTooltipVisible_;
+        triangleCountTooltipHovering_ = false;
+        triangleCountTooltipVisible_ = false;
+        if (visible && invalidate) InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void DrawTriangleCountTooltip() {
+        if (!triangleCountTooltipVisible_ || !TriangleCountTooltipAvailable()) return;
+        const RECT titleBounds = TriangleCountTitleTextBounds();
+        if (titleBounds.right <= titleBounds.left || titleBounds.bottom <= titleBounds.top) return;
+        const std::wstring text = FormatExactTriangleCount(modelTriangleCount_) + L" triangles";
+        const UINT dpi = GetDpiForWindow(window_);
+        const float scale = static_cast<float>(dpi) / 96.0f;
+        ComPtr<IDWriteTextFormat> format;
+        if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13.0f * scale, L"", &format))) return;
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format.Get(), 4096.0f, 4096.0f, &layout))) return;
+        DWRITE_TEXT_METRICS metrics{};
+        layout->GetMetrics(&metrics);
+        const float horizontalPadding = 12.0f * scale;
+        const float tooltipWidth = metrics.width + horizontalPadding * 2.0f;
+        const float tooltipHeight = 30.0f * scale;
+        layout->SetMaxWidth(tooltipWidth);
+        layout->SetMaxHeight(tooltipHeight);
+        RECT client{};
+        GetClientRect(window_, &client);
+        const float margin = 6.0f * scale;
+        float left = (static_cast<float>(titleBounds.left + titleBounds.right) - tooltipWidth) / 2.0f;
+        left = std::clamp(left, margin, std::max(margin, static_cast<float>(client.right) - tooltipWidth - margin));
+        float top = static_cast<float>(GetFrameMetrics(window_).titleBarHeight) + margin;
+        if (top + tooltipHeight > static_cast<float>(client.bottom) - margin) top = std::max(margin, static_cast<float>(titleBounds.top) - tooltipHeight - margin);
+        const D2D1_RECT_F bounds = D2D1::RectF(left, top, left + tooltipWidth, top + tooltipHeight);
+        const bool dark = UseDarkAppMode();
+        ComPtr<ID2D1SolidColorBrush> shadow, surface, border, foreground;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, dark ? 0.32f : 0.18f), &shadow)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(40.0f / 255.0f, 43.0f / 255.0f, 50.0f / 255.0f) : D2D1::ColorF(250.0f / 255.0f, 250.0f / 255.0f, 250.0f / 255.0f), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(82.0f / 255.0f, 86.0f / 255.0f, 96.0f / 255.0f) : D2D1::ColorF(190.0f / 255.0f, 190.0f / 255.0f, 190.0f / 255.0f), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(28.0f / 255.0f, 28.0f / 255.0f, 28.0f / 255.0f), &foreground))) return;
+        const float radius = 7.0f * scale;
+        const D2D1_RECT_F shadowBounds = D2D1::RectF(bounds.left, bounds.top + 2.0f * scale, bounds.right, bounds.bottom + 2.0f * scale);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(shadowBounds, radius, radius), shadow.Get());
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bounds, radius, radius), surface.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(bounds, radius, radius), border.Get(), 1.0f);
+        renderTarget_->DrawTextLayout(D2D1::Point2F(bounds.left, bounds.top), layout.Get(), foreground.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
     int GetShortcutRowHeight() const {
@@ -5095,7 +5226,7 @@ private:
         drawItem(DropdownItem::About, top, L"About", L'\uE946'); top += rowHeight;
         drawItem(DropdownItem::Feedback, top, L"Feedback", L'\uE939'); top += rowHeight;
         separator();
-        drawItem(DropdownItem::Close, top, L"Close", L'\uE8BB');
+        drawItem(DropdownItem::Close, top, L"Close Viewtrious", L'\uE8BB');
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 
@@ -5576,6 +5707,7 @@ private:
     std::wstring displayedPath_;
     FileIdentity currentFileIdentity_{};
     std::wstring resolutionText_;
+    uint64_t modelTriangleCount_ = 0;
     std::wstring fileSizeText_;
     std::wstring filenameText_;
     std::wstring error_;
@@ -5684,6 +5816,8 @@ private:
     bool hamburgerPressed_ = false;
     OverlayKind overlay_ = OverlayKind::None;
     bool dropdownOpen_ = false;
+    bool triangleCountTooltipHovering_ = false;
+    bool triangleCountTooltipVisible_ = false;
     DropdownItem dropdownHovered_ = DropdownItem::None;
     DropdownItem dropdownPressed_ = DropdownItem::None;
     bool contextMenuOpen_ = false;
@@ -5789,12 +5923,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_NCMOUSEMOVE: {
+        POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ScreenToClient(window, &point);
+        viewer->UpdateTriangleCountTooltipHover(point);
         viewer->SetCaptionButtonHover(CaptionButtonFromHitTest(wParam));
         TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE | TME_NONCLIENT, window, 0 };
         TrackMouseEvent(&track);
         return 0;
     }
-    case WM_NCMOUSELEAVE: viewer->SetCaptionButtonHover(CaptionButton::None); return 0;
+    case WM_NCMOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->SetCaptionButtonHover(CaptionButton::None); return 0;
     case WM_NCLBUTTONDOWN: {
         const CaptionButton button = CaptionButtonFromHitTest(wParam);
         if (button == CaptionButton::None) break;
@@ -5960,6 +6097,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         break;
     case WM_MOUSEMOVE: {
+        viewer->UpdateTriangleCountTooltipHover({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         if (viewer->TutorialActive()) {
             viewer->SetButtonHover(viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }));
             return 0;
@@ -6013,7 +6151,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         return 0;
     }
-    case WM_MOUSELEAVE: viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
+    case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); return 0;
     case WM_LBUTTONUP: {
         if (viewer->CanvasNavigationPressed()) {
             const ButtonKind navigation = viewer->FinishCanvasNavigationClick({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
@@ -6097,6 +6235,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
         if (wParam == kModelHomeAnimationTimer) { viewer->UpdateAnimatedModelHome(); return 0; }
         if (wParam == kModelLoadingAnimationTimer) { viewer->ModelLoadingAnimationTimerMessage(); return 0; }
+        if (wParam == kTriangleCountTooltipTimer) { viewer->TriangleCountTooltipTimerMessage(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {

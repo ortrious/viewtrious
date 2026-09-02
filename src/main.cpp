@@ -118,7 +118,7 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsZoomHudPositionToggle, SettingsImageScalingToggle, SettingsRenderingApiToggle,
+    SettingsZoomHudPositionToggle, SettingsImageScalingToggle, SettingsRenderingApiToggle, SettingsRenderingApiOption,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
@@ -1180,7 +1180,10 @@ public:
     }
     int SettingsContentLeft() const {
         const RECT bounds = GetOverlayBounds();
-        return bounds.left + MulDiv(static_cast<int>(kSettingsContentLeftPaddingDips), GetDpiForWindow(window_), 96);
+        const int dpi = GetDpiForWindow(window_);
+        const int preferred = bounds.left + MulDiv(static_cast<int>(kSettingsContentLeftPaddingDips), dpi, 96);
+        const int minimumContentWidth = MulDiv(140, dpi, 96);
+        return std::min(preferred, bounds.right - MulDiv(static_cast<int>(kSettingsContentRightPaddingDips), dpi, 96) - minimumContentWidth);
     }
     int MeasureSettingsTextHeight(const wchar_t* text, int width, float size, DWRITE_FONT_WEIGHT weight) const {
         if (!dwriteFactory_ || width <= 0) return MulDiv(20, GetDpiForWindow(window_), 96);
@@ -1204,7 +1207,7 @@ public:
     }
     int SettingsContentBottom() const {
         if (settingsPage_ == SettingsPage::General) return GetSettingsResetButtonBounds().bottom - GetOverlayBounds().top;
-        if (settingsPage_ == SettingsPage::Image2D) return GetSettingsScalingBounds(ImageScaling::Quality).bottom - GetOverlayBounds().top;
+        if (settingsPage_ == SettingsPage::Image2D) return GetSettingsZoomHudBounds().bottom - GetOverlayBounds().top;
         return GetSettingsSpaceMouseBounds().bottom - GetOverlayBounds().top;
     }
     RECT GetSettingsOptionBounds(int option) const {
@@ -1275,33 +1278,38 @@ public:
         result.bottom = result.top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96);
         return result;
     }
-    RECT GetSettingsZoomHudBounds() const {
-        const RECT reverse = GetSettingsOptionBounds(5);
-        const int labelHeight = MeasureSettingsTextHeight(L"show zoom percentage", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        const int top = reverse.bottom + SettingsStackGap() + labelHeight + MulDiv(static_cast<int>(kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96);
-        const int width = std::max(MulDiv(140, GetDpiForWindow(window_), 96), (SettingsContentRight() - SettingsContentLeft()) / 3);
-        return { SettingsContentLeft(), top, SettingsContentLeft() + width, top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96) };
-    }
     RECT GetSettingsScalingBounds(ImageScaling scaling) const {
-        const RECT zoom = GetSettingsZoomHudBounds();
+        const RECT reverse = GetSettingsOptionBounds(5);
         const int labelHeight = MeasureSettingsTextHeight(L"image scaling", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        const int top = zoom.bottom + SettingsStackGap() + labelHeight + MulDiv(static_cast<int>(kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96);
+        const int top = reverse.bottom + SettingsStackGap() + labelHeight + MulDiv(static_cast<int>(kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96);
+        const int width = MulDiv(scaling == ImageScaling::Quality ? 76 : 104, GetDpiForWindow(window_), 96), gap = MulDiv(8, GetDpiForWindow(window_), 96);
+        const int left = SettingsContentLeft() + (scaling == ImageScaling::Quality ? 0 : width - MulDiv(28, GetDpiForWindow(window_), 96) + gap);
+        return { left, top, left + width, top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96) };
+    }
+    RECT GetSettingsZoomHudBounds() const {
+        const RECT scaling = GetSettingsScalingBounds(ImageScaling::Quality);
+        const int labelHeight = MeasureSettingsTextHeight(L"show zoom percentage", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
+        const int top = scaling.bottom + SettingsStackGap() + labelHeight + MulDiv(static_cast<int>(kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96);
         const int width = std::max(MulDiv(140, GetDpiForWindow(window_), 96), (SettingsContentRight() - SettingsContentLeft()) / 3);
         return { SettingsContentLeft(), top, SettingsContentLeft() + width, top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96) };
     }
     RECT GetSettingsUpAxisBounds() const { return GetSettingsGridCell(0, kSettingsFirstControlTopDips); }
     RECT GetSettingsBuildPlateBounds() const { return GetSettingsGridCell(1, kSettingsFirstControlTopDips); }
     RECT GetSettingsProjectionBounds() const { return GetSettingsGridCell(0, kSettingsSecondControlTopDips); }
-    RECT GetSettingsSpaceMouseBounds() const { const RECT cell=GetSettingsGridCell(0, kSettingsInputControlTopDips); return { SettingsContentLeft(), cell.top, SettingsContentRight(), cell.bottom }; }
+    int GetSettingsInputHeadingTop() const {
+        const int statusBottom = GetSettingsGraphicsAdapterBounds().bottom + MulDiv(42, GetDpiForWindow(window_), 96);
+        return std::max(GetSettingsAntiAliasingBounds().bottom, statusBottom) + SettingsSectionGap();
+    }
+    RECT GetSettingsSpaceMouseBounds() const { const int top=GetSettingsInputHeadingTop()+MulDiv(26,GetDpiForWindow(window_),96); return { SettingsContentLeft(), top, SettingsContentRight(), top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96) }; }
     RECT GetSettingsRenderingApiBounds() const { return GetSettingsGridCell(0, kSettingsRenderControlTopDips); }
     RECT GetSettingsGraphicsAdapterBounds() const { return GetSettingsGridCell(1, kSettingsRenderControlTopDips); }
     RECT GetSettingsGraphicsAdapterMenuBounds() const { RECT result=GetSettingsGraphicsAdapterBounds();const int row=MulDiv(30,GetDpiForWindow(window_),96);result.top=result.bottom+MulDiv(4,GetDpiForWindow(window_),96);result.bottom=result.top+row*static_cast<int>(graphicsAdapters_.size()+1);return result; }
     RECT GetSettingsDropdownMenuBounds(RECT control, int itemCount) const { const int row=MulDiv(30,GetDpiForWindow(window_),96), gap=MulDiv(4,GetDpiForWindow(window_),96); return {control.left,control.bottom+gap,control.right,control.bottom+gap+row*itemCount}; }
     RECT GetSettingsZoomHudMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsZoomHudBounds(), 1); }
-    RECT GetSettingsScalingMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsScalingBounds(ImageScaling::Quality), 2); }
-    bool SettingsImageDropdownMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Image2D && (zoomHudPositionMenuOpen_ || imageScalingMenuOpen_); }
-    bool SettingsImageDropdownMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=zoomHudPositionMenuOpen_?GetSettingsZoomHudMenuBounds():GetSettingsScalingMenuBounds(); return PtInRect(&menu,point) != FALSE; }
-    void DismissSettingsImageDropdownMenu() { if (zoomHudPositionMenuOpen_ || imageScalingMenuOpen_) { zoomHudPositionMenuOpen_=imageScalingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
+    RECT GetSettingsRenderingApiMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsRenderingApiBounds(), 1); }
+    bool SettingsImageDropdownMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Image2D && zoomHudPositionMenuOpen_; }
+    bool SettingsImageDropdownMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=GetSettingsZoomHudMenuBounds(); return PtInRect(&menu,point) != FALSE; }
+    void DismissSettingsImageDropdownMenu() { if (zoomHudPositionMenuOpen_) { zoomHudPositionMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
     RECT GetSettingsUpAxisMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsUpAxisBounds(), 3); }
     RECT GetSettingsBuildPlateMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsBuildPlateBounds(), 3); }
     RECT GetSettingsProjectionMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsProjectionBounds(), 2); }
@@ -1313,9 +1321,9 @@ public:
     bool SettingsAntiAliasingMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Model3D && antiAliasingMenuOpen_; }
     bool SettingsAntiAliasingMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=GetSettingsAntiAliasingMenuBounds(); return PtInRect(&menu,point) != FALSE; }
     void DismissSettingsAntiAliasingMenu() { if (antiAliasingMenuOpen_) { antiAliasingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
-    bool SettingsSimpleDropdownMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Model3D && (upAxisMenuOpen_ || buildPlateMenuOpen_ || projectionMenuOpen_); }
-    bool SettingsSimpleDropdownMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=upAxisMenuOpen_?GetSettingsUpAxisMenuBounds():buildPlateMenuOpen_?GetSettingsBuildPlateMenuBounds():GetSettingsProjectionMenuBounds(); return PtInRect(&menu,point) != FALSE; }
-    void DismissSettingsSimpleDropdownMenu() { if (upAxisMenuOpen_ || buildPlateMenuOpen_ || projectionMenuOpen_) { upAxisMenuOpen_=buildPlateMenuOpen_=projectionMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
+    bool SettingsSimpleDropdownMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Model3D && (renderingApiMenuOpen_ || upAxisMenuOpen_ || buildPlateMenuOpen_ || projectionMenuOpen_); }
+    bool SettingsSimpleDropdownMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=renderingApiMenuOpen_?GetSettingsRenderingApiMenuBounds():upAxisMenuOpen_?GetSettingsUpAxisMenuBounds():buildPlateMenuOpen_?GetSettingsBuildPlateMenuBounds():GetSettingsProjectionMenuBounds(); return PtInRect(&menu,point) != FALSE; }
+    void DismissSettingsSimpleDropdownMenu() { if (renderingApiMenuOpen_ || upAxisMenuOpen_ || buildPlateMenuOpen_ || projectionMenuOpen_) { renderingApiMenuOpen_=upAxisMenuOpen_=buildPlateMenuOpen_=projectionMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
     bool SettingsDropdownControlContains(POINT point) const {
         point.y += static_cast<LONG>(std::lround(settingsScroll_));
         const auto contains = [&point](const RECT& bounds) { return PtInRect(&bounds, point) != FALSE; };
@@ -1560,15 +1568,15 @@ public:
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
                 if (SettingsDefaultAppsButtonContains(point)) return ButtonKind::SettingsDefaultApps;
             } else if (settingsPage_ == SettingsPage::Image2D) {
-                const int row = MulDiv(30, GetDpiForWindow(window_), 96);
-                if (imageScalingMenuOpen_) { const RECT menu=GetSettingsScalingMenuBounds(); if (PtInRect(&menu, settingsPoint)) return settingsPoint.y < menu.top + row ? ButtonKind::SettingsScalingQuality : ButtonKind::SettingsScalingPerformance; }
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
                 if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAnimations;
                 if (settingsContains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReverseWheelZoom;
                 if (settingsContains(GetSettingsZoomHudBounds())) return ButtonKind::SettingsZoomHudPositionToggle;
-                if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsImageScalingToggle;
+                if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
+                if (settingsContains(GetSettingsScalingBounds(ImageScaling::Performance))) return ButtonKind::SettingsScalingPerformance;
             } else if (settingsPage_ == SettingsPage::Model3D) {
                 const int row=MulDiv(30,GetDpiForWindow(window_),96);
+                if (renderingApiMenuOpen_) { const RECT menu=GetSettingsRenderingApiMenuBounds(); if (PtInRect(&menu,settingsPoint)) return ButtonKind::SettingsRenderingApiOption; }
                 if (upAxisMenuOpen_) { const RECT menu=GetSettingsUpAxisMenuBounds(); if (PtInRect(&menu,settingsPoint)) return settingsPoint.y < menu.top+row ? ButtonKind::SettingsUpAxisZ : settingsPoint.y < menu.top+row*2 ? ButtonKind::SettingsUpAxisY : ButtonKind::SettingsUpAxisX; }
                 if (buildPlateMenuOpen_) { const RECT menu=GetSettingsBuildPlateMenuBounds(); if (PtInRect(&menu,settingsPoint)) return settingsPoint.y < menu.top+row ? ButtonKind::SettingsBuildPlateAuto : settingsPoint.y < menu.top+row*2 ? ButtonKind::SettingsBuildPlateOn : ButtonKind::SettingsBuildPlateOff; }
                 if (projectionMenuOpen_) { const RECT menu=GetSettingsProjectionMenuBounds(); if (PtInRect(&menu,settingsPoint)) return settingsPoint.y < menu.top+row ? ButtonKind::SettingsProjectionPerspective : ButtonKind::SettingsProjectionOrthographic; }
@@ -1710,25 +1718,26 @@ public:
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
         else if (button == ButtonKind::SettingsShowZoomHud) ToggleShowZoomPercentage();
-        else if (button == ButtonKind::SettingsZoomHudPositionToggle) { zoomHudPositionMenuOpen_ = !zoomHudPositionMenuOpen_; imageScalingMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); }
-        else if (button == ButtonKind::SettingsImageScalingToggle) { imageScalingMenuOpen_ = !imageScalingMenuOpen_; zoomHudPositionMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::SettingsZoomHudPositionToggle) { zoomHudPositionMenuOpen_ = !zoomHudPositionMenuOpen_; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::SettingsRenderingApiToggle) { renderingApiMenuOpen_ = !renderingApiMenuOpen_; upAxisMenuOpen_=buildPlateMenuOpen_=projectionMenuOpen_=graphicsAdapterMenuOpen_=antiAliasingMenuOpen_=false; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::SettingsRenderingApiOption) { renderingApiMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsAnimations) ToggleAnimationsAndFadeEffects();
         else if (button == ButtonKind::SettingsReverseWheelZoom) ToggleReverseMouseWheelZoom();
         else if (button == ButtonKind::SettingsSpaceMouse) ToggleSpaceMouse();
-        else if (button == ButtonKind::SettingsUpAxisToggle) { upAxisMenuOpen_=!upAxisMenuOpen_; buildPlateMenuOpen_=projectionMenuOpen_=graphicsAdapterMenuOpen_=antiAliasingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::SettingsUpAxisToggle) { upAxisMenuOpen_=!upAxisMenuOpen_; buildPlateMenuOpen_=projectionMenuOpen_=renderingApiMenuOpen_=graphicsAdapterMenuOpen_=antiAliasingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); }
         else if (button == ButtonKind::SettingsUpAxisZ) { SetModelUpAxis(ModelUpAxis::ZUp); upAxisMenuOpen_=false; }
         else if (button == ButtonKind::SettingsUpAxisY) { SetModelUpAxis(ModelUpAxis::YUp); upAxisMenuOpen_=false; }
         else if (button == ButtonKind::SettingsUpAxisX) { SetModelUpAxis(ModelUpAxis::XUp); upAxisMenuOpen_=false; }
-        else if (button == ButtonKind::SettingsBuildPlateToggle) { buildPlateMenuOpen_=!buildPlateMenuOpen_; upAxisMenuOpen_=projectionMenuOpen_=graphicsAdapterMenuOpen_=antiAliasingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::SettingsBuildPlateToggle) { buildPlateMenuOpen_=!buildPlateMenuOpen_; upAxisMenuOpen_=projectionMenuOpen_=renderingApiMenuOpen_=graphicsAdapterMenuOpen_=antiAliasingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); }
         else if (button == ButtonKind::SettingsBuildPlateAuto) { SetModelBuildPlate(ModelBuildPlate::Auto); buildPlateMenuOpen_=false; }
         else if (button == ButtonKind::SettingsBuildPlateOn) { SetModelBuildPlate(ModelBuildPlate::On); buildPlateMenuOpen_=false; }
         else if (button == ButtonKind::SettingsBuildPlateOff) { SetModelBuildPlate(ModelBuildPlate::Off); buildPlateMenuOpen_=false; }
-        else if (button == ButtonKind::SettingsProjectionToggle) { projectionMenuOpen_=!projectionMenuOpen_; upAxisMenuOpen_=buildPlateMenuOpen_=graphicsAdapterMenuOpen_=antiAliasingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::SettingsProjectionToggle) { projectionMenuOpen_=!projectionMenuOpen_; upAxisMenuOpen_=buildPlateMenuOpen_=renderingApiMenuOpen_=graphicsAdapterMenuOpen_=antiAliasingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); }
         else if (button == ButtonKind::SettingsProjectionPerspective) { SetModelProjectionMode(ModelProjectionMode::Perspective); projectionMenuOpen_=false; }
         else if (button == ButtonKind::SettingsProjectionOrthographic) { SetModelProjectionMode(ModelProjectionMode::Orthographic); projectionMenuOpen_=false; }
-        else if (button == ButtonKind::SettingsGraphicsAdapterToggle) { graphicsAdapters_=GraphicsHost::EnumerateHardwareAdapters();graphicsAdapterMenuOpen_=!graphicsAdapterMenuOpen_;upAxisMenuOpen_=buildPlateMenuOpen_=projectionMenuOpen_=antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::SettingsGraphicsAdapterToggle) { graphicsAdapters_=GraphicsHost::EnumerateHardwareAdapters();graphicsAdapterMenuOpen_=!graphicsAdapterMenuOpen_;upAxisMenuOpen_=buildPlateMenuOpen_=projectionMenuOpen_=renderingApiMenuOpen_=antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); }
         else if (button == ButtonKind::SettingsGraphicsAdapterOption) SetGraphicsAdapterPreference(graphicsAdapterMenuOption_);
-        else if (button == ButtonKind::SettingsAntiAliasingToggle) { antiAliasingMenuOpen_=!antiAliasingMenuOpen_;upAxisMenuOpen_=buildPlateMenuOpen_=projectionMenuOpen_=graphicsAdapterMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::SettingsAntiAliasingToggle) { antiAliasingMenuOpen_=!antiAliasingMenuOpen_;upAxisMenuOpen_=buildPlateMenuOpen_=projectionMenuOpen_=renderingApiMenuOpen_=graphicsAdapterMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); }
         else if (button == ButtonKind::SettingsAntiAliasingOff) SetModelAntiAliasing(ModelAntiAliasing::Off);
         else if (button == ButtonKind::SettingsAntiAliasing2x) SetModelAntiAliasing(ModelAntiAliasing::Msaa2x);
         else if (button == ButtonKind::SettingsAntiAliasing4x) SetModelAntiAliasing(ModelAntiAliasing::Msaa4x);
@@ -1746,8 +1755,8 @@ public:
         else if (button == ButtonKind::SettingsThemeSystem) SetThemePreference(ThemePreference::System);
         else if (button == ButtonKind::SettingsThemeLight) SetThemePreference(ThemePreference::Light);
         else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
-        else if (button == ButtonKind::SettingsScalingPerformance) { SetImageScaling(ImageScaling::Performance); imageScalingMenuOpen_ = false; }
-        else if (button == ButtonKind::SettingsScalingQuality) { SetImageScaling(ImageScaling::Quality); imageScalingMenuOpen_ = false; }
+        else if (button == ButtonKind::SettingsScalingPerformance) SetImageScaling(ImageScaling::Performance);
+        else if (button == ButtonKind::SettingsScalingQuality) SetImageScaling(ImageScaling::Quality);
         else if (button == ButtonKind::SettingsDefaultApps) OpenRegisteredDefaultApps();
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
         else if (button == ButtonKind::ResetCancel) DismissOverlay();
@@ -4778,8 +4787,10 @@ private:
             drawToggle(4, ButtonKind::SettingsAnimations, L"animations and face effects", animationsEnabled_);
             drawToggle(5, ButtonKind::SettingsReverseWheelZoom, L"reverse mouse wheel zoom direction", reverseMouseWheelZoom_);
             const auto drawImageDropdown = [&](RECT control, ButtonKind button, const wchar_t* value, bool open) { const D2D1_RECT_F r=D2D1::RectF((float)control.left,(float)control.top,(float)control.right,(float)control.bottom); renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),((button != ButtonKind::None && hoveredButton_==button)||open)?segmentHover.Get():segmentIdle.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),borderBrush.Get(),1); DrawOverlayText(value,r.left+kDropdownLeftPaddingDips*dpiScale,r.top,r.right-r.left-(kDropdownLeftPaddingDips+kDropdownChevronReserveDips)*dpiScale,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,primaryBrush.Get(),true); DrawDropdownChevron(r,primaryBrush.Get(),dpiScale); };
+            const RECT scalingBounds=GetSettingsScalingBounds(ImageScaling::Quality); const int scalingLabelHeight=MeasureSettingsTextHeight(L"image scaling",settingsWidth,16,DWRITE_FONT_WEIGHT_NORMAL); DrawOverlayText(L"image scaling",settingsLeft,(float)scalingBounds.top-scalingLabelHeight-kSettingsLabelToControlGapDips*dpiScale,settingsWidth,(float)scalingLabelHeight,16,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),false,false,false,true);
+            const auto drawScalingButton = [&](ImageScaling value, ButtonKind button, const wchar_t* text) { const RECT control=GetSettingsScalingBounds(value); const D2D1_RECT_F r=D2D1::RectF((float)control.left,(float)control.top,(float)control.right,(float)control.bottom); const bool selected=imageScaling_==value; renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),selected?accent.Get():(hoveredButton_==button?segmentHover.Get():segmentIdle.Get())); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),selected?accent.Get():borderBrush.Get(),1); DrawOverlayText(text,r.left,r.top,r.right-r.left,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,selected?checkmark.Get():primaryBrush.Get(),true,false,true); };
+            drawScalingButton(ImageScaling::Quality,ButtonKind::SettingsScalingQuality,L"quality"); drawScalingButton(ImageScaling::Performance,ButtonKind::SettingsScalingPerformance,L"performance");
             const RECT zoomHudBounds=GetSettingsZoomHudBounds(); const int zoomLabelHeight=MeasureSettingsTextHeight(L"show zoom percentage",settingsWidth,16,DWRITE_FONT_WEIGHT_NORMAL); DrawOverlayText(L"show zoom percentage",settingsLeft,(float)zoomHudBounds.top-zoomLabelHeight-kSettingsLabelToControlGapDips*dpiScale,settingsWidth,(float)zoomLabelHeight,16,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),false,false,false,true); drawImageDropdown(zoomHudBounds,ButtonKind::SettingsZoomHudPositionToggle,L"bottom right",zoomHudPositionMenuOpen_);
-            const RECT scalingBounds=GetSettingsScalingBounds(ImageScaling::Quality); const int scalingLabelHeight=MeasureSettingsTextHeight(L"image scaling",settingsWidth,16,DWRITE_FONT_WEIGHT_NORMAL); DrawOverlayText(L"image scaling",settingsLeft,(float)scalingBounds.top-scalingLabelHeight-kSettingsLabelToControlGapDips*dpiScale,settingsWidth,(float)scalingLabelHeight,16,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),false,false,false,true); drawImageDropdown(scalingBounds,ButtonKind::SettingsImageScalingToggle,imageScaling_==ImageScaling::Quality?L"quality":L"performance",imageScalingMenuOpen_);
             } else {
             const auto label = [&](const wchar_t* text, int column, float top) { const RECT cell=GetSettingsGridCell(column, top); const int height=MeasureSettingsTextHeight(text,cell.right-cell.left,16,DWRITE_FONT_WEIGHT_NORMAL); DrawOverlayText(text,static_cast<float>(cell.left),static_cast<float>(cell.top-height-MulDiv(static_cast<int>(kSettingsLabelToControlGapDips),GetDpiForWindow(window_),96)),static_cast<float>(cell.right-cell.left),static_cast<float>(height),16,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),false,false,false,true); };
             const auto drawDropdown = [&](RECT control, ButtonKind button, const wchar_t* text, bool open) { const D2D1_RECT_F r=D2D1::RectF((float)control.left,(float)control.top,(float)control.right,(float)control.bottom); renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),((button != ButtonKind::None && hoveredButton_==button)||open)?segmentHover.Get():segmentIdle.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),borderBrush.Get(),1); DrawOverlayText(text,r.left+kDropdownLeftPaddingDips*dpiScale,r.top,r.right-r.left-(kDropdownLeftPaddingDips+kDropdownChevronReserveDips)*dpiScale,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,primaryBrush.Get(),true); DrawDropdownChevron(r,primaryBrush.Get(),dpiScale); };
@@ -4792,19 +4803,19 @@ private:
             if(buildPlateMenuOpen_)drawMenu(GetSettingsBuildPlateMenuBounds(),{L"Auto",L"On",L"Off"},static_cast<int>(modelBuildPlate_));
             if(projectionMenuOpen_)drawMenu(GetSettingsProjectionMenuBounds(),{L"Perspective",L"Orthographic"},static_cast<int>(modelProjectionMode_));
             group(L"RENDER", kSettingsRenderHeadingTopDips);
-            label(L"rendering API",0,kSettingsRenderControlTopDips); drawDropdown(GetSettingsRenderingApiBounds(),ButtonKind::SettingsRenderingApiToggle,L"Direct3D 11",false);
+            label(L"rendering API",0,kSettingsRenderControlTopDips); drawDropdown(GetSettingsRenderingApiBounds(),ButtonKind::SettingsRenderingApiToggle,L"Direct3D 11",renderingApiMenuOpen_);
             label(L"graphics adapter",1,kSettingsRenderControlTopDips); drawDropdown(GetSettingsGraphicsAdapterBounds(),ButtonKind::SettingsGraphicsAdapterToggle,GraphicsAdapterLabel().c_str(),graphicsAdapterMenuOpen_);
             label(L"anti-aliasing",0,kSettingsRenderControlTopDips + kSettingsRowHeightDips + kSettingsRowGapDips); const bool fallback=modelVisualStyle_==ModelVisualStyle::Wireframe&&IsModelAntiAliasingSsaa(modelAntiAliasing_); const ModelAntiAliasing displayed=EffectiveModelAntiAliasing(modelAntiAliasing_,modelVisualStyle_); const wchar_t* aaLabel=fallback?L"8x MSAA (Wireframe fallback)":displayed==ModelAntiAliasing::Off?L"Off":displayed==ModelAntiAliasing::Msaa2x?L"2x MSAA":displayed==ModelAntiAliasing::Msaa4x?L"4x MSAA":displayed==ModelAntiAliasing::Msaa8x?L"8x MSAA":displayed==ModelAntiAliasing::Ssaa1_5x?L"1.5x SSAA":L"2x SSAA"; drawDropdown(GetSettingsAntiAliasingBounds(),ButtonKind::SettingsAntiAliasingToggle,aaLabel,antiAliasingMenuOpen_);
             const RECT adapter=GetSettingsGraphicsAdapterBounds(); DrawOverlayText(L"Active",(float)adapter.left,(float)adapter.bottom+6*dpiScale,44*dpiScale,18*dpiScale,12,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get()); DrawOverlayText(graphicsHost_.ActiveAdapterName().empty()?L"Unavailable":graphicsHost_.ActiveAdapterName().c_str(),(float)adapter.left+46*dpiScale,(float)adapter.bottom+6*dpiScale,(float)(adapter.right-adapter.left)-46*dpiScale,18*dpiScale,12,DWRITE_FONT_WEIGHT_NORMAL,primaryBrush.Get()); DrawOverlayText(L"Restart Viewtrious to apply changes.",(float)adapter.left,(float)adapter.bottom+24*dpiScale,(float)(adapter.right-adapter.left),18*dpiScale,12,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get());
             if(graphicsAdapterMenuOpen_){ const RECT menu=GetSettingsGraphicsAdapterMenuBounds(); std::vector<const wchar_t*> items{L"Auto (High Performance)"}; int selectedAdapter=graphicsAdapterAuto_?0:-1; for(int i=0;i<(int)graphicsAdapters_.size();++i){items.push_back(graphicsAdapters_[i].name.c_str()); if(!graphicsAdapterAuto_&&SameGraphicsAdapterLuid(graphicsAdapters_[i].luid,graphicsAdapterLuid_))selectedAdapter=i+1;} drawMenu(menu,items,selectedAdapter); }
             if(antiAliasingMenuOpen_){ const RECT menu=GetSettingsAntiAliasingMenuBounds(); std::vector<const wchar_t*> items(kAntiAliasingOptions.begin(),kAntiAliasingOptions.end()); drawMenu(menu,items,static_cast<int>(displayed)); }
-            group(L"INPUT", kSettingsInputHeadingTopDips);
+            group(L"INPUT", static_cast<float>(GetSettingsInputHeadingTop() - bounds.top) / dpiScale);
             drawToggle(6, ButtonKind::SettingsSpaceMouse, L"Enable 3Dconnexion SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
             }
             if (settingsPage_ == SettingsPage::Image2D) {
                 if (zoomHudPositionMenuOpen_) drawForegroundMenu(GetSettingsZoomHudMenuBounds(), { L"bottom right" }, 0, {});
-                if (imageScalingMenuOpen_) drawForegroundMenu(GetSettingsScalingMenuBounds(), { L"quality", L"performance" }, imageScaling_ == ImageScaling::Quality ? 0 : 1, { ButtonKind::SettingsScalingQuality, ButtonKind::SettingsScalingPerformance });
             } else if (settingsPage_ == SettingsPage::Model3D) {
+                if (renderingApiMenuOpen_) drawForegroundMenu(GetSettingsRenderingApiMenuBounds(), { L"Direct3D 11" }, 0, { ButtonKind::SettingsRenderingApiOption });
                 if (upAxisMenuOpen_) drawForegroundMenu(GetSettingsUpAxisMenuBounds(), { L"z axis up", L"y axis up", L"x axis up" }, modelUpAxis_ == ModelUpAxis::ZUp ? 0 : modelUpAxis_ == ModelUpAxis::YUp ? 1 : 2, { ButtonKind::SettingsUpAxisZ, ButtonKind::SettingsUpAxisY, ButtonKind::SettingsUpAxisX });
                 if (buildPlateMenuOpen_) drawForegroundMenu(GetSettingsBuildPlateMenuBounds(), { L"auto", L"on", L"off" }, static_cast<int>(modelBuildPlate_), { ButtonKind::SettingsBuildPlateAuto, ButtonKind::SettingsBuildPlateOn, ButtonKind::SettingsBuildPlateOff });
                 if (projectionMenuOpen_) drawForegroundMenu(GetSettingsProjectionMenuBounds(), { L"perspective", L"orthographic" }, static_cast<int>(modelProjectionMode_), { ButtonKind::SettingsProjectionPerspective, ButtonKind::SettingsProjectionOrthographic });
@@ -5546,7 +5557,7 @@ private:
     bool buildPlateMenuOpen_ = false;
     bool projectionMenuOpen_ = false;
     bool zoomHudPositionMenuOpen_ = false;
-    bool imageScalingMenuOpen_ = false;
+    bool renderingApiMenuOpen_ = false;
     bool viewBarProjectionMenuOpen_ = false;
     bool viewBarVisualStyleMenuOpen_ = false;
     SettingsPage settingsPage_ = SettingsPage::General;

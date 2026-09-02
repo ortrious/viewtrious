@@ -488,7 +488,7 @@ FrameMetrics GetFrameMetrics(HWND window, bool includeVideoMetadata = false) {
     const int separatorHeight = MulDiv(20, dpi, 96);
     const int sectionGutter = MulDiv(14, dpi, 96);
     const int filenameLeadIn = MulDiv(14, dpi, 96);
-    const int resolutionWidth = MulDiv(includeVideoMetadata ? 184 : 92, dpi, 96);
+    const int resolutionWidth = MulDiv(includeVideoMetadata ? 160 : 92, dpi, 96);
     const int fileSizeWidth = MulDiv(72, dpi, 96);
     RECT client{};
     GetClientRect(window, &client);
@@ -2747,7 +2747,7 @@ public:
         float framesPerSecond = 0.0f;
         if (videoPlayer_.TryGetFramesPerSecond(framesPerSecond)) {
             videoFramesPerSecondText_ = FormatFramesPerSecond(framesPerSecond);
-            if (!resolutionText_.empty()) resolutionText_ += L" * " + videoFramesPerSecondText_;
+            if (!resolutionText_.empty()) resolutionText_ += L"  ·  " + videoFramesPerSecondText_;
         }
     }
     void VideoPlaybackTimerMessage() {

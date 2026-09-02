@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <d2d1_1.h>
 #include <d3d11.h>
+#include <d3d10_1.h>
 #include <AudioSessionTypes.h>
 #include <mfapi.h>
 #include <mfidl.h>
@@ -14,6 +15,7 @@
 // Small Media Foundation wrapper which leaves final composition to GraphicsHost.
 class VideoPlayer {
 public:
+    static void Trace(HWND window, const wchar_t* stage, HRESULT result = S_OK, DWORD event = 0);
     bool Open(HWND window, ID3D11Device* device, const std::wstring& path, std::wstring& error);
     void Shutdown();
     bool RebindDevice(ID3D11Device* device, std::wstring& error);
@@ -27,6 +29,7 @@ public:
 private:
     bool CreateFrameTexture(std::wstring& error);
     bool SetSourceFromPath(const std::wstring& path, std::wstring& error);
+    bool EnsureMultithreadProtection(ID3D11Device* device, std::wstring& error);
 
     HWND window_ = nullptr;
     Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> deviceManager_;
@@ -42,4 +45,7 @@ private:
     bool ready_ = false;
     bool playing_ = false;
     bool failed_ = false;
+    bool hasValidFrame_ = false;
+    bool hasTransferredPts_ = false;
+    LONGLONG lastTransferredPts_ = 0;
 };

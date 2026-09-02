@@ -1971,6 +1971,8 @@ public:
     void Paint() {
         PAINTSTRUCT paint{};
         BeginPaint(window_, &paint);
+        const bool videoPaint = VideoActive();
+        if (videoPaint) VideoPlayer::Trace(window_, L"Video2D paint begin");
         EnsureRenderTarget();
         if (renderTarget_ && graphicsHost_.Ready()) {
             if (ModelActive() && !TutorialActive()) modelViewport_.Render(graphicsHost_, ModelCanvasBounds());
@@ -1984,6 +1986,7 @@ public:
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
             if (!tutorialPresentation_) DrawRevisionLabel();
+            if (videoPaint) VideoPlayer::Trace(window_, L"Video2D overlay drawing begin");
             DrawTitleBar();
             DrawTriangleCountTooltip();
             DrawDropdown();
@@ -1992,12 +1995,20 @@ public:
             DrawOverlay();
             if (!tutorialPresentation_) DrawCopyFeedback();
             DrawTutorial();
+            if (videoPaint) VideoPlayer::Trace(window_, L"Video2D overlay drawing end");
+            if (videoPaint) VideoPlayer::Trace(window_, L"Video2D EndDraw begin");
             const HRESULT hr = graphicsHost_.EndDraw();
+            if (videoPaint) VideoPlayer::Trace(window_, L"Video2D EndDraw end", hr);
             if (SUCCEEDED(hr) && bitmap_ && !tutorialPresentation_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
-            else if (SUCCEEDED(hr)) graphicsHost_.Present();
+            else if (SUCCEEDED(hr)) {
+                if (videoPaint) VideoPlayer::Trace(window_, L"Video2D Present begin");
+                const HRESULT present = graphicsHost_.Present();
+                if (videoPaint) VideoPlayer::Trace(window_, L"Video2D Present end", present);
+            }
         }
         EndPaint(window_, &paint);
+        if (videoPaint) VideoPlayer::Trace(window_, L"Video2D paint end/return");
     }
 
     void Resize() {
@@ -2675,6 +2686,7 @@ private:
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
     void BeginVideoLoad(const std::wstring& path) {
+        VideoPlayer::Trace(window_, L"Viewer entering Video2D open");
         DeactivateModel(); DeactivateVideo(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         ++decodeRequestGeneration_; ++modelLoadGeneration_; pendingFullDecode_.reset(); imageDecodePending_ = false;
         source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
@@ -2687,9 +2699,11 @@ private:
             contentKind_ = ContentKind::None;
             error_ = videoError.empty() ? L"Viewtrious could not open this MP4." : videoError;
         }
+        VideoPlayer::Trace(window_, L"Video2D render invalidation after open");
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DeactivateVideo() {
+        VideoPlayer::Trace(window_, L"Viewer Video2D teardown");
         KillTimer(window_, kVideoPlaybackTimer);
         videoPlayer_.Shutdown();
         if (contentKind_ == ContentKind::Video2D) contentKind_ = ContentKind::None;
@@ -2697,16 +2711,20 @@ private:
 public:
     void VideoMediaEngineEvent(DWORD event) {
         if (!VideoActive()) return;
+        VideoPlayer::Trace(window_, L"Video2D event received by UI", S_OK, event);
         std::wstring videoError;
         videoPlayer_.HandleMediaEvent(event, videoError);
         if (!videoError.empty()) error_ = videoError;
-        if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (videoPlayer_.Failed()) { DeactivateVideo(); VideoPlayer::Trace(window_, L"Video2D render invalidation after failure", S_OK, event); InvalidateRect(window_, nullptr, FALSE); return; }
         if (videoPlayer_.Playing()) SetTimer(window_, kVideoPlaybackTimer, 16, nullptr);
         else KillTimer(window_, kVideoPlaybackTimer);
+        VideoPlayer::Trace(window_, L"Video2D render invalidation after event", S_OK, event);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void VideoPlaybackTimerMessage() {
         if (!VideoActive() || !videoPlayer_.Playing()) { KillTimer(window_, kVideoPlaybackTimer); return; }
+        VideoPlayer::Trace(window_, L"Video2D playback timer tick");
+        VideoPlayer::Trace(window_, L"Video2D render invalidation from timer");
         InvalidateRect(window_, nullptr, FALSE);
     }
 private:

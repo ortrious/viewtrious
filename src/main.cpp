@@ -2747,7 +2747,7 @@ public:
         float framesPerSecond = 0.0f;
         if (videoPlayer_.TryGetFramesPerSecond(framesPerSecond)) {
             videoFramesPerSecondText_ = FormatFramesPerSecond(framesPerSecond);
-            if (!resolutionText_.empty()) resolutionText_ += L"  ·  " + videoFramesPerSecondText_;
+            if (!resolutionText_.empty()) resolutionText_ += L"  \x2022  " + videoFramesPerSecondText_;
         }
     }
     void VideoPlaybackTimerMessage() {

@@ -309,6 +309,21 @@ bool IsHeifPath(const std::wstring& path) {
 
 bool IsGifPath(const std::wstring& path) { return LowercaseExtension(path) == L".gif"; }
 
+std::wstring FormatFramesPerSecond(float value) {
+    if (!std::isfinite(value) || value <= 0.0f) return {};
+    const float rounded = std::round(value * 100.0f) / 100.0f;
+    wchar_t text[32]{};
+    if (std::fabs(rounded - std::round(rounded)) < 0.005f) swprintf_s(text, L"%.0f FPS", rounded);
+    else {
+        swprintf_s(text, L"%.2f", rounded);
+        std::wstring compact(text);
+        while (!compact.empty() && compact.back() == L'0') compact.pop_back();
+        if (!compact.empty() && compact.back() == L'.') compact.pop_back();
+        return compact + L" FPS";
+    }
+    return text;
+}
+
 UINT GifMetadataUInt(IWICMetadataQueryReader* reader, const wchar_t* name, UINT fallback = 0) {
     if (!reader) return fallback;
     PROPVARIANT value{};
@@ -454,6 +469,9 @@ struct FrameMetrics {
     int resolutionLeft;
     int resolutionWidth;
     RECT resolutionSeparator;
+    int framesPerSecondLeft;
+    int framesPerSecondWidth;
+    RECT framesPerSecondSeparator;
     int fileSizeLeft;
     int fileSizeWidth;
     RECT fileSizeSeparator;
@@ -463,7 +481,7 @@ struct FrameMetrics {
     RECT close;
 };
 
-FrameMetrics GetFrameMetrics(HWND window) {
+FrameMetrics GetFrameMetrics(HWND window, bool includeVideoFramesPerSecond = false) {
     const UINT dpi = GetDpiForWindow(window);
     const int titleBarHeight = MulDiv(40, dpi, 96);
     const int border = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
@@ -474,6 +492,7 @@ FrameMetrics GetFrameMetrics(HWND window) {
     const int sectionGutter = MulDiv(14, dpi, 96);
     const int filenameLeadIn = MulDiv(14, dpi, 96);
     const int resolutionWidth = MulDiv(92, dpi, 96);
+    const int framesPerSecondWidth = MulDiv(76, dpi, 96);
     const int fileSizeWidth = MulDiv(72, dpi, 96);
     RECT client{};
     GetClientRect(window, &client);
@@ -482,7 +501,9 @@ FrameMetrics GetFrameMetrics(HWND window) {
     const int hamburgerSeparatorLeft = hamburgerWidth - separatorWidth;
     const int resolutionLeft = hamburgerSeparatorLeft + separatorWidth + sectionGutter;
     const int resolutionSeparatorLeft = resolutionLeft + resolutionWidth + sectionGutter;
-    const int fileSizeLeft = resolutionSeparatorLeft + separatorWidth + sectionGutter;
+    const int framesPerSecondLeft = resolutionSeparatorLeft + separatorWidth + sectionGutter;
+    const int framesPerSecondSeparatorLeft = framesPerSecondLeft + framesPerSecondWidth + sectionGutter;
+    const int fileSizeLeft = includeVideoFramesPerSecond ? framesPerSecondSeparatorLeft + separatorWidth + sectionGutter : framesPerSecondLeft;
     const int fileSizeSeparatorLeft = fileSizeLeft + fileSizeWidth + sectionGutter;
     const int filenameLeft = fileSizeSeparatorLeft + separatorWidth + sectionGutter + filenameLeadIn;
     return { titleBarHeight, border,
@@ -491,6 +512,8 @@ FrameMetrics GetFrameMetrics(HWND window) {
         { hamburgerSeparatorLeft, separatorTop, hamburgerSeparatorLeft + separatorWidth, separatorTop + separatorHeight },
         resolutionLeft, resolutionWidth,
         { resolutionSeparatorLeft, separatorTop, resolutionSeparatorLeft + separatorWidth, separatorTop + separatorHeight },
+        framesPerSecondLeft, framesPerSecondWidth,
+        { framesPerSecondSeparatorLeft, separatorTop, framesPerSecondSeparatorLeft + separatorWidth, separatorTop + separatorHeight },
         fileSizeLeft, fileSizeWidth,
         { fileSizeSeparatorLeft, separatorTop, fileSizeSeparatorLeft + separatorWidth, separatorTop + separatorHeight },
         filenameLeft,
@@ -2693,7 +2716,7 @@ private:
         source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         currentPath_ = path; displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
-        fileSizeText_ = FormatFileSize(path); resolutionText_ = L"Video"; error_.clear();
+        fileSizeText_ = FormatFileSize(path); resolutionText_.clear(); videoFramesPerSecondText_.clear(); error_.clear();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false; contentKind_ = ContentKind::Video2D;
         EnsureRenderTarget();
         std::wstring videoError;
@@ -2708,7 +2731,8 @@ private:
         VideoPlayer::Trace(window_, L"Viewer Video2D teardown");
         KillTimer(window_, kVideoPlaybackTimer);
         videoPlayer_.Shutdown();
-        if (contentKind_ == ContentKind::Video2D) contentKind_ = ContentKind::None;
+        videoFramesPerSecondText_.clear();
+        if (contentKind_ == ContentKind::Video2D) { resolutionText_.clear(); contentKind_ = ContentKind::None; }
     }
 public:
     void VideoMediaEngineEvent(DWORD event) {
@@ -2716,12 +2740,20 @@ public:
         VideoPlayer::Trace(window_, L"Video2D event received by UI", S_OK, event);
         std::wstring videoError;
         videoPlayer_.HandleMediaEvent(event, videoError);
+        UpdateVideoTitleMetadata();
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); VideoPlayer::Trace(window_, L"Video2D render invalidation after failure", S_OK, event); InvalidateRect(window_, nullptr, FALSE); return; }
         if (videoPlayer_.Playing()) SetTimer(window_, kVideoPlaybackTimer, 16, nullptr);
         else KillTimer(window_, kVideoPlaybackTimer);
         VideoPlayer::Trace(window_, L"Video2D render invalidation after event", S_OK, event);
         InvalidateRect(window_, nullptr, FALSE);
+    }
+    void UpdateVideoTitleMetadata() {
+        if (!VideoActive()) return;
+        DWORD width = 0, height = 0;
+        if (videoPlayer_.GetNativeVideoSize(width, height)) resolutionText_ = std::to_wstring(width) + L"×" + std::to_wstring(height);
+        float framesPerSecond = 0.0f;
+        if (videoPlayer_.TryGetFramesPerSecond(framesPerSecond)) videoFramesPerSecondText_ = FormatFramesPerSecond(framesPerSecond);
     }
     void VideoPlaybackTimerMessage() {
         if (!VideoActive() || !videoPlayer_.Playing()) { KillTimer(window_, kVideoPlaybackTimer); return; }
@@ -5621,7 +5653,8 @@ private:
     void DrawTitleBar() {
         if (fullscreen_) return;
 
-        const FrameMetrics frame = GetFrameMetrics(window_);
+        const bool showVideoFramesPerSecond = VideoActive() && !videoFramesPerSecondText_.empty();
+        const FrameMetrics frame = GetFrameMetrics(window_, showVideoFramesPerSecond);
         const bool dark = UseDarkAppMode();
         const D2D1_COLOR_F stripColor = dark ? D2D1::ColorF(29.0f / 255.0f, 32.0f / 255.0f, 38.0f / 255.0f)
             : D2D1::ColorF(242.0f / 255.0f, 242.0f / 255.0f, 242.0f / 255.0f);
@@ -5683,12 +5716,14 @@ private:
         else if (hamburgerHovered_) renderTarget_->FillRectangle(rect(frame.hamburger), hoverBrush.Get());
         renderTarget_->FillRectangle(rect(frame.hamburgerSeparator), separatorBrush.Get());
         renderTarget_->FillRectangle(rect(frame.resolutionSeparator), separatorBrush.Get());
+        if (showVideoFramesPerSecond) renderTarget_->FillRectangle(rect(frame.framesPerSecondSeparator), separatorBrush.Get());
         renderTarget_->FillRectangle(rect(frame.fileSizeSeparator), separatorBrush.Get());
 
         const bool tutorialMetadata = tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails;
         const bool hideTutorialMetadata = tutorialPresentation_ && !tutorialMetadata;
         ID2D1Brush* activeMetadataBrush = tutorialMetadata ? tutorialMetadataBrush.Get() : metadataBrush.Get();
         DrawTitleText(tutorialMetadata ? L"1920 x 1080" : hideTutorialMetadata ? L"" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
+        if (showVideoFramesPerSecond) DrawTitleText(hideTutorialMetadata ? L"" : videoFramesPerSecondText_, static_cast<float>(frame.framesPerSecondLeft), static_cast<float>(frame.framesPerSecondWidth), activeMetadataBrush, false, true);
         DrawTitleText(tutorialMetadata ? L"1.2 MB" : hideTutorialMetadata ? L"" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);
         const float filenameWidth = static_cast<float>(std::max(0L,
             frame.titleBarContent.right - frame.filenameLeft - MulDiv(8, GetDpiForWindow(window_), 96)));
@@ -5775,6 +5810,7 @@ private:
     std::wstring displayedPath_;
     FileIdentity currentFileIdentity_{};
     std::wstring resolutionText_;
+    std::wstring videoFramesPerSecondText_;
     uint64_t modelTriangleCount_ = 0;
     std::wstring fileSizeText_;
     std::wstring filenameText_;

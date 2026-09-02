@@ -23,6 +23,8 @@ public:
     bool HandleMediaEvent(DWORD event, std::wstring& error);
     bool Draw(ID2D1DeviceContext* context, const RECT& canvas);
     void TogglePlayPause();
+    bool GetNativeVideoSize(DWORD& width, DWORD& height) const;
+    bool TryGetFramesPerSecond(float& framesPerSecond);
     bool Playing() const { return playing_; }
     bool Active() const { return engine_ != nullptr; }
     bool Failed() const { return failed_; }
@@ -50,5 +52,7 @@ private:
     bool hasTransferredPts_ = false;
     bool bitmapRebuildPending_ = false;
     bool cachedFrameDrawAfterResizePending_ = false;
+    bool hasFramesPerSecond_ = false;
+    float framesPerSecond_ = 0.0f;
     LONGLONG lastTransferredPts_ = 0;
 };

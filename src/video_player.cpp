@@ -2,6 +2,8 @@
 
 #include <shlwapi.h>
 
+#include <cmath>
+
 using Microsoft::WRL::ComPtr;
 
 namespace {
@@ -94,8 +96,9 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
 
 void VideoPlayer::Shutdown() {
     Trace(window_, L"Video2D shutdown/teardown begin");
-    playing_ = ready_ = failed_ = hasValidFrame_ = hasTransferredPts_ = bitmapRebuildPending_ = cachedFrameDrawAfterResizePending_ = false;
+    playing_ = ready_ = failed_ = hasValidFrame_ = hasTransferredPts_ = bitmapRebuildPending_ = cachedFrameDrawAfterResizePending_ = hasFramesPerSecond_ = false;
     lastTransferredPts_ = 0;
+    framesPerSecond_ = 0.0f;
     frameBitmap_.Reset(); frameTexture_.Reset(); engineEx_.Reset();
     if (engine_) { const HRESULT shutdown = engine_->Shutdown(); Trace(window_, L"MediaEngine shutdown", shutdown); }
     engine_.Reset(); deviceManager_.Reset(); device_.Reset();
@@ -231,6 +234,27 @@ void VideoPlayer::TogglePlayPause() {
     Trace(window_, L"play/pause request");
     if (playing_) { const HRESULT pause = engine_->Pause(); Trace(window_, L"pause request end", pause); if (SUCCEEDED(pause)) playing_ = false; }
     else { const HRESULT play = engine_->Play(); Trace(window_, L"play request end", play); if (SUCCEEDED(play)) playing_ = true; }
+}
+
+bool VideoPlayer::GetNativeVideoSize(DWORD& width, DWORD& height) const {
+    width = videoWidth_; height = videoHeight_;
+    return width != 0 && height != 0;
+}
+
+bool VideoPlayer::TryGetFramesPerSecond(float& framesPerSecond) {
+    if (hasFramesPerSecond_) { framesPerSecond = framesPerSecond_; return true; }
+    if (!engineEx_) return false;
+    PROPVARIANT statistic{};
+    PropVariantInit(&statistic);
+    const HRESULT result = engineEx_->GetStatistics(MF_MEDIA_ENGINE_STATISTIC_FRAMES_PER_SECOND, &statistic);
+    if (SUCCEEDED(result) && statistic.vt == VT_R4 && std::isfinite(statistic.fltVal) && statistic.fltVal > 0.0f) {
+        framesPerSecond_ = statistic.fltVal;
+        hasFramesPerSecond_ = true;
+    }
+    PropVariantClear(&statistic);
+    if (!hasFramesPerSecond_) return false;
+    framesPerSecond = framesPerSecond_;
+    return true;
 }
 
 bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas) {

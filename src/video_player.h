@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <d2d1_1.h>
 #include <d3d11.h>
+#include <AudioSessionTypes.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfmediaengine.h>

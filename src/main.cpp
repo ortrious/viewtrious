@@ -1821,8 +1821,8 @@ public:
         else if (button == ButtonKind::SettingsZoomHudBottomRight) SetZoomHudPosition(ZoomHudPosition::BottomRight);
         else if (button == ButtonKind::SettingsZoomHudTopLeft) SetZoomHudPosition(ZoomHudPosition::TopLeft);
         else if (button == ButtonKind::SettingsZoomHudTopRight) SetZoomHudPosition(ZoomHudPosition::TopRight);
-        else if (button == ButtonKind::SettingsScrollUp) ScrollSettings(-MulDiv(180, GetDpiForWindow(window_), 96));
-        else if (button == ButtonKind::SettingsScrollDown) ScrollSettings(MulDiv(180, GetDpiForWindow(window_), 96));
+        else if (button == ButtonKind::SettingsScrollUp) ScrollSettings(static_cast<float>(-MulDiv(180, GetDpiForWindow(window_), 96)));
+        else if (button == ButtonKind::SettingsScrollDown) ScrollSettings(static_cast<float>(MulDiv(180, GetDpiForWindow(window_), 96)));
         else if (button == ButtonKind::SettingsAnimations) ToggleAnimationsAndFadeEffects();
         else if (button == ButtonKind::SettingsReverseWheelZoom) ToggleReverseMouseWheelZoom();
         else if (button == ButtonKind::SettingsSpaceMouse) ToggleSpaceMouse();
@@ -2694,6 +2694,7 @@ private:
         videoPlayer_.Shutdown();
         if (contentKind_ == ContentKind::Video2D) contentKind_ = ContentKind::None;
     }
+public:
     void VideoMediaEngineEvent(DWORD event) {
         if (!VideoActive()) return;
         std::wstring videoError;
@@ -2708,6 +2709,7 @@ private:
         if (!VideoActive() || !videoPlayer_.Playing()) { KillTimer(window_, kVideoPlaybackTimer); return; }
         InvalidateRect(window_, nullptr, FALSE);
     }
+private:
     void StopDirectoryWatcher() {
         directoryWatcherStopping_ = true;
         if (directoryWatcherHandle_ != INVALID_HANDLE_VALUE) CancelIoEx(directoryWatcherHandle_, nullptr);

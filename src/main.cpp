@@ -5559,12 +5559,12 @@ private:
             }
             const float logoLeft = static_cast<float>(bounds.left) + 40.0f * dpiScale;
             const float textTop = logoBottom + 16.0f * dpiScale;
-            DrawOverlayText(L"Version " VIEWTRIOUS_VERSION, logoLeft, textTop, logoWidth, 20.0f * dpiScale,
+            DrawOverlayText(L"Version " VIEWTRIOUS_VERSION, logoLeft, textTop, static_cast<float>(logoWidth), 20.0f * dpiScale,
                 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
-            DrawOverlayText(L"Extremely lightweight image viewer", logoLeft, textTop + 25.0f * dpiScale, logoWidth,
+            DrawOverlayText(L"Extremely lightweight image viewer", logoLeft, textTop + 25.0f * dpiScale, static_cast<float>(logoWidth),
                 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
             DrawOverlayText(L"3D input device development tools and related technology are provided under license from 3Dconnexion. © 3Dconnexion 1992 - 2025. All rights reserved.",
-                logoLeft, textTop + 49.0f * dpiScale, logoWidth, 38.0f * dpiScale, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
+                logoLeft, textTop + 49.0f * dpiScale, static_cast<float>(logoWidth), 38.0f * dpiScale, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         }
     }
 

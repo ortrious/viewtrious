@@ -19,6 +19,7 @@ public:
     bool Open(HWND window, ID3D11Device* device, const std::wstring& path, std::wstring& error);
     void Shutdown();
     bool RebindDevice(ID3D11Device* device, std::wstring& error);
+    void HandleRenderTargetResize();
     bool HandleMediaEvent(DWORD event, std::wstring& error);
     bool Draw(ID2D1DeviceContext* context, const RECT& canvas);
     void TogglePlayPause();
@@ -47,5 +48,7 @@ private:
     bool failed_ = false;
     bool hasValidFrame_ = false;
     bool hasTransferredPts_ = false;
+    bool bitmapRebuildPending_ = false;
+    bool cachedFrameDrawAfterResizePending_ = false;
     LONGLONG lastTransferredPts_ = 0;
 };

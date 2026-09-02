@@ -2019,7 +2019,7 @@ public:
             if (!graphicsHost_.Resize(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top), static_cast<float>(GetDpiForWindow(window_)), error)) error_ = error;
             renderTarget_ = graphicsHost_.D2DContext();
             bitmap_.Reset(); lanczosBitmap_.Reset(); aboutLogo_.Reset(); checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
-            if (VideoActive()) { std::wstring videoError; if (!videoPlayer_.RebindDevice(graphicsHost_.Device(), videoError)) error_ = videoError; }
+            if (VideoActive()) videoPlayer_.HandleRenderTargetResize();
         }
         if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());

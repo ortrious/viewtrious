@@ -94,7 +94,7 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
 
 void VideoPlayer::Shutdown() {
     Trace(window_, L"Video2D shutdown/teardown begin");
-    playing_ = ready_ = failed_ = hasValidFrame_ = hasTransferredPts_ = false;
+    playing_ = ready_ = failed_ = hasValidFrame_ = hasTransferredPts_ = bitmapRebuildPending_ = cachedFrameDrawAfterResizePending_ = false;
     lastTransferredPts_ = 0;
     frameBitmap_.Reset(); frameTexture_.Reset(); engineEx_.Reset();
     if (engine_) { const HRESULT shutdown = engine_->Shutdown(); Trace(window_, L"MediaEngine shutdown", shutdown); }
@@ -120,8 +120,20 @@ bool VideoPlayer::RebindDevice(ID3D11Device* device, std::wstring& error) {
     if (FAILED(reset)) {
         error = L"Windows could not bind the video decoder to the graphics device."; return false;
     }
-    device_ = device; frameBitmap_.Reset(); frameTexture_.Reset(); hasValidFrame_ = hasTransferredPts_ = false; lastTransferredPts_ = 0;
+    device_ = device; frameBitmap_.Reset(); frameTexture_.Reset(); hasValidFrame_ = hasTransferredPts_ = cachedFrameDrawAfterResizePending_ = false; lastTransferredPts_ = 0;
     return !ready_ || CreateFrameTexture(error);
+}
+
+void VideoPlayer::HandleRenderTargetResize() {
+    Trace(window_, L"Video2D resize begin");
+    if (frameTexture_) Trace(window_, L"video texture preserved");
+    if (frameBitmap_) {
+        frameBitmap_.Reset();
+        bitmapRebuildPending_ = true;
+        Trace(window_, L"video D2D bitmap released for target rebuild");
+    }
+    if (hasValidFrame_) { cachedFrameDrawAfterResizePending_ = true; Trace(window_, L"cached frame preserved across resize"); }
+    Trace(window_, L"Video2D resize end");
 }
 
 bool VideoPlayer::EnsureMultithreadProtection(ID3D11Device* device, std::wstring& error) {
@@ -277,11 +289,13 @@ bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas) {
         if (FAILED(surfaceResult)) return false;
         const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE,
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
-        Trace(window_, L"D2D bitmap creation from video texture begin");
+        Trace(window_, bitmapRebuildPending_ ? L"video D2D bitmap recreated from cached texture begin" : L"D2D bitmap creation from video texture begin");
         const HRESULT bitmapResult = context->CreateBitmapFromDxgiSurface(surface.Get(), &properties, &frameBitmap_);
-        Trace(window_, L"D2D bitmap creation from video texture end", bitmapResult);
+        Trace(window_, bitmapRebuildPending_ ? L"video D2D bitmap recreated from cached texture end" : L"D2D bitmap creation from video texture end", bitmapResult);
         if (FAILED(bitmapResult)) return false;
+        bitmapRebuildPending_ = false;
     } else Trace(window_, L"D2D bitmap reuse from video texture");
+    if (cachedFrameDrawAfterResizePending_) { Trace(window_, L"drawing cached frame after resize"); cachedFrameDrawAfterResizePending_ = false; }
     Trace(window_, L"drawing cached video frame");
     Trace(window_, L"D2D DrawBitmap video composite begin");
     context->DrawBitmap(frameBitmap_.Get(), destination, 1.0f, D2D1_INTERPOLATION_MODE_LINEAR);

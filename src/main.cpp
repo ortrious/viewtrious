@@ -75,7 +75,8 @@ constexpr UINT_PTR kVideoControlsTimer = 15;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
-constexpr int kLogoResourceId = 102;
+constexpr int kTopBarLogoResourceId = 102;
+constexpr int kAboutLogoResourceId = 103;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
 constexpr int kContextMenuPaddingDip = 8;
@@ -2239,7 +2240,8 @@ public:
             std::wstring error;
             if (!graphicsHost_.Resize(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top), static_cast<float>(GetDpiForWindow(window_)), error)) error_ = error;
             renderTarget_ = graphicsHost_.D2DContext();
-            bitmap_.Reset(); lanczosBitmap_.Reset(); aboutLogo_.Reset(); checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
+            bitmap_.Reset(); lanczosBitmap_.Reset(); aboutLogo_.Reset(); aboutLogoWidth_ = 0; aboutLogoHeight_ = 0;
+            topBarLogo_.Reset(); topBarLogoWidth_ = 0; topBarLogoHeight_ = 0; checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
             if (VideoActive()) videoPlayer_.HandleRenderTargetResize();
         }
         if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
@@ -5085,9 +5087,8 @@ private:
         renderTarget_->DrawLine(D2D1::Point2F(centerX, centerY + halfHeight), D2D1::Point2F(centerX + halfWidth, centerY - halfHeight), brush, 1.5f * dpiScale);
     }
 
-    bool EnsureAboutLogo() {
-        if (aboutLogo_) return true;
-        const HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(kLogoResourceId), RT_RCDATA);
+    bool CreateBitmapFromResource(int resourceId, UINT targetWidth, UINT targetHeight, ComPtr<ID2D1Bitmap>& target) {
+        const HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
         if (!resource) return false;
         const DWORD size = SizeofResource(nullptr, resource);
         const HGLOBAL loadedResource = LoadResource(nullptr, resource);
@@ -5097,6 +5098,7 @@ private:
         ComPtr<IWICBitmapDecoder> decoder;
         ComPtr<IWICBitmapFrameDecode> frame;
         ComPtr<IWICFormatConverter> converter;
+        ComPtr<IWICBitmapScaler> scaler;
         ComPtr<IWICBitmapSource> source;
         HRESULT hr = wicFactory_->CreateStream(&stream);
         if (SUCCEEDED(hr)) hr = stream->InitializeFromMemory(reinterpret_cast<BYTE*>(const_cast<void*>(bytes)), size);
@@ -5106,8 +5108,35 @@ private:
         if (SUCCEEDED(hr)) hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
             WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
         if (SUCCEEDED(hr)) source = converter;
+        if (SUCCEEDED(hr) && targetWidth && targetHeight) {
+            hr = wicFactory_->CreateBitmapScaler(&scaler);
+            if (SUCCEEDED(hr)) hr = scaler->Initialize(source.Get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant);
+            if (SUCCEEDED(hr)) source = scaler;
+        }
         if (FAILED(hr)) return false;
-        return SUCCEEDED(renderTarget_->CreateBitmapFromWicBitmap(source.Get(), nullptr, &aboutLogo_));
+        return SUCCEEDED(renderTarget_->CreateBitmapFromWicBitmap(source.Get(), nullptr, &target));
+    }
+
+    bool EnsureAboutLogo(UINT width, UINT height) {
+        if (aboutLogo_ && aboutLogoWidth_ == width && aboutLogoHeight_ == height) return true;
+        aboutLogo_.Reset();
+        aboutLogoWidth_ = 0;
+        aboutLogoHeight_ = 0;
+        if (!CreateBitmapFromResource(kAboutLogoResourceId, width, height, aboutLogo_)) return false;
+        aboutLogoWidth_ = width;
+        aboutLogoHeight_ = height;
+        return true;
+    }
+
+    bool EnsureTopBarLogo(UINT width, UINT height) {
+        if (topBarLogo_ && topBarLogoWidth_ == width && topBarLogoHeight_ == height) return true;
+        topBarLogo_.Reset();
+        topBarLogoWidth_ = 0;
+        topBarLogoHeight_ = 0;
+        if (!CreateBitmapFromResource(kTopBarLogoResourceId, width, height, topBarLogo_)) return false;
+        topBarLogoWidth_ = width;
+        topBarLogoHeight_ = height;
+        return true;
     }
 
     RECT GetEmptyOpenFileButtonBounds() const {
@@ -5182,12 +5211,11 @@ private:
         const float left = static_cast<float>(bounds.left) + panelPadding;
         const float contentWidth = static_cast<float>(bounds.right - bounds.left) - panelPadding * 2.0f;
         if (overlay_ == OverlayKind::Welcome) {
-            if (EnsureAboutLogo()) {
-                const D2D1_SIZE_F logoSource = aboutLogo_->GetSize();
-                const float logoWidth = std::min(216.0f * dpiScale, contentWidth);
-                const float logoHeight = logoWidth * logoSource.height / logoSource.width;
-                const float logoLeft = static_cast<float>(bounds.left) + (static_cast<float>(bounds.right - bounds.left) - logoWidth) / 2.0f;
-                const float logoTop = static_cast<float>(bounds.top) + 24.0f * dpiScale;
+            const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(std::min(216.0f * dpiScale, contentWidth))));
+            const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoWidth) * 577.0f / 2375.0f)));
+            if (EnsureAboutLogo(logoWidth, logoHeight)) {
+                const float logoLeft = std::round(static_cast<float>(bounds.left) + (static_cast<float>(bounds.right - bounds.left) - logoWidth) * 0.5f);
+                const float logoTop = std::round(static_cast<float>(bounds.top) + 24.0f * dpiScale);
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
             }
             DrawOverlayText(L"Make Viewtrious the default for common image formats?", left, static_cast<float>(bounds.top) + 136.0f * dpiScale,
@@ -5521,17 +5549,15 @@ private:
             DrawOverlayText(L"Opens GitHub in your web browser.", left, static_cast<float>(bounds.bottom) - panelPadding - 20.0f * dpiScale, contentWidth, 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         } else {
             float logoBottom = static_cast<float>(bounds.top) + panelPadding;
-            if (EnsureAboutLogo()) {
-                const D2D1_SIZE_F logoSource = aboutLogo_->GetSize();
-                const float logoWidth = std::min(520.0f * dpiScale, contentWidth);
-                const float logoHeight = logoWidth * logoSource.height / logoSource.width;
-                const float logoLeft = static_cast<float>(bounds.left) + 40.0f * dpiScale;
-                const float logoTop = logoBottom;
+            const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(std::min(520.0f * dpiScale, contentWidth))));
+            const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoWidth) * 577.0f / 2375.0f)));
+            if (EnsureAboutLogo(logoWidth, logoHeight)) {
+                const float logoLeft = std::round(static_cast<float>(bounds.left) + 40.0f * dpiScale);
+                const float logoTop = std::round(logoBottom);
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
                 logoBottom = logoTop + logoHeight;
             }
             const float logoLeft = static_cast<float>(bounds.left) + 40.0f * dpiScale;
-            const float logoWidth = std::min(520.0f * dpiScale, contentWidth);
             const float textTop = logoBottom + 16.0f * dpiScale;
             DrawOverlayText(L"Version " VIEWTRIOUS_VERSION, logoLeft, textTop, logoWidth, 20.0f * dpiScale,
                 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
@@ -5999,14 +6025,16 @@ private:
             tutorialMetadata ? tutorialMetadataBrush.Get() : filenameBrush.Get(), true, false);
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        if (EmptyStateActive() && EnsureAboutLogo()) {
-            const D2D1_SIZE_F logoSource = aboutLogo_->GetSize();
-            const float logoHeight = std::min(18.0f * dpiScale, static_cast<float>(frame.titleBarHeight) - 12.0f * dpiScale);
-            const float logoWidth = logoHeight * logoSource.width / logoSource.height;
-            const float logoLeft = (renderTarget_->GetSize().width - logoWidth) * 0.5f;
-            const float logoTop = (static_cast<float>(frame.titleBarHeight) - logoHeight) * 0.5f;
-            renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight),
-                1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        if (EmptyStateActive()) {
+            const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(std::min(18.0f * dpiScale,
+                static_cast<float>(frame.titleBarHeight) - 12.0f * dpiScale))));
+            const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoHeight) * 300.0f / 73.0f)));
+            if (EnsureTopBarLogo(logoWidth, logoHeight)) {
+                const float logoLeft = std::round((renderTarget_->GetSize().width - static_cast<float>(logoWidth)) * 0.5f);
+                const float logoTop = std::round((static_cast<float>(frame.titleBarHeight) - static_cast<float>(logoHeight)) * 0.5f);
+                renderTarget_->DrawBitmap(topBarLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight),
+                    1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+            }
         }
 
         const float stroke = 1.0f;
@@ -6033,6 +6061,11 @@ private:
         bitmap_.Reset();
         lanczosBitmap_.Reset();
         aboutLogo_.Reset();
+        aboutLogoWidth_ = 0;
+        aboutLogoHeight_ = 0;
+        topBarLogo_.Reset();
+        topBarLogoWidth_ = 0;
+        topBarLogoHeight_ = 0;
         checkerboardBrush_.Reset();
         checkerboardBitmap_.Reset();
         checkerboardDpi_ = 0;
@@ -6061,6 +6094,11 @@ private:
     ComPtr<ID2D1Bitmap> bitmap_;
     ComPtr<ID2D1Bitmap> lanczosBitmap_;
     ComPtr<ID2D1Bitmap> aboutLogo_;
+    UINT aboutLogoWidth_ = 0;
+    UINT aboutLogoHeight_ = 0;
+    ComPtr<ID2D1Bitmap> topBarLogo_;
+    UINT topBarLogoWidth_ = 0;
+    UINT topBarLogoHeight_ = 0;
     ComPtr<ID2D1Bitmap> checkerboardBitmap_;
     ComPtr<ID2D1BitmapBrush> checkerboardBrush_;
     UINT checkerboardDpi_ = 0;

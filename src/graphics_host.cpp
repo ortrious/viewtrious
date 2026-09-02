@@ -43,7 +43,7 @@ std::vector<GraphicsAdapterInfo> GraphicsHost::EnumerateHardwareAdapters() {
 
 bool GraphicsHost::Create(HWND window, ID2D1Factory1* factory, const LUID* preferredAdapter, std::wstring& error) {
     Destroy(); window_ = window;
-    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
     const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
     D3D_FEATURE_LEVEL level{};
     ComPtr<IDXGIAdapter1> adapter = FindHardwareAdapter(preferredAdapter);

@@ -17,6 +17,7 @@
 
 #include "lanczos_resampler.h"
 #include "d3d11_model_viewport.h"
+#include "video_player.h"
 #include "stl_loader.h"
 #include "three_mf_loader.h"
 #include "model_importer.h"
@@ -57,6 +58,7 @@ constexpr UINT kFullDecodeCompleteMessage = WM_APP + 4;
 constexpr UINT kDecodeWorkerFinishedMessage = WM_APP + 6;
 constexpr UINT kLanczosCompleteMessage = WM_APP + 7;
 constexpr UINT kModelLoadCompleteMessage = WM_APP + 8;
+constexpr UINT kVideoMediaEngineEventMessage = WM_APP + 9;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
 constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
 constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
@@ -68,6 +70,7 @@ constexpr UINT_PTR kGifPlaybackTimer = 10;
 constexpr UINT_PTR kModelHomeAnimationTimer = 11;
 constexpr UINT_PTR kModelLoadingAnimationTimer = 12;
 constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
+constexpr UINT_PTR kVideoPlaybackTimer = 14;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
@@ -123,7 +126,7 @@ enum class ModelRenderingApi : DWORD { Direct3D11 = 0 };
 enum class AxisIndicatorPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
 enum class ZoomHudPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
 enum class SettingsPage { General, Image2D, Model3D };
-enum class ContentKind { None, Image2D, Model3D };
+enum class ContentKind { None, Image2D, Model3D, Video2D };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
@@ -272,7 +275,7 @@ bool IsSupportedExtension(const fs::path& path) {
         extension == L".tiff" || extension == L".ico" || extension == L".webp" ||
         extension == L".heic" || extension == L".heif" || extension == L".avif" ||
         extension == L".dng" || extension == L".cr2" || extension == L".cr3" ||
-        extension == L".nef" || extension == L".arw" || extension == L".raf" || extension == L".stl" || extension == L".3mf" || extension == L".step" || extension == L".stp";
+        extension == L".nef" || extension == L".arw" || extension == L".raf" || extension == L".mp4" || extension == L".stl" || extension == L".3mf" || extension == L".step" || extension == L".stp";
 }
 
 
@@ -287,6 +290,7 @@ bool IsStlPath(const std::wstring& path) { return LowercaseExtension(path) == L"
 bool IsThreeMfPath(const std::wstring& path) { return LowercaseExtension(path) == L".3mf"; }
 bool IsStepPath(const std::wstring& path) { const std::wstring extension=LowercaseExtension(path); return extension == L".step" || extension == L".stp"; }
 bool IsModelPath(const std::wstring& path) { return IsStlPath(path) || IsThreeMfPath(path) || IsStepPath(path); }
+bool IsVideoPath(const std::wstring& path) { return LowercaseExtension(path) == L".mp4"; }
 
 bool IsJpegPath(const std::wstring& path) {
     const std::wstring extension = LowercaseExtension(path);
@@ -629,6 +633,8 @@ public:
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
+        if (IsVideoPath(path)) { BeginVideoLoad(path); return S_OK; }
+        DeactivateVideo();
         DeactivateModel();
         contentKind_ = ContentKind::Image2D;
         return LoadImage(path, resetNavigation);
@@ -829,7 +835,7 @@ public:
         ComPtr<IFileOpenDialog> dialog;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
         static const COMDLG_FILTERSPEC filters[] = {
-            { L"Supported files", StepAddonPresent() ? L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.stl;*.3mf;*.step;*.stp" : L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.stl;*.3mf" },
+            { L"Supported files", StepAddonPresent() ? L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.mp4;*.stl;*.3mf;*.step;*.stp" : L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.mp4;*.stl;*.3mf" },
             { L"All files", L"*.*" },
         };
         dialog->SetFileTypes(ARRAYSIZE(filters), filters);
@@ -847,6 +853,8 @@ public:
     }
     bool HasImage() const { return source_ != nullptr; }
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
+    bool VideoActive() const { return contentKind_ == ContentKind::Video2D && videoPlayer_.Active(); }
+    void ToggleVideoPlayPause() { if (VideoActive()) { videoPlayer_.TogglePlayPause(); SetTimer(window_, kVideoPlaybackTimer, 16, nullptr); InvalidateRect(window_, nullptr, FALSE); } }
     void UpdateTriangleCountTooltipHover(POINT point) {
         const RECT textBounds = TriangleCountTitleTextBounds();
         const bool hovering = TriangleCountTooltipAvailable() && PtInRect(&textBounds, point);
@@ -1627,7 +1635,7 @@ public:
         return PtInRect(&next, point) ? ButtonKind::CanvasNext : ButtonKind::None;
     }
     bool EmptyStateActive() const {
-        return contentKind_ != ContentKind::Model3D && source_ == nullptr;
+        return contentKind_ != ContentKind::Model3D && contentKind_ != ContentKind::Video2D && source_ == nullptr;
     }
     ButtonKind ButtonAt(POINT point) const {
         const auto contains = [&point](RECT bounds) { return PtInRect(&bounds, point) != FALSE; };
@@ -1968,6 +1976,7 @@ public:
             if (ModelActive() && !TutorialActive()) modelViewport_.Render(graphicsHost_, ModelCanvasBounds());
             graphicsHost_.BeginDraw();
             if (contentKind_ != ContentKind::Model3D || !ModelActive() || TutorialActive()) renderTarget_->Clear(kViewerBackground);
+            if (VideoActive() && !tutorialPresentation_) videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds());
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
@@ -1999,6 +2008,7 @@ public:
             if (!graphicsHost_.Resize(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top), static_cast<float>(GetDpiForWindow(window_)), error)) error_ = error;
             renderTarget_ = graphicsHost_.D2DContext();
             bitmap_.Reset(); lanczosBitmap_.Reset(); aboutLogo_.Reset(); checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
+            if (VideoActive()) { std::wstring videoError; if (!videoPlayer_.RebindDevice(graphicsHost_.Device(), videoError)) error_ = videoError; }
         }
         if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
@@ -2393,6 +2403,7 @@ public:
         while (PeekMessageW(&modelLoadMessage, window_, kModelLoadCompleteMessage, kModelLoadCompleteMessage, PM_REMOVE))
             delete reinterpret_cast<ModelLoadResult*>(modelLoadMessage.lParam);
         DeactivateModel();
+        DeactivateVideo();
         graphicsHost_.Destroy();
         if (spaceMouse_) {
             std::error_code error;
@@ -2625,7 +2636,7 @@ private:
         if (ModelLoadingOverlayVisible()) InvalidateRect(window_, nullptr, FALSE);
     }
     void BeginModelLoad(const std::wstring& path) {
-        DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
+        DeactivateVideo(); DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         ++decodeRequestGeneration_; ++modelLoadGeneration_; const uint64_t generation = modelLoadGeneration_;
         currentPath_ = path; displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
@@ -2662,6 +2673,40 @@ private:
         modelTriangleCount_ = 0;
         DismissTriangleCountTooltip(false);
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
+    }
+    void BeginVideoLoad(const std::wstring& path) {
+        DeactivateModel(); DeactivateVideo(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
+        ++decodeRequestGeneration_; ++modelLoadGeneration_; pendingFullDecode_.reset(); imageDecodePending_ = false;
+        source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
+        currentPath_ = path; displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
+        fileSizeText_ = FormatFileSize(path); resolutionText_ = L"Video"; error_.clear();
+        navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false; contentKind_ = ContentKind::Video2D;
+        EnsureRenderTarget();
+        std::wstring videoError;
+        if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, videoError)) {
+            contentKind_ = ContentKind::None;
+            error_ = videoError.empty() ? L"Viewtrious could not open this MP4." : videoError;
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void DeactivateVideo() {
+        KillTimer(window_, kVideoPlaybackTimer);
+        videoPlayer_.Shutdown();
+        if (contentKind_ == ContentKind::Video2D) contentKind_ = ContentKind::None;
+    }
+    void VideoMediaEngineEvent(DWORD event) {
+        if (!VideoActive()) return;
+        std::wstring videoError;
+        videoPlayer_.HandleMediaEvent(event, videoError);
+        if (!videoError.empty()) error_ = videoError;
+        if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (videoPlayer_.Playing()) SetTimer(window_, kVideoPlaybackTimer, 16, nullptr);
+        else KillTimer(window_, kVideoPlaybackTimer);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void VideoPlaybackTimerMessage() {
+        if (!VideoActive() || !videoPlayer_.Playing()) { KillTimer(window_, kVideoPlaybackTimer); return; }
+        InvalidateRect(window_, nullptr, FALSE);
     }
     void StopDirectoryWatcher() {
         directoryWatcherStopping_ = true;
@@ -5673,6 +5718,7 @@ private:
     std::shared_ptr<std::vector<BYTE>> gifPreviousCanvas_;
     std::shared_ptr<std::vector<BYTE>> lanczosPixels_;
     GraphicsHost graphicsHost_;
+    VideoPlayer videoPlayer_;
     std::vector<GraphicsAdapterInfo> graphicsAdapters_;
     bool graphicsAdapterAuto_ = true;
     LUID graphicsAdapterLuid_{};
@@ -6236,6 +6282,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kModelHomeAnimationTimer) { viewer->UpdateAnimatedModelHome(); return 0; }
         if (wParam == kModelLoadingAnimationTimer) { viewer->ModelLoadingAnimationTimerMessage(); return 0; }
         if (wParam == kTriangleCountTooltipTimer) { viewer->TriangleCountTooltipTimerMessage(); return 0; }
+        if (wParam == kVideoPlaybackTimer) { viewer->VideoPlaybackTimerMessage(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {
@@ -6253,6 +6300,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kLanczosCompleteMessage: viewer->LanczosCompleteMessage(reinterpret_cast<LanczosResult*>(lParam)); return 0;
     case kDecodeWorkerFinishedMessage: viewer->DecodeWorkerFinishedMessage(reinterpret_cast<DecodeWorkerFinished*>(lParam)); return 0;
     case kModelLoadCompleteMessage: viewer->ModelLoadCompleteMessage(reinterpret_cast<ModelLoadResult*>(lParam)); return 0;
+    case kVideoMediaEngineEventMessage: viewer->VideoMediaEngineEvent(static_cast<DWORD>(wParam)); return 0;
     case WM_KEYDOWN:
         if (viewer->TutorialActive()) { if (wParam == VK_ESCAPE) viewer->StopTutorial(); return 0; }
         if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }
@@ -6272,6 +6320,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'O') { viewer->OpenFile(); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'C') { viewer->InvokeContextAction(ContextAction::Copy); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'P') { viewer->InvokeContextAction(ContextAction::Print); return 0; }
+        if (wParam == VK_SPACE && viewer->VideoActive()) { viewer->ToggleVideoPlayPause(); return 0; }
         if (wParam == VK_DELETE) { viewer->InvokeContextAction(ContextAction::Delete); return 0; }
         if (wParam == VK_ESCAPE) { if (viewer->IsFullscreen()) viewer->ToggleFullscreen(); else DestroyWindow(window); return 0; }
         if (wParam == VK_F11) { viewer->ToggleFullscreen(); return 0; }

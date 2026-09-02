@@ -1331,7 +1331,7 @@ public:
         top += MeasureSettingsTextHeight(L"Restart Viewtrious to apply changes.", width, 12.0f, DWRITE_FONT_WEIGHT_NORMAL);
         return top;
     }
-    int GetSettingsInputHeadingTop() const { return std::max(GetSettingsAntiAliasingBounds().bottom, GetSettingsGraphicsAdapterInfoBottom()) + SettingsSectionGap(); }
+    int GetSettingsInputHeadingTop() const { return static_cast<int>(std::max<LONG>(GetSettingsAntiAliasingBounds().bottom, GetSettingsGraphicsAdapterInfoBottom())) + SettingsSectionGap(); }
     RECT GetSettingsSpaceMouseBounds() const { const int top = GetSettingsInputHeadingTop() + SettingsSectionHeadingHeight() + SettingsLabelToControlGap(); return { SettingsContentLeft(), top, SettingsContentRight(), top + SettingsControlHeight() }; }
     RECT GetSettingsGraphicsAdapterMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsGraphicsAdapterBounds(), static_cast<int>(graphicsAdapters_.size() + 1)); }
     RECT GetSettingsDropdownMenuBounds(RECT control, int itemCount) const {

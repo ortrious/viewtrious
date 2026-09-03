@@ -1310,6 +1310,7 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool HasOverlay() const { return overlay_ != OverlayKind::None; }
+    bool DeleteConfirmationOpen() const { return overlay_ == OverlayKind::DeleteConfirm; }
     bool TutorialActive() const { return tutorialStep_ != TutorialStep::None; }
     void StartTutorial() {
         if (TutorialActive()) return;
@@ -1486,13 +1487,13 @@ public:
         const int firstTop = bounds.top + MulDiv(static_cast<int>(kSettingsFirstRowTopDips), GetDpiForWindow(window_), 96);
         if (settingsPage_ == SettingsPage::General) {
             const RECT remember = GetSettingsSingleColumnBounds(firstTop, L"remember application position and size");
-            return option == 0 ? remember : GetSettingsSingleColumnBounds(remember.bottom + SettingsStackGap(), L"confirm before deleting images");
+            const RECT include = GetSettingsSingleColumnBounds(remember.bottom + SettingsStackGap(), L"include hidden images in folder");
+            return option == 0 ? remember : option == 1 ? include :
+                GetSettingsSingleColumnBounds(include.bottom + SettingsStackGap(), L"confirm before deleting images");
         }
         if (settingsPage_ == SettingsPage::Image2D) {
-            const RECT include = GetSettingsSingleColumnBounds(firstTop, L"include hidden images in folder");
-            const RECT animations = GetSettingsSingleColumnBounds(include.bottom + SettingsStackGap(), L"animations and face effects");
+            const RECT animations = GetSettingsSingleColumnBounds(firstTop, L"animations and face effects");
             const RECT reverse = GetSettingsSingleColumnBounds(animations.bottom + SettingsStackGap(), L"reverse mouse wheel zoom direction");
-            if (option == 1) return include;
             if (option == 4) return animations;
             if (option == 5) return reverse;
         }
@@ -1540,7 +1541,6 @@ public:
     }
     static bool SameGraphicsAdapterLuid(const LUID& left, const LUID& right) { return left.HighPart == right.HighPart && left.LowPart == right.LowPart; }
     std::wstring GraphicsAdapterLabel() const { if (graphicsAdapterAuto_) return L"Auto (High Performance)"; for (const auto& adapter : graphicsAdapters_) if (SameGraphicsAdapterLuid(adapter.luid, graphicsAdapterLuid_)) return adapter.name; return L"Saved adapter unavailable"; }
-    RECT GetSettingsToggleBounds(int column, float topDips) const { return GetSettingsGridCell(column, topDips); }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
         const RECT confirm = GetSettingsOptionBounds(2);
         const int buttonWidth = MulDiv(76, GetDpiForWindow(window_), 96), gap = MulDiv(8, GetDpiForWindow(window_), 96);
@@ -1884,8 +1884,9 @@ public:
             settingsPoint.y += static_cast<LONG>(std::lround(settingsScroll_));
             const auto settingsContains = [&settingsPoint](RECT bounds) { return PtInRect(&bounds, settingsPoint) != FALSE; };
             if (settingsPage_ == SettingsPage::General) {
-                if (settingsContains(GetSettingsToggleBounds(0, kSettingsFirstRowTopDips))) return ButtonKind::SettingsRememberPlacement;
-                if (settingsContains(GetSettingsToggleBounds(1, kSettingsFirstRowTopDips))) return ButtonKind::SettingsConfirmDelete;
+                if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
+                if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
+                if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -1894,7 +1895,6 @@ public:
                 if (zoomHudPositionMenuOpen_) { const RECT menu = GetSettingsZoomHudMenuBounds(); if (PtInRect(&menu, settingsPoint)) { const int row = MulDiv(30, GetDpiForWindow(window_), 96); return settingsPoint.y < menu.top + row ? ButtonKind::SettingsZoomHudBottomLeft : settingsPoint.y < menu.top + row * 2 ? ButtonKind::SettingsZoomHudBottomRight : settingsPoint.y < menu.top + row * 3 ? ButtonKind::SettingsZoomHudTopLeft : ButtonKind::SettingsZoomHudTopRight; } }
                 if (SettingsScrollUpVisible() && SettingsScrollIndicatorContains(point, true)) return ButtonKind::SettingsScrollUp;
                 if (SettingsScrollDownVisible() && SettingsScrollIndicatorContains(point, false)) return ButtonKind::SettingsScrollDown;
-                if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
                 if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAnimations;
                 if (settingsContains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReverseWheelZoom;
                 if (settingsContains(GetSettingsZoomHudBounds())) return ButtonKind::SettingsZoomHudPositionToggle;
@@ -3940,15 +3940,16 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
 
-    void ShowImageAfterDelete() {
+    void ShowImageAfterDelete(std::vector<fs::path> filesBeforeDelete) {
         StopGifPlayback();
-        BuildNavigation();
         const fs::path deleted(currentPath_);
-        auto current = std::find_if(navigationFiles_.begin(), navigationFiles_.end(),
+        auto current = std::find_if(filesBeforeDelete.begin(), filesBeforeDelete.end(),
             [&deleted](const fs::path& path) { return PathsEqual(path, deleted); });
-        if (current == navigationFiles_.end()) { ClearDeletedImage(); return; }
-        const size_t index = static_cast<size_t>(std::distance(navigationFiles_.begin(), current));
-        navigationFiles_.erase(current);
+        if (current == filesBeforeDelete.end()) { ClearDeletedImage(); return; }
+        const size_t index = static_cast<size_t>(std::distance(filesBeforeDelete.begin(), current));
+        filesBeforeDelete.erase(current);
+        navigationFiles_ = std::move(filesBeforeDelete);
+        navigationBuilt_ = true;
         for (size_t offset = 0; offset < navigationFiles_.size(); ++offset) {
             const size_t candidate = (index + offset) % navigationFiles_.size();
             if (IsGifPath(navigationFiles_[candidate].wstring()) && SUCCEEDED(LoadAnimatedGif(navigationFiles_[candidate].wstring(), false))) {
@@ -3968,6 +3969,8 @@ private:
 
     void DeleteImage() {
         if (currentPath_.empty()) return;
+        BuildNavigation(true);
+        const std::vector<fs::path> filesBeforeDelete = navigationFiles_;
         ComPtr<IShellItem> item;
         ComPtr<IFileOperation> operation;
         HRESULT hr = SHCreateItemFromParsingName(currentPath_.c_str(), nullptr, IID_PPV_ARGS(&item));
@@ -3979,7 +3982,7 @@ private:
         BOOL aborted = FALSE;
         if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
         if (FAILED(hr)) { ShowActionError(L"Windows could not move this image to the Recycle Bin."); return; }
-        if (!aborted) ShowImageAfterDelete();
+        if (!aborted) ShowImageAfterDelete(filesBeforeDelete);
     }
 
     RECT GetDropdownBounds() const {
@@ -5408,6 +5411,7 @@ private:
             const float resetTop = static_cast<float>(defaultAppsLayoutBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
             group(L"GENERAL", 76.0f);
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"remember application position and size", rememberWindowPlacement_);
+            drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden images in folder", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
             group(L"THEME", appearanceTop);
             DrawOverlayText(L"", settingsLeft, static_cast<float>(bounds.top) + (appearanceTop + 28.0f) * dpiScale, settingsWidth,
@@ -5448,7 +5452,6 @@ private:
             DrawOverlayText(L"reset", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             } else if (settingsPage_ == SettingsPage::Image2D) {
             group(L"2D VIEWER", 76.0f);
-            drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden images in folder", includeHiddenImages_);
             drawToggle(4, ButtonKind::SettingsAnimations, L"animations and face effects", animationsEnabled_);
             drawToggle(5, ButtonKind::SettingsReverseWheelZoom, L"reverse mouse wheel zoom direction", reverseMouseWheelZoom_);
             const auto drawImageDropdown = [&](RECT control, ButtonKind button, const wchar_t* value, bool open) { const D2D1_RECT_F r=D2D1::RectF((float)control.left,(float)control.top,(float)control.right,(float)control.bottom); renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),((button != ButtonKind::None && hoveredButton_==button)||open)?segmentHover.Get():segmentIdle.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),borderBrush.Get(),1); DrawOverlayText(value,r.left+kDropdownLeftPaddingDips*dpiScale,r.top,r.right-r.left-(kDropdownLeftPaddingDips+kDropdownChevronReserveDips)*dpiScale,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,primaryBrush.Get(),true); DrawDropdownChevron(r,primaryBrush.Get(),dpiScale); };
@@ -5476,7 +5479,7 @@ private:
             if(graphicsAdapterMenuOpen_){ const RECT menu=GetSettingsGraphicsAdapterMenuBounds(); std::vector<const wchar_t*> items{L"Auto (High Performance)"}; int selectedAdapter=graphicsAdapterAuto_?0:-1; for(int i=0;i<(int)graphicsAdapters_.size();++i){items.push_back(graphicsAdapters_[i].name.c_str()); if(!graphicsAdapterAuto_&&SameGraphicsAdapterLuid(graphicsAdapters_[i].luid,graphicsAdapterLuid_))selectedAdapter=i+1;} drawMenu(menu,items,selectedAdapter); }
             if(antiAliasingMenuOpen_){ const RECT menu=GetSettingsAntiAliasingMenuBounds(); std::vector<const wchar_t*> items(kAntiAliasingOptions.begin(),kAntiAliasingOptions.end()); drawMenu(menu,items,static_cast<int>(displayed)); }
             group(L"INPUT", static_cast<float>(GetSettingsInputHeadingTop() - bounds.top) / dpiScale);
-            drawToggle(6, ButtonKind::SettingsSpaceMouse, L"Enable 3Dconnexion SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
+            drawToggle(6, ButtonKind::SettingsSpaceMouse, L"enable 3Dconnexion SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
             }
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
             const auto drawSettingsScrollIndicator = [&](bool up) {
@@ -6765,6 +6768,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (viewer->DropdownOpen()) {
             if (wParam == VK_ESCAPE) viewer->DismissDropdown();
+            return 0;
+        }
+        if (viewer->DeleteConfirmationOpen() && wParam == VK_RETURN) {
+            viewer->InvokeButton(ButtonKind::DeleteConfirm);
             return 0;
         }
         if (viewer->HasOverlay()) {

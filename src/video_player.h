@@ -10,6 +10,7 @@
 #include <mfmediaengine.h>
 #include <wrl/client.h>
 
+#include <array>
 #include <string>
 
 // Small Media Foundation wrapper which leaves final composition to GraphicsHost.
@@ -29,6 +30,11 @@ public:
     bool Muted() const;
     bool GetNativeVideoSize(DWORD& width, DWORD& height) const;
     bool TryGetFramesPerSecond(float& framesPerSecond);
+    void RecordFramePacingSchedule(double intervalMs, double remainderMs);
+    void RecordFramePacingTimer();
+    void RecordFramePacingPaint();
+    void RecordFramePacingPresent(HRESULT result);
+    void FlushFramePacingDiagnostics();
     bool Playing() const { return playing_; }
     bool Active() const { return engine_ != nullptr; }
     bool Failed() const { return failed_; }
@@ -38,6 +44,10 @@ private:
     bool ReadNominalFrameRate(const std::wstring& path);
     bool SetSourceFromPath(const std::wstring& path, std::wstring& error);
     bool EnsureMultithreadProtection(ID3D11Device* device, std::wstring& error);
+    enum class FramePacingEvent : unsigned char { PlaybackBegin, PlaybackPause, PlaybackResume, PlaybackSeek, PlaybackEnd, Schedule, Timer, StreamTick, Transfer, CachePublish, Paint, Present };
+    struct FramePacingRecord { LONGLONG qpc = 0; LONGLONG pts = 0; HRESULT result = S_OK; FramePacingEvent event = FramePacingEvent::PlaybackBegin; double first = 0.0; double second = 0.0; };
+    void ResetFramePacingDiagnostics();
+    void RecordFramePacingEvent(FramePacingEvent event, LONGLONG pts = 0, HRESULT result = S_OK, double first = 0.0, double second = 0.0);
 
     HWND window_ = nullptr;
     Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> deviceManager_;
@@ -60,4 +70,16 @@ private:
     bool hasFramesPerSecond_ = false;
     float framesPerSecond_ = 0.0f;
     LONGLONG lastTransferredPts_ = 0;
+#if defined(_DEBUG)
+    static constexpr size_t kFramePacingRecordCapacity = 8192;
+    std::array<FramePacingRecord, kFramePacingRecordCapacity> framePacingRecords_{};
+    size_t framePacingRecordStart_ = 0;
+    size_t framePacingRecordCount_ = 0;
+    LONGLONG framePacingFrequency_ = 0;
+    LONGLONG framePacingExpectedTimerQpc_ = 0;
+    LONGLONG framePacingLastPaintPts_ = 0;
+    LONGLONG framePacingLastPresentPts_ = 0;
+    bool framePacingHaveLastPaintPts_ = false;
+    bool framePacingHaveLastPresentPts_ = false;
+#endif
 };

@@ -900,6 +900,7 @@ public:
         videoPlayer_.TogglePlayPause();
         ShowVideoControls();
         ScheduleVideoPlaybackTimer();
+        if (!videoPlayer_.Playing()) videoPlayer_.FlushFramePacingDiagnostics();
         InvalidateRect(window_, nullptr, FALSE);
     }
     VideoControlsLayout GetVideoControlsLayout() const {
@@ -2201,6 +2202,7 @@ public:
         PAINTSTRUCT paint{};
         BeginPaint(window_, &paint);
         const bool videoPaint = VideoActive();
+        if (videoPaint) videoPlayer_.RecordFramePacingPaint();
         if (videoPaint) VideoPlayer::Trace(window_, L"Video2D paint begin");
         EnsureRenderTarget();
         if (renderTarget_ && graphicsHost_.Ready()) {
@@ -2234,6 +2236,7 @@ public:
             else if (SUCCEEDED(hr)) {
                 if (videoPaint) VideoPlayer::Trace(window_, L"Video2D Present begin");
                 const HRESULT present = graphicsHost_.Present();
+                if (videoPaint) videoPlayer_.RecordFramePacingPresent(present);
                 if (videoPaint) VideoPlayer::Trace(window_, L"Video2D Present end", present);
             }
         }
@@ -2982,6 +2985,7 @@ public:
     }
     void VideoPlaybackTimerMessage() {
         if (!VideoActive() || !videoPlayer_.Playing()) { KillTimer(window_, kVideoPlaybackTimer); videoPlaybackTimerRemainderMs_ = 0.0; return; }
+        videoPlayer_.RecordFramePacingTimer();
         VideoPlayer::Trace(window_, L"Video2D playback timer tick");
         ScheduleVideoPlaybackTimer();
         VideoPlayer::Trace(window_, L"Video2D render invalidation from timer");
@@ -2997,6 +3001,7 @@ private:
         float framesPerSecond = 0.0f;
         if (!videoPlayer_.TryGetFramesPerSecond(framesPerSecond) || !std::isfinite(framesPerSecond) || framesPerSecond <= 0.0f) {
             videoPlaybackTimerRemainderMs_ = 0.0;
+            videoPlayer_.RecordFramePacingSchedule(16.0, videoPlaybackTimerRemainderMs_);
             SetTimer(window_, kVideoPlaybackTimer, 16, nullptr);
             return;
         }
@@ -3006,6 +3011,7 @@ private:
         const double scheduledIntervalMs = intervalMs + videoPlaybackTimerRemainderMs_;
         const UINT delayMs = std::max<UINT>(1, static_cast<UINT>(std::floor(scheduledIntervalMs)));
         videoPlaybackTimerRemainderMs_ = scheduledIntervalMs - static_cast<double>(delayMs);
+        videoPlayer_.RecordFramePacingSchedule(static_cast<double>(delayMs), videoPlaybackTimerRemainderMs_);
         SetTimer(window_, kVideoPlaybackTimer, delayMs, nullptr);
     }
     void StopDirectoryWatcher() {

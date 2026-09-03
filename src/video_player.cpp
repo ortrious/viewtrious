@@ -10,12 +10,9 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 void TraceVideo(HWND window, const wchar_t* stage, HRESULT result = S_OK, DWORD event = 0) {
-    const DWORD uiThread = window ? GetWindowThreadProcessId(window, nullptr) : 0;
-    const DWORD thread = GetCurrentThreadId();
-    wchar_t line[512]{};
-    swprintf_s(line, L"Viewtrious Video t=%llu tid=%lu %s stage=%s event=%lu hr=0x%08X\n",
-        GetTickCount64(), thread, thread == uiThread ? L"UI" : L"MF/callback", stage, event, static_cast<unsigned>(result));
-    OutputDebugStringW(line);
+    // Frame-pacing diagnostics use the buffered QPC records below. Keep legacy stage tracing
+    // silent so debugger I/O does not perturb the cadence being measured.
+    (void)window; (void)stage; (void)result; (void)event;
 }
 
 class MediaEngineNotify final : public IMFMediaEngineNotify {
@@ -61,9 +58,90 @@ std::wstring FileUrl(const std::wstring& path) {
 
 void VideoPlayer::Trace(HWND window, const wchar_t* stage, HRESULT result, DWORD event) { TraceVideo(window, stage, result, event); }
 
+void VideoPlayer::RecordFramePacingSchedule(double intervalMs, double remainderMs) {
+#if defined(_DEBUG)
+    RecordFramePacingEvent(FramePacingEvent::Schedule, 0, S_OK, intervalMs, remainderMs);
+    if (framePacingFrequency_) framePacingExpectedTimerQpc_ = framePacingRecords_[(framePacingRecordStart_ + framePacingRecordCount_ - 1) % kFramePacingRecordCapacity].qpc + static_cast<LONGLONG>(std::llround(intervalMs * static_cast<double>(framePacingFrequency_) / 1000.0));
+#else
+    (void)intervalMs; (void)remainderMs;
+#endif
+}
+
+void VideoPlayer::RecordFramePacingTimer() {
+#if defined(_DEBUG)
+    LARGE_INTEGER now{}; QueryPerformanceCounter(&now);
+    const double latenessMs = framePacingExpectedTimerQpc_ && framePacingFrequency_ ? 1000.0 * static_cast<double>(now.QuadPart - framePacingExpectedTimerQpc_) / static_cast<double>(framePacingFrequency_) : 0.0;
+    RecordFramePacingEvent(FramePacingEvent::Timer, 0, S_OK, latenessMs);
+#endif
+}
+
+void VideoPlayer::RecordFramePacingPaint() {
+#if defined(_DEBUG)
+    const LONGLONG pts = hasTransferredPts_ ? lastTransferredPts_ : -1;
+    const bool changed = !framePacingHaveLastPaintPts_ || pts != framePacingLastPaintPts_;
+    RecordFramePacingEvent(FramePacingEvent::Paint, pts, S_OK, changed ? 1.0 : 0.0);
+    framePacingLastPaintPts_ = pts; framePacingHaveLastPaintPts_ = true;
+#endif
+}
+
+void VideoPlayer::RecordFramePacingPresent(HRESULT result) {
+#if defined(_DEBUG)
+    const LONGLONG pts = hasTransferredPts_ ? lastTransferredPts_ : -1;
+    const bool changed = !framePacingHaveLastPresentPts_ || pts != framePacingLastPresentPts_;
+    RecordFramePacingEvent(FramePacingEvent::Present, pts, result, changed ? 1.0 : 0.0);
+    framePacingLastPresentPts_ = pts; framePacingHaveLastPresentPts_ = true;
+#else
+    (void)result;
+#endif
+}
+
+void VideoPlayer::FlushFramePacingDiagnostics() {
+#if defined(_DEBUG)
+    if (!framePacingRecordCount_ || !framePacingFrequency_) return;
+    static const wchar_t* names[] = { L"begin", L"pause", L"resume", L"seek", L"end", L"schedule", L"timer", L"tick", L"transfer", L"cache", L"paint", L"present" };
+    OutputDebugStringW(L"Viewtrious VIDEO PACING trace begin\n");
+    std::array<LONGLONG, 12> previous{};
+    for (size_t index = 0; index < framePacingRecordCount_; ++index) {
+        const FramePacingRecord& record = framePacingRecords_[(framePacingRecordStart_ + index) % kFramePacingRecordCapacity];
+        const size_t event = static_cast<size_t>(record.event);
+        const double elapsedMs = 1000.0 * static_cast<double>(record.qpc - framePacingRecords_[framePacingRecordStart_].qpc) / static_cast<double>(framePacingFrequency_);
+        const double deltaMs = previous[event] ? 1000.0 * static_cast<double>(record.qpc - previous[event]) / static_cast<double>(framePacingFrequency_) : 0.0;
+        previous[event] = record.qpc;
+        wchar_t line[320]{};
+        swprintf_s(line, L"VFP t=%.3f dt=%.3f type=%s pts=%lld hr=0x%08X a=%.3f b=%.3f\n", elapsedMs, deltaMs, names[event], record.pts, static_cast<unsigned>(record.result), record.first, record.second);
+        OutputDebugStringW(line);
+    }
+    OutputDebugStringW(L"Viewtrious VIDEO PACING trace end\n");
+    framePacingRecordStart_ = framePacingRecordCount_ = 0;
+#endif
+}
+
+#if defined(_DEBUG)
+void VideoPlayer::ResetFramePacingDiagnostics() {
+    LARGE_INTEGER frequency{}; QueryPerformanceFrequency(&frequency);
+    framePacingRecordStart_ = framePacingRecordCount_ = 0;
+    framePacingFrequency_ = frequency.QuadPart;
+    framePacingExpectedTimerQpc_ = framePacingLastPaintPts_ = framePacingLastPresentPts_ = 0;
+    framePacingHaveLastPaintPts_ = framePacingHaveLastPresentPts_ = false;
+}
+
+void VideoPlayer::RecordFramePacingEvent(FramePacingEvent event, LONGLONG pts, HRESULT result, double first, double second) {
+    if (!framePacingFrequency_) ResetFramePacingDiagnostics();
+    LARGE_INTEGER now{}; QueryPerformanceCounter(&now);
+    const size_t index = (framePacingRecordStart_ + framePacingRecordCount_) % kFramePacingRecordCapacity;
+    framePacingRecords_[index] = { now.QuadPart, pts, result, event, first, second };
+    if (framePacingRecordCount_ < kFramePacingRecordCapacity) ++framePacingRecordCount_;
+    else framePacingRecordStart_ = (framePacingRecordStart_ + 1) % kFramePacingRecordCapacity;
+}
+#else
+void VideoPlayer::ResetFramePacingDiagnostics() {}
+void VideoPlayer::RecordFramePacingEvent(FramePacingEvent, LONGLONG, HRESULT, double, double) {}
+#endif
+
 bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& path, std::wstring& error) {
     Trace(window, L"Video2D open entered");
     Shutdown();
+    ResetFramePacingDiagnostics();
     if (!window || !device) { error = L"The video graphics device is unavailable."; return false; }
     Trace(window, L"MFStartup begin");
     const HRESULT startup = MFStartup(MF_VERSION);
@@ -97,6 +175,7 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
 }
 
 void VideoPlayer::Shutdown() {
+    FlushFramePacingDiagnostics();
     Trace(window_, L"Video2D shutdown/teardown begin");
     playing_ = ready_ = failed_ = hasValidFrame_ = hasTransferredPts_ = bitmapRebuildPending_ = cachedFrameDrawAfterResizePending_ = hasFramesPerSecond_ = false;
     lastTransferredPts_ = 0;
@@ -216,13 +295,13 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
         const HRESULT play = engine_->Play();
         Trace(window_, L"play request end", play, event);
         if (FAILED(play)) { error = L"Viewtrious could not start video playback."; failed_ = true; }
-        else playing_ = true;
+        else { playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackBegin); }
     } else if (event == MF_MEDIA_ENGINE_EVENT_PLAYING) {
         Trace(window_, L"playing", S_OK, event);
-        playing_ = true;
+        playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackResume);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ENDED) {
         Trace(window_, L"ended", S_OK, event);
-        playing_ = false;
+        playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackEnd);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ERROR) {
         Trace(window_, L"error", S_OK, event);
         error = L"Viewtrious could not decode this MP4. It may be corrupt or use an unsupported codec.";
@@ -234,14 +313,14 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
 void VideoPlayer::TogglePlayPause() {
     if (!engine_ || failed_) return;
     Trace(window_, L"play/pause request");
-    if (playing_) { const HRESULT pause = engine_->Pause(); Trace(window_, L"pause request end", pause); if (SUCCEEDED(pause)) playing_ = false; }
+    if (playing_) { const HRESULT pause = engine_->Pause(); Trace(window_, L"pause request end", pause); if (SUCCEEDED(pause)) { playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackPause); } }
     else {
         if (engine_->IsEnded()) {
             const HRESULT restart = engine_->SetCurrentTime(0.0);
             Trace(window_, L"restart at EOF", restart);
             if (FAILED(restart)) return;
         }
-        const HRESULT play = engine_->Play(); Trace(window_, L"play request end", play); if (SUCCEEDED(play)) playing_ = true;
+        const HRESULT play = engine_->Play(); Trace(window_, L"play request end", play); if (SUCCEEDED(play)) { playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackResume); }
     }
 }
 
@@ -259,6 +338,7 @@ bool VideoPlayer::GetPlaybackTimes(double& currentSeconds, double& durationSecon
 bool VideoPlayer::Seek(double seconds) {
     double current = 0.0, duration = 0.0;
     if (!GetPlaybackTimes(current, duration)) return false;
+    RecordFramePacingEvent(FramePacingEvent::PlaybackSeek, 0, S_OK, seconds);
     const HRESULT result = engine_->SetCurrentTime(std::clamp(seconds, 0.0, duration));
     Trace(window_, L"MediaEngine seek", result);
     return SUCCEEDED(result);
@@ -334,6 +414,7 @@ bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas) {
     LONGLONG pts = 0;
     Trace(window_, L"OnVideoStreamTick begin");
     const HRESULT tick = engine_->OnVideoStreamTick(&pts);
+    RecordFramePacingEvent(FramePacingEvent::StreamTick, pts, tick, tick == S_OK ? 1.0 : 0.0, hasTransferredPts_ && pts == lastTransferredPts_ ? 1.0 : 0.0);
     wchar_t tickStage[160]{};
     swprintf_s(tickStage, L"OnVideoStreamTick end pts=%lld", pts);
     Trace(window_, tickStage, tick);
@@ -347,8 +428,10 @@ bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas) {
         const HRESULT transfer = engineEx_->TransferVideoFrame(frameTexture_.Get(), nullptr, &source, &border);
         Trace(window_, L"TransferVideoFrame end", transfer);
         if (SUCCEEDED(transfer)) {
+            RecordFramePacingEvent(FramePacingEvent::Transfer, pts, transfer);
             hasValidFrame_ = hasTransferredPts_ = true;
             lastTransferredPts_ = pts;
+            RecordFramePacingEvent(FramePacingEvent::CachePublish, pts);
             wchar_t transferredStage[160]{};
             swprintf_s(transferredStage, L"new frame transferred pts=%lld", pts);
             Trace(window_, transferredStage);

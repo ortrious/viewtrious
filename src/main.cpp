@@ -1482,7 +1482,7 @@ public:
     RECT GetHelpTopicBounds(int topic) const {
         const RECT rail = GetHelpRailBounds(); const int height = GetHelpTopicRowHeight();
         const int top = rail.top + topic * height;
-        return { rail.left, top, rail.right, std::min(rail.bottom, top + height) };
+        return { rail.left, top, rail.right, std::min<LONG>(rail.bottom, static_cast<LONG>(top) + height) };
     }
     int HelpTopicAt(POINT point) const {
         if (overlay_ != OverlayKind::Help) return -1;

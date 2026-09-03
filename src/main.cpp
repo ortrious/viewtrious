@@ -7,7 +7,6 @@
 #include <propkey.h>
 #include <propsys.h>
 #include <dwmapi.h>
-#include <mmsystem.h>
 #include <d2d1_1.h>
 #include <dwrite.h>
 #include <gdiplus.h>
@@ -45,7 +44,6 @@
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "gdiplus.lib")
-#pragma comment(lib, "winmm.lib")
 
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
@@ -61,6 +59,9 @@ constexpr UINT kDecodeWorkerFinishedMessage = WM_APP + 6;
 constexpr UINT kLanczosCompleteMessage = WM_APP + 7;
 constexpr UINT kModelLoadCompleteMessage = WM_APP + 8;
 constexpr UINT kVideoMediaEngineEventMessage = WM_APP + 9;
+constexpr UINT kVideoPlaybackWakeMessage = WM_APP + 10;
+// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is available on Windows 10 version 1803 and later.
+constexpr DWORD kHighResolutionWaitableTimerFlag = 0x00000002;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
 constexpr UINT_PTR kCanvasNavigationFadeTimer = 2;
 constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
@@ -72,7 +73,6 @@ constexpr UINT_PTR kGifPlaybackTimer = 10;
 constexpr UINT_PTR kModelHomeAnimationTimer = 11;
 constexpr UINT_PTR kModelLoadingAnimationTimer = 12;
 constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
-constexpr UINT_PTR kVideoPlaybackTimer = 14;
 constexpr UINT_PTR kVideoControlsTimer = 15;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
@@ -2954,9 +2954,7 @@ private:
     }
     void DeactivateVideo() {
         VideoPlayer::Trace(window_, L"Viewer Video2D teardown");
-        KillTimer(window_, kVideoPlaybackTimer);
-        videoPlaybackTimerRemainderMs_ = 0.0;
-        ReleaseVideoTimerResolution();
+        StopVideoPlaybackScheduler();
         StopVideoControls();
         videoPlayer_.Shutdown();
         videoFramesPerSecondText_.clear();
@@ -2966,12 +2964,18 @@ public:
     void VideoMediaEngineEvent(DWORD event) {
         if (!VideoActive()) return;
         VideoPlayer::Trace(window_, L"Video2D event received by UI", S_OK, event);
+        const bool wasPlaying = videoPlayer_.Playing();
         std::wstring videoError;
         videoPlayer_.HandleMediaEvent(event, videoError);
         UpdateVideoTitleMetadata();
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); VideoPlayer::Trace(window_, L"Video2D render invalidation after failure", S_OK, event); InvalidateRect(window_, nullptr, FALSE); return; }
-        ScheduleVideoPlaybackTimer();
+        if ((!wasPlaying && videoPlayer_.Playing()) ||
+            (event == MF_MEDIA_ENGINE_EVENT_SEEKED && videoPlayer_.Playing())) {
+            ScheduleVideoPlaybackTimer(true);
+        } else if (!videoPlayer_.Playing()) {
+            StopVideoPlaybackScheduler();
+        }
         if (event == MF_MEDIA_ENGINE_EVENT_ENDED || event == MF_MEDIA_ENGINE_EVENT_CANPLAY || event == MF_MEDIA_ENGINE_EVENT_PLAYING) ShowVideoControls();
         VideoPlayer::Trace(window_, L"Video2D render invalidation after event", S_OK, event);
         InvalidateRect(window_, nullptr, FALSE);
@@ -2986,46 +2990,101 @@ public:
             if (!resolutionText_.empty()) resolutionText_ += L"  \x2022  " + videoFramesPerSecondText_;
         }
     }
-    void VideoPlaybackTimerMessage() {
-        if (!VideoActive() || !videoPlayer_.Playing()) { KillTimer(window_, kVideoPlaybackTimer); videoPlaybackTimerRemainderMs_ = 0.0; ReleaseVideoTimerResolution(); return; }
-        videoPlayer_.RecordFramePacingTimer();
-        VideoPlayer::Trace(window_, L"Video2D playback timer tick");
-        ScheduleVideoPlaybackTimer();
-        VideoPlayer::Trace(window_, L"Video2D render invalidation from timer");
+    void VideoPlaybackWakeMessage(uint64_t generation) {
+        uint64_t expected = generation;
+        videoPlaybackWakePendingGeneration_.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+        if (generation != videoPlaybackSchedulerGeneration_.load(std::memory_order_acquire) || !VideoActive() || !videoPlayer_.Playing()) return;
+
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        videoPlayer_.RecordFramePacingTimer(videoPlaybackWakeQpc_.load(std::memory_order_acquire),
+            static_cast<LONGLONG>(std::llround(videoPlaybackDeadlineQpc_)));
+        // Advance the stable QPC grid past missed slots instead of replaying stale wakeups.
+        while (videoPlaybackDeadlineQpc_ <= static_cast<double>(now.QuadPart))
+            videoPlaybackDeadlineQpc_ += videoPlaybackFramePeriodQpc_;
+        ArmVideoPlaybackTimer();
+        VideoPlayer::Trace(window_, L"Video2D render invalidation from high-resolution timer");
         InvalidateRect(window_, nullptr, FALSE);
     }
 private:
-    void ScheduleVideoPlaybackTimer() {
+    void ScheduleVideoPlaybackTimer(bool resetDeadline = false) {
         if (!VideoActive() || !videoPlayer_.Playing()) {
-            KillTimer(window_, kVideoPlaybackTimer);
-            videoPlaybackTimerRemainderMs_ = 0.0;
-            ReleaseVideoTimerResolution();
+            StopVideoPlaybackScheduler();
             return;
         }
-        AcquireVideoTimerResolution();
+        if (!resetDeadline && videoPlaybackSchedulerRunning_) return;
+
         float framesPerSecond = 0.0f;
+        double framePeriodSeconds = 1.0 / 60.0;
         if (!videoPlayer_.TryGetFramesPerSecond(framesPerSecond) || !std::isfinite(framesPerSecond) || framesPerSecond <= 0.0f) {
-            videoPlaybackTimerRemainderMs_ = 0.0;
-            videoPlayer_.RecordFramePacingSchedule(16.0, videoPlaybackTimerRemainderMs_);
-            SetTimer(window_, kVideoPlaybackTimer, 16, nullptr);
-            return;
+            framePeriodSeconds = 0.016;
+        } else {
+            framePeriodSeconds = 1.0 / static_cast<double>(framesPerSecond);
         }
-        // WM_TIMER accepts whole milliseconds. Carry the fractional remainder so rates such
-        // as 24, 30, and 60 fps retain their correct long-term cadence instead of polling at 62.5 Hz.
-        const double intervalMs = 1000.0 / static_cast<double>(framesPerSecond);
-        const double scheduledIntervalMs = intervalMs + videoPlaybackTimerRemainderMs_;
-        const UINT delayMs = std::max<UINT>(1, static_cast<UINT>(std::floor(scheduledIntervalMs)));
-        videoPlaybackTimerRemainderMs_ = scheduledIntervalMs - static_cast<double>(delayMs);
-        videoPlayer_.RecordFramePacingSchedule(static_cast<double>(delayMs), videoPlaybackTimerRemainderMs_);
-        SetTimer(window_, kVideoPlaybackTimer, delayMs, nullptr);
+        if (!EnsureVideoPlaybackScheduler()) return;
+
+        LARGE_INTEGER now{}, frequency{};
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&frequency);
+        videoPlaybackFramePeriodQpc_ = framePeriodSeconds * static_cast<double>(frequency.QuadPart);
+        videoPlaybackDeadlineQpc_ = static_cast<double>(now.QuadPart) + videoPlaybackFramePeriodQpc_;
+        ++videoPlaybackSchedulerGeneration_;
+        videoPlaybackWakePendingGeneration_.store(0, std::memory_order_release);
+        videoPlaybackSchedulerRunning_ = true;
+        ArmVideoPlaybackTimer();
     }
-    void AcquireVideoTimerResolution() {
-        if (!videoTimerResolutionActive_ && timeBeginPeriod(1) == TIMERR_NOERROR) videoTimerResolutionActive_ = true;
+    bool EnsureVideoPlaybackScheduler() {
+        if (videoPlaybackTimer_) return true;
+        videoPlaybackStopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        videoPlaybackTimer_ = CreateWaitableTimerExW(nullptr, nullptr, kHighResolutionWaitableTimerFlag, TIMER_ALL_ACCESS);
+        if (!videoPlaybackStopEvent_ || !videoPlaybackTimer_) {
+            if (videoPlaybackTimer_) CloseHandle(videoPlaybackTimer_);
+            if (videoPlaybackStopEvent_) CloseHandle(videoPlaybackStopEvent_);
+            videoPlaybackTimer_ = videoPlaybackStopEvent_ = nullptr;
+            return false;
+        }
+        videoPlaybackSchedulerThread_ = std::thread([this] {
+            HANDLE handles[] = { videoPlaybackStopEvent_, videoPlaybackTimer_ };
+            for (;;) {
+                const DWORD wait = WaitForMultipleObjects(ARRAYSIZE(handles), handles, FALSE, INFINITE);
+                if (wait != WAIT_OBJECT_0 + 1) return;
+                const uint64_t generation = videoPlaybackSchedulerGeneration_.load(std::memory_order_acquire);
+                uint64_t none = 0;
+                LARGE_INTEGER wake{};
+                QueryPerformanceCounter(&wake);
+                videoPlaybackWakeQpc_.store(wake.QuadPart, std::memory_order_release);
+                // The helper only wakes the UI; Media Foundation and rendering remain on it.
+                if (videoPlaybackWakePendingGeneration_.compare_exchange_strong(none, generation, std::memory_order_acq_rel))
+                    PostMessageW(window_, kVideoPlaybackWakeMessage, static_cast<WPARAM>(generation), 0);
+            }
+        });
+        return true;
     }
-    void ReleaseVideoTimerResolution() {
-        if (!videoTimerResolutionActive_) return;
-        timeEndPeriod(1);
-        videoTimerResolutionActive_ = false;
+    void ArmVideoPlaybackTimer() {
+        if (!videoPlaybackTimer_ || !videoPlaybackSchedulerRunning_) return;
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        const double remainingQpc = std::max(1.0, videoPlaybackDeadlineQpc_ - static_cast<double>(now.QuadPart));
+        LARGE_INTEGER due{};
+        due.QuadPart = -std::max<LONGLONG>(1, static_cast<LONGLONG>(std::llround(remainingQpc * 10000000.0 / videoPlaybackQpcFrequency())));
+        videoPlayer_.RecordFramePacingSchedule(videoPlaybackFramePeriodQpc_ * 1000.0 / videoPlaybackQpcFrequency(), static_cast<LONGLONG>(std::llround(videoPlaybackDeadlineQpc_)));
+        SetWaitableTimer(videoPlaybackTimer_, &due, 0, nullptr, nullptr, FALSE);
+    }
+    double videoPlaybackQpcFrequency() const {
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        return static_cast<double>(frequency.QuadPart);
+    }
+    void StopVideoPlaybackScheduler() {
+        videoPlaybackSchedulerRunning_ = false;
+        ++videoPlaybackSchedulerGeneration_;
+        videoPlaybackWakePendingGeneration_.store(0, std::memory_order_release);
+        if (videoPlaybackTimer_) CancelWaitableTimer(videoPlaybackTimer_);
+        if (videoPlaybackStopEvent_) SetEvent(videoPlaybackStopEvent_);
+        if (videoPlaybackSchedulerThread_.joinable()) videoPlaybackSchedulerThread_.join();
+        if (videoPlaybackTimer_) CloseHandle(videoPlaybackTimer_);
+        if (videoPlaybackStopEvent_) CloseHandle(videoPlaybackStopEvent_);
+        videoPlaybackTimer_ = videoPlaybackStopEvent_ = nullptr;
     }
     void StopDirectoryWatcher() {
         directoryWatcherStopping_ = true;
@@ -6235,8 +6294,15 @@ private:
     bool gifPlaying_ = false;
     bool gifPaused_ = false;
     bool gifPlaybackTimerActive_ = false;
-    double videoPlaybackTimerRemainderMs_ = 0.0;
-    bool videoTimerResolutionActive_ = false;
+    HANDLE videoPlaybackTimer_ = nullptr;
+    HANDLE videoPlaybackStopEvent_ = nullptr;
+    std::thread videoPlaybackSchedulerThread_;
+    std::atomic<uint64_t> videoPlaybackSchedulerGeneration_{ 0 };
+    std::atomic<uint64_t> videoPlaybackWakePendingGeneration_{ 0 };
+    std::atomic<LONGLONG> videoPlaybackWakeQpc_{ 0 };
+    bool videoPlaybackSchedulerRunning_ = false;
+    double videoPlaybackDeadlineQpc_ = 0.0;
+    double videoPlaybackFramePeriodQpc_ = 0.0;
     bool gifVisible_ = true;
     bool gifHasLoopExtension_ = false;
     bool committingGifFrame_ = false;
@@ -6780,7 +6846,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kModelHomeAnimationTimer) { viewer->UpdateAnimatedModelHome(); return 0; }
         if (wParam == kModelLoadingAnimationTimer) { viewer->ModelLoadingAnimationTimerMessage(); return 0; }
         if (wParam == kTriangleCountTooltipTimer) { viewer->TriangleCountTooltipTimerMessage(); return 0; }
-        if (wParam == kVideoPlaybackTimer) { viewer->VideoPlaybackTimerMessage(); return 0; }
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
         break;
     case WM_ACTIVATE:
@@ -6800,6 +6865,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kDecodeWorkerFinishedMessage: viewer->DecodeWorkerFinishedMessage(reinterpret_cast<DecodeWorkerFinished*>(lParam)); return 0;
     case kModelLoadCompleteMessage: viewer->ModelLoadCompleteMessage(reinterpret_cast<ModelLoadResult*>(lParam)); return 0;
     case kVideoMediaEngineEventMessage: viewer->VideoMediaEngineEvent(static_cast<DWORD>(wParam)); return 0;
+    case kVideoPlaybackWakeMessage: viewer->VideoPlaybackWakeMessage(static_cast<uint64_t>(wParam)); return 0;
     case WM_KEYDOWN:
         if (viewer->TutorialActive()) { if (wParam == VK_ESCAPE) viewer->StopTutorial(); return 0; }
         if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }

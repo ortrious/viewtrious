@@ -30,8 +30,8 @@ public:
     bool Muted() const;
     bool GetNativeVideoSize(DWORD& width, DWORD& height) const;
     bool TryGetFramesPerSecond(float& framesPerSecond);
-    void RecordFramePacingSchedule(double intervalMs, double remainderMs);
-    void RecordFramePacingTimer();
+    void RecordFramePacingSchedule(double intervalMs, LONGLONG deadlineQpc);
+    void RecordFramePacingTimer(LONGLONG wakeQpc, LONGLONG deadlineQpc);
     void RecordFramePacingPaint();
     void RecordFramePacingPresent(HRESULT result);
     void FlushFramePacingDiagnostics();
@@ -48,6 +48,7 @@ private:
     struct FramePacingRecord { LONGLONG qpc = 0; LONGLONG pts = 0; HRESULT result = S_OK; FramePacingEvent event = FramePacingEvent::PlaybackBegin; double first = 0.0; double second = 0.0; };
     void ResetFramePacingDiagnostics();
     void RecordFramePacingEvent(FramePacingEvent event, LONGLONG pts = 0, HRESULT result = S_OK, double first = 0.0, double second = 0.0);
+    void RecordFramePacingEventAtQpc(FramePacingEvent event, LONGLONG qpc, LONGLONG pts = 0, HRESULT result = S_OK, double first = 0.0, double second = 0.0);
 
     HWND window_ = nullptr;
     Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> deviceManager_;
@@ -76,7 +77,6 @@ private:
     size_t framePacingRecordStart_ = 0;
     size_t framePacingRecordCount_ = 0;
     LONGLONG framePacingFrequency_ = 0;
-    LONGLONG framePacingExpectedTimerQpc_ = 0;
     LONGLONG framePacingLastPaintPts_ = 0;
     LONGLONG framePacingLastPresentPts_ = 0;
     bool framePacingHaveLastPaintPts_ = false;

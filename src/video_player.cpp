@@ -58,20 +58,24 @@ std::wstring FileUrl(const std::wstring& path) {
 
 void VideoPlayer::Trace(HWND window, const wchar_t* stage, HRESULT result, DWORD event) { TraceVideo(window, stage, result, event); }
 
-void VideoPlayer::RecordFramePacingSchedule(double intervalMs, double remainderMs) {
+void VideoPlayer::RecordFramePacingSchedule(double intervalMs, LONGLONG deadlineQpc) {
 #if defined(_DEBUG)
-    RecordFramePacingEvent(FramePacingEvent::Schedule, 0, S_OK, intervalMs, remainderMs);
-    if (framePacingFrequency_) framePacingExpectedTimerQpc_ = framePacingRecords_[(framePacingRecordStart_ + framePacingRecordCount_ - 1) % kFramePacingRecordCapacity].qpc + static_cast<LONGLONG>(std::llround(intervalMs * static_cast<double>(framePacingFrequency_) / 1000.0));
+    RecordFramePacingEvent(FramePacingEvent::Schedule, 0, S_OK, intervalMs);
+    if (framePacingFrequency_ && framePacingRecordCount_) {
+        FramePacingRecord& record = framePacingRecords_[(framePacingRecordStart_ + framePacingRecordCount_ - 1) % kFramePacingRecordCapacity];
+        record.second = 1000.0 * static_cast<double>(deadlineQpc - framePacingRecords_[framePacingRecordStart_].qpc) / static_cast<double>(framePacingFrequency_);
+    }
 #else
-    (void)intervalMs; (void)remainderMs;
+    (void)intervalMs; (void)deadlineQpc;
 #endif
 }
 
-void VideoPlayer::RecordFramePacingTimer() {
+void VideoPlayer::RecordFramePacingTimer(LONGLONG wakeQpc, LONGLONG deadlineQpc) {
 #if defined(_DEBUG)
-    LARGE_INTEGER now{}; QueryPerformanceCounter(&now);
-    const double latenessMs = framePacingExpectedTimerQpc_ && framePacingFrequency_ ? 1000.0 * static_cast<double>(now.QuadPart - framePacingExpectedTimerQpc_) / static_cast<double>(framePacingFrequency_) : 0.0;
-    RecordFramePacingEvent(FramePacingEvent::Timer, 0, S_OK, latenessMs);
+    const double latenessMs = deadlineQpc && framePacingFrequency_ ? 1000.0 * static_cast<double>(wakeQpc - deadlineQpc) / static_cast<double>(framePacingFrequency_) : 0.0;
+    RecordFramePacingEventAtQpc(FramePacingEvent::Timer, wakeQpc, 0, S_OK, latenessMs);
+#else
+    (void)wakeQpc; (void)deadlineQpc;
 #endif
 }
 
@@ -121,21 +125,27 @@ void VideoPlayer::ResetFramePacingDiagnostics() {
     LARGE_INTEGER frequency{}; QueryPerformanceFrequency(&frequency);
     framePacingRecordStart_ = framePacingRecordCount_ = 0;
     framePacingFrequency_ = frequency.QuadPart;
-    framePacingExpectedTimerQpc_ = framePacingLastPaintPts_ = framePacingLastPresentPts_ = 0;
+    framePacingLastPaintPts_ = framePacingLastPresentPts_ = 0;
     framePacingHaveLastPaintPts_ = framePacingHaveLastPresentPts_ = false;
 }
 
 void VideoPlayer::RecordFramePacingEvent(FramePacingEvent event, LONGLONG pts, HRESULT result, double first, double second) {
     if (!framePacingFrequency_) ResetFramePacingDiagnostics();
     LARGE_INTEGER now{}; QueryPerformanceCounter(&now);
+    RecordFramePacingEventAtQpc(event, now.QuadPart, pts, result, first, second);
+}
+
+void VideoPlayer::RecordFramePacingEventAtQpc(FramePacingEvent event, LONGLONG qpc, LONGLONG pts, HRESULT result, double first, double second) {
+    if (!framePacingFrequency_) ResetFramePacingDiagnostics();
     const size_t index = (framePacingRecordStart_ + framePacingRecordCount_) % kFramePacingRecordCapacity;
-    framePacingRecords_[index] = { now.QuadPart, pts, result, event, first, second };
+    framePacingRecords_[index] = { qpc, pts, result, event, first, second };
     if (framePacingRecordCount_ < kFramePacingRecordCapacity) ++framePacingRecordCount_;
     else framePacingRecordStart_ = (framePacingRecordStart_ + 1) % kFramePacingRecordCapacity;
 }
 #else
 void VideoPlayer::ResetFramePacingDiagnostics() {}
 void VideoPlayer::RecordFramePacingEvent(FramePacingEvent, LONGLONG, HRESULT, double, double) {}
+void VideoPlayer::RecordFramePacingEventAtQpc(FramePacingEvent, LONGLONG, LONGLONG, HRESULT, double, double) {}
 #endif
 
 bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& path, std::wstring& error) {

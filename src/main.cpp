@@ -1814,11 +1814,11 @@ public:
     RECT GetDefaultAppsHelperButtonBounds(bool open) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int openWidth = MulDiv(212, dpi, 96), cancelWidth = MulDiv(92, dpi, 96);
-        const int height = MulDiv(36, dpi, 96), gap = MulDiv(10, dpi, 96);
+        const int openWidth = MulDiv(220, dpi, 96), cancelWidth = MulDiv(96, dpi, 96);
+        const int height = MulDiv(40, dpi, 96), gap = MulDiv(12, dpi, 96);
         const int groupWidth = cancelWidth + gap + openWidth;
         const int left = bounds.left + (bounds.right - bounds.left - groupWidth) / 2;
-        const int top = bounds.bottom - MulDiv(24, dpi, 96) - height;
+        const int top = bounds.bottom - MulDiv(22, dpi, 96) - height;
         return open ? RECT{ left + cancelWidth + gap, top, left + groupWidth, top + height } : RECT{ left, top, left + cancelWidth, top + height };
     }
     bool DefaultAppsHelperButtonContains(POINT point, bool open) const {
@@ -3170,6 +3170,7 @@ private:
             { L".heic", L"Viewtrious.heic", L"Viewtrious HEIC Image" },
             { L".heif", L"Viewtrious.heif", L"Viewtrious HEIF Image" },
             { L".dng", L"Viewtrious.dng", L"Viewtrious DNG Image" },
+            { L".mp4", L"Viewtrious.mp4", L"Viewtrious MP4 Video" },
             { L".stl", L"Viewtrious.stl", L"Viewtrious STL Model" },
             { L".3mf", L"Viewtrious.3mf", L"Viewtrious 3MF Model" },
         };
@@ -5229,7 +5230,7 @@ private:
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(300, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(344, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(252, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(244, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -5323,9 +5324,8 @@ private:
         const UINT dpi = GetDpiForWindow(window_);
         const int width = MulDiv(132, dpi, 96);
         const int height = MulDiv(38, dpi, 96);
-        const int groupTop = (fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight) +
-            std::max(0L, (client.bottom - (fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight) - MulDiv(86, dpi, 96)) / 2);
-        const int top = groupTop + MulDiv(48, dpi, 96);
+        const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
+        const int top = canvasTop + std::max(0L, (client.bottom - canvasTop - height) / 2);
         const int left = (client.right - width) / 2;
         return { left, top, left + width, top + height };
     }
@@ -5344,17 +5344,17 @@ private:
         const float scale = static_cast<float>(dpi) / 96.0f;
         const D2D1_SIZE_F target = ClientSize();
         const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
-        const float groupTop = top + std::max(0.0f, (target.height - top - 86.0f * scale) / 2.0f);
-        DrawOverlayText(error_.empty() ? L"Drag and drop an image here or open a file" : error_.c_str(), 24.0f * scale,
-            groupTop, target.width - 48.0f * scale, 24.0f * scale, 16.0f,
-            DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true, false, true);
         const RECT buttonBounds = GetEmptyOpenFileButtonBounds();
+        const float textTop = std::max(top, static_cast<float>(buttonBounds.top) - 38.0f * scale);
+        DrawOverlayText(error_.empty() ? L"drag and drop an image here or open a file" : error_.c_str(), 24.0f * scale,
+            textTop, target.width - 48.0f * scale, 30.0f * scale, 16.0f,
+            DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true, false, true);
         const D2D1_RECT_F buttonRect = D2D1::RectF(static_cast<float>(buttonBounds.left), static_cast<float>(buttonBounds.top),
             static_cast<float>(buttonBounds.right), static_cast<float>(buttonBounds.bottom));
         ID2D1Brush* buttonBrush = pressedButton_ == ButtonKind::EmptyOpenFile ? buttonPressed.Get() :
             hoveredButton_ == ButtonKind::EmptyOpenFile ? buttonHover.Get() : button.Get();
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(buttonRect, 5.0f * scale, 5.0f * scale), buttonBrush);
-        DrawOverlayText(L"Open File", buttonRect.left, buttonRect.top, buttonRect.right - buttonRect.left,
+        DrawOverlayText(L"open file", buttonRect.left, buttonRect.top, buttonRect.right - buttonRect.left,
             buttonRect.bottom - buttonRect.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
     }
 
@@ -5393,13 +5393,13 @@ private:
             const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoWidth) * 577.0f / 2375.0f)));
             if (EnsureAboutLogo(logoWidth, logoHeight)) {
                 const float logoLeft = std::round(static_cast<float>(bounds.left) + (static_cast<float>(bounds.right - bounds.left) - logoWidth) * 0.5f);
-                const float logoTop = std::round(static_cast<float>(bounds.top) + 24.0f * dpiScale);
+                const float logoTop = std::round(static_cast<float>(bounds.top) + 20.0f * dpiScale);
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
             }
-            DrawOverlayText(L"Make Viewtrious the default for common image formats?", left, static_cast<float>(bounds.top) + 136.0f * dpiScale,
+            DrawOverlayText(L"make Viewtrious the default for common media formats?", left, static_cast<float>(bounds.top) + 98.0f * dpiScale,
                 contentWidth, 26.0f * dpiScale, 19.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
-            DrawOverlayText(L"Windows will open Default Apps so you can choose which image formats Viewtrious should open.", left,
-                static_cast<float>(bounds.top) + 170.0f * dpiScale, contentWidth, 44.0f * dpiScale,
+            DrawOverlayText(L"Windows will open Default Apps so you can choose which formats Viewtrious should open.", left,
+                static_cast<float>(bounds.top) + 132.0f * dpiScale, contentWidth, 44.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
             const RECT secondaryBounds = GetWelcomeButtonBounds(false), primaryBounds = GetWelcomeButtonBounds(true);
             const D2D1_RECT_F secondaryButton = D2D1::RectF(static_cast<float>(secondaryBounds.left), static_cast<float>(secondaryBounds.top),
@@ -5418,7 +5418,7 @@ private:
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(primaryButton, 5.0f * dpiScale, 5.0f * dpiScale), primaryButtonBrush);
                 if (pressedButton_ == ButtonKind::WelcomeSecondary) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(secondaryButton, 5.0f * dpiScale, 5.0f * dpiScale), neutralPressed.Get());
                 else if (hoveredButton_ == ButtonKind::WelcomeSecondary) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(secondaryButton, 5.0f * dpiScale, 5.0f * dpiScale), neutralHover.Get());
-                DrawOverlayText(L"Choose defaults", primaryButton.left, primaryButton.top,
+                DrawOverlayText(L"choose defaults", primaryButton.left, primaryButton.top,
                     primaryButton.right - primaryButton.left, primaryButton.bottom - primaryButton.top, 16.0f,
                     DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
             }
@@ -5427,13 +5427,16 @@ private:
                 secondaryButton.right - secondaryButton.left, secondaryButton.bottom - secondaryButton.top, 16.0f,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::DefaultAppsHelper) {
-            DrawOverlayText(L"Set up Viewtrious", left, static_cast<float>(bounds.top) + 28.0f * dpiScale,
+            DrawOverlayText(L"set up Viewtrious", left, static_cast<float>(bounds.top) + 24.0f * dpiScale,
                 contentWidth, 32.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            DrawOverlayText(L"Choose Viewtrious for the image formats you want to open.", left,
-                static_cast<float>(bounds.top) + 88.0f * dpiScale, contentWidth, 28.0f * dpiScale,
+            DrawOverlayText(L"choose Viewtrious for the formats you want to open.", left,
+                static_cast<float>(bounds.top) + 70.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            DrawOverlayText(L"Close Windows Settings when you are finished.", left,
-                static_cast<float>(bounds.top) + 134.0f * dpiScale, contentWidth, 28.0f * dpiScale,
+            DrawOverlayText(L"images: JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG   video: MP4", left,
+                static_cast<float>(bounds.top) + 98.0f * dpiScale, contentWidth, 34.0f * dpiScale,
+                15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+            DrawOverlayText(L"close Windows Settings when you are finished.", left,
+                static_cast<float>(bounds.top) + 138.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT cancelBounds = GetDefaultAppsHelperButtonBounds(false), openBounds = GetDefaultAppsHelperButtonBounds(true);
             const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));
@@ -5450,10 +5453,10 @@ private:
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(open, 5.0f * dpiScale, 5.0f * dpiScale), openBrush);
                 if (pressedButton_ == ButtonKind::DefaultAppsHelperCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralPressed.Get());
                 else if (hoveredButton_ == ButtonKind::DefaultAppsHelperCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralHover.Get());
-                DrawOverlayText(L"Open Windows Settings", open.left, open.top, open.right - open.left, open.bottom - open.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
+                DrawOverlayText(L"open Windows settings", open.left, open.top, open.right - open.left, open.bottom - open.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            DrawOverlayText(L"cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::KeyboardShortcuts) {
             DrawOverlayText(L"Keyboard Shortcuts", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
@@ -5947,8 +5950,8 @@ private:
             const float annotationWidth = std::min(340.0f * scale, static_cast<float>(client.right) - 32.0f * scale);
             const float annotationLeft = (static_cast<float>(target.left + target.right) - annotationWidth) / 2.0f;
             const float headingTop = static_cast<float>(target.bottom) + 24.0f * scale;
-            DrawHandwrittenText(L"Open images", annotationLeft, headingTop, annotationWidth, 32.0f * scale, 24.0f, pencil.Get(), true);
-            DrawOverlayText(L"Use Open File or drag and drop", annotationLeft, headingTop + 31.0f * scale,
+            DrawHandwrittenText(L"open images", annotationLeft, headingTop, annotationWidth, 32.0f * scale, 24.0f, pencil.Get(), true);
+            DrawOverlayText(L"use open file or drag and drop", annotationLeft, headingTop + 31.0f * scale,
                 annotationWidth, 24.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, false, true);
             scribble(target);
             const float arrowX = (target.left + target.right) / 2.0f;
@@ -5976,8 +5979,8 @@ private:
             const float noteWidth = std::min(310.0f * scale, static_cast<float>(client.right) - 36.0f * scale);
             const float noteLeft = 20.0f * scale;
             const float noteTop = static_cast<float>(client.bottom) - 136.0f * scale;
-            DrawHandwrittenText(L"Resize the window", noteLeft, noteTop, noteWidth, 34.0f * scale, 23.0f, pencil.Get());
-            DrawOverlayText(L"Drag the app corners to resize the app", noteLeft, noteTop + 33.0f * scale,
+            DrawHandwrittenText(L"resize the window", noteLeft, noteTop, noteWidth, 34.0f * scale, 23.0f, pencil.Get());
+            DrawOverlayText(L"drag the app corners to resize the app", noteLeft, noteTop + 33.0f * scale,
                 noteWidth, 26.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true);
             arrow(D2D1::Point2F(noteLeft + noteWidth * 0.38f, noteTop + 66.0f * scale),
                 D2D1::Point2F(5.0f * scale, static_cast<float>(client.bottom) - 5.0f * scale), 2.5f);
@@ -5989,7 +5992,7 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(lineLeft, lineY), D2D1::Point2F(headingLeft - 8.0f * scale, lineY), pencil.Get(), 2.2f * scale);
             renderTarget_->DrawLine(D2D1::Point2F(lineLeft, lineY), D2D1::Point2F(lineLeft + 11.0f * scale, lineY - 7.0f * scale), pencil.Get(), 2.2f * scale);
             renderTarget_->DrawLine(D2D1::Point2F(lineLeft, lineY), D2D1::Point2F(lineLeft + 11.0f * scale, lineY + 7.0f * scale), pencil.Get(), 2.2f * scale);
-            DrawHandwrittenText(L"Menu & settings", headingLeft, headingTop,
+            DrawHandwrittenText(L"menu & settings", headingLeft, headingTop,
                 std::max(120.0f * scale, static_cast<float>(client.right) - headingLeft - 20.0f * scale), 38.0f * scale, 22.0f, pencil.Get());
             scribble(frame.hamburger);
         } else if (tutorialStep_ == TutorialStep::ImageDetails) {
@@ -6001,7 +6004,7 @@ private:
             const float headingLeft = arrowStartX - headingWidth / 2.0f;
             arrow(D2D1::Point2F(arrowStartX, headingTop + 2.0f * scale),
                 D2D1::Point2F((target.left + target.right) / 2.0f, static_cast<float>(target.bottom) + 4.0f * scale));
-            DrawHandwrittenText(L"Image details appear here", headingLeft, headingTop,
+            DrawHandwrittenText(L"file details appear here", headingLeft, headingTop,
                 headingWidth, 38.0f * scale, 22.0f, pencil.Get(), true);
             scribble(target);
         } else if (tutorialStep_ == TutorialStep::ContextMenu) {
@@ -6010,21 +6013,21 @@ private:
             const float headingLeft = std::max(16.0f * scale, static_cast<float>(target.left) - annotationWidth - 72.0f * scale);
             const float headingTop = std::clamp(static_cast<float>(target.top) + 16.0f * scale, canvasTop + 12.0f * scale,
                 static_cast<float>(client.bottom) - 100.0f * scale);
-            DrawHandwrittenText(L"Right click menu", headingLeft, headingTop, annotationWidth, 38.0f * scale, 22.0f, pencil.Get(), false, true);
+            DrawHandwrittenText(L"right click menu", headingLeft, headingTop, annotationWidth, 38.0f * scale, 22.0f, pencil.Get(), false, true);
             const float noteGap = 18.0f * scale;
             const float noteWidth = std::min(340.0f * scale, static_cast<float>(target.left) - noteGap - 16.0f * scale);
             const float noteLeft = std::max(16.0f * scale, static_cast<float>(target.left) - noteGap - noteWidth);
-            DrawOverlayText(L"Right-click an image to find these options.", noteLeft, headingTop + 37.0f * scale,
+            DrawOverlayText(L"right-click an image to find these options.", noteLeft, headingTop + 37.0f * scale,
                 noteWidth, 28.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, true);
             scribble(target);
             arrow(D2D1::Point2F(headingLeft + annotationWidth * 0.62f, headingTop - 8.0f * scale),
                 D2D1::Point2F(static_cast<float>(target.left) - 4.0f * scale, static_cast<float>(target.top) + 10.0f * scale), 3.1f);
         } else if (tutorialStep_ == TutorialStep::Shortcuts) {
             const RECT target = GetOverlayBounds();
-            DrawHandwrittenText(L"Keyboard shortcuts", static_cast<float>(target.left), static_cast<float>(target.top) - 38.0f * scale,
+            DrawHandwrittenText(L"keyboard shortcuts", static_cast<float>(target.left), static_cast<float>(target.top) - 38.0f * scale,
                 static_cast<float>(target.right - target.left), 32.0f * scale, 21.0f, pencil.Get(), true);
             scribble(target);
-            DrawHandwrittenText(L"Thanks for downloading, enjoy!", 0, static_cast<float>(target.bottom) + 10.0f * scale,
+            DrawHandwrittenText(L"thanks for downloading, enjoy!", 0, static_cast<float>(target.bottom) + 10.0f * scale,
                 static_cast<float>(client.right), 34.0f * scale, 18.0f, pencil.Get(), true);
         }
         const RECT skipBounds = GetTutorialButtonBounds(false), nextBounds = GetTutorialButtonBounds(true);
@@ -6034,8 +6037,8 @@ private:
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(skip, 5.0f * scale, 5.0f * scale), pencil.Get(), 1.0f * scale);
         ID2D1Brush* nextBrush = pressedButton_ == ButtonKind::TutorialNext ? buttonPressed.Get() : hoveredButton_ == ButtonKind::TutorialNext ? buttonHover.Get() : button.Get();
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(next, 5.0f * scale, 5.0f * scale), nextBrush);
-        DrawOverlayText(L"Skip", skip.left, skip.top, skip.right - skip.left, skip.bottom - skip.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, pencil.Get(), true, false, true);
-        DrawOverlayText(tutorialStep_ == TutorialStep::Shortcuts ? L"Finish" : L"Next", next.left, next.top, next.right - next.left, next.bottom - next.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
+        DrawOverlayText(L"skip", skip.left, skip.top, skip.right - skip.left, skip.bottom - skip.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, pencil.Get(), true, false, true);
+        DrawOverlayText(tutorialStep_ == TutorialStep::Shortcuts ? L"finish" : L"next", next.left, next.top, next.right - next.left, next.bottom - next.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
     }
 
     void DrawCopyFeedback() {
@@ -6203,7 +6206,7 @@ private:
             tutorialMetadata ? tutorialMetadataBrush.Get() : filenameBrush.Get(), true, false);
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        if (EmptyStateActive()) {
+        if (EmptyStateActive() && !(tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails)) {
             const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(std::min(18.0f * dpiScale,
                 static_cast<float>(frame.titleBarHeight) - 12.0f * dpiScale))));
             const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoHeight) * 300.0f / 73.0f)));

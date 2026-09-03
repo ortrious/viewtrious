@@ -136,21 +136,30 @@ enum class ContentKind { None, Image2D, Model3D, Video2D };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
 struct HelpTopic { const wchar_t* title; const wchar_t* body; };
+struct HelpSection { const wchar_t* heading; const wchar_t* body; };
+constexpr int kTroubleshootingTopic = 11;
 constexpr std::array<HelpTopic, 14> kHelpTopics{{
-    { L"getting started", L"Viewtrious quickly opens images, video, animated media, and supported 3D models.\n\nUse open file, drag and drop a supported file into Viewtrious, or open an associated file from Windows Explorer.\n\nWhen a file is opened from a folder, Viewtrious can move between other supported files in that same folder." },
-    { L"image viewing", L"Images open fitted to the available viewing area.\n\nUse the mouse wheel to zoom. When zoomed in, drag the image to pan. Double-click the image to switch between fitted view and 100% scale.\n\nThe left and right viewer controls move between supported files in the current folder. Transparent areas use the Viewtrious checkerboard background." },
-    { L"video and animation", L"Supported video files play inside the normal Viewtrious viewer. Use the playback controls to play, pause, and seek; Space also toggles play and pause.\n\nFolder navigation keeps compatible 2D media together, so images, video, and animated media can be browsed naturally from the same folder.\n\nGIF files are handled as animated media rather than static images." },
-    { L"3D viewing", L"Supported 3D models open in the Viewtrious 3D viewer.\n\nUse the mouse to orbit, the middle mouse button to pan, and the mouse wheel to move closer to or farther from the model. Press 0 to reset the model view.\n\n3D navigation is intentionally separate from 2D image and video navigation." },
-    { L"SpaceMouse", L"Viewtrious supports compatible 3Dconnexion SpaceMouse devices.\n\nEnable or disable SpaceMouse under 3D settings. In the 3D viewer it provides analog model navigation. In the 2D image viewer, supported motion can pan and zoom the image.\n\nExact movement depends on the active viewer mode." },
-    { L"keyboard shortcuts", L"Open keyboard shortcuts from the main menu for the complete shortcut reference.\n\nCommon shortcuts are available for navigation, playback, viewing, file actions, and application controls." },
-    { L"quick tutorial", L"Open quick tutorial from the main menu for a short interactive introduction to the main Viewtrious controls.\n\nThe tutorial is a quick visual walkthrough; Help provides the more complete reference." },
+    { L"getting started", L"Viewtrious quickly opens images, video, animated media, and supported 3D models.\n\nuse open file, drag and drop a supported file into Viewtrious, or open an associated file from Windows Explorer.\n\nwhen a file is opened from a folder, Viewtrious can move between other supported files in that same folder." },
+    { L"image viewing", L"images open fitted to the available viewing area.\n\nuse the mouse wheel to zoom. when zoomed in, drag the image to pan. double-click the image to switch between fitted view and 100% scale.\n\nthe left and right viewer controls move between supported files in the current folder. transparent areas use the Viewtrious checkerboard background." },
+    { L"video and animation", L"supported video files play inside the normal Viewtrious viewer. use the playback controls to play, pause, and seek; spacebar also toggles play and pause.\n\nfolder navigation keeps compatible 2D media together, so images, video, and animated media can be browsed naturally from the same folder.\n\nGIF files are handled as animated media rather than static images." },
+    { L"3D viewing", L"supported 3D models open in the Viewtrious 3D viewer.\n\nuse the mouse to orbit, the middle mouse button to pan, and the mouse wheel to move closer to or farther from the model. press 0 to reset the model view.\n\n3D navigation is intentionally separate from 2D image and video navigation." },
+    { L"SpaceMouse", L"Viewtrious supports compatible 3Dconnexion SpaceMouse devices.\n\nenable or disable SpaceMouse under 3D settings. in the 3D viewer it provides analog model navigation. in the 2D image viewer, supported motion can pan and zoom the image.\n\nexact movement depends on the active viewer mode." },
+    { L"keyboard shortcuts", L"open keyboard shortcuts from the main menu for the complete shortcut reference.\n\ncommon shortcuts are available for navigation, playback, viewing, file actions, and application controls." },
+    { L"quick tutorial", L"open quick tutorial from the main menu for a short interactive introduction to the main Viewtrious controls.\n\nthe tutorial is a quick visual walkthrough; help provides the more complete reference." },
     { L"supported file types", L"images\nPNG, JPEG, BMP, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF\n\nvideo and animation\nMP4, GIF\n\n3D models\nSTL, 3MF; STEP and STP when the optional Open CASCADE Technology add-on is installed." },
-    { L"file associations", L"Viewtrious can be selected as the default application for supported file types.\n\nUse the Viewtrious setup flow or Windows Settings to choose which file types open with Viewtrious.\n\nChanging a file association does not modify the file; it only changes which application Windows uses to open it." },
-    { L"deleting files", L"When deletion confirmation is enabled, Viewtrious asks before deleting a file. Change this option in general settings.\n\nAfter a file is deleted successfully, Viewtrious continues to an appropriate neighboring file when one is available.\n\nDeleted files are moved to the Windows Recycle Bin rather than permanently deleted." },
-    { L"settings", L"Settings are divided into three areas.\n\ngeneral — application-wide behavior.\n\n2D settings — options affecting image and other 2D viewing.\n\n3D settings — options affecting model viewing, navigation, and SpaceMouse support.\n\nSaved settings remain in effect the next time Viewtrious is opened." },
-    { L"troubleshooting", L"a file will not open\nConfirm that the file type is supported and that the file itself can be read normally by Windows.\n\nvideo will not play\nAn MP4 file can contain a codec unavailable through the Windows media components used by Viewtrious. A supported extension does not guarantee every codec can be decoded.\n\na 3D model will not open\nConfirm that the format is supported and that the file contains valid model geometry.\n\nSpaceMouse does not respond\nConfirm that SpaceMouse is enabled under 3D settings and that 3Dconnexion software recognizes the device.\n\nViewtrious behaves unexpectedly\nUse feedback from the main menu and include the file type and steps to reproduce the problem." },
-    { L"feedback and about", L"Use feedback from the main menu for the current Viewtrious feedback and project links.\n\nUse about for the Viewtrious version and application information." },
-    { L"third-party notices", L"3D input device development tools and related technology are provided under license from 3Dconnexion. © 3Dconnexion 1992 - 2025. All rights reserved.\n\nOpen CASCADE Technology support is provided by the optional STEP add-on under GNU LGPL version 2.1 with the Open CASCADE exception." },
+    { L"file associations", L"Viewtrious can be selected as the default application for supported file types.\n\nuse the Viewtrious setup flow or Windows Settings to choose which file types open with Viewtrious.\n\nchanging a file association does not modify the file; it only changes which application Windows uses to open it." },
+    { L"deleting files", L"when deletion confirmation is enabled, Viewtrious asks before deleting a file. change this option in general settings.\n\nafter a file is deleted successfully, Viewtrious continues to an appropriate neighboring file when one is available.\n\ndeleted files are moved to the Windows Recycle Bin rather than permanently deleted." },
+    { L"settings", L"settings are divided into three areas.\n\ngeneral: application-wide behavior.\n\n2D settings: options affecting image and other 2D viewing.\n\n3D settings: options affecting model viewing, navigation, and SpaceMouse support.\n\nsaved settings remain in effect the next time Viewtrious is opened." },
+    { L"troubleshooting", L"" },
+    { L"feedback and about", L"use feedback from the main menu for the current Viewtrious feedback and project links.\n\nuse about for the Viewtrious version and application information." },
+    { L"third-party notices", L"3D input device development tools and related technology are provided under license from 3Dconnexion. (c) 3Dconnexion 1992 - 2025. All rights reserved.\n\nOpen CASCADE Technology support is provided by the optional STEP add-on under GNU LGPL version 2.1 with the Open CASCADE exception." },
+}};
+constexpr std::array<HelpSection, 5> kTroubleshootingSections{{
+    { L"a file will not open", L"confirm that the file type is supported and that the file itself can be read normally by Windows." },
+    { L"video will not play", L"an MP4 file can contain a codec unavailable through the Windows media components used by Viewtrious. a supported extension does not guarantee every codec can be decoded." },
+    { L"a 3D model will not open", L"confirm that the format is supported and that the file contains valid model geometry." },
+    { L"SpaceMouse does not respond", L"confirm that SpaceMouse is enabled under 3D settings and that 3Dconnexion software recognizes the device." },
+    { L"Viewtrious behaves unexpectedly", L"use feedback from the main menu and include the file type and steps to reproduce the problem." },
 }};
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
 struct PixelBuffer {
@@ -1412,7 +1421,7 @@ public:
             settingsPage_ = SettingsPage::General;
             settingsScroll_ = 0.0f;
         }
-        if (overlay == OverlayKind::Help) { helpTopic_ = 0; helpScroll_ = 0.0f; }
+        if (overlay == OverlayKind::Help) { helpTopic_ = 0; helpTopicHover_ = -1; helpScroll_ = 0.0f; }
         overlay_ = overlay;
         EndPan();
         InvalidateRect(window_, nullptr, FALSE);
@@ -1505,8 +1514,15 @@ public:
         if (overlay_ != OverlayKind::Help) return 0;
         const RECT content = GetHelpContentBounds(); const UINT dpi = GetDpiForWindow(window_);
         const int width = static_cast<int>(std::max<LONG>(1, content.right - content.left));
-        return MeasureHelpTextHeight(kHelpTopics[helpTopic_].title, width, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD) +
-            MulDiv(14, dpi, 96) + MeasureHelpTextHeight(kHelpTopics[helpTopic_].body, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
+        int height = MeasureHelpTextHeight(kHelpTopics[helpTopic_].title, width, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD) + MulDiv(14, dpi, 96);
+        if (helpTopic_ != kTroubleshootingTopic)
+            return height + MeasureHelpTextHeight(kHelpTopics[helpTopic_].body, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
+        for (const HelpSection& section : kTroubleshootingSections) {
+            height += MeasureHelpTextHeight(section.heading, width, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+            height += MulDiv(4, dpi, 96) + MeasureHelpTextHeight(section.body, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
+            height += MulDiv(14, dpi, 96);
+        }
+        return height - MulDiv(14, dpi, 96);
     }
     float HelpMaximumScroll() const {
         if (overlay_ != OverlayKind::Help) return 0.0f;
@@ -2047,8 +2063,10 @@ public:
         return ButtonKind::None;
     }
     void SetButtonHover(ButtonKind button) {
-        if (hoveredButton_ == button) return;
+        const int helpTopic = button == ButtonKind::HelpTopic ? helpTopicHit_ : -1;
+        if (hoveredButton_ == button && helpTopicHover_ == helpTopic) return;
         hoveredButton_ = button;
+        helpTopicHover_ = helpTopic;
         InvalidateRect(window_, nullptr, FALSE);
     }
     void AdvanceCanvasNavigationFade() {
@@ -5598,7 +5616,7 @@ private:
                 const RECT topicBounds = GetHelpTopicBounds(topic);
                 const D2D1_RECT_F topicRect = D2D1::RectF(static_cast<float>(topicBounds.left), static_cast<float>(topicBounds.top), static_cast<float>(topicBounds.right), static_cast<float>(topicBounds.bottom));
                 if (topic == helpTopic_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(topicRect, 4.0f * dpiScale, 4.0f * dpiScale), accent.Get());
-                else if (hoveredButton_ == ButtonKind::HelpTopic && helpTopicHit_ == topic) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(topicRect, 4.0f * dpiScale, 4.0f * dpiScale), rowHover.Get());
+                else if (hoveredButton_ == ButtonKind::HelpTopic && helpTopicHover_ == topic) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(topicRect, 4.0f * dpiScale, 4.0f * dpiScale), rowHover.Get());
                 DrawOverlayText(kHelpTopics[topic].title, topicRect.left + 9.0f * dpiScale, topicRect.top, topicRect.right - topicRect.left - 18.0f * dpiScale,
                     topicRect.bottom - topicRect.top, topicFontSize, DWRITE_FONT_WEIGHT_SEMI_BOLD, topic == helpTopic_ ? selectedText.Get() : primaryBrush.Get(), true);
             }
@@ -5612,8 +5630,19 @@ private:
             const float titleHeight = static_cast<float>(MeasureHelpTextHeight(topic.title, helpWidth, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD));
             DrawOverlayText(topic.title, viewport.left, y, viewport.right - viewport.left, titleHeight, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, false, true);
             y += titleHeight + 14.0f * dpiScale;
-            const float bodyHeight = static_cast<float>(MeasureHelpTextHeight(topic.body, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_NORMAL));
-            DrawOverlayText(topic.body, viewport.left, y, viewport.right - viewport.left, bodyHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+            if (helpTopic_ != kTroubleshootingTopic) {
+                const float bodyHeight = static_cast<float>(MeasureHelpTextHeight(topic.body, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_NORMAL));
+                DrawOverlayText(topic.body, viewport.left, y, viewport.right - viewport.left, bodyHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+            } else {
+                for (const HelpSection& section : kTroubleshootingSections) {
+                    const float headingHeight = static_cast<float>(MeasureHelpTextHeight(section.heading, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD));
+                    DrawOverlayText(section.heading, viewport.left, y, viewport.right - viewport.left, headingHeight, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, false, true);
+                    y += headingHeight + 4.0f * dpiScale;
+                    const float bodyHeight = static_cast<float>(MeasureHelpTextHeight(section.body, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_NORMAL));
+                    DrawOverlayText(section.body, viewport.left, y, viewport.right - viewport.left, bodyHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+                    y += bodyHeight + 14.0f * dpiScale;
+                }
+            }
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
             renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::KeyboardShortcuts) {
@@ -6583,6 +6612,7 @@ private:
     float settingsScroll_ = 0.0f;
     float helpScroll_ = 0.0f;
     int helpTopic_ = 0;
+    int helpTopicHover_ = -1;
     mutable int helpTopicHit_ = -1;
     bool onboardingRequired_ = false;
     bool tourPending_ = false;

@@ -899,8 +899,7 @@ public:
         if (!VideoActive()) return;
         videoPlayer_.TogglePlayPause();
         ShowVideoControls();
-        if (videoPlayer_.Playing()) SetTimer(window_, kVideoPlaybackTimer, 16, nullptr);
-        else KillTimer(window_, kVideoPlaybackTimer);
+        ScheduleVideoPlaybackTimer();
         InvalidateRect(window_, nullptr, FALSE);
     }
     VideoControlsLayout GetVideoControlsLayout() const {
@@ -2951,6 +2950,7 @@ private:
     void DeactivateVideo() {
         VideoPlayer::Trace(window_, L"Viewer Video2D teardown");
         KillTimer(window_, kVideoPlaybackTimer);
+        videoPlaybackTimerRemainderMs_ = 0.0;
         StopVideoControls();
         videoPlayer_.Shutdown();
         videoFramesPerSecondText_.clear();
@@ -2965,8 +2965,7 @@ public:
         UpdateVideoTitleMetadata();
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); VideoPlayer::Trace(window_, L"Video2D render invalidation after failure", S_OK, event); InvalidateRect(window_, nullptr, FALSE); return; }
-        if (videoPlayer_.Playing()) SetTimer(window_, kVideoPlaybackTimer, 16, nullptr);
-        else KillTimer(window_, kVideoPlaybackTimer);
+        ScheduleVideoPlaybackTimer();
         if (event == MF_MEDIA_ENGINE_EVENT_ENDED || event == MF_MEDIA_ENGINE_EVENT_CANPLAY || event == MF_MEDIA_ENGINE_EVENT_PLAYING) ShowVideoControls();
         VideoPlayer::Trace(window_, L"Video2D render invalidation after event", S_OK, event);
         InvalidateRect(window_, nullptr, FALSE);
@@ -2982,12 +2981,33 @@ public:
         }
     }
     void VideoPlaybackTimerMessage() {
-        if (!VideoActive() || !videoPlayer_.Playing()) { KillTimer(window_, kVideoPlaybackTimer); return; }
+        if (!VideoActive() || !videoPlayer_.Playing()) { KillTimer(window_, kVideoPlaybackTimer); videoPlaybackTimerRemainderMs_ = 0.0; return; }
         VideoPlayer::Trace(window_, L"Video2D playback timer tick");
+        ScheduleVideoPlaybackTimer();
         VideoPlayer::Trace(window_, L"Video2D render invalidation from timer");
         InvalidateRect(window_, nullptr, FALSE);
     }
 private:
+    void ScheduleVideoPlaybackTimer() {
+        if (!VideoActive() || !videoPlayer_.Playing()) {
+            KillTimer(window_, kVideoPlaybackTimer);
+            videoPlaybackTimerRemainderMs_ = 0.0;
+            return;
+        }
+        float framesPerSecond = 0.0f;
+        if (!videoPlayer_.TryGetFramesPerSecond(framesPerSecond) || !std::isfinite(framesPerSecond) || framesPerSecond <= 0.0f) {
+            videoPlaybackTimerRemainderMs_ = 0.0;
+            SetTimer(window_, kVideoPlaybackTimer, 16, nullptr);
+            return;
+        }
+        // WM_TIMER accepts whole milliseconds. Carry the fractional remainder so rates such
+        // as 24, 30, and 60 fps retain their correct long-term cadence instead of polling at 62.5 Hz.
+        const double intervalMs = 1000.0 / static_cast<double>(framesPerSecond);
+        const double scheduledIntervalMs = intervalMs + videoPlaybackTimerRemainderMs_;
+        const UINT delayMs = std::max<UINT>(1, static_cast<UINT>(std::floor(scheduledIntervalMs)));
+        videoPlaybackTimerRemainderMs_ = scheduledIntervalMs - static_cast<double>(delayMs);
+        SetTimer(window_, kVideoPlaybackTimer, delayMs, nullptr);
+    }
     void StopDirectoryWatcher() {
         directoryWatcherStopping_ = true;
         if (directoryWatcherHandle_ != INVALID_HANDLE_VALUE) CancelIoEx(directoryWatcherHandle_, nullptr);
@@ -6196,6 +6216,7 @@ private:
     bool gifPlaying_ = false;
     bool gifPaused_ = false;
     bool gifPlaybackTimerActive_ = false;
+    double videoPlaybackTimerRemainderMs_ = 0.0;
     bool gifVisible_ = true;
     bool gifHasLoopExtension_ = false;
     bool committingGifFrame_ = false;

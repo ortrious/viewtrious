@@ -1797,7 +1797,7 @@ public:
     RECT GetWelcomeButtonBounds(bool primary) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int primaryWidth = MulDiv(132, dpi, 96);
+        const int primaryWidth = MulDiv(76, dpi, 96);
         const int secondaryWidth = MulDiv(92, dpi, 96);
         const int height = MulDiv(36, dpi, 96);
         const int gap = MulDiv(10, dpi, 96);
@@ -1870,6 +1870,7 @@ public:
     bool EmptyStateActive() const {
         return contentKind_ != ContentKind::Model3D && contentKind_ != ContentKind::Video2D && source_ == nullptr;
     }
+    bool EmptyStatePresentationActive() const { return TutorialActive() || EmptyStateActive(); }
     ButtonKind ButtonAt(POINT point) const {
         const auto contains = [&point](RECT bounds) { return PtInRect(&bounds, point) != FALSE; };
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
@@ -2222,7 +2223,7 @@ public:
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
-            } else if (EmptyStateActive()) DrawEmptyState();
+            } else if (EmptyStatePresentationActive()) DrawEmptyState();
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
             if (!tutorialPresentation_) DrawRevisionLabel();
@@ -5230,7 +5231,7 @@ private:
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(252, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(244, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(260, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -5331,7 +5332,7 @@ private:
     }
 
     void DrawEmptyState() {
-        if (!EmptyStateActive() || HasOverlay()) return;
+        if (!EmptyStatePresentationActive() || HasOverlay()) return;
         const bool dark = UseDarkAppMode();
         ComPtr<ID2D1SolidColorBrush> primary, secondary, button, buttonHover, buttonPressed, buttonText;
         if (FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(30.f/255,30.f/255,30.f/255), &primary)) ||
@@ -5396,11 +5397,8 @@ private:
                 const float logoTop = std::round(static_cast<float>(bounds.top) + 20.0f * dpiScale);
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
             }
-            DrawOverlayText(L"make Viewtrious the default for common media formats?", left, static_cast<float>(bounds.top) + 98.0f * dpiScale,
+            DrawOverlayText(L"make Viewtrious the default for common media formats?", left, static_cast<float>(bounds.top) + 94.0f * dpiScale,
                 contentWidth, 26.0f * dpiScale, 19.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
-            DrawOverlayText(L"Windows will open Default Apps so you can choose which formats Viewtrious should open.", left,
-                static_cast<float>(bounds.top) + 132.0f * dpiScale, contentWidth, 44.0f * dpiScale,
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
             const RECT secondaryBounds = GetWelcomeButtonBounds(false), primaryBounds = GetWelcomeButtonBounds(true);
             const D2D1_RECT_F secondaryButton = D2D1::RectF(static_cast<float>(secondaryBounds.left), static_cast<float>(secondaryBounds.top),
                 static_cast<float>(secondaryBounds.right), static_cast<float>(secondaryBounds.bottom));
@@ -5418,7 +5416,7 @@ private:
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(primaryButton, 5.0f * dpiScale, 5.0f * dpiScale), primaryButtonBrush);
                 if (pressedButton_ == ButtonKind::WelcomeSecondary) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(secondaryButton, 5.0f * dpiScale, 5.0f * dpiScale), neutralPressed.Get());
                 else if (hoveredButton_ == ButtonKind::WelcomeSecondary) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(secondaryButton, 5.0f * dpiScale, 5.0f * dpiScale), neutralHover.Get());
-                DrawOverlayText(L"choose defaults", primaryButton.left, primaryButton.top,
+                DrawOverlayText(L"yes", primaryButton.left, primaryButton.top,
                     primaryButton.right - primaryButton.left, primaryButton.bottom - primaryButton.top, 16.0f,
                     DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
             }
@@ -5427,16 +5425,24 @@ private:
                 secondaryButton.right - secondaryButton.left, secondaryButton.bottom - secondaryButton.top, 16.0f,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::DefaultAppsHelper) {
-            DrawOverlayText(L"set up Viewtrious", left, static_cast<float>(bounds.top) + 24.0f * dpiScale,
-                contentWidth, 32.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(24.0f * dpiScale)));
+            const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoHeight) * 300.0f / 73.0f)));
+            if (EnsureTopBarLogo(logoWidth, logoHeight)) {
+                const float logoTop = std::round(static_cast<float>(bounds.top) + 24.0f * dpiScale);
+                renderTarget_->DrawBitmap(topBarLogo_.Get(), D2D1::RectF(left, logoTop, left + logoWidth, logoTop + logoHeight),
+                    1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+            }
             DrawOverlayText(L"choose Viewtrious for the formats you want to open.", left,
-                static_cast<float>(bounds.top) + 70.0f * dpiScale, contentWidth, 24.0f * dpiScale,
+                static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            DrawOverlayText(L"images: JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG   video: MP4", left,
-                static_cast<float>(bounds.top) + 98.0f * dpiScale, contentWidth, 34.0f * dpiScale,
-                15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+            DrawOverlayText(L"images: JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", left,
+                static_cast<float>(bounds.top) + 98.0f * dpiScale, contentWidth, 22.0f * dpiScale,
+                15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            DrawOverlayText(L"video: MP4", left,
+                static_cast<float>(bounds.top) + 122.0f * dpiScale, contentWidth, 22.0f * dpiScale,
+                15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             DrawOverlayText(L"close Windows Settings when you are finished.", left,
-                static_cast<float>(bounds.top) + 138.0f * dpiScale, contentWidth, 24.0f * dpiScale,
+                static_cast<float>(bounds.top) + 154.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT cancelBounds = GetDefaultAppsHelperButtonBounds(false), openBounds = GetDefaultAppsHelperButtonBounds(true);
             const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));
@@ -5453,7 +5459,7 @@ private:
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(open, 5.0f * dpiScale, 5.0f * dpiScale), openBrush);
                 if (pressedButton_ == ButtonKind::DefaultAppsHelperCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralPressed.Get());
                 else if (hoveredButton_ == ButtonKind::DefaultAppsHelperCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralHover.Get());
-                DrawOverlayText(L"open Windows settings", open.left, open.top, open.right - open.left, open.bottom - open.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
+                DrawOverlayText(L"choose defaults", open.left, open.top, open.right - open.left, open.bottom - open.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
@@ -6206,7 +6212,7 @@ private:
             tutorialMetadata ? tutorialMetadataBrush.Get() : filenameBrush.Get(), true, false);
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        if (EmptyStateActive() && !(tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails)) {
+        if (EmptyStatePresentationActive() && !(tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails)) {
             const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(std::min(18.0f * dpiScale,
                 static_cast<float>(frame.titleBarHeight) - 12.0f * dpiScale))));
             const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoHeight) * 300.0f / 73.0f)));

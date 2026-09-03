@@ -117,14 +117,14 @@ constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
 
-enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback };
-enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, About, Feedback, Close };
+enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help };
+enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, TutorialSkip, TutorialNext, VideoPlayPause, VideoMute };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, TutorialSkip, TutorialNext, VideoPlayPause, VideoMute };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
@@ -843,8 +843,9 @@ public:
         item = hit(DropdownItem::QuickTour); if (item != DropdownItem::None) return item;
         item = hit(DropdownItem::KeyboardShortcuts); if (item != DropdownItem::None) return item;
         top += separatorGap;
-        item = hit(DropdownItem::About); if (item != DropdownItem::None) return item;
+        item = hit(DropdownItem::Help); if (item != DropdownItem::None) return item;
         item = hit(DropdownItem::Feedback); if (item != DropdownItem::None) return item;
+        item = hit(DropdownItem::About); if (item != DropdownItem::None) return item;
         top += separatorGap;
         return hit(DropdownItem::Close);
     }
@@ -870,6 +871,7 @@ public:
         else if (item == DropdownItem::Settings) ShowOverlay(OverlayKind::Settings);
         else if (item == DropdownItem::QuickTour) StartTutorial();
         else if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
+        else if (item == DropdownItem::Help) ShowOverlay(OverlayKind::Help);
         else if (item == DropdownItem::About) ShowOverlay(OverlayKind::About);
         else if (item == DropdownItem::Feedback) ShowOverlay(OverlayKind::Feedback);
         else if (item == DropdownItem::Close) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
@@ -1393,6 +1395,7 @@ public:
             settingsPage_ = SettingsPage::General;
             settingsScroll_ = 0.0f;
         }
+        if (overlay == OverlayKind::Help) helpScroll_ = 0.0f;
         overlay_ = overlay;
         EndPan();
         InvalidateRect(window_, nullptr, FALSE);
@@ -1421,6 +1424,63 @@ public:
     void ScrollSettings(float delta) {
         if (overlay_ != OverlayKind::Settings) return;
         settingsScroll_ = std::clamp(settingsScroll_ + delta, 0.0f, SettingsMaximumScroll());
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    int MeasureHelpTextHeight(const wchar_t* text, int width, float size, DWRITE_FONT_WEIGHT weight) const {
+        if (!dwriteFactory_ || width <= 0) return MulDiv(20, GetDpiForWindow(window_), 96);
+        ComPtr<IDWriteTextFormat> format;
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, size * scale, L"", &format))) return MulDiv(20, GetDpiForWindow(window_), 96);
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), static_cast<float>(width), 4096.0f, &layout))) return MulDiv(20, GetDpiForWindow(window_), 96);
+        DWRITE_TEXT_METRICS metrics{};
+        return SUCCEEDED(layout->GetMetrics(&metrics)) ? std::max(MulDiv(20, GetDpiForWindow(window_), 96), static_cast<int>(std::ceil(metrics.height))) : MulDiv(20, GetDpiForWindow(window_), 96);
+    }
+    RECT GetHelpCloseBounds() const {
+        const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
+        const int size = MulDiv(32, dpi, 96), inset = MulDiv(14, dpi, 96);
+        return { bounds.right - inset - size, bounds.top + inset, bounds.right - inset, bounds.top + inset + size };
+    }
+    bool HelpCloseContains(POINT point) const {
+        const RECT bounds = GetHelpCloseBounds();
+        return overlay_ == OverlayKind::Help && PtInRect(&bounds, point);
+    }
+    int HelpContentHeight() const {
+        if (overlay_ != OverlayKind::Help) return 0;
+        const RECT bounds = GetOverlayBounds(); const UINT dpi = GetDpiForWindow(window_);
+        const int width = static_cast<int>(std::max<LONG>(1, bounds.right - bounds.left - MulDiv(48, dpi, 96)));
+        const std::array<ShortcutEntry, 6> sections{{
+            { L"getting started", L"open a file with open file, drag and drop a supported file into Viewtrious, or use left and right to move between supported files in the same folder." },
+            { L"supported file types", L"images: JPG, JPEG, PNG, BMP, GIF, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF. video: MP4. 3D: STL and 3MF; STEP and STP when the optional add-on is installed." },
+            { L"navigation and controls", L"quick tutorial provides the basic walkthrough, and keyboard shortcuts lists every shortcut. mouse, keyboard, and SpaceMouse behavior varies by viewer mode." },
+            { L"file associations", L"choose Viewtrious as the default app for supported file types through Windows Settings or the app's setup flow." },
+            { L"troubleshooting", L"if a file does not open, confirm that its format is supported. use feedback for reproducible Viewtrious problems." },
+            { L"third-party notices", L"3D input device development tools and related technology are provided under license from 3Dconnexion. © 3Dconnexion 1992 - 2025. All rights reserved.\n\nOpen CASCADE Technology support is provided by the optional STEP add-on under GNU LGPL version 2.1 with the Open CASCADE exception." },
+        }};
+        int height = 0;
+        for (const ShortcutEntry& section : sections) {
+            height += MeasureHelpTextHeight(section.shortcut, width, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+            height += MulDiv(6, dpi, 96);
+            height += MeasureHelpTextHeight(section.description, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
+            height += MulDiv(18, dpi, 96);
+        }
+        return height;
+    }
+    float HelpMaximumScroll() const {
+        if (overlay_ != OverlayKind::Help) return 0.0f;
+        const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
+        const float viewport = static_cast<float>(bounds.bottom - bounds.top - MulDiv(82, dpi, 96));
+        return std::max(0.0f, static_cast<float>(HelpContentHeight()) - viewport);
+    }
+    bool HelpContains(POINT point) const {
+        const RECT bounds = GetOverlayBounds();
+        return overlay_ == OverlayKind::Help && PtInRect(&bounds, point);
+    }
+    void ScrollHelp(float delta) {
+        if (overlay_ != OverlayKind::Help) return;
+        helpScroll_ = std::clamp(helpScroll_ + delta, 0.0f, HelpMaximumScroll());
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool SettingsScrollUpVisible() const { return SettingsMaximumScroll() > 0.5f && settingsScroll_ > 0.5f; }
@@ -1877,6 +1937,7 @@ public:
     bool EmptyStatePresentationActive() const { return TutorialActive() || EmptyStateActive(); }
     ButtonKind ButtonAt(POINT point) const {
         const auto contains = [&point](RECT bounds) { return PtInRect(&bounds, point) != FALSE; };
+        if (HelpCloseContains(point)) return ButtonKind::HelpClose;
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (EmptyStateActive() && EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
@@ -2133,6 +2194,7 @@ public:
             if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", url, nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
                 ShowActionError(L"Viewtrious couldn't open the feedback page.");
         }
+        else if (button == ButtonKind::HelpClose) DismissOverlay();
         else if (button == ButtonKind::TutorialSkip) StopTutorial();
         else if (button == ButtonKind::TutorialNext) AdvanceTutorial();
     }
@@ -2270,6 +2332,7 @@ public:
         }
         if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < MinimumScale()) CenterAtMinimumScale();
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
+        helpScroll_ = std::min(helpScroll_, HelpMaximumScroll());
         ClampPan();
         if (lanczosSelected_ && source_) {
             InvalidateLanczosVariant(true);
@@ -4125,7 +4188,7 @@ private:
         const LONG rowHeight = MulDiv(38, dpi, 96);
         const LONG separatorGap = MulDiv(9, dpi, 96);
         const LONG panelPadding = MulDiv(4, dpi, 96);
-        const LONG height = panelPadding * 2 + rowHeight * 7 + separatorGap * 3;
+        const LONG height = panelPadding * 2 + rowHeight * 8 + separatorGap * 3;
         const LONG left = std::clamp<LONG>(frame.hamburger.left + margin, margin,
             std::max<LONG>(margin, client.right - width - margin));
         const LONG top = std::min<LONG>(frame.hamburger.bottom + margin,
@@ -5235,11 +5298,11 @@ private:
         const int rowHeight = GetShortcutRowHeight();
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
             overlay_ == OverlayKind::Settings ? 760 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
-            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : 608, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : 460, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(260, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : MulDiv(319, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(260, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -5471,6 +5534,41 @@ private:
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+        } else if (overlay_ == OverlayKind::Help) {
+            const RECT closeBounds = GetHelpCloseBounds();
+            const D2D1_RECT_F close = D2D1::RectF(static_cast<float>(closeBounds.left), static_cast<float>(closeBounds.top), static_cast<float>(closeBounds.right), static_cast<float>(closeBounds.bottom));
+            if (hoveredButton_ == ButtonKind::HelpClose || pressedButton_ == ButtonKind::HelpClose) {
+                ComPtr<ID2D1SolidColorBrush> closeHover;
+                if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &closeHover))
+                    renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(close, 4.0f * dpiScale, 4.0f * dpiScale), closeHover.Get());
+            }
+            const float closeCenterX = (close.left + close.right) * 0.5f, closeCenterY = (close.top + close.bottom) * 0.5f, closeRadius = 5.0f * dpiScale;
+            renderTarget_->DrawLine(D2D1::Point2F(closeCenterX - closeRadius, closeCenterY - closeRadius), D2D1::Point2F(closeCenterX + closeRadius, closeCenterY + closeRadius), primaryBrush.Get(), std::max(1.0f, dpiScale));
+            renderTarget_->DrawLine(D2D1::Point2F(closeCenterX + closeRadius, closeCenterY - closeRadius), D2D1::Point2F(closeCenterX - closeRadius, closeCenterY + closeRadius), primaryBrush.Get(), std::max(1.0f, dpiScale));
+            DrawOverlayText(L"help", left, static_cast<float>(bounds.top) + panelPadding, contentWidth - 44.0f * dpiScale, 28.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            const D2D1_RECT_F viewport = D2D1::RectF(left, static_cast<float>(bounds.top) + 58.0f * dpiScale, left + contentWidth, static_cast<float>(bounds.bottom) - 24.0f * dpiScale);
+            renderTarget_->PushAxisAlignedClip(viewport, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -helpScroll_));
+            const std::array<ShortcutEntry, 6> sections{{
+                { L"getting started", L"open a file with open file, drag and drop a supported file into Viewtrious, or use left and right to move between supported files in the same folder." },
+                { L"supported file types", L"images: JPG, JPEG, PNG, BMP, GIF, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF. video: MP4. 3D: STL and 3MF; STEP and STP when the optional add-on is installed." },
+                { L"navigation and controls", L"quick tutorial provides the basic walkthrough, and keyboard shortcuts lists every shortcut. mouse, keyboard, and SpaceMouse behavior varies by viewer mode." },
+                { L"file associations", L"choose Viewtrious as the default app for supported file types through Windows Settings or the app's setup flow." },
+                { L"troubleshooting", L"if a file does not open, confirm that its format is supported. use feedback for reproducible Viewtrious problems." },
+                { L"third-party notices", L"3D input device development tools and related technology are provided under license from 3Dconnexion. © 3Dconnexion 1992 - 2025. All rights reserved.\n\nOpen CASCADE Technology support is provided by the optional STEP add-on under GNU LGPL version 2.1 with the Open CASCADE exception." },
+            }};
+            float y = viewport.top + helpScroll_;
+            const int helpWidth = static_cast<int>(contentWidth);
+            for (const ShortcutEntry& section : sections) {
+                const float headingHeight = static_cast<float>(MeasureHelpTextHeight(section.shortcut, helpWidth, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD));
+                DrawOverlayText(section.shortcut, left, y, contentWidth, headingHeight, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, false, true);
+                y += headingHeight + 6.0f * dpiScale;
+                const float bodyHeight = static_cast<float>(MeasureHelpTextHeight(section.description, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_NORMAL));
+                DrawOverlayText(section.description, left, y, contentWidth, bodyHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+                y += bodyHeight + 18.0f * dpiScale;
+            }
+            renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+            renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::KeyboardShortcuts) {
             DrawOverlayText(L"Keyboard Shortcuts", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
@@ -5754,12 +5852,10 @@ private:
             }
             const float logoLeft = static_cast<float>(bounds.left) + 40.0f * dpiScale;
             const float textTop = logoBottom + 16.0f * dpiScale;
-            DrawOverlayText(L"Version " VIEWTRIOUS_VERSION, logoLeft, textTop, static_cast<float>(logoWidth), 20.0f * dpiScale,
+            DrawOverlayText(L"version " VIEWTRIOUS_VERSION, logoLeft, textTop, static_cast<float>(logoWidth), 20.0f * dpiScale,
                 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
-            DrawOverlayText(L"Extremely lightweight image viewer", logoLeft, textTop + 25.0f * dpiScale, static_cast<float>(logoWidth),
+            DrawOverlayText(L"extremely lightweight image viewer", logoLeft, textTop + 25.0f * dpiScale, static_cast<float>(logoWidth),
                 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
-            DrawOverlayText(L"3D input device development tools and related technology are provided under license from 3Dconnexion. © 3Dconnexion 1992 - 2025. All rights reserved.",
-                logoLeft, textTop + 49.0f * dpiScale, static_cast<float>(logoWidth), 38.0f * dpiScale, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         }
     }
 
@@ -5823,8 +5919,9 @@ private:
         drawItem(DropdownItem::QuickTour, top, L"quick tutorial", L'\uE897'); top += rowHeight;
         drawItem(DropdownItem::KeyboardShortcuts, top, L"keyboard shortcuts", L'\uE765'); top += rowHeight;
         separator();
-        drawItem(DropdownItem::About, top, L"about", L'\uE946'); top += rowHeight;
+        drawItem(DropdownItem::Help, top, L"help", L'\uE897'); top += rowHeight;
         drawItem(DropdownItem::Feedback, top, L"feedback", L'\uE939'); top += rowHeight;
+        drawItem(DropdownItem::About, top, L"about", L'\uE946'); top += rowHeight;
         separator();
         drawItem(DropdownItem::Close, top, L"close Viewtrious", 0, true);
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
@@ -6432,6 +6529,7 @@ private:
     bool viewBarVisualStyleMenuOpen_ = false;
     SettingsPage settingsPage_ = SettingsPage::General;
     float settingsScroll_ = 0.0f;
+    float helpScroll_ = 0.0f;
     bool onboardingRequired_ = false;
     bool tourPending_ = false;
     TutorialStep tutorialStep_ = TutorialStep::None;
@@ -6600,6 +6698,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->SettingsContains(point)) {
             const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
             viewer->ScrollSettings(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
+            return 0;
+        }
+        if (viewer->HelpContains(point)) {
+            const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+            viewer->ScrollHelp(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
             return 0;
         }
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen() || viewer->ModelViewBarMenuOpen()) return 0;

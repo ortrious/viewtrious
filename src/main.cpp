@@ -5298,11 +5298,11 @@ private:
         const int rowHeight = GetShortcutRowHeight();
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
             overlay_ == OverlayKind::Settings ? 760 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
-            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : 460, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : 608, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(260, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : MulDiv(220, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(260, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : MulDiv(319, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -5841,21 +5841,26 @@ private:
             drawAction(true, L"Suggest a feature", L"Have an idea for Viewtrious?");
             DrawOverlayText(L"Opens GitHub in your web browser.", left, static_cast<float>(bounds.bottom) - panelPadding - 20.0f * dpiScale, contentWidth, 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         } else {
-            float logoBottom = static_cast<float>(bounds.top) + panelPadding;
-            const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(std::min(520.0f * dpiScale, contentWidth))));
+            const float aboutContentWidth = std::max(1.0f, std::min(520.0f * dpiScale,
+                static_cast<float>(bounds.right - bounds.left) - 80.0f * dpiScale));
+            const UINT logoWidth = static_cast<UINT>(std::round(aboutContentWidth));
             const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoWidth) * 577.0f / 2375.0f)));
+            const float aboutTextGap = 16.0f * dpiScale;
+            const float aboutLineHeight = 20.0f * dpiScale;
+            const float aboutLineGap = 5.0f * dpiScale;
+            const float aboutGroupHeight = static_cast<float>(logoHeight) + aboutTextGap + aboutLineHeight + aboutLineGap + aboutLineHeight;
+            const float logoLeft = std::round(static_cast<float>(bounds.left) + (static_cast<float>(bounds.right - bounds.left) - static_cast<float>(logoWidth)) * 0.5f);
+            const float logoTop = std::round(static_cast<float>(bounds.top) + (static_cast<float>(bounds.bottom - bounds.top) - aboutGroupHeight) * 0.5f);
+            float logoBottom = logoTop;
             if (EnsureAboutLogo(logoWidth, logoHeight)) {
-                const float logoLeft = std::round(static_cast<float>(bounds.left) + 40.0f * dpiScale);
-                const float logoTop = std::round(logoBottom);
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
                 logoBottom = logoTop + logoHeight;
             }
-            const float logoLeft = static_cast<float>(bounds.left) + 40.0f * dpiScale;
-            const float textTop = logoBottom + 16.0f * dpiScale;
-            DrawOverlayText(L"version " VIEWTRIOUS_VERSION, logoLeft, textTop, static_cast<float>(logoWidth), 20.0f * dpiScale,
-                14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
-            DrawOverlayText(L"extremely lightweight image viewer", logoLeft, textTop + 25.0f * dpiScale, static_cast<float>(logoWidth),
-                20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
+            const float textTop = logoBottom + aboutTextGap;
+            DrawOverlayText(L"version " VIEWTRIOUS_VERSION, logoLeft, textTop, static_cast<float>(logoWidth), aboutLineHeight,
+                14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
+            DrawOverlayText(L"extremely lightweight image viewer", logoLeft, textTop + aboutLineHeight + aboutLineGap, static_cast<float>(logoWidth),
+                aboutLineHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
         }
     }
 

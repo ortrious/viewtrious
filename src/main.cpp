@@ -4122,11 +4122,15 @@ private:
         const FrameMetrics frame = GetFrameMetrics(window_);
         const LONG margin = MulDiv(4, dpi, 96);
         const LONG width = std::min<LONG>(MulDiv(236, dpi, 96), std::max<LONG>(1, client.right - margin * 2));
-        const LONG height = MulDiv(301, dpi, 96);
+        const LONG rowHeight = MulDiv(38, dpi, 96);
+        const LONG separatorGap = MulDiv(9, dpi, 96);
+        const LONG panelPadding = MulDiv(4, dpi, 96);
+        const LONG height = panelPadding * 2 + rowHeight * 7 + separatorGap * 3;
         const LONG left = std::clamp<LONG>(frame.hamburger.left + margin, margin,
             std::max<LONG>(margin, client.right - width - margin));
-        const LONG top = frame.hamburger.bottom + margin;
-        return { left, top, left + width, std::min<LONG>(client.bottom - margin, top + height) };
+        const LONG top = std::min<LONG>(frame.hamburger.bottom + margin,
+            std::max<LONG>(margin, client.bottom - margin - height));
+        return { left, top, left + width, top + height };
     }
 
     HRESULT ReloadCurrentImage() {
@@ -5788,12 +5792,22 @@ private:
             static_cast<float>(bounds.right - 1), static_cast<float>(top + rowHeight)); };
         const int firstTop = bounds.top + MulDiv(4, dpi, 96);
         const int iconLeft = bounds.left + MulDiv(14, dpi, 96), iconWidth = MulDiv(18, dpi, 96), labelLeft = iconLeft + MulDiv(28, dpi, 96);
-        const auto drawItem = [&](DropdownItem item, int top, const wchar_t* label, wchar_t glyph) {
+        const int labelRight = bounds.right - MulDiv(14, dpi, 96);
+        const auto drawItem = [&](DropdownItem item, int top, const wchar_t* label, wchar_t glyph, bool nativeCloseIcon = false) {
             if (dropdownPressed_ == item) renderTarget_->FillRectangle(row(top), pressedBrush.Get());
             else if (dropdownHovered_ == item) renderTarget_->FillRectangle(row(top), hoverBrush.Get());
-            DrawMenuGlyph(glyph, static_cast<float>(iconLeft), static_cast<float>(top), static_cast<float>(iconWidth), static_cast<float>(rowHeight), textBrush.Get());
+            if (nativeCloseIcon) {
+                const float centerX = static_cast<float>(iconLeft) + static_cast<float>(iconWidth) * 0.5f;
+                const float centerY = static_cast<float>(top) + static_cast<float>(rowHeight) * 0.5f;
+                const float radius = std::min(static_cast<float>(iconWidth), static_cast<float>(rowHeight)) * 0.27f;
+                const float stroke = std::max(1.0f, static_cast<float>(dpi) / 96.0f);
+                renderTarget_->DrawLine(D2D1::Point2F(centerX - radius, centerY - radius), D2D1::Point2F(centerX + radius, centerY + radius), textBrush.Get(), stroke);
+                renderTarget_->DrawLine(D2D1::Point2F(centerX + radius, centerY - radius), D2D1::Point2F(centerX - radius, centerY + radius), textBrush.Get(), stroke);
+            } else {
+                DrawMenuGlyph(glyph, static_cast<float>(iconLeft), static_cast<float>(top), static_cast<float>(iconWidth), static_cast<float>(rowHeight), textBrush.Get());
+            }
             DrawOverlayText(label, static_cast<float>(labelLeft), static_cast<float>(top),
-                static_cast<float>(bounds.right - labelLeft - MulDiv(14, dpi, 96)), static_cast<float>(rowHeight),
+                static_cast<float>(std::max(0, labelRight - labelLeft)), static_cast<float>(rowHeight),
                 13.0f, DWRITE_FONT_WEIGHT_NORMAL, textBrush.Get(), true);
         };
         const int separatorGap = MulDiv(9, dpi, 96);
@@ -5803,16 +5817,16 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(bounds.left + MulDiv(12, dpi, 96)), y), D2D1::Point2F(static_cast<float>(bounds.right - MulDiv(12, dpi, 96)), y), borderBrush.Get());
             top += separatorGap;
         };
-        drawItem(DropdownItem::OpenFile, top, L"Open File...", L'\uE8B7'); top += rowHeight;
-        drawItem(DropdownItem::Settings, top, L"Settings", L'\uE713'); top += rowHeight;
+        drawItem(DropdownItem::OpenFile, top, L"open file...", L'\uE8B7'); top += rowHeight;
+        drawItem(DropdownItem::Settings, top, L"settings", L'\uE713'); top += rowHeight;
         separator();
-        drawItem(DropdownItem::QuickTour, top, L"Quick Tutorial", L'\uE897'); top += rowHeight;
-        drawItem(DropdownItem::KeyboardShortcuts, top, L"Keyboard Shortcuts", L'\uE765'); top += rowHeight;
+        drawItem(DropdownItem::QuickTour, top, L"quick tutorial", L'\uE897'); top += rowHeight;
+        drawItem(DropdownItem::KeyboardShortcuts, top, L"keyboard shortcuts", L'\uE765'); top += rowHeight;
         separator();
-        drawItem(DropdownItem::About, top, L"About", L'\uE946'); top += rowHeight;
-        drawItem(DropdownItem::Feedback, top, L"Feedback", L'\uE939'); top += rowHeight;
+        drawItem(DropdownItem::About, top, L"about", L'\uE946'); top += rowHeight;
+        drawItem(DropdownItem::Feedback, top, L"feedback", L'\uE939'); top += rowHeight;
         separator();
-        drawItem(DropdownItem::Close, top, L"Close Viewtrious", L'\uE8BB');
+        drawItem(DropdownItem::Close, top, L"close Viewtrious", 0, true);
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 

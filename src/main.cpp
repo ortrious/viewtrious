@@ -2244,7 +2244,6 @@ public:
             topBarLogo_.Reset(); topBarLogoWidth_ = 0; topBarLogoHeight_ = 0; checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
             if (VideoActive()) videoPlayer_.HandleRenderTargetResize();
         }
-        if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < BaseScale()) FitToWindow();
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
         ClampPan();
         if (lanczosSelected_ && source_) {
@@ -2366,20 +2365,18 @@ public:
         if (!source_) return;
         const float oldScale = CurrentScale();
         const float baseScale = BaseScale();
-        const float newScale = std::clamp(requestedScale, baseScale, kMaximumZoom);
-        if (newScale <= baseScale + 0.0001f) {
-            FitToWindow();
-            return;
-        }
+        const float newScale = std::min(requestedScale, std::max(kMaximumZoom, baseScale));
+        if (!std::isfinite(newScale) || newScale <= 0.0001f) return;
         if (std::abs(newScale - oldScale) < 0.0001f) return;
 
         const D2D1_SIZE_F target = ImageCanvasSize();
+        const D2D1_RECT_F canvas = ImageCanvasBounds();
         const D2D1_POINT_2F oldTopLeft = ImageTopLeft(oldScale, target);
         const float ratio = newScale / oldScale;
         pan_.x = static_cast<float>(cursor.x) - (static_cast<float>(cursor.x) - oldTopLeft.x) * ratio +
-            imageWidth_ * newScale / 2.0f - target.width / 2.0f;
+            imageWidth_ * newScale / 2.0f - (canvas.left + target.width / 2.0f);
         pan_.y = static_cast<float>(cursor.y) - (static_cast<float>(cursor.y) - oldTopLeft.y) * ratio +
-            imageHeight_ * newScale / 2.0f - target.height / 2.0f;
+            imageHeight_ * newScale / 2.0f - (canvas.top + target.height / 2.0f);
         fitToWindow_ = false;
         zoom_ = newScale;
         ClampPan();
@@ -2410,8 +2407,9 @@ public:
     }
 
     void ZoomCentered(float factor) {
-        const D2D1_SIZE_F client = ImageCanvasSize();
-        ZoomAt({ static_cast<LONG>(client.width / 2.0f), static_cast<LONG>(client.height / 2.0f) }, factor);
+        const D2D1_SIZE_F canvas = ImageCanvasSize();
+        const D2D1_RECT_F bounds = ImageCanvasBounds();
+        ZoomAt({ static_cast<LONG>(bounds.left + canvas.width / 2.0f), static_cast<LONG>(bounds.top + canvas.height / 2.0f) }, factor);
     }
 
     void FitToWindow() {
@@ -2444,8 +2442,14 @@ public:
 
     void PanTo(POINT point) {
         if (!dragging_) return;
-        pan_.x += static_cast<float>(point.x - lastDragPoint_.x);
-        pan_.y += static_cast<float>(point.y - lastDragPoint_.y);
+        const LONG deltaX = point.x - lastDragPoint_.x;
+        const LONG deltaY = point.y - lastDragPoint_.y;
+        if (fitToWindow_ && (deltaX || deltaY)) {
+            zoom_ = CurrentScale();
+            fitToWindow_ = false;
+        }
+        pan_.x += static_cast<float>(deltaX);
+        pan_.y += static_cast<float>(deltaY);
         lastDragPoint_ = point;
         ClampPan();
         if (lanczosSelected_) {
@@ -4254,13 +4258,14 @@ private:
         const float dpiScale = RenderTargetDpi() / 96.0f;
         const float physicalScale = PhysicalPixelScale();
         const D2D1_SIZE_F canvas = ImageCanvasSize();
+        const D2D1_RECT_F canvasBounds = ImageCanvasBounds();
         const D2D1_POINT_2F imageTopLeft = ImageTopLeft(CurrentScale(), canvas);
         const UINT fullWidth = std::max(1u, static_cast<UINT>(std::lround(imageWidth_ * physicalScale)));
         const UINT fullHeight = std::max(1u, static_cast<UINT>(std::lround(imageHeight_ * physicalScale)));
-        const int visibleLeft = std::clamp(static_cast<int>(std::floor(-imageTopLeft.x * dpiScale)), 0, static_cast<int>(fullWidth));
-        const int visibleTop = std::clamp(static_cast<int>(std::floor(-imageTopLeft.y * dpiScale)), 0, static_cast<int>(fullHeight));
-        const int visibleRight = std::clamp(static_cast<int>(std::ceil(canvas.width * dpiScale - imageTopLeft.x * dpiScale)), 0, static_cast<int>(fullWidth));
-        const int visibleBottom = std::clamp(static_cast<int>(std::ceil(canvas.height * dpiScale - imageTopLeft.y * dpiScale)), 0, static_cast<int>(fullHeight));
+        const int visibleLeft = std::clamp(static_cast<int>(std::floor((canvasBounds.left - imageTopLeft.x) * dpiScale)), 0, static_cast<int>(fullWidth));
+        const int visibleTop = std::clamp(static_cast<int>(std::floor((canvasBounds.top - imageTopLeft.y) * dpiScale)), 0, static_cast<int>(fullHeight));
+        const int visibleRight = std::clamp(static_cast<int>(std::ceil((canvasBounds.right - imageTopLeft.x) * dpiScale)), 0, static_cast<int>(fullWidth));
+        const int visibleBottom = std::clamp(static_cast<int>(std::ceil((canvasBounds.bottom - imageTopLeft.y) * dpiScale)), 0, static_cast<int>(fullHeight));
         if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) return false;
         const uint64_t fullArea = static_cast<uint64_t>(fullWidth) * fullHeight;
         const uint64_t canvasArea = static_cast<uint64_t>(std::max(1.0f, canvas.width * dpiScale)) *
@@ -4569,7 +4574,14 @@ private:
     }
 
     D2D1_SIZE_F ImageCanvasSize() const {
-        return ClientSize();
+        const D2D1_RECT_F bounds = ImageCanvasBounds();
+        return D2D1::SizeF(bounds.right - bounds.left, bounds.bottom - bounds.top);
+    }
+
+    D2D1_RECT_F ImageCanvasBounds() const {
+        const D2D1_SIZE_F client = ClientSize();
+        const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
+        return D2D1::RectF(0.0f, top, client.width, std::max(top + 1.0f, client.height));
     }
 
     float BaseScale() const {
@@ -4577,10 +4589,10 @@ private:
         const D2D1_SIZE_F target = ImageCanvasSize();
         const float fitScale = std::min(target.width / static_cast<float>(imageWidth_),
             target.height / static_cast<float>(imageHeight_));
-        return std::min(1.0f, fitScale);
+        return fitScale;
     }
 
-    float CurrentScale() const { return fitToWindow_ ? BaseScale() : std::max(zoom_, BaseScale()); }
+    float CurrentScale() const { return fitToWindow_ ? BaseScale() : zoom_; }
 
     std::pair<UINT, UINT> LanczosTargetSize() const {
         const float physicalScale = PhysicalPixelScale();
@@ -4613,8 +4625,9 @@ private:
     }
 
     D2D1_POINT_2F ImageTopLeft(float scale, const D2D1_SIZE_F& target) const {
-        return D2D1::Point2F((target.width - imageWidth_ * scale) / 2.0f + pan_.x,
-            (target.height - imageHeight_ * scale) / 2.0f + pan_.y);
+        const D2D1_RECT_F canvas = ImageCanvasBounds();
+        return D2D1::Point2F(canvas.left + (target.width - imageWidth_ * scale) / 2.0f + pan_.x,
+            canvas.top + (target.height - imageHeight_ * scale) / 2.0f + pan_.y);
     }
 
     void ClampPan() {
@@ -4671,9 +4684,9 @@ private:
 
     void DrawCheckerboard(const D2D1_RECT_F& bounds) {
         if (!EnsureCheckerboardBrush()) return;
-        const D2D1_SIZE_F target = ImageCanvasSize();
-        const D2D1_RECT_F visible = D2D1::RectF(std::max(bounds.left, 0.0f), std::max(bounds.top, 0.0f),
-            std::min(bounds.right, target.width), std::min(bounds.bottom, target.height));
+        const D2D1_RECT_F canvas = ImageCanvasBounds();
+        const D2D1_RECT_F visible = D2D1::RectF(std::max(bounds.left, canvas.left), std::max(bounds.top, canvas.top),
+            std::min(bounds.right, canvas.right), std::min(bounds.bottom, canvas.bottom));
         if (visible.right <= visible.left || visible.bottom <= visible.top) return;
         renderTarget_->PushAxisAlignedClip(visible, D2D1_ANTIALIAS_MODE_ALIASED);
         renderTarget_->FillRectangle(visible, checkerboardBrush_.Get());
@@ -4681,14 +4694,17 @@ private:
     }
     void DrawImage() {
         const D2D1_SIZE_F target = ImageCanvasSize();
+        const D2D1_RECT_F canvas = ImageCanvasBounds();
         const float scale = CurrentScale();
         const D2D1_POINT_2F topLeft = ImageTopLeft(scale, target);
         const D2D1_RECT_F destination = D2D1::RectF(topLeft.x, topLeft.y,
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
+        renderTarget_->PushAxisAlignedClip(canvas, D2D1_ANTIALIAS_MODE_ALIASED);
         DrawCheckerboard(destination);
         if (!gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
             renderTarget_->DrawBitmap(lanczosBitmap_.Get(), lanczosDestination_, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         else renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        renderTarget_->PopAxisAlignedClip();
     }
 
 

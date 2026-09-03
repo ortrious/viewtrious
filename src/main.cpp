@@ -124,7 +124,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, TutorialSkip, TutorialNext, VideoPlayPause, VideoMute };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, TutorialSkip, TutorialNext, VideoPlayPause, VideoMute };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
@@ -135,6 +135,23 @@ enum class SettingsPage { General, Image2D, Model3D };
 enum class ContentKind { None, Image2D, Model3D, Video2D };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
+struct HelpTopic { const wchar_t* title; const wchar_t* body; };
+constexpr std::array<HelpTopic, 14> kHelpTopics{{
+    { L"getting started", L"Viewtrious quickly opens images, video, animated media, and supported 3D models.\n\nUse open file, drag and drop a supported file into Viewtrious, or open an associated file from Windows Explorer.\n\nWhen a file is opened from a folder, Viewtrious can move between other supported files in that same folder." },
+    { L"image viewing", L"Images open fitted to the available viewing area.\n\nUse the mouse wheel to zoom. When zoomed in, drag the image to pan. Double-click the image to switch between fitted view and 100% scale.\n\nThe left and right viewer controls move between supported files in the current folder. Transparent areas use the Viewtrious checkerboard background." },
+    { L"video and animation", L"Supported video files play inside the normal Viewtrious viewer. Use the playback controls to play, pause, and seek; Space also toggles play and pause.\n\nFolder navigation keeps compatible 2D media together, so images, video, and animated media can be browsed naturally from the same folder.\n\nGIF files are handled as animated media rather than static images." },
+    { L"3D viewing", L"Supported 3D models open in the Viewtrious 3D viewer.\n\nUse the mouse to orbit, the middle mouse button to pan, and the mouse wheel to move closer to or farther from the model. Press 0 to reset the model view.\n\n3D navigation is intentionally separate from 2D image and video navigation." },
+    { L"SpaceMouse", L"Viewtrious supports compatible 3Dconnexion SpaceMouse devices.\n\nEnable or disable SpaceMouse under 3D settings. In the 3D viewer it provides analog model navigation. In the 2D image viewer, supported motion can pan and zoom the image.\n\nExact movement depends on the active viewer mode." },
+    { L"keyboard shortcuts", L"Open keyboard shortcuts from the main menu for the complete shortcut reference.\n\nCommon shortcuts are available for navigation, playback, viewing, file actions, and application controls." },
+    { L"quick tutorial", L"Open quick tutorial from the main menu for a short interactive introduction to the main Viewtrious controls.\n\nThe tutorial is a quick visual walkthrough; Help provides the more complete reference." },
+    { L"supported file types", L"images\nPNG, JPEG, BMP, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF\n\nvideo and animation\nMP4, GIF\n\n3D models\nSTL, 3MF; STEP and STP when the optional Open CASCADE Technology add-on is installed." },
+    { L"file associations", L"Viewtrious can be selected as the default application for supported file types.\n\nUse the Viewtrious setup flow or Windows Settings to choose which file types open with Viewtrious.\n\nChanging a file association does not modify the file; it only changes which application Windows uses to open it." },
+    { L"deleting files", L"When deletion confirmation is enabled, Viewtrious asks before deleting a file. Change this option in general settings.\n\nAfter a file is deleted successfully, Viewtrious continues to an appropriate neighboring file when one is available.\n\nDeleted files are moved to the Windows Recycle Bin rather than permanently deleted." },
+    { L"settings", L"Settings are divided into three areas.\n\ngeneral — application-wide behavior.\n\n2D settings — options affecting image and other 2D viewing.\n\n3D settings — options affecting model viewing, navigation, and SpaceMouse support.\n\nSaved settings remain in effect the next time Viewtrious is opened." },
+    { L"troubleshooting", L"a file will not open\nConfirm that the file type is supported and that the file itself can be read normally by Windows.\n\nvideo will not play\nAn MP4 file can contain a codec unavailable through the Windows media components used by Viewtrious. A supported extension does not guarantee every codec can be decoded.\n\na 3D model will not open\nConfirm that the format is supported and that the file contains valid model geometry.\n\nSpaceMouse does not respond\nConfirm that SpaceMouse is enabled under 3D settings and that 3Dconnexion software recognizes the device.\n\nViewtrious behaves unexpectedly\nUse feedback from the main menu and include the file type and steps to reproduce the problem." },
+    { L"feedback and about", L"Use feedback from the main menu for the current Viewtrious feedback and project links.\n\nUse about for the Viewtrious version and application information." },
+    { L"third-party notices", L"3D input device development tools and related technology are provided under license from 3Dconnexion. © 3Dconnexion 1992 - 2025. All rights reserved.\n\nOpen CASCADE Technology support is provided by the optional STEP add-on under GNU LGPL version 2.1 with the Open CASCADE exception." },
+}};
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
 struct PixelBuffer {
     UINT width = 0;
@@ -1395,7 +1412,7 @@ public:
             settingsPage_ = SettingsPage::General;
             settingsScroll_ = 0.0f;
         }
-        if (overlay == OverlayKind::Help) helpScroll_ = 0.0f;
+        if (overlay == OverlayKind::Help) { helpTopic_ = 0; helpScroll_ = 0.0f; }
         overlay_ = overlay;
         EndPan();
         InvalidateRect(window_, nullptr, FALSE);
@@ -1447,36 +1464,55 @@ public:
         const RECT bounds = GetHelpCloseBounds();
         return overlay_ == OverlayKind::Help && PtInRect(&bounds, point);
     }
+    RECT GetHelpRailBounds() const {
+        const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
+        const int left = bounds.left + MulDiv(18, dpi, 96);
+        const int top = bounds.top + MulDiv(64, dpi, 96);
+        return { left, top, left + MulDiv(178, dpi, 96), bounds.bottom - MulDiv(18, dpi, 96) };
+    }
+    RECT GetHelpContentBounds() const {
+        const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
+        const int left = bounds.left + MulDiv(220, dpi, 96);
+        return { left, bounds.top + MulDiv(64, dpi, 96), bounds.right - MulDiv(24, dpi, 96), bounds.bottom - MulDiv(24, dpi, 96) };
+    }
+    int GetHelpTopicRowHeight() const {
+        const RECT rail = GetHelpRailBounds();
+        return std::max(MulDiv(18, GetDpiForWindow(window_), 96), static_cast<int>((rail.bottom - rail.top) / static_cast<LONG>(kHelpTopics.size())));
+    }
+    RECT GetHelpTopicBounds(int topic) const {
+        const RECT rail = GetHelpRailBounds(); const int height = GetHelpTopicRowHeight();
+        const int top = rail.top + topic * height;
+        return { rail.left, top, rail.right, std::min(rail.bottom, top + height) };
+    }
+    int HelpTopicAt(POINT point) const {
+        if (overlay_ != OverlayKind::Help) return -1;
+        const RECT rail = GetHelpRailBounds();
+        if (!PtInRect(&rail, point)) return -1;
+        const int topic = (point.y - rail.top) / GetHelpTopicRowHeight();
+        return topic >= 0 && topic < static_cast<int>(kHelpTopics.size()) ? topic : -1;
+    }
+    bool HelpContentContains(POINT point) const {
+        const RECT bounds = GetHelpContentBounds();
+        return overlay_ == OverlayKind::Help && PtInRect(&bounds, point);
+    }
+    void SetHelpTopic(int topic) {
+        if (topic < 0 || topic >= static_cast<int>(kHelpTopics.size())) return;
+        helpTopic_ = topic;
+        helpScroll_ = 0.0f;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     int HelpContentHeight() const {
         if (overlay_ != OverlayKind::Help) return 0;
-        const RECT bounds = GetOverlayBounds(); const UINT dpi = GetDpiForWindow(window_);
-        const int width = static_cast<int>(std::max<LONG>(1, bounds.right - bounds.left - MulDiv(48, dpi, 96)));
-        const std::array<ShortcutEntry, 6> sections{{
-            { L"getting started", L"open a file with open file, drag and drop a supported file into Viewtrious, or use left and right to move between supported files in the same folder." },
-            { L"supported file types", L"images: JPG, JPEG, PNG, BMP, GIF, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF. video: MP4. 3D: STL and 3MF; STEP and STP when the optional add-on is installed." },
-            { L"navigation and controls", L"quick tutorial provides the basic walkthrough, and keyboard shortcuts lists every shortcut. mouse, keyboard, and SpaceMouse behavior varies by viewer mode." },
-            { L"file associations", L"choose Viewtrious as the default app for supported file types through Windows Settings or the app's setup flow." },
-            { L"troubleshooting", L"if a file does not open, confirm that its format is supported. use feedback for reproducible Viewtrious problems." },
-            { L"third-party notices", L"3D input device development tools and related technology are provided under license from 3Dconnexion. © 3Dconnexion 1992 - 2025. All rights reserved.\n\nOpen CASCADE Technology support is provided by the optional STEP add-on under GNU LGPL version 2.1 with the Open CASCADE exception." },
-        }};
-        int height = 0;
-        for (const ShortcutEntry& section : sections) {
-            height += MeasureHelpTextHeight(section.shortcut, width, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD);
-            height += MulDiv(6, dpi, 96);
-            height += MeasureHelpTextHeight(section.description, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
-            height += MulDiv(18, dpi, 96);
-        }
-        return height;
+        const RECT content = GetHelpContentBounds(); const UINT dpi = GetDpiForWindow(window_);
+        const int width = static_cast<int>(std::max<LONG>(1, content.right - content.left));
+        return MeasureHelpTextHeight(kHelpTopics[helpTopic_].title, width, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD) +
+            MulDiv(14, dpi, 96) + MeasureHelpTextHeight(kHelpTopics[helpTopic_].body, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
     }
     float HelpMaximumScroll() const {
         if (overlay_ != OverlayKind::Help) return 0.0f;
-        const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
-        const float viewport = static_cast<float>(bounds.bottom - bounds.top - MulDiv(82, dpi, 96));
+        const RECT bounds = GetHelpContentBounds();
+        const float viewport = static_cast<float>(bounds.bottom - bounds.top);
         return std::max(0.0f, static_cast<float>(HelpContentHeight()) - viewport);
-    }
-    bool HelpContains(POINT point) const {
-        const RECT bounds = GetOverlayBounds();
-        return overlay_ == OverlayKind::Help && PtInRect(&bounds, point);
     }
     void ScrollHelp(float delta) {
         if (overlay_ != OverlayKind::Help) return;
@@ -1938,6 +1974,8 @@ public:
     ButtonKind ButtonAt(POINT point) const {
         const auto contains = [&point](RECT bounds) { return PtInRect(&bounds, point) != FALSE; };
         if (HelpCloseContains(point)) return ButtonKind::HelpClose;
+        const int helpTopic = HelpTopicAt(point);
+        if (helpTopic >= 0) { helpTopicHit_ = helpTopic; return ButtonKind::HelpTopic; }
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (EmptyStateActive() && EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
@@ -2195,6 +2233,7 @@ public:
                 ShowActionError(L"Viewtrious couldn't open the feedback page.");
         }
         else if (button == ButtonKind::HelpClose) DismissOverlay();
+        else if (button == ButtonKind::HelpTopic) SetHelpTopic(helpTopicHit_);
         else if (button == ButtonKind::TutorialSkip) StopTutorial();
         else if (button == ButtonKind::TutorialNext) AdvanceTutorial();
     }
@@ -5546,27 +5585,35 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(closeCenterX - closeRadius, closeCenterY - closeRadius), D2D1::Point2F(closeCenterX + closeRadius, closeCenterY + closeRadius), primaryBrush.Get(), std::max(1.0f, dpiScale));
             renderTarget_->DrawLine(D2D1::Point2F(closeCenterX + closeRadius, closeCenterY - closeRadius), D2D1::Point2F(closeCenterX - closeRadius, closeCenterY + closeRadius), primaryBrush.Get(), std::max(1.0f, dpiScale));
             DrawOverlayText(L"help", left, static_cast<float>(bounds.top) + panelPadding, contentWidth - 44.0f * dpiScale, 28.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            const D2D1_RECT_F viewport = D2D1::RectF(left, static_cast<float>(bounds.top) + 58.0f * dpiScale, left + contentWidth, static_cast<float>(bounds.bottom) - 24.0f * dpiScale);
+            ComPtr<ID2D1SolidColorBrush> accent, rowHover, selectedText;
+            if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &accent)) ||
+                FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &rowHover)) ||
+                FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &selectedText))) return;
+            const RECT railBounds = GetHelpRailBounds();
+            const float dividerX = static_cast<float>(railBounds.right) + 12.0f * dpiScale;
+            renderTarget_->DrawLine(D2D1::Point2F(dividerX, static_cast<float>(railBounds.top)), D2D1::Point2F(dividerX, static_cast<float>(railBounds.bottom)), borderBrush.Get());
+            const int topicRowHeight = GetHelpTopicRowHeight();
+            const float topicFontSize = topicRowHeight < MulDiv(25, GetDpiForWindow(window_), 96) ? 10.0f : 11.5f;
+            for (int topic = 0; topic < static_cast<int>(kHelpTopics.size()); ++topic) {
+                const RECT topicBounds = GetHelpTopicBounds(topic);
+                const D2D1_RECT_F topicRect = D2D1::RectF(static_cast<float>(topicBounds.left), static_cast<float>(topicBounds.top), static_cast<float>(topicBounds.right), static_cast<float>(topicBounds.bottom));
+                if (topic == helpTopic_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(topicRect, 4.0f * dpiScale, 4.0f * dpiScale), accent.Get());
+                else if (hoveredButton_ == ButtonKind::HelpTopic && helpTopicHit_ == topic) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(topicRect, 4.0f * dpiScale, 4.0f * dpiScale), rowHover.Get());
+                DrawOverlayText(kHelpTopics[topic].title, topicRect.left + 9.0f * dpiScale, topicRect.top, topicRect.right - topicRect.left - 18.0f * dpiScale,
+                    topicRect.bottom - topicRect.top, topicFontSize, DWRITE_FONT_WEIGHT_SEMI_BOLD, topic == helpTopic_ ? selectedText.Get() : primaryBrush.Get(), true);
+            }
+            const RECT contentBounds = GetHelpContentBounds();
+            const D2D1_RECT_F viewport = D2D1::RectF(static_cast<float>(contentBounds.left), static_cast<float>(contentBounds.top), static_cast<float>(contentBounds.right), static_cast<float>(contentBounds.bottom));
             renderTarget_->PushAxisAlignedClip(viewport, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -helpScroll_));
-            const std::array<ShortcutEntry, 6> sections{{
-                { L"getting started", L"open a file with open file, drag and drop a supported file into Viewtrious, or use left and right to move between supported files in the same folder." },
-                { L"supported file types", L"images: JPG, JPEG, PNG, BMP, GIF, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF. video: MP4. 3D: STL and 3MF; STEP and STP when the optional add-on is installed." },
-                { L"navigation and controls", L"quick tutorial provides the basic walkthrough, and keyboard shortcuts lists every shortcut. mouse, keyboard, and SpaceMouse behavior varies by viewer mode." },
-                { L"file associations", L"choose Viewtrious as the default app for supported file types through Windows Settings or the app's setup flow." },
-                { L"troubleshooting", L"if a file does not open, confirm that its format is supported. use feedback for reproducible Viewtrious problems." },
-                { L"third-party notices", L"3D input device development tools and related technology are provided under license from 3Dconnexion. © 3Dconnexion 1992 - 2025. All rights reserved.\n\nOpen CASCADE Technology support is provided by the optional STEP add-on under GNU LGPL version 2.1 with the Open CASCADE exception." },
-            }};
+            const HelpTopic& topic = kHelpTopics[helpTopic_];
+            const int helpWidth = static_cast<int>(std::max<LONG>(1, contentBounds.right - contentBounds.left));
             float y = viewport.top + helpScroll_;
-            const int helpWidth = static_cast<int>(contentWidth);
-            for (const ShortcutEntry& section : sections) {
-                const float headingHeight = static_cast<float>(MeasureHelpTextHeight(section.shortcut, helpWidth, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD));
-                DrawOverlayText(section.shortcut, left, y, contentWidth, headingHeight, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, false, true);
-                y += headingHeight + 6.0f * dpiScale;
-                const float bodyHeight = static_cast<float>(MeasureHelpTextHeight(section.description, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_NORMAL));
-                DrawOverlayText(section.description, left, y, contentWidth, bodyHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
-                y += bodyHeight + 18.0f * dpiScale;
-            }
+            const float titleHeight = static_cast<float>(MeasureHelpTextHeight(topic.title, helpWidth, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD));
+            DrawOverlayText(topic.title, viewport.left, y, viewport.right - viewport.left, titleHeight, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, false, true);
+            y += titleHeight + 14.0f * dpiScale;
+            const float bodyHeight = static_cast<float>(MeasureHelpTextHeight(topic.body, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_NORMAL));
+            DrawOverlayText(topic.body, viewport.left, y, viewport.right - viewport.left, bodyHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
             renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::KeyboardShortcuts) {
@@ -6535,6 +6582,8 @@ private:
     SettingsPage settingsPage_ = SettingsPage::General;
     float settingsScroll_ = 0.0f;
     float helpScroll_ = 0.0f;
+    int helpTopic_ = 0;
+    mutable int helpTopicHit_ = -1;
     bool onboardingRequired_ = false;
     bool tourPending_ = false;
     TutorialStep tutorialStep_ = TutorialStep::None;
@@ -6705,7 +6754,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->ScrollSettings(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
             return 0;
         }
-        if (viewer->HelpContains(point)) {
+        if (viewer->HelpContentContains(point)) {
             const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
             viewer->ScrollHelp(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
             return 0;

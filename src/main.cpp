@@ -60,7 +60,6 @@ constexpr UINT kLanczosCompleteMessage = WM_APP + 7;
 constexpr UINT kModelLoadCompleteMessage = WM_APP + 8;
 constexpr UINT kVideoMediaEngineEventMessage = WM_APP + 9;
 constexpr UINT kVideoPlaybackWakeMessage = WM_APP + 10;
-constexpr UINT kVideoPausedSeekRefreshMessage = WM_APP + 11;
 // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is available on Windows 10 version 1803 and later.
 constexpr DWORD kHighResolutionWaitableTimerFlag = 0x00000002;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
@@ -901,6 +900,7 @@ public:
     void ToggleVideoPlayPause() {
         if (!VideoActive()) return;
         videoPlayer_.TogglePlayPause();
+        if (videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = false;
         ShowVideoControls();
         ScheduleVideoPlaybackTimer();
         if (!videoPlayer_.Playing()) videoPlayer_.FlushFramePacingDiagnostics();
@@ -1006,7 +1006,7 @@ public:
         if (scrubber.right <= scrubber.left) return;
         const float fraction = std::clamp(static_cast<float>(point.x - scrubber.left) / static_cast<float>(scrubber.right - scrubber.left), 0.0f, 1.0f);
         videoScrubSeconds_ = duration * fraction;
-        videoPlayer_.Seek(videoScrubSeconds_);
+        if (videoPlayer_.Seek(videoScrubSeconds_) && !videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = true;
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool BeginVideoControlsInteraction(POINT point) {
@@ -2212,7 +2212,12 @@ public:
             if (ModelActive() && !TutorialActive()) modelViewport_.Render(graphicsHost_, ModelCanvasBounds());
             graphicsHost_.BeginDraw();
             if (contentKind_ != ContentKind::Model3D || !ModelActive() || TutorialActive()) renderTarget_->Clear(kViewerBackground);
-            if (VideoActive() && !tutorialPresentation_) videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds());
+            if (VideoActive() && !tutorialPresentation_) {
+                // A paused scrub explicitly owns this retry; ordinary paints stay cache-only.
+                if (videoPausedSeekRefreshPending_ && videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek))
+                    videoPausedSeekRefreshPending_ = false;
+                videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds());
+            }
             if (VideoActive() && !tutorialPresentation_) DrawVideoPlaybackControls();
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
@@ -2955,8 +2960,7 @@ private:
     }
     void DeactivateVideo() {
         VideoPlayer::Trace(window_, L"Viewer Video2D teardown");
-        ++videoPausedSeekRefreshGeneration_;
-        videoPausedSeekRefreshQueued_ = false;
+        videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
         StopVideoControls();
         videoPlayer_.Shutdown();
@@ -2975,7 +2979,6 @@ public:
         if (videoPlayer_.Failed()) { DeactivateVideo(); VideoPlayer::Trace(window_, L"Video2D render invalidation after failure", S_OK, event); InvalidateRect(window_, nullptr, FALSE); return; }
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
-            else QueuePausedSeekRefresh();
         } else if (!videoPlayer_.HasValidFrame() &&
             (event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY || event == MF_MEDIA_ENGINE_EVENT_CANPLAY)) {
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
@@ -3017,20 +3020,7 @@ public:
         VideoPlayer::Trace(window_, L"Video2D render invalidation from high-resolution timer");
         InvalidateRect(window_, nullptr, FALSE);
     }
-    void VideoPausedSeekRefreshMessage(uint64_t generation) {
-        if (generation != videoPausedSeekRefreshGeneration_) return;
-        videoPausedSeekRefreshQueued_ = false;
-        if (!VideoActive() || videoPlayer_.Playing()) return;
-        videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
-        InvalidateRect(window_, nullptr, FALSE);
-    }
 private:
-    void QueuePausedSeekRefresh() {
-        if (videoPausedSeekRefreshQueued_) return;
-        videoPausedSeekRefreshQueued_ = true;
-        const uint64_t generation = ++videoPausedSeekRefreshGeneration_;
-        if (!PostMessageW(window_, kVideoPausedSeekRefreshMessage, static_cast<WPARAM>(generation), 0)) videoPausedSeekRefreshQueued_ = false;
-    }
     void ScheduleVideoPlaybackTimer(bool resetDeadline = false) {
         if (!VideoActive() || !videoPlayer_.Playing()) {
             StopVideoPlaybackScheduler();
@@ -4985,7 +4975,7 @@ private:
 
         double current = 0.0, duration = 0.0;
         const bool hasTimes = videoPlayer_.GetPlaybackTimes(current, duration);
-        if (videoScrubbing_ && hasTimes) current = videoScrubSeconds_;
+        if ((videoScrubbing_ || videoPausedSeekRefreshPending_) && hasTimes) current = videoScrubSeconds_;
         DrawOverlayText(hasTimes ? FormatVideoTime(current).c_str() : L"--:--", static_cast<float>(layout.currentTime.left), static_cast<float>(layout.currentTime.top), static_cast<float>(layout.currentTime.right - layout.currentTime.left), static_cast<float>(layout.currentTime.bottom - layout.currentTime.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         DrawOverlayText(hasTimes ? FormatVideoTime(duration).c_str() : L"--:--", static_cast<float>(layout.duration.left), static_cast<float>(layout.duration.top), static_cast<float>(layout.duration.right - layout.duration.left), static_cast<float>(layout.duration.bottom - layout.duration.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
 
@@ -6324,8 +6314,7 @@ private:
     std::atomic<uint64_t> videoPlaybackSchedulerGeneration_{ 0 };
     std::atomic<uint64_t> videoPlaybackWakePendingGeneration_{ 0 };
     std::atomic<LONGLONG> videoPlaybackWakeQpc_{ 0 };
-    bool videoPausedSeekRefreshQueued_ = false;
-    uint64_t videoPausedSeekRefreshGeneration_ = 0;
+    bool videoPausedSeekRefreshPending_ = false;
     bool videoPlaybackSchedulerRunning_ = false;
     double videoPlaybackDeadlineQpc_ = 0.0;
     double videoPlaybackFramePeriodQpc_ = 0.0;
@@ -6892,7 +6881,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kModelLoadCompleteMessage: viewer->ModelLoadCompleteMessage(reinterpret_cast<ModelLoadResult*>(lParam)); return 0;
     case kVideoMediaEngineEventMessage: viewer->VideoMediaEngineEvent(static_cast<DWORD>(wParam)); return 0;
     case kVideoPlaybackWakeMessage: viewer->VideoPlaybackWakeMessage(static_cast<uint64_t>(wParam)); return 0;
-    case kVideoPausedSeekRefreshMessage: viewer->VideoPausedSeekRefreshMessage(static_cast<uint64_t>(wParam)); return 0;
     case WM_KEYDOWN:
         if (viewer->TutorialActive()) { if (wParam == VK_ESCAPE) viewer->StopTutorial(); return 0; }
         if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }

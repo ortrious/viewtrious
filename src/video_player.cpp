@@ -422,6 +422,7 @@ bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
     RecordFramePacingEvent(acquisition);
     Trace(window_, frameReady ? L"video frame acquisition: resources ready; checking stream tick" : L"video frame acquisition: resources not ready");
     if (!frameReady) return false;
+    bool transferred = false;
     LONGLONG pts = 0;
     Trace(window_, L"OnVideoStreamTick begin");
     const HRESULT tick = engine_->OnVideoStreamTick(&pts);
@@ -443,6 +444,7 @@ bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
             hasValidFrame_ = hasTransferredPts_ = true;
             lastTransferredPts_ = pts;
             RecordFramePacingEvent(FramePacingEvent::CachePublish, pts);
+            transferred = true;
             wchar_t transferredStage[160]{};
             swprintf_s(transferredStage, L"new frame transferred pts=%lld", pts);
             Trace(window_, transferredStage);
@@ -454,7 +456,7 @@ bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
     } else {
         Trace(window_, L"frame-ready decision: tick failed; reusing previous frame", tick);
     }
-    return hasValidFrame_;
+    return transferred;
 }
 
 bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas) {

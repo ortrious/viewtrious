@@ -102,9 +102,9 @@ void VideoPlayer::RecordFramePacingPresent(HRESULT result) {
 void VideoPlayer::FlushFramePacingDiagnostics() {
 #if defined(_DEBUG)
     if (!framePacingRecordCount_ || !framePacingFrequency_) return;
-    static const wchar_t* names[] = { L"begin", L"pause", L"resume", L"seek", L"end", L"schedule", L"timer", L"tick", L"transfer", L"cache", L"paint", L"present" };
+    static const wchar_t* names[] = { L"begin", L"pause", L"resume", L"seek", L"end", L"schedule", L"timer", L"scheduler-acquire", L"initial-acquire", L"seek-acquire", L"tick", L"transfer", L"cache", L"paint", L"present" };
     OutputDebugStringW(L"Viewtrious VIDEO PACING trace begin\n");
-    std::array<LONGLONG, 12> previous{};
+    std::array<LONGLONG, 15> previous{};
     for (size_t index = 0; index < framePacingRecordCount_; ++index) {
         const FramePacingRecord& record = framePacingRecords_[(framePacingRecordStart_ + index) % kFramePacingRecordCapacity];
         const size_t event = static_cast<size_t>(record.event);
@@ -415,11 +415,12 @@ bool VideoPlayer::TryGetFramesPerSecond(float& framesPerSecond) {
     return true;
 }
 
-bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas) {
-    // Previously, "ready" meant only that the texture and dimensions existed. That allowed
-    // every timer-driven paint to call TransferVideoFrame, including repeated stale frames.
-    const bool frameReady = context && engine_ && engineEx_ && frameTexture_ && videoWidth_ && videoHeight_ && !failed_;
-    Trace(window_, frameReady ? L"frame-ready decision: resources ready; checking stream tick" : L"frame-ready decision: resources not ready");
+bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
+    const bool frameReady = engine_ && engineEx_ && frameTexture_ && videoWidth_ && videoHeight_ && !failed_;
+    const FramePacingEvent acquisition = reason == FrameAcquisitionReason::Scheduler ? FramePacingEvent::SchedulerAcquire :
+        reason == FrameAcquisitionReason::InitialLoad ? FramePacingEvent::InitialLoadAcquire : FramePacingEvent::SeekAcquire;
+    RecordFramePacingEvent(acquisition);
+    Trace(window_, frameReady ? L"video frame acquisition: resources ready; checking stream tick" : L"video frame acquisition: resources not ready");
     if (!frameReady) return false;
     LONGLONG pts = 0;
     Trace(window_, L"OnVideoStreamTick begin");
@@ -453,7 +454,12 @@ bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas) {
     } else {
         Trace(window_, L"frame-ready decision: tick failed; reusing previous frame", tick);
     }
-    if (!hasValidFrame_) { Trace(window_, L"no valid video frame yet"); return false; }
+    return hasValidFrame_;
+}
+
+bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas) {
+    if (!context || !frameTexture_ || !videoWidth_ || !videoHeight_ || !hasValidFrame_ || failed_) return false;
+    const RECT source{ 0, 0, static_cast<LONG>(videoWidth_), static_cast<LONG>(videoHeight_) };
     wchar_t sourceStage[160]{};
     swprintf_s(sourceStage, L"video source rectangle calculated (%ld,%ld)-(%ld,%ld)", source.left, source.top, source.right, source.bottom);
     Trace(window_, sourceStage);

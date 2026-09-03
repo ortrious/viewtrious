@@ -2970,6 +2970,12 @@ public:
         UpdateVideoTitleMetadata();
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); VideoPlayer::Trace(window_, L"Video2D render invalidation after failure", S_OK, event); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
+            videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
+        } else if (!videoPlayer_.HasValidFrame() &&
+            (event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY || event == MF_MEDIA_ENGINE_EVENT_CANPLAY)) {
+            videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
+        }
         if ((!wasPlaying && videoPlayer_.Playing()) ||
             (event == MF_MEDIA_ENGINE_EVENT_SEEKED && videoPlayer_.Playing())) {
             ScheduleVideoPlaybackTimer(true);
@@ -2999,6 +3005,7 @@ public:
         QueryPerformanceCounter(&now);
         videoPlayer_.RecordFramePacingTimer(videoPlaybackWakeQpc_.load(std::memory_order_acquire),
             static_cast<LONGLONG>(std::llround(videoPlaybackDeadlineQpc_)));
+        videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Scheduler);
         // Advance the stable QPC grid past missed slots instead of replaying stale wakeups.
         while (videoPlaybackDeadlineQpc_ <= static_cast<double>(now.QuadPart))
             videoPlaybackDeadlineQpc_ += videoPlaybackFramePeriodQpc_;

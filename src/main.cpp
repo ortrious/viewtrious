@@ -1838,15 +1838,24 @@ public:
             !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
     }
     RECT GetCanvasNavigationZoneBounds(bool next) const {
-        RECT client{};
-        GetClientRect(window_, &client);
+        const D2D1_RECT_F canvas = ImageCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
+        const int canvasLeft = static_cast<int>(canvas.left);
+        const int canvasTop = static_cast<int>(canvas.top);
+        const int canvasRight = static_cast<int>(canvas.right);
+        const int canvasBottom = static_cast<int>(canvas.bottom);
+        const int canvasWidth = std::max(1, canvasRight - canvasLeft);
+        const int canvasHeight = std::max(1, canvasBottom - canvasTop);
         const int desiredWidth = MulDiv(112, dpi, 96);
         const int minimumCenterWidth = MulDiv(160, dpi, 96);
-        const int zoneWidth = std::min(desiredWidth, static_cast<int>(std::max(0L, (client.right - minimumCenterWidth) / 2)));
-        return next ? RECT{ client.right - zoneWidth, canvasTop, client.right, client.bottom } :
-            RECT{ 0, canvasTop, zoneWidth, client.bottom };
+        const int zoneWidth = std::min(desiredWidth, std::max(0, (canvasWidth - minimumCenterWidth) / 2));
+        const int requestedVerticalInset = MulDiv(100, dpi, 96);
+        const int maximumVerticalInset = std::min((canvasHeight - 1) / 2, (canvasHeight * 2) / 5);
+        const int verticalInset = std::min(requestedVerticalInset, maximumVerticalInset);
+        const int navigationTop = canvasTop + verticalInset;
+        const int navigationBottom = std::max(navigationTop + 1, canvasBottom - verticalInset);
+        return next ? RECT{ canvasRight - zoneWidth, navigationTop, canvasRight, navigationBottom } :
+            RECT{ canvasLeft, navigationTop, canvasLeft + zoneWidth, navigationBottom };
     }
     ButtonKind CanvasNavigationZoneAt(POINT point) const {
         if (!CanvasNavigationButtonsVisible()) return ButtonKind::None;

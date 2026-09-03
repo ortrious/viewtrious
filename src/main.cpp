@@ -2244,6 +2244,7 @@ public:
             topBarLogo_.Reset(); topBarLogoWidth_ = 0; topBarLogoHeight_ = 0; checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
             if (VideoActive()) videoPlayer_.HandleRenderTargetResize();
         }
+        if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < MinimumScale()) CenterAtMinimumScale();
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
         ClampPan();
         if (lanczosSelected_ && source_) {
@@ -2365,8 +2366,13 @@ public:
         if (!source_) return;
         const float oldScale = CurrentScale();
         const float baseScale = BaseScale();
-        const float newScale = std::min(requestedScale, std::max(kMaximumZoom, baseScale));
+        const float minimumScale = MinimumScale();
+        const float newScale = std::clamp(requestedScale, minimumScale, std::max(kMaximumZoom, baseScale));
         if (!std::isfinite(newScale) || newScale <= 0.0001f) return;
+        if (newScale <= minimumScale + 0.0001f) {
+            CenterAtMinimumScale();
+            return;
+        }
         if (std::abs(newScale - oldScale) < 0.0001f) return;
 
         const D2D1_SIZE_F target = ImageCanvasSize();
@@ -2415,9 +2421,11 @@ public:
     void FitToWindow() {
         if (!source_) return;
         const float oldScale = CurrentScale();
+        const D2D1_POINT_2F oldPan = pan_;
         fitToWindow_ = true;
         pan_ = D2D1::Point2F();
-        if (lanczosSelected_ && std::abs(CurrentScale() - oldScale) >= 0.0001f) {
+        if (lanczosSelected_ && (std::abs(CurrentScale() - oldScale) >= 0.0001f ||
+                std::abs(oldPan.x) >= 0.0001f || std::abs(oldPan.y) >= 0.0001f)) {
             InvalidateLanczosVariant(true);
             QueueLanczosRefinement();
         }
@@ -4592,7 +4600,25 @@ private:
         return fitScale;
     }
 
+    float MinimumScale() const { return std::min(1.0f, BaseScale()); }
+
     float CurrentScale() const { return fitToWindow_ ? BaseScale() : zoom_; }
+
+    void CenterAtMinimumScale() {
+        if (!source_) return;
+        const float oldScale = CurrentScale();
+        const D2D1_POINT_2F oldPan = pan_;
+        const float minimumScale = MinimumScale();
+        fitToWindow_ = std::abs(minimumScale - BaseScale()) < 0.0001f;
+        zoom_ = minimumScale;
+        pan_ = D2D1::Point2F();
+        if (lanczosSelected_ && (std::abs(minimumScale - oldScale) >= 0.0001f ||
+                std::abs(oldPan.x) >= 0.0001f || std::abs(oldPan.y) >= 0.0001f)) {
+            InvalidateLanczosVariant(true);
+            QueueLanczosRefinement();
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
 
     std::pair<UINT, UINT> LanczosTargetSize() const {
         const float physicalScale = PhysicalPixelScale();

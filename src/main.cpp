@@ -1814,7 +1814,11 @@ public:
     RECT GetDefaultAppsHelperButtonBounds(bool open) const {
         const RECT bounds = GetOverlayBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int openWidth = MulDiv(220, dpi, 96), cancelWidth = MulDiv(96, dpi, 96);
+        const int horizontalPadding = MulDiv(32, dpi, 96);
+        const int openWidth = std::max(MulDiv(128, dpi, 96),
+            MeasureSettingsTextWidth(L"choose defaults", 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD) + horizontalPadding);
+        const int cancelWidth = std::max(MulDiv(92, dpi, 96),
+            MeasureSettingsTextWidth(L"cancel", 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD) + horizontalPadding);
         const int height = MulDiv(40, dpi, 96), gap = MulDiv(12, dpi, 96);
         const int groupWidth = cancelWidth + gap + openWidth;
         const int left = bounds.left + (bounds.right - bounds.left - groupWidth) / 2;
@@ -5421,7 +5425,7 @@ private:
                     DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(secondaryButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"Not now", secondaryButton.left, secondaryButton.top,
+            DrawOverlayText(L"not now", secondaryButton.left, secondaryButton.top,
                 secondaryButton.right - secondaryButton.left, secondaryButton.bottom - secondaryButton.top, 16.0f,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::DefaultAppsHelper) {
@@ -5436,13 +5440,13 @@ private:
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             DrawOverlayText(L"images: JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", left,
-                static_cast<float>(bounds.top) + 98.0f * dpiScale, contentWidth, 22.0f * dpiScale,
+                static_cast<float>(bounds.top) + 98.0f * dpiScale, contentWidth, 28.0f * dpiScale,
                 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             DrawOverlayText(L"video: MP4", left,
-                static_cast<float>(bounds.top) + 122.0f * dpiScale, contentWidth, 22.0f * dpiScale,
+                static_cast<float>(bounds.top) + 134.0f * dpiScale, contentWidth, 28.0f * dpiScale,
                 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             DrawOverlayText(L"close Windows Settings when you are finished.", left,
-                static_cast<float>(bounds.top) + 154.0f * dpiScale, contentWidth, 24.0f * dpiScale,
+                static_cast<float>(bounds.top) + 168.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT cancelBounds = GetDefaultAppsHelperButtonBounds(false), openBounds = GetDefaultAppsHelperButtonBounds(true);
             const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));

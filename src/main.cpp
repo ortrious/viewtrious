@@ -7,6 +7,7 @@
 #include <propkey.h>
 #include <propsys.h>
 #include <dwmapi.h>
+#include <mmsystem.h>
 #include <d2d1_1.h>
 #include <dwrite.h>
 #include <gdiplus.h>
@@ -44,6 +45,7 @@
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "winmm.lib")
 
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
@@ -2954,6 +2956,7 @@ private:
         VideoPlayer::Trace(window_, L"Viewer Video2D teardown");
         KillTimer(window_, kVideoPlaybackTimer);
         videoPlaybackTimerRemainderMs_ = 0.0;
+        ReleaseVideoTimerResolution();
         StopVideoControls();
         videoPlayer_.Shutdown();
         videoFramesPerSecondText_.clear();
@@ -2984,7 +2987,7 @@ public:
         }
     }
     void VideoPlaybackTimerMessage() {
-        if (!VideoActive() || !videoPlayer_.Playing()) { KillTimer(window_, kVideoPlaybackTimer); videoPlaybackTimerRemainderMs_ = 0.0; return; }
+        if (!VideoActive() || !videoPlayer_.Playing()) { KillTimer(window_, kVideoPlaybackTimer); videoPlaybackTimerRemainderMs_ = 0.0; ReleaseVideoTimerResolution(); return; }
         videoPlayer_.RecordFramePacingTimer();
         VideoPlayer::Trace(window_, L"Video2D playback timer tick");
         ScheduleVideoPlaybackTimer();
@@ -2996,8 +2999,10 @@ private:
         if (!VideoActive() || !videoPlayer_.Playing()) {
             KillTimer(window_, kVideoPlaybackTimer);
             videoPlaybackTimerRemainderMs_ = 0.0;
+            ReleaseVideoTimerResolution();
             return;
         }
+        AcquireVideoTimerResolution();
         float framesPerSecond = 0.0f;
         if (!videoPlayer_.TryGetFramesPerSecond(framesPerSecond) || !std::isfinite(framesPerSecond) || framesPerSecond <= 0.0f) {
             videoPlaybackTimerRemainderMs_ = 0.0;
@@ -3013,6 +3018,14 @@ private:
         videoPlaybackTimerRemainderMs_ = scheduledIntervalMs - static_cast<double>(delayMs);
         videoPlayer_.RecordFramePacingSchedule(static_cast<double>(delayMs), videoPlaybackTimerRemainderMs_);
         SetTimer(window_, kVideoPlaybackTimer, delayMs, nullptr);
+    }
+    void AcquireVideoTimerResolution() {
+        if (!videoTimerResolutionActive_ && timeBeginPeriod(1) == TIMERR_NOERROR) videoTimerResolutionActive_ = true;
+    }
+    void ReleaseVideoTimerResolution() {
+        if (!videoTimerResolutionActive_) return;
+        timeEndPeriod(1);
+        videoTimerResolutionActive_ = false;
     }
     void StopDirectoryWatcher() {
         directoryWatcherStopping_ = true;
@@ -6223,6 +6236,7 @@ private:
     bool gifPaused_ = false;
     bool gifPlaybackTimerActive_ = false;
     double videoPlaybackTimerRemainderMs_ = 0.0;
+    bool videoTimerResolutionActive_ = false;
     bool gifVisible_ = true;
     bool gifHasLoopExtension_ = false;
     bool committingGifFrame_ = false;

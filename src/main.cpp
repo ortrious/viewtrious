@@ -2381,7 +2381,7 @@ public:
         if (immediatePaint) UpdateWindow(window_);
     }
 
-    void SetScaleAt(POINT cursor, float requestedScale) {
+    void SetScaleAt(POINT cursor, float requestedScale, bool recenterAtMinimum = true) {
         if (!source_) return;
         const float oldScale = CurrentScale();
         const float baseScale = BaseScale();
@@ -2389,7 +2389,18 @@ public:
         const float newScale = std::clamp(requestedScale, minimumScale, std::max(kMaximumZoom, baseScale));
         if (!std::isfinite(newScale) || newScale <= 0.0001f) return;
         if (newScale <= minimumScale + 0.0001f) {
-            CenterAtMinimumScale();
+            if (recenterAtMinimum) {
+                CenterAtMinimumScale();
+                return;
+            }
+            if (std::abs(newScale - oldScale) < 0.0001f) return;
+            fitToWindow_ = false;
+            zoom_ = newScale;
+            if (lanczosSelected_) {
+                InvalidateLanczosVariant(true);
+                QueueLanczosRefinement();
+            }
+            InvalidateRect(window_, nullptr, FALSE);
             return;
         }
         if (std::abs(newScale - oldScale) < 0.0001f) return;
@@ -2617,7 +2628,7 @@ public:
         if (requestedWidth <= 0.0 || canvas.width <= 0.0f) return;
         const float requestedScale = static_cast<float>(canvas.width / requestedWidth);
         const D2D1_SIZE_F center = ImageCanvasSize();
-        SetScaleAt({ static_cast<LONG>(center.width / 2.0f), static_cast<LONG>(center.height / 2.0f) }, requestedScale);
+        SetScaleAt({ static_cast<LONG>(center.width / 2.0f), static_cast<LONG>(center.height / 2.0f) }, requestedScale, false);
     }
     void SetSpaceMouseMotion(bool motion) {
         spaceMouseMotionActive_ = motion;

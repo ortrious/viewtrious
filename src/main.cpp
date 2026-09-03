@@ -5539,7 +5539,7 @@ private:
             const D2D1_RECT_F close = D2D1::RectF(static_cast<float>(closeBounds.left), static_cast<float>(closeBounds.top), static_cast<float>(closeBounds.right), static_cast<float>(closeBounds.bottom));
             if (hoveredButton_ == ButtonKind::HelpClose || pressedButton_ == ButtonKind::HelpClose) {
                 ComPtr<ID2D1SolidColorBrush> closeHover;
-                if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &closeHover))
+                if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &closeHover)))
                     renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(close, 4.0f * dpiScale, 4.0f * dpiScale), closeHover.Get());
             }
             const float closeCenterX = (close.left + close.right) * 0.5f, closeCenterY = (close.top + close.bottom) * 0.5f, closeRadius = 5.0f * dpiScale;

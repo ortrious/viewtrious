@@ -3940,9 +3940,8 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
 
-    void ShowImageAfterDelete(std::vector<fs::path> filesBeforeDelete) {
+    void ShowImageAfterDelete(std::vector<fs::path> filesBeforeDelete, const fs::path& deleted) {
         StopGifPlayback();
-        const fs::path deleted(currentPath_);
         auto current = std::find_if(filesBeforeDelete.begin(), filesBeforeDelete.end(),
             [&deleted](const fs::path& path) { return PathsEqual(path, deleted); });
         if (current == filesBeforeDelete.end()) { ClearDeletedImage(); return; }
@@ -3970,6 +3969,8 @@ private:
     void DeleteImage() {
         if (currentPath_.empty()) return;
         BuildNavigation(true);
+        if (currentPath_.empty()) return;
+        const fs::path deleted(currentPath_);
         const std::vector<fs::path> filesBeforeDelete = navigationFiles_;
         ComPtr<IShellItem> item;
         ComPtr<IFileOperation> operation;
@@ -3982,7 +3983,7 @@ private:
         BOOL aborted = FALSE;
         if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
         if (FAILED(hr)) { ShowActionError(L"Windows could not move this image to the Recycle Bin."); return; }
-        if (!aborted) ShowImageAfterDelete(filesBeforeDelete);
+        if (!aborted) ShowImageAfterDelete(filesBeforeDelete, deleted);
     }
 
     RECT GetDropdownBounds() const {

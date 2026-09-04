@@ -507,6 +507,22 @@ bool VerifyRegistryString(HKEY root, const wchar_t* path, const wchar_t* name, c
     return true;
 }
 
+bool DeleteRegistryTreeIfPresent(HKEY root, const wchar_t* path) {
+    const LONG result = RegDeleteTreeW(root, path);
+    if (result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return true;
+    TraceRegistryFailure(L"delete", path, L"", result);
+    return false;
+}
+
+bool VerifyRegistryKeyAbsent(HKEY root, const wchar_t* path) {
+    HKEY key = nullptr;
+    const LONG result = RegOpenKeyExW(root, path, 0, KEY_READ, &key);
+    if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return true;
+    if (result == ERROR_SUCCESS) RegCloseKey(key);
+    TraceRegistryFailure(L"verify absent", path, L"", result == ERROR_SUCCESS ? ERROR_ALREADY_EXISTS : result);
+    return false;
+}
+
 struct SavedPlacement {
     RECT rect{};
     bool maximized = false;
@@ -3418,20 +3434,25 @@ private:
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
             const std::wstring iconReference = executable + L",-" + std::to_wstring(association.iconResourceId);
             const std::wstring defaultIconPath = progIdPath + L"\\DefaultIcon";
-            const std::wstring typeOverlayPath = progIdPath + L"\\TypeOverlay";
+            const std::wstring malformedTypeOverlayPath = progIdPath + L"\\TypeOverlay";
             const std::wstring openCommandPath = progIdPath + L"\\shell\\open\\command";
             const std::wstring capabilitiesPath = std::wstring(kCapabilitiesPath) + L"\\FileAssociations";
+            const std::wstring openWithProgIdsPath = std::wstring(L"Software\\Classes\\") + association.extension + L"\\OpenWithProgids";
             bool success = true;
+            success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, malformedTypeOverlayPath.c_str());
             success &= WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description);
             success &= WriteRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference);
-            success &= WriteRegistryString(HKEY_CURRENT_USER, typeOverlayPath.c_str(), L"", iconReference);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"TypeOverlay", iconReference);
             success &= WriteRegistryString(HKEY_CURRENT_USER, openCommandPath.c_str(), L"", command);
             success &= WriteRegistryString(HKEY_CURRENT_USER, capabilitiesPath.c_str(), association.extension, association.progId);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, openWithProgIdsPath.c_str(), association.progId, L"");
             success &= VerifyRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description);
             success &= VerifyRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference);
-            success &= VerifyRegistryString(HKEY_CURRENT_USER, typeOverlayPath.c_str(), L"", iconReference);
+            success &= VerifyRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"TypeOverlay", iconReference);
             success &= VerifyRegistryString(HKEY_CURRENT_USER, openCommandPath.c_str(), L"", command);
             success &= VerifyRegistryString(HKEY_CURRENT_USER, capabilitiesPath.c_str(), association.extension, association.progId);
+            success &= VerifyRegistryString(HKEY_CURRENT_USER, openWithProgIdsPath.c_str(), association.progId, L"");
+            success &= VerifyRegistryKeyAbsent(HKEY_CURRENT_USER, malformedTypeOverlayPath.c_str());
             return success;
         };
         bool success = true;

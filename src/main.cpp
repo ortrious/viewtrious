@@ -117,7 +117,7 @@ constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
 
-enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError };
+enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError, RegistrationError };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
@@ -470,13 +470,41 @@ void WriteSetting(const wchar_t* name, DWORD value) {
     RegCloseKey(key);
 }
 
+void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const wchar_t* name, LONG error) {
+#ifdef _DEBUG
+    std::wstring message = L"Viewtrious registry " + std::wstring(operation) + L" failed: path=" + path +
+        std::wstring(L", value=") + (name && *name ? name : L"(Default)") + L", error=" + std::to_wstring(error) + L"\n";
+    OutputDebugStringW(message.c_str());
+#else
+    (void)operation; (void)path; (void)name; (void)error;
+#endif
+}
+
 bool WriteRegistryString(HKEY root, const wchar_t* path, const wchar_t* name, const std::wstring& value) {
     HKEY key = nullptr;
-    if (RegCreateKeyExW(root, path, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return false;
+    const LONG createResult = RegCreateKeyExW(root, path, 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr);
+    if (createResult != ERROR_SUCCESS) { TraceRegistryFailure(L"create", path, name, createResult); return false; }
     const LONG result = RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
         static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
     RegCloseKey(key);
+    if (result != ERROR_SUCCESS) TraceRegistryFailure(L"write", path, name, result);
     return result == ERROR_SUCCESS;
+}
+
+bool VerifyRegistryString(HKEY root, const wchar_t* path, const wchar_t* name, const std::wstring& expected) {
+    DWORD size = 0;
+    LONG result = RegGetValueW(root, path, name, RRF_RT_REG_SZ, nullptr, nullptr, &size);
+    if (result != ERROR_SUCCESS || size < sizeof(wchar_t)) {
+        TraceRegistryFailure(L"read", path, name, result == ERROR_SUCCESS ? ERROR_INVALID_DATA : result);
+        return false;
+    }
+    std::vector<wchar_t> value(size / sizeof(wchar_t));
+    result = RegGetValueW(root, path, name, RRF_RT_REG_SZ, nullptr, value.data(), &size);
+    if (result != ERROR_SUCCESS || expected != value.data()) {
+        TraceRegistryFailure(L"verify", path, name, result == ERROR_SUCCESS ? ERROR_INVALID_DATA : result);
+        return false;
+    }
+    return true;
 }
 
 struct SavedPlacement {
@@ -2029,7 +2057,7 @@ public:
     }
     bool PrintErrorDismissButtonContains(POINT point) const {
         const RECT button = GetPrintErrorDismissButtonBounds();
-        return overlay_ == OverlayKind::PrintError && PtInRect(&button, point);
+        return (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) && PtInRect(&button, point);
     }
     bool CanvasNavigationButtonsVisible() const {
         return source_ && navigationBuilt_ && navigationFiles_.size() > 1 &&
@@ -2322,9 +2350,10 @@ public:
             CompleteWelcome(false);
         }
         else if (button == ButtonKind::DefaultAppsHelperOpen) {
+            if (!RegisterDefaultAppCapabilities()) { ShowOverlay(OverlayKind::RegistrationError); return; }
             overlay_ = OverlayKind::Welcome;
             CompleteWelcome(true);
-            OpenRegisteredDefaultApps();
+            OpenRegisteredDefaultApps(false);
         }
         else if (button == ButtonKind::FeedbackBug || button == ButtonKind::FeedbackFeature) {
             DismissOverlay();
@@ -3364,9 +3393,12 @@ private:
         SetTimer(window_, kDirectoryChangeDebounceTimer, 150, nullptr);
     }
 
-    void RegisterDefaultAppCapabilities() {
+    bool RegisterDefaultAppCapabilities() {
         wchar_t modulePath[MAX_PATH]{};
-        if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) return;
+        if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) {
+            TraceRegistryFailure(L"resolve executable", L"(module path)", L"", GetLastError());
+            return false;
+        }
         const std::wstring executable(modulePath);
         const std::wstring command = L"\"" + executable + L"\" \"%1\"";
         const struct Association { const wchar_t* extension; const wchar_t* progId; const wchar_t* description; int iconResourceId; } associations[] = {
@@ -3385,24 +3417,41 @@ private:
         const auto registerAssociation = [&](const Association& association) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
             const std::wstring iconReference = executable + L",-" + std::to_wstring(association.iconResourceId);
-            WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description);
-            WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\DefaultIcon").c_str(), L"", iconReference);
-            WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\TypeOverlay").c_str(), L"", iconReference);
-            WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\shell\\open\\command").c_str(), L"", command);
-            WriteRegistryString(HKEY_CURRENT_USER, (std::wstring(kCapabilitiesPath) + L"\\FileAssociations").c_str(), association.extension, association.progId);
+            const std::wstring defaultIconPath = progIdPath + L"\\DefaultIcon";
+            const std::wstring typeOverlayPath = progIdPath + L"\\TypeOverlay";
+            const std::wstring openCommandPath = progIdPath + L"\\shell\\open\\command";
+            const std::wstring capabilitiesPath = std::wstring(kCapabilitiesPath) + L"\\FileAssociations";
+            bool success = true;
+            success &= WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, typeOverlayPath.c_str(), L"", iconReference);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, openCommandPath.c_str(), L"", command);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, capabilitiesPath.c_str(), association.extension, association.progId);
+            success &= VerifyRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description);
+            success &= VerifyRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference);
+            success &= VerifyRegistryString(HKEY_CURRENT_USER, typeOverlayPath.c_str(), L"", iconReference);
+            success &= VerifyRegistryString(HKEY_CURRENT_USER, openCommandPath.c_str(), L"", command);
+            success &= VerifyRegistryString(HKEY_CURRENT_USER, capabilitiesPath.c_str(), association.extension, association.progId);
+            return success;
         };
+        bool success = true;
         if (StepAddonPresent()) {
             const Association stepAssociations[] = { { L".step", L"Viewtrious.step", L"Viewtrious STEP Model", 105 }, { L".stp", L"Viewtrious.stp", L"Viewtrious STP Model", 105 } };
-            for (const Association& association : stepAssociations) registerAssociation(association);
+            for (const Association& association : stepAssociations) success &= registerAssociation(association);
         }
-        for (const Association& association : associations) registerAssociation(association);
-        WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
-        WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"Viewtrious image viewer");
-        WriteRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
-        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+        for (const Association& association : associations) success &= registerAssociation(association);
+        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
+        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"Viewtrious image viewer");
+        success &= WriteRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
+        success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
+        success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"Viewtrious image viewer");
+        success &= VerifyRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
+        if (success) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+        return success;
     }
 
-    void OpenRegisteredDefaultApps() {
+    void OpenRegisteredDefaultApps(bool verifyRegistration = true) {
+        if (verifyRegistration && !RegisterDefaultAppCapabilities()) { ShowOverlay(OverlayKind::RegistrationError); return; }
         INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
             L"ms-settings:defaultapps?registeredAppUser=Viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
         if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
@@ -5439,11 +5488,11 @@ private:
         const int rowHeight = GetShortcutRowHeight();
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
             overlay_ == OverlayKind::Settings ? 760 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
-            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : overlay_ == OverlayKind::PrintError ? 420 : 460, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : MulDiv(220, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -6013,11 +6062,12 @@ private:
                 15.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get(), true);
             DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             DrawOverlayText(L"Delete", remove.left, remove.top, remove.right - remove.left, remove.bottom - remove.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
-        } else if (overlay_ == OverlayKind::PrintError) {
+        } else if (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) {
             const RECT dismissBounds = GetPrintErrorDismissButtonBounds();
-            DrawOverlayText(L"unable to print this file", left, static_cast<float>(bounds.top) + panelPadding,
-                contentWidth, 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
-            DrawOverlayText(L"Windows could not start printing this file.", left, static_cast<float>(bounds.top) + panelPadding + 46.0f * dpiScale,
+            const bool registrationError = overlay_ == OverlayKind::RegistrationError;
+            DrawOverlayText(registrationError ? L"unable to register Viewtrious file types" : L"unable to print this file", left, static_cast<float>(bounds.top) + panelPadding,
+                contentWidth, registrationError ? 52.0f * dpiScale : 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
+            DrawOverlayText(registrationError ? L"Viewtrious could not prepare Windows file associations." : L"Windows could not start printing this file.", left, static_cast<float>(bounds.top) + panelPadding + (registrationError ? 62.0f : 46.0f) * dpiScale,
                 contentWidth, 42.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
             const D2D1_RECT_F dismiss = D2D1::RectF(static_cast<float>(dismissBounds.left), static_cast<float>(dismissBounds.top),
                 static_cast<float>(dismissBounds.right), static_cast<float>(dismissBounds.bottom));

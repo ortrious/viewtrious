@@ -117,14 +117,14 @@ constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 
 
-enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help };
+enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, TutorialSkip, TutorialNext, VideoPlayPause, VideoMute };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoMute };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
@@ -1952,6 +1952,18 @@ public:
         const RECT button = GetFeedbackActionBounds(feature);
         return overlay_ == OverlayKind::Feedback && PtInRect(&button, point);
     }
+    RECT GetPrintErrorDismissButtonBounds() const {
+        const RECT bounds = GetOverlayBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(96, dpi, 96), height = MulDiv(36, dpi, 96);
+        const int left = bounds.left + (bounds.right - bounds.left - width) / 2;
+        const int top = bounds.bottom - MulDiv(24, dpi, 96) - height;
+        return { left, top, left + width, top + height };
+    }
+    bool PrintErrorDismissButtonContains(POINT point) const {
+        const RECT button = GetPrintErrorDismissButtonBounds();
+        return overlay_ == OverlayKind::PrintError && PtInRect(&button, point);
+    }
     bool CanvasNavigationButtonsVisible() const {
         return source_ && navigationBuilt_ && navigationFiles_.size() > 1 &&
             !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
@@ -2060,6 +2072,7 @@ public:
         if (DefaultAppsHelperButtonContains(point, true)) return ButtonKind::DefaultAppsHelperOpen;
         if (FeedbackActionContains(point, false)) return ButtonKind::FeedbackBug;
         if (FeedbackActionContains(point, true)) return ButtonKind::FeedbackFeature;
+        if (PrintErrorDismissButtonContains(point)) return ButtonKind::PrintErrorDismiss;
         return ButtonKind::None;
     }
     void SetButtonHover(ButtonKind button) {
@@ -2252,6 +2265,7 @@ public:
         }
         else if (button == ButtonKind::HelpClose) DismissOverlay();
         else if (button == ButtonKind::HelpTopic) SetHelpTopic(helpTopicHit_);
+        else if (button == ButtonKind::PrintErrorDismiss) DismissOverlay();
         else if (button == ButtonKind::TutorialSkip) StopTutorial();
         else if (button == ButtonKind::TutorialNext) AdvanceTutorial();
     }
@@ -3633,7 +3647,7 @@ private:
         SHELLEXECUTEINFOW execute{ sizeof(execute) };
         execute.fMask = SEE_MASK_FLAG_NO_UI; execute.hwnd = window_; execute.lpVerb = L"print";
         execute.lpFile = currentPath_.c_str(); execute.nShow = SW_SHOWNORMAL;
-        if (!ShellExecuteExW(&execute)) ShowActionError(L"Windows could not find a print handler for this image.");
+        if (!ShellExecuteExW(&execute)) ShowOverlay(OverlayKind::PrintError);
     }
 
     static UINT RotatedOrientation(UINT orientation, bool clockwise) {
@@ -5355,11 +5369,11 @@ private:
         const int rowHeight = GetShortcutRowHeight();
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
             overlay_ == OverlayKind::Settings ? 760 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
-            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : 460, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : overlay_ == OverlayKind::PrintError ? 420 : 460, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(260, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : MulDiv(220, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(260, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -5898,6 +5912,23 @@ private:
                 15.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get(), true);
             DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             DrawOverlayText(L"Delete", remove.left, remove.top, remove.right - remove.left, remove.bottom - remove.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
+        } else if (overlay_ == OverlayKind::PrintError) {
+            DrawOverlayText(L"unable to print this file", left, static_cast<float>(bounds.top) + panelPadding,
+                contentWidth, 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            DrawOverlayText(L"Windows could not start printing this file.", left, static_cast<float>(bounds.top) + panelPadding + 46.0f * dpiScale,
+                contentWidth, 42.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+            const RECT dismissBounds = GetPrintErrorDismissButtonBounds();
+            const D2D1_RECT_F dismiss = D2D1::RectF(static_cast<float>(dismissBounds.left), static_cast<float>(dismissBounds.top),
+                static_cast<float>(dismissBounds.right), static_cast<float>(dismissBounds.bottom));
+            ComPtr<ID2D1SolidColorBrush> hover, pressed;
+            if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &hover)) &&
+                SUCCEEDED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(75.f / 255, 80.f / 255, 92.f / 255) : D2D1::ColorF(210.f / 255, 210.f / 255, 210.f / 255), &pressed))) {
+                if (pressedButton_ == ButtonKind::PrintErrorDismiss) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(dismiss, 5.0f * dpiScale, 5.0f * dpiScale), pressed.Get());
+                else if (hoveredButton_ == ButtonKind::PrintErrorDismiss) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(dismiss, 5.0f * dpiScale, 5.0f * dpiScale), hover.Get());
+            }
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(dismiss, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
+            DrawOverlayText(L"dismiss", dismiss.left, dismiss.top, dismiss.right - dismiss.left, dismiss.bottom - dismiss.top,
+                16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::Feedback) {
             DrawOverlayText(L"Feedback", left, static_cast<float>(bounds.top) + panelPadding, contentWidth, 34.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             DrawOverlayText(L"Help make Viewtrious better.", left, static_cast<float>(bounds.top) + panelPadding + 42.0f * dpiScale, contentWidth, 26.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());

@@ -76,4 +76,4 @@ function New-Icon([string]$smallSourceName, [string]$largeSourceName, [string]$o
 
 New-Icon 'icon_32.png' 'icon_1024.png' 'Viewtrious.ico'
 New-Icon 'icon_play_32.png' 'icon_play_1024.png' 'ViewtriousVideo.ico'
-New-Icon 'icon_3d_32.png' 'icon_3d_1024.png' 'Viewtrious3D.ico'
+New-Icon 'icon_3d_32_new.png' 'icon_3d_1024new.png' 'Viewtrious3D.ico'

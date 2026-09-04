@@ -5914,15 +5914,10 @@ private:
             DrawOverlayText(L"Delete", remove.left, remove.top, remove.right - remove.left, remove.bottom - remove.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::PrintError) {
             const RECT dismissBounds = GetPrintErrorDismissButtonBounds();
-            const float titleHeight = 34.0f * dpiScale, messageGap = 10.0f * dpiScale, messageHeight = 28.0f * dpiScale;
-            const float textHeight = titleHeight + messageGap + messageHeight;
-            const float textAreaTop = static_cast<float>(bounds.top) + panelPadding;
-            const float textAreaBottom = static_cast<float>(dismissBounds.top) - 18.0f * dpiScale;
-            const float textTop = textAreaTop + std::max(0.0f, (textAreaBottom - textAreaTop - textHeight) * 0.5f);
-            DrawOverlayText(L"unable to print this file", left, textTop,
-                contentWidth, titleHeight, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
-            DrawOverlayText(L"Windows could not start printing this file.", left, textTop + titleHeight + messageGap,
-                contentWidth, messageHeight, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), true, false, false, true);
+            DrawOverlayText(L"unable to print this file", left, static_cast<float>(bounds.top) + panelPadding,
+                contentWidth, 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
+            DrawOverlayText(L"Windows could not start printing this file.", left, static_cast<float>(bounds.top) + panelPadding + 46.0f * dpiScale,
+                contentWidth, 42.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
             const D2D1_RECT_F dismiss = D2D1::RectF(static_cast<float>(dismissBounds.left), static_cast<float>(dismissBounds.top),
                 static_cast<float>(dismissBounds.right), static_cast<float>(dismissBounds.bottom));
             ComPtr<ID2D1SolidColorBrush> hover, pressed;

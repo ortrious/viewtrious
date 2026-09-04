@@ -5578,7 +5578,7 @@ private:
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             constexpr float introTop = 68.0f, introHeight = 24.0f, closingTop = 160.0f;
-            constexpr float formatRowHeight = 28.0f, formatRowGap = 4.0f;
+            constexpr float formatRowHeight = 24.0f, formatRowGap = 0.0f;
             const float formatsHeight = formatRowHeight * 2.0f + formatRowGap;
             const float formatsTop = introTop + introHeight + (closingTop - (introTop + introHeight) - formatsHeight) * 0.5f;
             DrawOverlayText(L"images: JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", left,

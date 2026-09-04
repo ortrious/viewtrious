@@ -3382,23 +3382,24 @@ private:
             { L".stl", L"Viewtrious.stl", L"Viewtrious STL Model", 105 },
             { L".3mf", L"Viewtrious.3mf", L"Viewtrious 3MF Model", 105 },
         };
-        if (StepAddonPresent()) {
-            const Association stepAssociations[] = { { L".step", L"Viewtrious.step", L"Viewtrious STEP Model", 105 }, { L".stp", L"Viewtrious.stp", L"Viewtrious STP Model", 105 } };
-            for (const Association& association : stepAssociations) {
-                const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
-                WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description); WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\DefaultIcon").c_str(), L"", executable + L",-" + std::to_wstring(association.iconResourceId)); WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\shell\\open\\command").c_str(), L"", command); WriteRegistryString(HKEY_CURRENT_USER, (std::wstring(kCapabilitiesPath) + L"\\FileAssociations").c_str(), association.extension, association.progId);
-            }
-        }
-        for (const Association& association : associations) {
+        const auto registerAssociation = [&](const Association& association) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
+            const std::wstring iconReference = executable + L",-" + std::to_wstring(association.iconResourceId);
             WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description);
-            WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\DefaultIcon").c_str(), L"", executable + L",-" + std::to_wstring(association.iconResourceId));
+            WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\DefaultIcon").c_str(), L"", iconReference);
+            WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\TypeOverlay").c_str(), L"", iconReference);
             WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\shell\\open\\command").c_str(), L"", command);
             WriteRegistryString(HKEY_CURRENT_USER, (std::wstring(kCapabilitiesPath) + L"\\FileAssociations").c_str(), association.extension, association.progId);
+        };
+        if (StepAddonPresent()) {
+            const Association stepAssociations[] = { { L".step", L"Viewtrious.step", L"Viewtrious STEP Model", 105 }, { L".stp", L"Viewtrious.stp", L"Viewtrious STP Model", 105 } };
+            for (const Association& association : stepAssociations) registerAssociation(association);
         }
+        for (const Association& association : associations) registerAssociation(association);
         WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
         WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"Viewtrious image viewer");
         WriteRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
     }
 
     void OpenRegisteredDefaultApps() {

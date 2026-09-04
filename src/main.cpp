@@ -5373,7 +5373,7 @@ private:
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(412, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : MulDiv(220, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -5577,8 +5577,8 @@ private:
             DrawOverlayText(L"choose which file types should open with Viewtrious.", left,
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            constexpr float formatPanelTop = 102.0f, formatPanelHeight = 194.0f, formatPanelPadding = 12.0f;
-            constexpr float formatLineHeight = 18.0f, labelToFormatsGap = 6.0f, familyGap = 12.0f, noteGap = 4.0f, closingTop = 312.0f;
+            constexpr float formatPanelTop = 102.0f, formatPanelHeight = 200.0f, formatPanelPadding = 12.0f;
+            constexpr float categoryLineHeight = 20.0f, formatLineHeight = 18.0f, labelToFormatsGap = 6.0f, familyGap = 12.0f, noteGap = 4.0f, closingTop = 318.0f;
             ComPtr<ID2D1SolidColorBrush> formatPanelBrush, formatNoteBrush;
             const D2D1_COLOR_F formatPanelColor = dark ? D2D1::ColorF(34.0f / 255.0f, 37.0f / 255.0f, 44.0f / 255.0f)
                 : D2D1::ColorF(242.0f / 255.0f, 242.0f / 255.0f, 242.0f / 255.0f);
@@ -5593,13 +5593,13 @@ private:
             const float formatWidth = contentWidth - formatPanelPadding * 2.0f * dpiScale;
             const auto drawFormatFamily = [&](const wchar_t* label, const wchar_t* formats, float top) {
                 const float rowTop = static_cast<float>(bounds.top) + top * dpiScale;
-                DrawOverlayText(label, formatLeft, rowTop, formatWidth, formatLineHeight * dpiScale,
+                DrawOverlayText(label, formatLeft, rowTop, formatWidth, categoryLineHeight * dpiScale,
                     15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-                DrawOverlayText(formats, formatLeft, rowTop + (formatLineHeight + labelToFormatsGap) * dpiScale, formatWidth, formatLineHeight * dpiScale,
+                DrawOverlayText(formats, formatLeft, rowTop + (categoryLineHeight + labelToFormatsGap) * dpiScale, formatWidth, formatLineHeight * dpiScale,
                     15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             };
             const float imagesTop = formatPanelTop + formatPanelPadding;
-            const float familyHeight = formatLineHeight * 2.0f + labelToFormatsGap;
+            const float familyHeight = categoryLineHeight + labelToFormatsGap + formatLineHeight;
             const float videoTop = imagesTop + familyHeight + familyGap;
             const float modelsTop = videoTop + familyHeight + familyGap;
             drawFormatFamily(L"images", L"JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", imagesTop);

@@ -5373,7 +5373,7 @@ private:
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(276, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : MulDiv(220, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(378, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -5577,21 +5577,36 @@ private:
             DrawOverlayText(L"choose which file types should open with Viewtrious.", left,
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            constexpr float introTop = 68.0f, introHeight = 24.0f, closingTop = 176.0f;
-            constexpr float formatRowHeight = 22.0f, formatRowGap = 3.0f;
-            const float formatsHeight = formatRowHeight * 3.0f + formatRowGap * 2.0f;
-            const float formatsTop = introTop + introHeight + (closingTop - (introTop + introHeight) - formatsHeight) * 0.5f;
-            const auto drawFormatRow = [&](const wchar_t* label, const wchar_t* formats, float top) {
-                const float labelWidth = static_cast<float>(MeasureSettingsTextWidth(label, 15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD));
-                DrawOverlayText(label, left, static_cast<float>(bounds.top) + top * dpiScale, labelWidth, formatRowHeight * dpiScale,
-                    15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, secondaryBrush.Get());
-                DrawOverlayText(formats, left + labelWidth, static_cast<float>(bounds.top) + top * dpiScale, contentWidth - labelWidth, formatRowHeight * dpiScale,
+            constexpr float formatPanelTop = 102.0f, formatPanelHeight = 160.0f, formatPanelPadding = 10.0f;
+            constexpr float formatLineHeight = 18.0f, familyGap = 8.0f, closingTop = 278.0f;
+            ComPtr<ID2D1SolidColorBrush> formatPanelBrush, formatNoteBrush;
+            const D2D1_COLOR_F formatPanelColor = dark ? D2D1::ColorF(34.0f / 255.0f, 37.0f / 255.0f, 44.0f / 255.0f)
+                : D2D1::ColorF(242.0f / 255.0f, 242.0f / 255.0f, 242.0f / 255.0f);
+            const D2D1_COLOR_F formatNoteColor = dark ? D2D1::ColorF(155.0f / 255.0f, 158.0f / 255.0f, 166.0f / 255.0f)
+                : D2D1::ColorF(112.0f / 255.0f, 112.0f / 255.0f, 112.0f / 255.0f);
+            if (FAILED(renderTarget_->CreateSolidColorBrush(formatPanelColor, &formatPanelBrush)) ||
+                FAILED(renderTarget_->CreateSolidColorBrush(formatNoteColor, &formatNoteBrush))) return;
+            const D2D1_RECT_F formatPanel = D2D1::RectF(left, static_cast<float>(bounds.top) + formatPanelTop * dpiScale,
+                left + contentWidth, static_cast<float>(bounds.top) + (formatPanelTop + formatPanelHeight) * dpiScale);
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(formatPanel, 6.0f * dpiScale, 6.0f * dpiScale), formatPanelBrush.Get());
+            const float formatLeft = left + formatPanelPadding * dpiScale;
+            const float formatWidth = contentWidth - formatPanelPadding * 2.0f * dpiScale;
+            const auto drawFormatFamily = [&](const wchar_t* label, const wchar_t* formats, float top) {
+                const float rowTop = static_cast<float>(bounds.top) + top * dpiScale;
+                DrawOverlayText(label, formatLeft, rowTop, formatWidth, formatLineHeight * dpiScale,
+                    15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+                DrawOverlayText(formats, formatLeft, rowTop + formatLineHeight * dpiScale, formatWidth, formatLineHeight * dpiScale,
                     15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             };
-            drawFormatRow(L"images: ", L"JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", formatsTop);
-            drawFormatRow(L"video: ", L"MP4", formatsTop + formatRowHeight + formatRowGap);
-            drawFormatRow(L"3D: ", StepAddonPresent() ? L"STL, 3MF, STEP, STP (optional add-on)" : L"STL, 3MF",
-                formatsTop + (formatRowHeight + formatRowGap) * 2.0f);
+            const float imagesTop = formatPanelTop + formatPanelPadding;
+            const float videoTop = imagesTop + formatLineHeight * 2.0f + familyGap;
+            const float modelsTop = videoTop + formatLineHeight * 2.0f + familyGap;
+            drawFormatFamily(L"images", L"JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", imagesTop);
+            drawFormatFamily(L"video", L"MP4", videoTop);
+            drawFormatFamily(L"3D", StepAddonPresent() ? L"STL, 3MF, STEP, STP" : L"STL, 3MF", modelsTop);
+            DrawOverlayText(L"STEP/STP require the optional add-on", formatLeft,
+                static_cast<float>(bounds.top) + (modelsTop + formatLineHeight * 2.0f) * dpiScale, formatWidth, 16.0f * dpiScale,
+                13.0f, DWRITE_FONT_WEIGHT_NORMAL, formatNoteBrush.Get());
             DrawOverlayText(L"close Windows Settings when you are finished.", left,
                 static_cast<float>(bounds.top) + closingTop * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());

@@ -5577,14 +5577,18 @@ private:
             DrawOverlayText(L"choose Viewtrious for the formats you want to open.", left,
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            constexpr float introTop = 68.0f, introHeight = 24.0f, closingTop = 160.0f;
+            constexpr float formatRowHeight = 28.0f, formatRowGap = 4.0f;
+            const float formatsHeight = formatRowHeight * 2.0f + formatRowGap;
+            const float formatsTop = introTop + introHeight + (closingTop - (introTop + introHeight) - formatsHeight) * 0.5f;
             DrawOverlayText(L"images: JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", left,
-                static_cast<float>(bounds.top) + 98.0f * dpiScale, contentWidth, 28.0f * dpiScale,
+                static_cast<float>(bounds.top) + formatsTop * dpiScale, contentWidth, formatRowHeight * dpiScale,
                 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             DrawOverlayText(L"video: MP4", left,
-                static_cast<float>(bounds.top) + 134.0f * dpiScale, contentWidth, 28.0f * dpiScale,
+                static_cast<float>(bounds.top) + (formatsTop + formatRowHeight + formatRowGap) * dpiScale, contentWidth, formatRowHeight * dpiScale,
                 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             DrawOverlayText(L"close Windows Settings when you are finished.", left,
-                static_cast<float>(bounds.top) + 168.0f * dpiScale, contentWidth, 24.0f * dpiScale,
+                static_cast<float>(bounds.top) + closingTop * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT cancelBounds = GetDefaultAppsHelperButtonBounds(false), openBounds = GetDefaultAppsHelperButtonBounds(true);
             const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));

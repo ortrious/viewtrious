@@ -265,7 +265,7 @@ constexpr ShortcutEntry kShortcutEntries[] = {
     { L"Ctrl+O", L"Open file" }, { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom in/out" },
     { L"+", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
     { L"Left mouse drag", L"Pan" }, { L"Right mouse click", L"Open right-click menu" }, { L"Double-click image", L"Toggle Fit / 100%" }, { L"F11", L"Toggle fullscreen" },
-    { L"Ctrl+C", L"Copy image" }, { L"Ctrl+P", L"Print" }, { L"Delete", L"Move image to Recycle Bin" },
+    { L"Ctrl+C", L"copy media" }, { L"Ctrl+P", L"Print" }, { L"Delete", L"Move image to Recycle Bin" },
     { L"Esc", L"Exit fullscreen, or close Viewtrious" },
 };
 constexpr size_t kShortcutEntryCount = sizeof(kShortcutEntries) / sizeof(kShortcutEntries[0]);
@@ -3446,7 +3446,7 @@ private:
         if (FAILED(SHOpenWithDialog(window_, &info))) ShowActionError(L"Windows could not open the Open With chooser for this image.");
     }
 
-    void StartCopyFeedback(const wchar_t* text = L"Copied to Clipboard", bool wallpaper = false) {
+    void StartCopyFeedback(const wchar_t* text = L"copied to clipboard", bool wallpaper = false) {
         feedbackText_ = text;
         feedbackIsWallpaper_ = wallpaper;
         copyFeedbackStart_ = GetTickCount64();
@@ -3473,7 +3473,7 @@ private:
         header->bV5BlueMask = 0x000000FF; header->bV5AlphaMask = 0xFF000000; header->bV5CSType = LCS_sRGB;
         const HRESULT copy = source_->CopyPixels(nullptr, stride, static_cast<UINT>(pixelBytes), reinterpret_cast<BYTE*>(header + 1));
         GlobalUnlock(memory);
-        if (FAILED(copy)) { GlobalFree(memory); ShowActionError(L"Viewtrious could not copy this image to the clipboard."); return; }
+        if (FAILED(copy)) { GlobalFree(memory); ShowActionError(L"Viewtrious could not copy this media to the clipboard."); return; }
         const size_t dropBytes = sizeof(DROPFILES) + (currentPath_.size() + 2) * sizeof(wchar_t);
         HGLOBAL fileDrop = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, dropBytes);
         if (fileDrop) {
@@ -3487,9 +3487,9 @@ private:
                 GlobalUnlock(fileDrop);
             }
         }
-        if (!OpenClipboard(window_)) { GlobalFree(memory); if (fileDrop) GlobalFree(fileDrop); ShowActionError(L"The clipboard is currently unavailable."); return; }
+        if (!OpenClipboard(window_)) { GlobalFree(memory); if (fileDrop) GlobalFree(fileDrop); ShowActionError(L"the clipboard is currently unavailable."); return; }
         EmptyClipboard();
-        if (!SetClipboardData(CF_DIBV5, memory)) { CloseClipboard(); GlobalFree(memory); if (fileDrop) GlobalFree(fileDrop); ShowActionError(L"Viewtrious could not publish the image to the clipboard."); return; }
+        if (!SetClipboardData(CF_DIBV5, memory)) { CloseClipboard(); GlobalFree(memory); if (fileDrop) GlobalFree(fileDrop); ShowActionError(L"Viewtrious could not publish the media to the clipboard."); return; }
         if (fileDrop && !SetClipboardData(CF_HDROP, fileDrop)) GlobalFree(fileDrop);
         CloseClipboard();
         StartCopyFeedback();
@@ -6067,7 +6067,7 @@ private:
         drawItem(ContextAction::OpenWith, L"Open With", L'\uE8A7');
         DrawOverlayText(L">", static_cast<float>(bounds.right - MulDiv(28, dpi, 96)), static_cast<float>(openWithTop), static_cast<float>(MulDiv(16, dpi, 96)),
             static_cast<float>(rowHeight), 14.0f, DWRITE_FONT_WEIGHT_NORMAL, ContextActionEnabled(ContextAction::OpenWith) ? textBrush.Get() : disabledBrush.Get(), true, true);
-        drawItem(ContextAction::Copy, L"Copy", L'\uE8C8'); drawItem(ContextAction::Print, L"Print", L'\uE749'); separator();
+        drawItem(ContextAction::Copy, L"copy media", L'\uE8C8'); drawItem(ContextAction::Print, L"Print", L'\uE749'); separator();
         drawItem(ContextAction::SetBackground, L"Set as Desktop Background", L'\uE7F4'); separator(); drawItem(ContextAction::Delete, L"Delete", L'\uE74D');
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
@@ -6515,7 +6515,7 @@ private:
     std::wstring filenameText_;
     std::wstring error_;
     std::wstring rotationDiagnosticDetail_;
-    std::wstring feedbackText_ = L"Copied to Clipboard";
+    std::wstring feedbackText_ = L"copied to clipboard";
     std::vector<fs::path> navigationFiles_;
     D2D1_POINT_2F pan_ = D2D1::Point2F();
     POINT lastDragPoint_{};

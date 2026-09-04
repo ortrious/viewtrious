@@ -507,6 +507,31 @@ bool VerifyRegistryString(HKEY root, const wchar_t* path, const wchar_t* name, c
     return true;
 }
 
+bool ReadRegistryStringIfPresent(HKEY root, const wchar_t* path, const wchar_t* name, std::wstring& value) {
+    DWORD size = 0;
+    if (RegGetValueW(root, path, name, RRF_RT_REG_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS || size < sizeof(wchar_t)) return false;
+    std::vector<wchar_t> buffer(size / sizeof(wchar_t));
+    if (RegGetValueW(root, path, name, RRF_RT_REG_SZ, nullptr, buffer.data(), &size) != ERROR_SUCCESS) return false;
+    value = buffer.data();
+    return true;
+}
+
+bool CommandOpensExecutable(const std::wstring& command, const std::wstring& executable) {
+    const size_t first = command.find_first_not_of(L" \t");
+    if (first == std::wstring::npos) return false;
+    std::wstring commandExecutable;
+    if (command[first] == L'\"') {
+        const size_t end = command.find(L'\"', first + 1);
+        if (end == std::wstring::npos) return false;
+        commandExecutable = command.substr(first + 1, end - first - 1);
+    } else {
+        const size_t end = command.find_first_of(L" \t", first);
+        commandExecutable = command.substr(first, end == std::wstring::npos ? std::wstring::npos : end - first);
+    }
+    return CompareStringOrdinal(commandExecutable.c_str(), static_cast<int>(commandExecutable.size()),
+        executable.c_str(), static_cast<int>(executable.size()), TRUE) == CSTR_EQUAL;
+}
+
 bool DeleteRegistryTreeIfPresent(HKEY root, const wchar_t* path) {
     const LONG result = RegDeleteTreeW(root, path);
     if (result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return true;
@@ -3409,6 +3434,30 @@ private:
         SetTimer(window_, kDirectoryChangeDebounceTimer, 150, nullptr);
     }
 
+    bool Reconcile3DAutoProgId(const wchar_t* extension, const std::wstring& executable, bool& changed) {
+        const std::wstring autoProgId = std::wstring(extension + 1) + L"_auto_file";
+        const std::wstring autoProgIdPath = std::wstring(L"Software\\Classes\\") + autoProgId;
+        const std::wstring openCommandPath = autoProgIdPath + L"\\shell\\open\\command";
+        std::wstring openCommand;
+        if (!ReadRegistryStringIfPresent(HKEY_CURRENT_USER, openCommandPath.c_str(), L"", openCommand) ||
+            !CommandOpensExecutable(openCommand, executable)) return true;
+
+        const std::wstring iconReference = executable + L",-105";
+        const std::wstring defaultIconPath = autoProgIdPath + L"\\DefaultIcon";
+        std::wstring existingDefaultIcon;
+        std::wstring existingTypeOverlay;
+        const bool updateDefaultIcon = !ReadRegistryStringIfPresent(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", existingDefaultIcon) || existingDefaultIcon != iconReference;
+        const bool updateTypeOverlay = !ReadRegistryStringIfPresent(HKEY_CURRENT_USER, autoProgIdPath.c_str(), L"TypeOverlay", existingTypeOverlay) || existingTypeOverlay != iconReference;
+        bool success = true;
+        if (updateDefaultIcon) success &= WriteRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference);
+        if (updateTypeOverlay) success &= WriteRegistryString(HKEY_CURRENT_USER, autoProgIdPath.c_str(), L"TypeOverlay", iconReference);
+        if (!updateDefaultIcon && !updateTypeOverlay) return true;
+        success &= VerifyRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference);
+        success &= VerifyRegistryString(HKEY_CURRENT_USER, autoProgIdPath.c_str(), L"TypeOverlay", iconReference);
+        changed |= success;
+        return success;
+    }
+
     bool RegisterDefaultAppCapabilities() {
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) {
@@ -3467,6 +3516,13 @@ private:
         success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
         success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"Viewtrious image viewer");
         success &= VerifyRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
+        bool autoProgIdChanged = false;
+        success &= Reconcile3DAutoProgId(L".stl", executable, autoProgIdChanged);
+        success &= Reconcile3DAutoProgId(L".3mf", executable, autoProgIdChanged);
+        if (StepAddonPresent()) {
+            success &= Reconcile3DAutoProgId(L".step", executable, autoProgIdChanged);
+            success &= Reconcile3DAutoProgId(L".stp", executable, autoProgIdChanged);
+        }
         if (success) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
         return success;
     }

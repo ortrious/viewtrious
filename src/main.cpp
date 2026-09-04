@@ -120,7 +120,7 @@ const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
-enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
+enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
@@ -131,35 +131,92 @@ enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
 enum class ModelRenderingApi : DWORD { Direct3D11 = 0 };
 enum class AxisIndicatorPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
 enum class ZoomHudPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
-enum class SettingsPage { General, Image2D, Model3D };
+enum class SettingsPage { General, Image2D, Video2D, Model3D };
 enum class ContentKind { None, Image2D, Model3D, Video2D };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
-struct HelpTopic { const wchar_t* title; const wchar_t* body; };
 struct HelpSection { const wchar_t* heading; const wchar_t* body; };
-constexpr int kTroubleshootingTopic = 11;
-constexpr std::array<HelpTopic, 14> kHelpTopics{{
-    { L"getting started", L"- Viewtrious quickly opens images, video, animated media, and supported 3D models.\n- use open file, drag and drop a supported file into Viewtrious, or open an associated file from Windows Explorer.\n- when a file is opened from a folder, Viewtrious can move between other supported files in that same folder." },
-    { L"image viewing", L"- images open fitted to the available viewing area.\n- use the mouse wheel to zoom.\n- when zoomed in, drag the image to pan.\n- double-click the image to switch between fitted view and 100% scale.\n- the left and right viewer controls move between supported files in the current folder.\n- transparent areas use the Viewtrious checkerboard background." },
-    { L"video and animation", L"- supported video files play inside the normal Viewtrious viewer.\n- use the playback controls to play, pause, and seek; spacebar also toggles play and pause.\n- folder navigation keeps compatible 2D media together, so images, video, and animated media can be browsed naturally from the same folder.\n- GIF files are handled as animated media rather than static images." },
-    { L"3D viewing", L"- supported 3D models open in the Viewtrious 3D viewer.\n- use the mouse to orbit, the middle mouse button to pan, and the mouse wheel to move closer to or farther from the model.\n- press 0 to reset the model view.\n- 3D navigation is intentionally separate from 2D image and video navigation." },
-    { L"SpaceMouse", L"- Viewtrious supports compatible 3Dconnexion SpaceMouse devices.\n- enable or disable SpaceMouse under 3D settings.\n- in the 3D viewer it provides analog model navigation.\n- in the 2D image viewer, supported motion can pan and zoom the image.\n- exact movement depends on the active viewer mode." },
-    { L"keyboard shortcuts", L"- open keyboard shortcuts from the main menu for the complete shortcut reference.\n- common shortcuts are available for navigation, playback, viewing, file actions, and application controls." },
-    { L"quick tutorial", L"- open quick tutorial from the main menu for a short interactive introduction to the main Viewtrious controls.\n- the tutorial is a quick visual walkthrough; help provides the more complete reference." },
-    { L"supported file types", L"images\n- PNG, JPEG, BMP, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF\n\nvideo and animation\n- MP4, GIF\n\n3D models\n- STL, 3MF; STEP and STP when the optional Open CASCADE Technology add-on is installed." },
-    { L"file associations", L"- Viewtrious can be selected as the default application for supported file types.\n- use the Viewtrious setup flow or Windows Settings to choose which file types open with Viewtrious.\n- changing a file association does not modify the file; it only changes which application Windows uses to open it." },
-    { L"deleting files", L"- when deletion confirmation is enabled, Viewtrious asks before deleting a file.\n- change this option in general settings.\n- after a file is deleted successfully, Viewtrious continues to an appropriate neighboring file when one is available.\n- deleted files are moved to the Windows Recycle Bin rather than permanently deleted." },
-    { L"settings", L"- settings are divided into three areas.\n- general: application-wide behavior.\n- 2D settings: options affecting image and other 2D viewing.\n- 3D settings: options affecting model viewing, navigation, and SpaceMouse support.\n- saved settings remain in effect the next time Viewtrious is opened." },
-    { L"troubleshooting", L"" },
-    { L"feedback and about", L"- use feedback from the main menu for the current Viewtrious feedback and project links.\n- use about for the Viewtrious version and application information." },
-    { L"third-party notices", L"3D input device development tools and related technology are provided under license from 3Dconnexion. (c) 3Dconnexion 1992 - 2025. All rights reserved.\n\nOpen CASCADE Technology support is provided by the optional STEP add-on under GNU LGPL version 2.1 with the Open CASCADE exception." },
+struct HelpTopic { const wchar_t* title; const HelpSection* sections; size_t sectionCount; const wchar_t* body; };
+constexpr std::array<HelpSection, 3> kGettingStartedSections{{
+    { L"open a file", L"use open file, drag and drop a supported file into Viewtrious, or open an associated file from Windows Explorer." },
+    { L"browse the folder", L"after opening a file, Viewtrious can move between other supported sibling files in that folder." },
+    { L"learn the controls", L"use quick tutorial for the visual walkthrough and keyboard shortcuts for the complete shortcut reference." },
+}};
+constexpr std::array<HelpSection, 4> kImageViewingSections{{
+    { L"fit and zoom", L"images open fitted to the available viewing area. use the mouse wheel to zoom, and double-click the image to switch between fitted view and 100% scale." },
+    { L"pan", L"when zoomed in, drag the image to pan." },
+    { L"folder navigation", L"the left and right viewer controls move between supported files in the current folder." },
+    { L"transparency", L"transparent image areas use the Viewtrious checkerboard background." },
+}};
+constexpr std::array<HelpSection, 4> kVideoAndAnimationSections{{
+    { L"playback", L"supported video files play inside the normal Viewtrious viewer. use the playback controls or Space to play and pause." },
+    { L"seeking", L"use the scrubber to seek through video; the controls show elapsed time and duration." },
+    { L"folder navigation", L"compatible 2D media stays together, so images, video, and animated media can be browsed naturally from the same folder." },
+    { L"animation", L"GIF files are handled as animated media rather than static images." },
+}};
+constexpr std::array<HelpSection, 4> kModelViewingSections{{
+    { L"orbit", L"use the mouse to orbit a supported 3D model." },
+    { L"pan", L"use the middle mouse button to pan the model view." },
+    { L"zoom", L"use the mouse wheel to move closer to or farther from the model." },
+    { L"reset view", L"press 0 to reset the model view." },
+}};
+constexpr std::array<HelpSection, 3> kSpaceMouseSections{{
+    { L"enable SpaceMouse", L"enable or disable compatible 3Dconnexion SpaceMouse devices under 3D settings." },
+    { L"3D navigation", L"in the 3D viewer, SpaceMouse provides analog model navigation." },
+    { L"2D navigation", L"in the 2D image viewer, supported motion can pan and zoom the image." },
+}};
+constexpr std::array<HelpSection, 1> kKeyboardShortcutSections{{
+    { L"full shortcut list", L"keyboard shortcuts remains a direct main-menu item and contains the complete shortcut reference." },
+}};
+constexpr std::array<HelpSection, 1> kQuickTutorialSections{{
+    { L"interactive walkthrough", L"quick tutorial is a short visual introduction to the main Viewtrious controls; help provides the more complete reference." },
+}};
+constexpr std::array<HelpSection, 3> kSupportedFileTypeSections{{
+    { L"images", L"PNG, JPEG, BMP, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF" },
+    { L"video", L"MP4, GIF" },
+    { L"3D", L"STL, 3MF; STEP and STP when the optional Open CASCADE Technology add-on is installed." },
+}};
+constexpr std::array<HelpSection, 2> kFileAssociationSections{{
+    { L"choose defaults", L"use the Viewtrious setup flow or Windows Settings to choose which supported file types open with Viewtrious." },
+    { L"change them later", L"changing a file association does not modify the file; it only changes which application Windows uses to open it." },
+}};
+constexpr std::array<HelpSection, 3> kDeletingFileSections{{
+    { L"confirmation", L"when deletion confirmation is enabled, Viewtrious asks before deleting a file. change this option in general settings." },
+    { L"after deletion", L"after a file is deleted successfully, Viewtrious continues to an appropriate neighboring file when one is available." },
+    { L"delete behavior", L"deleted files are moved to the Windows Recycle Bin rather than permanently deleted." },
+}};
+constexpr std::array<HelpSection, 4> kSettingsSections{{
+    { L"general", L"application-wide behavior." },
+    { L"2D settings", L"options affecting image and other 2D viewing." },
+    { L"video settings", L"Video2D-specific options will appear here as they are added." },
+    { L"3D settings", L"options affecting model viewing, navigation, and SpaceMouse support." },
+}};
+constexpr std::array<HelpSection, 2> kFeedbackAndAboutSections{{
+    { L"feedback", L"use feedback from the main menu for the current Viewtrious feedback and project links." },
+    { L"about", L"use about for the Viewtrious version and application information." },
 }};
 constexpr std::array<HelpSection, 5> kTroubleshootingSections{{
-    { L"a file will not open", L"- confirm that the file type is supported and that the file itself can be read normally by Windows." },
-    { L"video will not play", L"- an MP4 file can contain a codec unavailable through the Windows media components used by Viewtrious.\n- a supported extension does not guarantee every codec can be decoded." },
-    { L"a 3D model will not open", L"- confirm that the format is supported and that the file contains valid model geometry." },
-    { L"SpaceMouse does not respond", L"- confirm that SpaceMouse is enabled under 3D settings and that 3Dconnexion software recognizes the device." },
-    { L"Viewtrious behaves unexpectedly", L"- use feedback from the main menu and include the file type and steps to reproduce the problem." },
+    { L"a file will not open", L"confirm that the file type is supported and that the file itself can be read normally by Windows." },
+    { L"video will not play", L"an MP4 file can contain a codec unavailable through the Windows media components used by Viewtrious. a supported extension does not guarantee every codec can be decoded." },
+    { L"a 3D model will not open", L"confirm that the format is supported and that the file contains valid model geometry." },
+    { L"SpaceMouse does not respond", L"confirm that SpaceMouse is enabled under 3D settings and that 3Dconnexion software recognizes the device." },
+    { L"Viewtrious behaves unexpectedly", L"use feedback from the main menu and include the file type and steps to reproduce the problem." },
+}};
+constexpr std::array<HelpTopic, 14> kHelpTopics{{
+    { L"getting started", kGettingStartedSections.data(), kGettingStartedSections.size(), L"" },
+    { L"image viewing", kImageViewingSections.data(), kImageViewingSections.size(), L"" },
+    { L"video and animation", kVideoAndAnimationSections.data(), kVideoAndAnimationSections.size(), L"" },
+    { L"3D viewing", kModelViewingSections.data(), kModelViewingSections.size(), L"" },
+    { L"SpaceMouse", kSpaceMouseSections.data(), kSpaceMouseSections.size(), L"" },
+    { L"keyboard shortcuts", kKeyboardShortcutSections.data(), kKeyboardShortcutSections.size(), L"" },
+    { L"quick tutorial", kQuickTutorialSections.data(), kQuickTutorialSections.size(), L"" },
+    { L"supported file types", kSupportedFileTypeSections.data(), kSupportedFileTypeSections.size(), L"" },
+    { L"file associations", kFileAssociationSections.data(), kFileAssociationSections.size(), L"" },
+    { L"deleting files", kDeletingFileSections.data(), kDeletingFileSections.size(), L"" },
+    { L"settings", kSettingsSections.data(), kSettingsSections.size(), L"" },
+    { L"troubleshooting", kTroubleshootingSections.data(), kTroubleshootingSections.size(), L"" },
+    { L"feedback and about", kFeedbackAndAboutSections.data(), kFeedbackAndAboutSections.size(), L"" },
+    { L"third-party notices", nullptr, 0, L"3D input device development tools and related technology are provided under license from 3Dconnexion. (c) 3Dconnexion 1992 - 2025. All rights reserved.\n\nOpen CASCADE Technology support is provided by the optional STEP add-on under GNU LGPL version 2.1 with the Open CASCADE exception." },
 }};
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
 struct PixelBuffer {
@@ -1515,9 +1572,11 @@ public:
         const RECT content = GetHelpContentBounds(); const UINT dpi = GetDpiForWindow(window_);
         const int width = static_cast<int>(std::max<LONG>(1, content.right - content.left));
         int height = MeasureHelpTextHeight(kHelpTopics[helpTopic_].title, width, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD) + MulDiv(14, dpi, 96);
-        if (helpTopic_ != kTroubleshootingTopic)
-            return height + MeasureHelpTextHeight(kHelpTopics[helpTopic_].body, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        for (const HelpSection& section : kTroubleshootingSections) {
+        const HelpTopic& topic = kHelpTopics[helpTopic_];
+        if (topic.sectionCount == 0)
+            return height + MeasureHelpTextHeight(topic.body, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
+        for (size_t index = 0; index < topic.sectionCount; ++index) {
+            const HelpSection& section = topic.sections[index];
             height += MeasureHelpTextHeight(section.heading, width, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD);
             height += MulDiv(4, dpi, 96) + MeasureHelpTextHeight(section.body, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
             height += MulDiv(14, dpi, 96);
@@ -1595,7 +1654,15 @@ public:
     int SettingsContentBottom() const {
         if (settingsPage_ == SettingsPage::General) return GetSettingsResetButtonBounds().bottom - GetOverlayBounds().top;
         if (settingsPage_ == SettingsPage::Image2D) return GetSettingsZoomHudBounds().bottom - GetOverlayBounds().top;
+        if (settingsPage_ == SettingsPage::Video2D) return GetSettingsVideoPlaceholderBounds().bottom - GetOverlayBounds().top;
         return GetSettingsSpaceMouseBounds().bottom - GetOverlayBounds().top;
+    }
+    RECT GetSettingsVideoPlaceholderBounds() const {
+        const RECT bounds = GetOverlayBounds();
+        const int top = bounds.top + MulDiv(static_cast<int>(kSettingsFirstRowTopDips), GetDpiForWindow(window_), 96);
+        const wchar_t* text = L"video-specific settings will appear here as they are added.";
+        const int height = MeasureSettingsTextHeight(text, SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
+        return { SettingsContentLeft(), top, SettingsContentRight(), top + height };
     }
     RECT GetSettingsOptionBounds(int option) const {
         const RECT bounds = GetOverlayBounds();
@@ -2014,6 +2081,7 @@ public:
             };
             if (containsNavigation(SettingsPage::General)) return ButtonKind::SettingsGeneralPage;
             if (containsNavigation(SettingsPage::Image2D)) return ButtonKind::SettingsImage2DPage;
+            if (containsNavigation(SettingsPage::Video2D)) return ButtonKind::SettingsVideoPage;
             if (containsNavigation(SettingsPage::Model3D)) return ButtonKind::SettingsModel3DPage;
             POINT settingsPoint = point;
             settingsPoint.y += static_cast<LONG>(std::lround(settingsScroll_));
@@ -2179,6 +2247,7 @@ public:
         else if (button == ButtonKind::CanvasNext) Navigate(1);
         else if (button == ButtonKind::SettingsGeneralPage) { settingsPage_ = SettingsPage::General; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsImage2DPage) { settingsPage_ = SettingsPage::Image2D; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::SettingsVideoPage) { settingsPage_ = SettingsPage::Video2D; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsModel3DPage) { settingsPage_ = SettingsPage::Model3D; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsRememberPlacement) ToggleRememberWindowPlacement();
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
@@ -5669,11 +5738,12 @@ private:
             const float titleHeight = static_cast<float>(MeasureHelpTextHeight(topic.title, helpWidth, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD));
             DrawOverlayText(topic.title, viewport.left, y, viewport.right - viewport.left, titleHeight, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, false, true);
             y += titleHeight + 14.0f * dpiScale;
-            if (helpTopic_ != kTroubleshootingTopic) {
+            if (topic.sectionCount == 0) {
                 const float bodyHeight = static_cast<float>(MeasureHelpTextHeight(topic.body, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_NORMAL));
                 DrawOverlayText(topic.body, viewport.left, y, viewport.right - viewport.left, bodyHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             } else {
-                for (const HelpSection& section : kTroubleshootingSections) {
+                for (size_t index = 0; index < topic.sectionCount; ++index) {
+                    const HelpSection& section = topic.sections[index];
                     const float headingHeight = static_cast<float>(MeasureHelpTextHeight(section.heading, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD));
                     DrawOverlayText(section.heading, viewport.left, y, viewport.right - viewport.left, headingHeight, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, false, true);
                     y += headingHeight + 4.0f * dpiScale;
@@ -5722,6 +5792,7 @@ private:
             };
             drawNavigation(SettingsPage::General, ButtonKind::SettingsGeneralPage, L"GENERAL");
             drawNavigation(SettingsPage::Image2D, ButtonKind::SettingsImage2DPage, L"2D SETTINGS");
+            drawNavigation(SettingsPage::Video2D, ButtonKind::SettingsVideoPage, L"VIDEO SETTINGS");
             drawNavigation(SettingsPage::Model3D, ButtonKind::SettingsModel3DPage, L"3D SETTINGS");
             const float dividerX = static_cast<float>(bounds.left) + 194.0f * dpiScale;
             renderTarget_->DrawLine(D2D1::Point2F(dividerX, static_cast<float>(bounds.top) + 58.0f * dpiScale),
@@ -5804,6 +5875,10 @@ private:
             else if (hoveredButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), rowHover.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"reset", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            } else if (settingsPage_ == SettingsPage::Video2D) {
+            const RECT placeholder = GetSettingsVideoPlaceholderBounds();
+            DrawOverlayText(L"video-specific settings will appear here as they are added.", static_cast<float>(placeholder.left), static_cast<float>(placeholder.top),
+                static_cast<float>(placeholder.right - placeholder.left), static_cast<float>(placeholder.bottom - placeholder.top), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             } else if (settingsPage_ == SettingsPage::Image2D) {
             group(L"2D VIEWER", 76.0f);
             drawToggle(4, ButtonKind::SettingsAnimations, L"animations and face effects", animationsEnabled_);

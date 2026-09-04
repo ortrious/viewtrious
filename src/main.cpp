@@ -6030,8 +6030,8 @@ private:
             DrawOverlayText(L"dismiss", dismiss.left, dismiss.top, dismiss.right - dismiss.left, dismiss.bottom - dismiss.top,
                 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::Feedback) {
-            DrawOverlayText(L"Feedback", left, static_cast<float>(bounds.top) + panelPadding, contentWidth, 34.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            DrawOverlayText(L"Help make Viewtrious better.", left, static_cast<float>(bounds.top) + panelPadding + 42.0f * dpiScale, contentWidth, 26.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            DrawOverlayText(L"feedback", left, static_cast<float>(bounds.top) + panelPadding, contentWidth, 34.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            DrawOverlayText(L"help make Viewtrious better.", left, static_cast<float>(bounds.top) + panelPadding + 42.0f * dpiScale, contentWidth, 26.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             ComPtr<ID2D1SolidColorBrush> actionHover, actionPressed;
             if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255), &actionHover)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f / 255, 80.f / 255, 92.f / 255), &actionPressed))) return;
             const auto drawAction = [&](bool feature, const wchar_t* title, const wchar_t* detail) {
@@ -6044,9 +6044,9 @@ private:
                 DrawOverlayText(title, action.left + 16.0f * dpiScale, action.top + 6.0f * dpiScale, action.right - action.left - 32.0f * dpiScale, 27.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
                 DrawOverlayText(detail, action.left + 16.0f * dpiScale, action.top + 35.0f * dpiScale, action.right - action.left - 32.0f * dpiScale, 23.0f * dpiScale, 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), true);
             };
-            drawAction(false, L"Report a bug", L"Something isn't working correctly.");
-            drawAction(true, L"Suggest a feature", L"Have an idea for Viewtrious?");
-            DrawOverlayText(L"Opens GitHub in your web browser.", left, static_cast<float>(bounds.bottom) - panelPadding - 20.0f * dpiScale, contentWidth, 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
+            drawAction(false, L"report a bug", L"something isn't working correctly.");
+            drawAction(true, L"suggest a feature", L"have an idea for Viewtrious?");
+            DrawOverlayText(L"opens GitHub in your web browser.", left, static_cast<float>(bounds.bottom) - panelPadding - 20.0f * dpiScale, contentWidth, 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         } else {
             const float aboutContentWidth = std::max(1.0f, std::min(520.0f * dpiScale,
                 static_cast<float>(bounds.right - bounds.left) - 80.0f * dpiScale));

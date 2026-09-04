@@ -5373,7 +5373,7 @@ private:
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(260, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : MulDiv(220, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(276, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -5574,19 +5574,24 @@ private:
                 renderTarget_->DrawBitmap(topBarLogo_.Get(), D2D1::RectF(left, logoTop, left + logoWidth, logoTop + logoHeight),
                     1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
             }
-            DrawOverlayText(L"choose Viewtrious for the formats you want to open.", left,
+            DrawOverlayText(L"choose which file types should open with Viewtrious.", left,
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            constexpr float introTop = 68.0f, introHeight = 24.0f, closingTop = 160.0f;
-            constexpr float formatRowHeight = 24.0f, formatRowGap = 0.0f;
-            const float formatsHeight = formatRowHeight * 2.0f + formatRowGap;
+            constexpr float introTop = 68.0f, introHeight = 24.0f, closingTop = 176.0f;
+            constexpr float formatRowHeight = 22.0f, formatRowGap = 3.0f;
+            const float formatsHeight = formatRowHeight * 3.0f + formatRowGap * 2.0f;
             const float formatsTop = introTop + introHeight + (closingTop - (introTop + introHeight) - formatsHeight) * 0.5f;
-            DrawOverlayText(L"images: JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", left,
-                static_cast<float>(bounds.top) + formatsTop * dpiScale, contentWidth, formatRowHeight * dpiScale,
-                15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-            DrawOverlayText(L"video: MP4", left,
-                static_cast<float>(bounds.top) + (formatsTop + formatRowHeight + formatRowGap) * dpiScale, contentWidth, formatRowHeight * dpiScale,
-                15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const auto drawFormatRow = [&](const wchar_t* label, const wchar_t* formats, float top) {
+                const float labelWidth = static_cast<float>(MeasureSettingsTextWidth(label, 15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD));
+                DrawOverlayText(label, left, static_cast<float>(bounds.top) + top * dpiScale, labelWidth, formatRowHeight * dpiScale,
+                    15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, secondaryBrush.Get());
+                DrawOverlayText(formats, left + labelWidth, static_cast<float>(bounds.top) + top * dpiScale, contentWidth - labelWidth, formatRowHeight * dpiScale,
+                    15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            };
+            drawFormatRow(L"images: ", L"JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", formatsTop);
+            drawFormatRow(L"video: ", L"MP4", formatsTop + formatRowHeight + formatRowGap);
+            drawFormatRow(L"3D: ", StepAddonPresent() ? L"STL, 3MF, STEP, STP (optional add-on)" : L"STL, 3MF",
+                formatsTop + (formatRowHeight + formatRowGap) * 2.0f);
             DrawOverlayText(L"close Windows Settings when you are finished.", left,
                 static_cast<float>(bounds.top) + closingTop * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());

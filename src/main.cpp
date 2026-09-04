@@ -3369,30 +3369,30 @@ private:
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) return;
         const std::wstring executable(modulePath);
         const std::wstring command = L"\"" + executable + L"\" \"%1\"";
-        const struct Association { const wchar_t* extension; const wchar_t* progId; const wchar_t* description; } associations[] = {
-            { L".jpg", L"Viewtrious.jpg", L"Viewtrious JPG Image" },
-            { L".jpeg", L"Viewtrious.jpeg", L"Viewtrious JPEG Image" },
-            { L".png", L"Viewtrious.png", L"Viewtrious PNG Image" },
-            { L".bmp", L"Viewtrious.bmp", L"Viewtrious BMP Image" },
-            { L".gif", L"Viewtrious.gif", L"Viewtrious GIF Image" },
-            { L".heic", L"Viewtrious.heic", L"Viewtrious HEIC Image" },
-            { L".heif", L"Viewtrious.heif", L"Viewtrious HEIF Image" },
-            { L".dng", L"Viewtrious.dng", L"Viewtrious DNG Image" },
-            { L".mp4", L"Viewtrious.mp4", L"Viewtrious MP4 Video" },
-            { L".stl", L"Viewtrious.stl", L"Viewtrious STL Model" },
-            { L".3mf", L"Viewtrious.3mf", L"Viewtrious 3MF Model" },
+        const struct Association { const wchar_t* extension; const wchar_t* progId; const wchar_t* description; int iconIndex; } associations[] = {
+            { L".jpg", L"Viewtrious.jpg", L"Viewtrious JPG Image", 0 },
+            { L".jpeg", L"Viewtrious.jpeg", L"Viewtrious JPEG Image", 0 },
+            { L".png", L"Viewtrious.png", L"Viewtrious PNG Image", 0 },
+            { L".bmp", L"Viewtrious.bmp", L"Viewtrious BMP Image", 0 },
+            { L".gif", L"Viewtrious.gif", L"Viewtrious GIF Image", 0 },
+            { L".heic", L"Viewtrious.heic", L"Viewtrious HEIC Image", 0 },
+            { L".heif", L"Viewtrious.heif", L"Viewtrious HEIF Image", 0 },
+            { L".dng", L"Viewtrious.dng", L"Viewtrious DNG Image", 0 },
+            { L".mp4", L"Viewtrious.mp4", L"Viewtrious MP4 Video", 1 },
+            { L".stl", L"Viewtrious.stl", L"Viewtrious STL Model", 2 },
+            { L".3mf", L"Viewtrious.3mf", L"Viewtrious 3MF Model", 2 },
         };
         if (StepAddonPresent()) {
-            const Association stepAssociations[] = { { L".step", L"Viewtrious.step", L"Viewtrious STEP Model" }, { L".stp", L"Viewtrious.stp", L"Viewtrious STP Model" } };
+            const Association stepAssociations[] = { { L".step", L"Viewtrious.step", L"Viewtrious STEP Model", 2 }, { L".stp", L"Viewtrious.stp", L"Viewtrious STP Model", 2 } };
             for (const Association& association : stepAssociations) {
                 const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
-                WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description); WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\DefaultIcon").c_str(), L"", executable + L",0"); WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\shell\\open\\command").c_str(), L"", command); WriteRegistryString(HKEY_CURRENT_USER, (std::wstring(kCapabilitiesPath) + L"\\FileAssociations").c_str(), association.extension, association.progId);
+                WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description); WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\DefaultIcon").c_str(), L"", executable + L"," + std::to_wstring(association.iconIndex)); WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\shell\\open\\command").c_str(), L"", command); WriteRegistryString(HKEY_CURRENT_USER, (std::wstring(kCapabilitiesPath) + L"\\FileAssociations").c_str(), association.extension, association.progId);
             }
         }
         for (const Association& association : associations) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
             WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description);
-            WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\DefaultIcon").c_str(), L"", executable + L",0");
+            WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\DefaultIcon").c_str(), L"", executable + L"," + std::to_wstring(association.iconIndex));
             WriteRegistryString(HKEY_CURRENT_USER, (progIdPath + L"\\shell\\open\\command").c_str(), L"", command);
             WriteRegistryString(HKEY_CURRENT_USER, (std::wstring(kCapabilitiesPath) + L"\\FileAssociations").c_str(), association.extension, association.progId);
         }

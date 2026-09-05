@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 using Microsoft::WRL::ComPtr;
 
@@ -241,6 +242,40 @@ bool VideoPlayer::CreateFrameTexture(std::wstring& error) {
     if (FAILED(createTexture)) {
         error = L"Viewtrious could not create the video frame surface."; return false;
     }
+    return true;
+}
+
+bool VideoPlayer::CopyCachedFramePixels(std::vector<BYTE>& pixels, UINT& width, UINT& height) const {
+    pixels.clear();
+    width = height = 0;
+    if (!device_ || !frameTexture_ || !hasValidFrame_ || !videoWidth_ || !videoHeight_) return false;
+    if (videoWidth_ > UINT_MAX / 4 || videoHeight_ > UINT_MAX / (videoWidth_ * 4)) return false;
+
+    D3D11_TEXTURE2D_DESC description{};
+    frameTexture_->GetDesc(&description);
+    description.Usage = D3D11_USAGE_STAGING;
+    description.BindFlags = 0;
+    description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    description.MiscFlags = 0;
+    description.MipLevels = 1;
+    description.ArraySize = 1;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(device_->CreateTexture2D(&description, nullptr, &staging))) return false;
+
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+    device_->GetImmediateContext(&context);
+    if (!context) return false;
+    context->CopyResource(staging.Get(), frameTexture_.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return false;
+
+    const size_t rowBytes = static_cast<size_t>(videoWidth_) * 4;
+    pixels.resize(rowBytes * videoHeight_);
+    for (UINT row = 0; row < videoHeight_; ++row)
+        std::memcpy(pixels.data() + rowBytes * row, static_cast<const BYTE*>(mapped.pData) + static_cast<size_t>(mapped.RowPitch) * row, rowBytes);
+    context->Unmap(staging.Get(), 0);
+    width = videoWidth_;
+    height = videoHeight_;
     return true;
 }
 

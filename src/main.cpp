@@ -3858,6 +3858,77 @@ public:
         mediaDragButton_ = button;
         SetCapture(window_);
     }
+    SIZE MediaDragPreviewSize(UINT width, UINT height) const {
+        const UINT maximum = static_cast<UINT>(std::clamp(std::lround(160.0 * GetDpiForWindow(window_) / 96.0), 48l, 512l));
+        if (!width || !height) return {};
+        if (width >= height) return { static_cast<LONG>(maximum), static_cast<LONG>(std::max<UINT>(1, static_cast<UINT>(std::lround(static_cast<double>(height) * maximum / width)))) };
+        return { static_cast<LONG>(std::max<UINT>(1, static_cast<UINT>(std::lround(static_cast<double>(width) * maximum / height)))), static_cast<LONG>(maximum) };
+    }
+    HBITMAP CreateMediaDragBitmap(const BYTE* pixels, UINT width, UINT height, bool premultiplied) const {
+        const SIZE size = MediaDragPreviewSize(width, height);
+        if (!pixels || size.cx <= 0 || size.cy <= 0) return nullptr;
+        BITMAPINFO information{};
+        information.bmiHeader.biSize = sizeof(information.bmiHeader);
+        information.bmiHeader.biWidth = size.cx;
+        information.bmiHeader.biHeight = -size.cy;
+        information.bmiHeader.biPlanes = 1;
+        information.bmiHeader.biBitCount = 32;
+        information.bmiHeader.biCompression = BI_RGB;
+        void* output = nullptr;
+        HBITMAP bitmap = CreateDIBSection(nullptr, &information, DIB_RGB_COLORS, &output, nullptr, 0);
+        if (!bitmap || !output) { if (bitmap) DeleteObject(bitmap); return nullptr; }
+
+        auto* destination = static_cast<BYTE*>(output);
+        for (LONG y = 0; y < size.cy; ++y) {
+            const UINT sourceY = std::min(height - 1, static_cast<UINT>(static_cast<uint64_t>(y) * height / size.cy));
+            for (LONG x = 0; x < size.cx; ++x) {
+                const UINT sourceX = std::min(width - 1, static_cast<UINT>(static_cast<uint64_t>(x) * width / size.cx));
+                const BYTE* source = pixels + (static_cast<size_t>(sourceY) * width + sourceX) * 4;
+                BYTE* target = destination + (static_cast<size_t>(y) * size.cx + x) * 4;
+                const BYTE alpha = source[3];
+                if (premultiplied && alpha && alpha != 255) {
+                    target[0] = static_cast<BYTE>(std::min(255u, (static_cast<UINT>(source[0]) * 255u + alpha / 2) / alpha));
+                    target[1] = static_cast<BYTE>(std::min(255u, (static_cast<UINT>(source[1]) * 255u + alpha / 2) / alpha));
+                    target[2] = static_cast<BYTE>(std::min(255u, (static_cast<UINT>(source[2]) * 255u + alpha / 2) / alpha));
+                } else { target[0] = source[0]; target[1] = source[1]; target[2] = source[2]; }
+                target[3] = alpha;
+            }
+        }
+        return bitmap;
+    }
+    HBITMAP CreateImageDragBitmap() const {
+        if (!source_ || !imageWidth_ || !imageHeight_) return nullptr;
+        const SIZE size = MediaDragPreviewSize(imageWidth_, imageHeight_);
+        ComPtr<IWICBitmapScaler> scaler;
+        if (FAILED(wicFactory_->CreateBitmapScaler(&scaler)) ||
+            FAILED(scaler->Initialize(source_.Get(), size.cx, size.cy, WICBitmapInterpolationModeFant))) return nullptr;
+        std::vector<BYTE> pixels(static_cast<size_t>(size.cx) * size.cy * 4);
+        if (FAILED(scaler->CopyPixels(nullptr, size.cx * 4, static_cast<UINT>(pixels.size()), pixels.data()))) return nullptr;
+        return CreateMediaDragBitmap(pixels.data(), static_cast<UINT>(size.cx), static_cast<UINT>(size.cy), true);
+    }
+    HBITMAP CreateVideoDragBitmap() const {
+        std::vector<BYTE> pixels;
+        UINT width = 0, height = 0;
+        if (!videoPlayer_.CopyCachedFramePixels(pixels, width, height)) return nullptr;
+        return CreateMediaDragBitmap(pixels.data(), width, height, false);
+    }
+    bool InitializeNativeMediaDragImage(IDataObject* data, HBITMAP& bitmap) const {
+        bitmap = source_ ? CreateImageDragBitmap() : CreateVideoDragBitmap();
+        if (!bitmap) return false;
+        ComPtr<IDragSourceHelper> helper;
+        if (FAILED(CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&helper)))) {
+            DeleteObject(bitmap); bitmap = nullptr; return false;
+        }
+        BITMAP properties{};
+        if (!GetObject(bitmap, sizeof(properties), &properties)) { DeleteObject(bitmap); bitmap = nullptr; return false; }
+        SHDRAGIMAGE image{};
+        image.sizeDragImage = { properties.bmWidth, properties.bmHeight };
+        image.ptOffset = { std::max(0L, properties.bmWidth / 4), std::max(0L, properties.bmHeight / 4) };
+        image.hbmpDragImage = bitmap;
+        image.crColorKey = CLR_NONE;
+        if (FAILED(helper->InitializeFromBitmap(&image, data))) { DeleteObject(bitmap); bitmap = nullptr; return false; }
+        return true;
+    }
     bool ContinueMediaDrag(POINT point) {
         if (!mediaDragPending_) return false;
         if (std::abs(point.x - mediaDragStart_.x) <= GetSystemMetrics(SM_CXDRAG) &&
@@ -3873,7 +3944,10 @@ public:
         DWORD effect = DROPEFFECT_NONE;
         const HRESULT ole = OleInitialize(nullptr);
         if (SUCCEEDED(ole)) {
+            HBITMAP dragBitmap = nullptr;
+            InitializeNativeMediaDragImage(data.Get(), dragBitmap);
             DoDragDrop(data.Get(), source, DROPEFFECT_COPY, &effect);
+            if (dragBitmap) DeleteObject(dragBitmap);
             OleUninitialize();
         }
         source->Release();

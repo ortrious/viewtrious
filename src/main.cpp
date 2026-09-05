@@ -964,6 +964,7 @@ public:
         if (tourPending_) { StartPendingTour(); return; }
         if (!onboardingRequired_) return;
         overlay_ = OverlayKind::Welcome;
+        ShowVideoControls();
     }
     bool WelcomeOpen() const { return overlay_ == OverlayKind::Welcome || overlay_ == OverlayKind::DefaultAppsHelper; }
     bool IsFullscreen() const { return fullscreen_; }
@@ -1142,13 +1143,14 @@ public:
         const RECT island = GetVideoControlsLayout().island;
         return PtInRect(&island, point);
     }
+    bool VideoCursorMayHide() const { return !HasOverlay() && !TutorialActive(); }
     void RestoreVideoCursor() {
         if (!videoCursorHidden_) return;
         ShowCursor(TRUE);
         videoCursorHidden_ = false;
     }
     void HideVideoCursorIfAppropriate() {
-        if (videoCursorHidden_ || !VideoActive() || !videoPlayer_.Playing() || videoControlsOpacity_ > 0.01f) return;
+        if (videoCursorHidden_ || !VideoCursorMayHide() || !VideoActive() || !videoPlayer_.Playing() || videoControlsOpacity_ > 0.01f) return;
         POINT point{};
         if (!GetCursorPos(&point) || !ScreenToClient(window_, &point)) return;
         const RECT canvas = ModelCanvasBounds();
@@ -1592,11 +1594,13 @@ public:
         if (overlay == OverlayKind::Help) { helpTopic_ = 0; helpTopicHover_ = -1; helpScroll_ = 0.0f; }
         overlay_ = overlay;
         EndPan();
+        ShowVideoControls();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DismissOverlay() {
         if (!HasOverlay()) return;
         overlay_ = OverlayKind::None;
+        ShowVideoControls();
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool OverlayContains(POINT point) const {
@@ -3755,6 +3759,7 @@ private:
         }
         ClearButtonPressed();
         SetButtonHover(ButtonKind::None);
+        ShowVideoControls();
         InvalidateRect(window_, nullptr, FALSE);
     }
 

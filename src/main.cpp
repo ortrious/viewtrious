@@ -2692,6 +2692,10 @@ public:
     }
 
     void DropFile(HDROP drop) {
+        // A Viewtrious-originated OLE drag may still surface as WM_DROPFILES on
+        // this window. Reject it before the generic incoming-file path can
+        // reopen the current media.
+        if (mediaDragInProgress_) { DragFinish(drop); return; }
         if (WelcomeOpen() || TutorialActive()) { DragFinish(drop); return; }
         const UINT length = DragQueryFileW(drop, 0, nullptr, 0);
         if (length > 0) {
@@ -4005,13 +4009,14 @@ public:
         if (std::abs(point.x - mediaDragStart_.x) <= GetSystemMetrics(SM_CXDRAG) &&
             std::abs(point.y - mediaDragStart_.y) <= GetSystemMetrics(SM_CYDRAG)) return true;
         mediaDragPending_ = false;
+        const DWORD dragButton = mediaDragButton_;
         if (GetCapture() == window_) ReleaseCapture();
         ComPtr<IShellItem> item;
         ComPtr<IDataObject> data;
         if (FAILED(SHCreateItemFromParsingName(currentPath_.c_str(), nullptr, IID_PPV_ARGS(&item))) ||
-            FAILED(item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&data)))) return true;
-        auto* source = new (std::nothrow) CopyOnlyDropSource(mediaDragButton_);
-        if (!source) return true;
+            FAILED(item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&data)))) { mediaDragButton_ = 0; return true; }
+        auto* source = new (std::nothrow) CopyOnlyDropSource(dragButton);
+        if (!source) { mediaDragButton_ = 0; return true; }
         DWORD effect = DROPEFFECT_NONE;
         const HRESULT ole = OleInitialize(nullptr);
         if (SUCCEEDED(ole)) {
@@ -4020,21 +4025,25 @@ public:
             InitializeNativeMediaDragImage(data.Get(), dragBitmap);
             auto* target = new (std::nothrow) RejectingMediaDropTarget(window_);
             const bool targetRegistered = target && SUCCEEDED(RegisterDragDrop(window_, target));
+            mediaDragInProgress_ = true;
             DoDragDrop(data.Get(), source, DROPEFFECT_COPY, &effect);
+            mediaDragInProgress_ = false;
             if (targetRegistered) RevokeDragDrop(window_);
             if (target) target->Release();
             if (dragBitmap) DeleteObject(dragBitmap);
             OleUninitialize();
         }
         source->Release();
+        mediaDragButton_ = 0;
         return true;
     }
     bool EndMediaDrag() {
         if (!mediaDragPending_) return false;
         mediaDragPending_ = false;
+        mediaDragButton_ = 0;
         return true;
     }
-    void CancelMediaDrag() { mediaDragPending_ = false; }
+    void CancelMediaDrag() { mediaDragPending_ = false; mediaDragButton_ = 0; }
 private:
 
     static std::wstring DescribeWallpaperFailure(HRESULT hr) {
@@ -7118,6 +7127,7 @@ private:
     bool fitToWindow_ = true;
     bool videoFitToWindow_ = true;
     bool mediaDragPending_ = false;
+    bool mediaDragInProgress_ = false;
     DWORD mediaDragButton_ = 0;
     bool gifPlaying_ = false;
     bool gifPaused_ = false;

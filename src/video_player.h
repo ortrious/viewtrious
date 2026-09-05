@@ -32,8 +32,6 @@ public:
     bool ToggleMute();
     bool Muted() const;
     bool GetNativeVideoSize(DWORD& width, DWORD& height) const;
-    // Copies only the already-presented frame; this never asks Media Foundation for a new frame.
-    bool CopyCachedFramePixels(std::vector<BYTE>& pixels, UINT& width, UINT& height) const;
     bool TryGetFramesPerSecond(float& framesPerSecond);
     void RecordFramePacingSchedule(double intervalMs, LONGLONG deadlineQpc);
     void RecordFramePacingTimer(LONGLONG wakeQpc, LONGLONG deadlineQpc);

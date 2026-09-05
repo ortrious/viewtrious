@@ -122,7 +122,7 @@ enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm,
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
-    SettingsConfirmDelete, SettingsDragMediaWithLeftMouseWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
+    SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoMute };
@@ -471,87 +471,6 @@ void WriteSetting(const wchar_t* name, DWORD value) {
     RegCloseKey(key);
 }
 
-class CopyOnlyDropSource final : public IDropSource {
-public:
-    explicit CopyOnlyDropSource(DWORD button) : button_(button) {}
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
-        if (!object) return E_POINTER;
-        *object = nullptr;
-        if (iid == IID_IUnknown || iid == IID_IDropSource) { *object = static_cast<IDropSource*>(this); AddRef(); return S_OK; }
-        return E_NOINTERFACE;
-    }
-    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&references_)); }
-    ULONG STDMETHODCALLTYPE Release() override { const ULONG value = static_cast<ULONG>(InterlockedDecrement(&references_)); if (!value) delete this; return value; }
-    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escapePressed, DWORD keyState) override {
-        if (escapePressed) return DRAGDROP_S_CANCEL;
-        return (keyState & button_) ? S_OK : DRAGDROP_S_DROP;
-    }
-    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
-private:
-    LONG references_ = 1;
-    DWORD button_ = 0;
-};
-
-class RejectingMediaDropTarget final : public IDropTarget {
-public:
-    explicit RejectingMediaDropTarget(HWND window) : window_(window) {
-        CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&helper_));
-    }
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
-        if (!object) return E_POINTER;
-        *object = nullptr;
-        if (iid == IID_IUnknown || iid == IID_IDropTarget) { *object = static_cast<IDropTarget*>(this); AddRef(); return S_OK; }
-        return E_NOINTERFACE;
-    }
-    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&references_)); }
-    ULONG STDMETHODCALLTYPE Release() override { const ULONG value = static_cast<ULONG>(InterlockedDecrement(&references_)); if (!value) delete this; return value; }
-    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD, POINTL point, DWORD* effect) override {
-        if (!effect) return E_POINTER;
-        *effect = DROPEFFECT_NONE;
-        POINT helperPoint{ point.x, point.y };
-        if (helper_) helper_->DragEnter(window_, data, &helperPoint, DROPEFFECT_NONE);
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL point, DWORD* effect) override {
-        if (!effect) return E_POINTER;
-        *effect = DROPEFFECT_NONE;
-        POINT helperPoint{ point.x, point.y };
-        if (helper_) helper_->DragOver(&helperPoint, DROPEFFECT_NONE);
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE DragLeave() override {
-        if (helper_) helper_->DragLeave();
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE Drop(IDataObject*, DWORD, POINTL, DWORD* effect) override {
-        if (!effect) return E_POINTER;
-        *effect = DROPEFFECT_NONE;
-        if (helper_) helper_->DragLeave();
-        return S_OK;
-    }
-private:
-    LONG references_ = 1;
-    HWND window_ = nullptr;
-    ComPtr<IDropTargetHelper> helper_;
-};
-
-void SetPreferredCopyDropEffect(IDataObject* data) {
-    if (!data) return;
-    const CLIPFORMAT format = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT));
-    if (!format) return;
-    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
-    if (!memory) return;
-    auto* effect = static_cast<DWORD*>(GlobalLock(memory));
-    if (!effect) { GlobalFree(memory); return; }
-    *effect = DROPEFFECT_COPY;
-    GlobalUnlock(memory);
-    FORMATETC formatEtc{ format, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-    STGMEDIUM medium{};
-    medium.tymed = TYMED_HGLOBAL;
-    medium.hGlobal = memory;
-    if (FAILED(data->SetData(&formatEtc, &medium, TRUE))) GlobalFree(memory);
-}
-
 void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const wchar_t* name, LONG error);
 
 bool DeleteSettingsValues() {
@@ -887,9 +806,6 @@ public:
         DWORD confirmDelete = 1;
         ReadSetting(L"ConfirmBeforeDeleting", confirmDelete);
         confirmBeforeDeleting_ = confirmDelete != 0;
-        DWORD dragMediaWithLeftMouseWhenFit = 0;
-        ReadSetting(L"DragMediaWithLeftMouseWhenFit", dragMediaWithLeftMouseWhenFit);
-        dragMediaWithLeftMouseWhenFit_ = dragMediaWithLeftMouseWhenFit != 0;
         DWORD showZoomHud = 1;
         ReadSetting(L"ShowZoomPercentage", showZoomHud);
         showZoomPercentage_ = showZoomHud != 0;
@@ -1866,8 +1782,7 @@ public:
             const RECT remember = GetSettingsSingleColumnBounds(firstTop, L"remember application position and size");
             const RECT include = GetSettingsSingleColumnBounds(remember.bottom + SettingsStackGap(), L"include hidden images in folder");
             const RECT confirm = GetSettingsSingleColumnBounds(include.bottom + SettingsStackGap(), L"confirm before deleting images");
-            return option == 0 ? remember : option == 1 ? include : option == 2 ? confirm :
-                GetSettingsSingleColumnBounds(confirm.bottom + SettingsStackGap(), L"drag media with left mouse button when fit");
+            return option == 0 ? remember : option == 1 ? include : confirm;
         }
         if (settingsPage_ == SettingsPage::Image2D) {
             const RECT animations = GetSettingsSingleColumnBounds(firstTop, L"animations and face effects");
@@ -1920,7 +1835,7 @@ public:
     static bool SameGraphicsAdapterLuid(const LUID& left, const LUID& right) { return left.HighPart == right.HighPart && left.LowPart == right.LowPart; }
     std::wstring GraphicsAdapterLabel() const { if (graphicsAdapterAuto_) return L"Auto (High Performance)"; for (const auto& adapter : graphicsAdapters_) if (SameGraphicsAdapterLuid(adapter.luid, graphicsAdapterLuid_)) return adapter.name; return L"Saved adapter unavailable"; }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
-        const RECT confirm = GetSettingsOptionBounds(3);
+        const RECT confirm = GetSettingsOptionBounds(2);
         const int buttonWidth = MulDiv(76, GetDpiForWindow(window_), 96), gap = MulDiv(8, GetDpiForWindow(window_), 96);
         const int left = SettingsContentLeft() + static_cast<int>(preference) * (buttonWidth + gap);
         RECT result{ left, confirm.bottom + SettingsSectionGap() + MulDiv(static_cast<int>(kSettingsSectionHeadingHeightDips + kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96), left + buttonWidth, 0 };
@@ -2051,11 +1966,6 @@ public:
     void ToggleConfirmBeforeDeleting() {
         confirmBeforeDeleting_ = !confirmBeforeDeleting_;
         WriteSetting(L"ConfirmBeforeDeleting", confirmBeforeDeleting_ ? 1 : 0);
-        InvalidateRect(window_, nullptr, FALSE);
-    }
-    void ToggleDragMediaWithLeftMouseWhenFit() {
-        dragMediaWithLeftMouseWhenFit_ = !dragMediaWithLeftMouseWhenFit_;
-        WriteSetting(L"DragMediaWithLeftMouseWhenFit", dragMediaWithLeftMouseWhenFit_ ? 1 : 0);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleShowZoomPercentage() {
@@ -2291,7 +2201,6 @@ public:
                 if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
-                if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsDragMediaWithLeftMouseWhenFit;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -2454,7 +2363,6 @@ public:
         else if (button == ButtonKind::SettingsRememberPlacement) ToggleRememberWindowPlacement();
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
-        else if (button == ButtonKind::SettingsDragMediaWithLeftMouseWhenFit) ToggleDragMediaWithLeftMouseWhenFit();
         else if (button == ButtonKind::SettingsShowZoomHud) ToggleShowZoomPercentage();
         else if (button == ButtonKind::SettingsZoomHudPositionToggle) { zoomHudPositionMenuOpen_ = !zoomHudPositionMenuOpen_; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsZoomHudBottomLeft) SetZoomHudPosition(ZoomHudPosition::BottomLeft);
@@ -2692,10 +2600,6 @@ public:
     }
 
     void DropFile(HDROP drop) {
-        // A Viewtrious-originated OLE drag may still surface as WM_DROPFILES on
-        // this window. Reject it before the generic incoming-file path can
-        // reopen the current media.
-        if (mediaDragInProgress_) { DragFinish(drop); return; }
         if (WelcomeOpen() || TutorialActive()) { DragFinish(drop); return; }
         const UINT length = DragQueryFileW(drop, 0, nullptr, 0);
         if (length > 0) {
@@ -3913,137 +3817,6 @@ private:
         StartCopyFeedback();
     }
 
-public:
-    bool MediaSurfaceContains(POINT point) const {
-        return VideoActive() ? VideoContains(point) : ImageContains(point);
-    }
-    bool MediaDragSurfaceContains(POINT point) const {
-        return MediaSurfaceContains(point) && !VideoControlsContains(point) && CanvasNavigationZoneAt(point) == ButtonKind::None;
-    }
-    bool ShouldBeginLeftMediaDrag(POINT point) const {
-        return dragMediaWithLeftMouseWhenFit_ && !CanPan() && !currentPath_.empty() && MediaDragSurfaceContains(point);
-    }
-    bool ShouldBeginMiddleMediaDrag(POINT point) const {
-        return !dragMediaWithLeftMouseWhenFit_ && !currentPath_.empty() && MediaDragSurfaceContains(point);
-    }
-    void BeginMediaDrag(POINT point, DWORD button) {
-        if (currentPath_.empty() || !MediaDragSurfaceContains(point)) return;
-        mediaDragPending_ = true;
-        mediaDragStart_ = point;
-        mediaDragButton_ = button;
-        SetCapture(window_);
-    }
-    SIZE MediaDragPreviewSize(UINT width, UINT height) const {
-        const UINT maximum = static_cast<UINT>(std::clamp(std::lround(160.0 * GetDpiForWindow(window_) / 96.0), 48l, 512l));
-        if (!width || !height) return {};
-        if (width >= height) return { static_cast<LONG>(maximum), static_cast<LONG>(std::max<UINT>(1, static_cast<UINT>(std::lround(static_cast<double>(height) * maximum / width)))) };
-        return { static_cast<LONG>(std::max<UINT>(1, static_cast<UINT>(std::lround(static_cast<double>(width) * maximum / height)))), static_cast<LONG>(maximum) };
-    }
-    HBITMAP CreateMediaDragBitmap(const BYTE* pixels, UINT width, UINT height, bool premultiplied) const {
-        const SIZE size = MediaDragPreviewSize(width, height);
-        if (!pixels || size.cx <= 0 || size.cy <= 0) return nullptr;
-        BITMAPINFO information{};
-        information.bmiHeader.biSize = sizeof(information.bmiHeader);
-        information.bmiHeader.biWidth = size.cx;
-        information.bmiHeader.biHeight = -size.cy;
-        information.bmiHeader.biPlanes = 1;
-        information.bmiHeader.biBitCount = 32;
-        information.bmiHeader.biCompression = BI_RGB;
-        void* output = nullptr;
-        HBITMAP bitmap = CreateDIBSection(nullptr, &information, DIB_RGB_COLORS, &output, nullptr, 0);
-        if (!bitmap || !output) { if (bitmap) DeleteObject(bitmap); return nullptr; }
-
-        auto* destination = static_cast<BYTE*>(output);
-        for (LONG y = 0; y < size.cy; ++y) {
-            const UINT sourceY = std::min(height - 1, static_cast<UINT>(static_cast<uint64_t>(y) * height / size.cy));
-            for (LONG x = 0; x < size.cx; ++x) {
-                const UINT sourceX = std::min(width - 1, static_cast<UINT>(static_cast<uint64_t>(x) * width / size.cx));
-                const BYTE* source = pixels + (static_cast<size_t>(sourceY) * width + sourceX) * 4;
-                BYTE* target = destination + (static_cast<size_t>(y) * size.cx + x) * 4;
-                const BYTE alpha = source[3];
-                if (premultiplied && alpha && alpha != 255) {
-                    target[0] = static_cast<BYTE>(std::min(255u, (static_cast<UINT>(source[0]) * 255u + alpha / 2) / alpha));
-                    target[1] = static_cast<BYTE>(std::min(255u, (static_cast<UINT>(source[1]) * 255u + alpha / 2) / alpha));
-                    target[2] = static_cast<BYTE>(std::min(255u, (static_cast<UINT>(source[2]) * 255u + alpha / 2) / alpha));
-                } else { target[0] = source[0]; target[1] = source[1]; target[2] = source[2]; }
-                target[3] = alpha;
-            }
-        }
-        return bitmap;
-    }
-    HBITMAP CreateImageDragBitmap() const {
-        if (!source_ || !imageWidth_ || !imageHeight_) return nullptr;
-        const SIZE size = MediaDragPreviewSize(imageWidth_, imageHeight_);
-        ComPtr<IWICBitmapScaler> scaler;
-        if (FAILED(wicFactory_->CreateBitmapScaler(&scaler)) ||
-            FAILED(scaler->Initialize(source_.Get(), size.cx, size.cy, WICBitmapInterpolationModeFant))) return nullptr;
-        std::vector<BYTE> pixels(static_cast<size_t>(size.cx) * size.cy * 4);
-        if (FAILED(scaler->CopyPixels(nullptr, size.cx * 4, static_cast<UINT>(pixels.size()), pixels.data()))) return nullptr;
-        return CreateMediaDragBitmap(pixels.data(), static_cast<UINT>(size.cx), static_cast<UINT>(size.cy), true);
-    }
-    HBITMAP CreateVideoDragBitmap() const {
-        std::vector<BYTE> pixels;
-        UINT width = 0, height = 0;
-        if (!videoPlayer_.CopyCachedFramePixels(pixels, width, height)) return nullptr;
-        return CreateMediaDragBitmap(pixels.data(), width, height, false);
-    }
-    bool InitializeNativeMediaDragImage(IDataObject* data, HBITMAP& bitmap) const {
-        bitmap = source_ ? CreateImageDragBitmap() : CreateVideoDragBitmap();
-        if (!bitmap) return false;
-        ComPtr<IDragSourceHelper> helper;
-        if (FAILED(CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&helper)))) {
-            DeleteObject(bitmap); bitmap = nullptr; return false;
-        }
-        BITMAP properties{};
-        if (!GetObject(bitmap, sizeof(properties), &properties)) { DeleteObject(bitmap); bitmap = nullptr; return false; }
-        SHDRAGIMAGE image{};
-        image.sizeDragImage = { properties.bmWidth, properties.bmHeight };
-        image.ptOffset = { std::max(0L, properties.bmWidth / 4), std::max(0L, properties.bmHeight / 4) };
-        image.hbmpDragImage = bitmap;
-        image.crColorKey = CLR_NONE;
-        if (FAILED(helper->InitializeFromBitmap(&image, data))) { DeleteObject(bitmap); bitmap = nullptr; return false; }
-        return true;
-    }
-    bool ContinueMediaDrag(POINT point) {
-        if (!mediaDragPending_) return false;
-        if (std::abs(point.x - mediaDragStart_.x) <= GetSystemMetrics(SM_CXDRAG) &&
-            std::abs(point.y - mediaDragStart_.y) <= GetSystemMetrics(SM_CYDRAG)) return true;
-        mediaDragPending_ = false;
-        const DWORD dragButton = mediaDragButton_;
-        if (GetCapture() == window_) ReleaseCapture();
-        ComPtr<IShellItem> item;
-        ComPtr<IDataObject> data;
-        if (FAILED(SHCreateItemFromParsingName(currentPath_.c_str(), nullptr, IID_PPV_ARGS(&item))) ||
-            FAILED(item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&data)))) { mediaDragButton_ = 0; return true; }
-        auto* source = new (std::nothrow) CopyOnlyDropSource(dragButton);
-        if (!source) { mediaDragButton_ = 0; return true; }
-        DWORD effect = DROPEFFECT_NONE;
-        const HRESULT ole = OleInitialize(nullptr);
-        if (SUCCEEDED(ole)) {
-            SetPreferredCopyDropEffect(data.Get());
-            HBITMAP dragBitmap = nullptr;
-            InitializeNativeMediaDragImage(data.Get(), dragBitmap);
-            auto* target = new (std::nothrow) RejectingMediaDropTarget(window_);
-            const bool targetRegistered = target && SUCCEEDED(RegisterDragDrop(window_, target));
-            mediaDragInProgress_ = true;
-            DoDragDrop(data.Get(), source, DROPEFFECT_COPY, &effect);
-            mediaDragInProgress_ = false;
-            if (targetRegistered) RevokeDragDrop(window_);
-            if (target) target->Release();
-            if (dragBitmap) DeleteObject(dragBitmap);
-            OleUninitialize();
-        }
-        source->Release();
-        mediaDragButton_ = 0;
-        return true;
-    }
-    bool EndMediaDrag() {
-        if (!mediaDragPending_) return false;
-        mediaDragPending_ = false;
-        mediaDragButton_ = 0;
-        return true;
-    }
-    void CancelMediaDrag() { mediaDragPending_ = false; mediaDragButton_ = 0; }
 private:
 
     static std::wstring DescribeWallpaperFailure(HRESULT hr) {
@@ -6297,7 +6070,7 @@ private:
                 for(int i=0;i<(int)items.size();++i) { const D2D1_RECT_F item=D2D1::RectF((float)menu.left,(float)(menu.top+i*row),(float)menu.right,(float)(menu.top+(i+1)*row)); const bool active=i==selected, hover=(i<(int)buttons.size()&&hoveredButton_==buttons[i])||i==hoveredItem; if(active)renderTarget_->FillRectangle(item,accent.Get()); else if(hover)renderTarget_->FillRectangle(item,rowHover.Get()); DrawOverlayText(items[i],item.left+kDropdownLeftPaddingDips*dpiScale,item.top,item.right-item.left-kDropdownLeftPaddingDips*dpiScale,item.bottom-item.top,13,DWRITE_FONT_WEIGHT_NORMAL,active?checkmark.Get():primaryBrush.Get(),true); }
             };
             if (settingsPage_ == SettingsPage::General) {
-            const RECT confirmBounds = GetSettingsOptionBounds(3);
+            const RECT confirmBounds = GetSettingsOptionBounds(2);
             const float appearanceTop = static_cast<float>(confirmBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
             const RECT themeBounds = GetSettingsThemeBounds(ThemePreference::System);
             const float defaultTypesTop = static_cast<float>(themeBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
@@ -6307,7 +6080,6 @@ private:
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"remember application position and size", rememberWindowPlacement_);
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden images in folder", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
-            drawToggle(3, ButtonKind::SettingsDragMediaWithLeftMouseWhenFit, L"drag media with left mouse button when fit", dragMediaWithLeftMouseWhenFit_);
             group(L"THEME", appearanceTop);
             DrawOverlayText(L"", settingsLeft, static_cast<float>(bounds.top) + (appearanceTop + 28.0f) * dpiScale, settingsWidth,
                 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
@@ -7121,14 +6893,10 @@ private:
     D2D1_POINT_2F pan_ = D2D1::Point2F();
     D2D1_POINT_2F videoPan_ = D2D1::Point2F();
     POINT lastDragPoint_{};
-    POINT mediaDragStart_{};
     float zoom_ = 1.0f;
     float videoZoom_ = 1.0f;
     bool fitToWindow_ = true;
     bool videoFitToWindow_ = true;
-    bool mediaDragPending_ = false;
-    bool mediaDragInProgress_ = false;
-    DWORD mediaDragButton_ = 0;
     bool gifPlaying_ = false;
     bool gifPaused_ = false;
     bool gifPlaybackTimerActive_ = false;
@@ -7170,7 +6938,6 @@ private:
     bool rememberWindowPlacement_ = true;
     bool includeHiddenImages_ = true;
     bool confirmBeforeDeleting_ = true;
-    bool dragMediaWithLeftMouseWhenFit_ = false;
     bool deleteWarningSuppressOnConfirm_ = false;
     bool showZoomPercentage_ = true;
     ZoomHudPosition zoomHudPosition_ = ZoomHudPosition::BottomRight;
@@ -7526,7 +7293,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetCapture(window);
         } else {
             if (viewer->ModelActive()) { viewer->BeginModelOrbit({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); SetCapture(window); }
-            else if (viewer->ShouldBeginLeftMediaDrag(point)) viewer->BeginMediaDrag(point, MK_LBUTTON);
             else viewer->BeginPan(point);
         }
         return 0;
@@ -7535,11 +7301,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (!viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen() && viewer->ModelActive()) {
             viewer->BeginModelPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
             SetCapture(window);
-            return 0;
-        }
-        if (!viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen() && !viewer->ModelActive() &&
-            viewer->ShouldBeginMiddleMediaDrag({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
-            viewer->BeginMediaDrag({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }, MK_MBUTTON);
             return 0;
         }
         break;
@@ -7597,7 +7358,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 viewer->ContinueCanvasNavigationClick(point);
                 return 0;
             }
-            if (viewer->ContinueMediaDrag(point)) return 0;
             if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) viewer->PanTo(point);
             return 0;
         }
@@ -7612,7 +7372,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->ContinueCanvasNavigationClick(point);
             return 0;
         }
-        if (viewer->ContinueMediaDrag(point)) return 0;
         if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) {
             if (viewer->ModelActive()) {
                 if (wParam & (MK_LBUTTON | MK_MBUTTON)) viewer->ContinueModelDrag(point);
@@ -7631,10 +7390,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const ButtonKind navigation = viewer->FinishCanvasNavigationClick({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
             if (GetCapture() == window) ReleaseCapture();
             if (navigation != ButtonKind::None) viewer->InvokeButton(navigation);
-            return 0;
-        }
-        if (viewer->EndMediaDrag()) {
-            if (GetCapture() == window) ReleaseCapture();
             return 0;
         }
         if (viewer->PressedButton() != ButtonKind::None) {
@@ -7689,10 +7444,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->EndPan(); viewer->EndModelDrag(); if (GetCapture() == window) ReleaseCapture(); return 0;
     }
     case WM_MBUTTONUP:
-        if (viewer->EndMediaDrag()) {
-            if (GetCapture() == window) ReleaseCapture();
-            return 0;
-        }
         if (viewer->ModelActive()) {
             viewer->EndModelDrag();
             if (GetCapture() == window) ReleaseCapture();
@@ -7700,7 +7451,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         break;
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelMediaDrag(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (!viewer->TutorialActive()) { if (viewer->ModelActive()) viewer->SelectModelFace(point); viewer->OpenContextMenu(point); }

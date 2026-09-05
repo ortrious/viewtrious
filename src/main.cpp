@@ -75,6 +75,8 @@ constexpr UINT_PTR kModelHomeAnimationTimer = 11;
 constexpr UINT_PTR kModelLoadingAnimationTimer = 12;
 constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
 constexpr UINT_PTR kVideoControlsTimer = 15;
+constexpr UINT_PTR kVideoFrameStepPumpTimer = 16;
+constexpr UINT kVideoFrameStepPumpIntervalMs = 16;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
@@ -1159,8 +1161,11 @@ public:
         TraceFrameStepTransport(L"frame-step-request", 0, step);
         if (FAILED(step)) return false;
         videoFrameStepPending_ = true;
+        videoFrameStepFramePublished_ = false;
+        videoFrameStepPumpWaitLogged_ = false;
         videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
+        StartVideoFrameStepPump();
         videoPlayer_.FlushFramePacingDiagnostics();
         ShowVideoControls();
         return true;
@@ -1301,9 +1306,11 @@ public:
         KillTimer(window_, kVideoControlsTimer);
         if (VideoScrubberContains(point)) {
             TraceFrameStepTransport(L"scrub-begin");
+            StopVideoFrameStepPump();
             videoFrameStepAwaitingPause_ = false;
             videoFrameStepPending_ = false;
             videoFrameStepResumeRequested_ = false;
+            videoFrameStepFramePublished_ = false;
             videoWasPlayingBeforeScrub_ = videoPlayer_.Playing();
             if (videoWasPlayingBeforeScrub_) ToggleVideoPlayPause();
             videoScrubbing_ = true;
@@ -3502,9 +3509,11 @@ private:
     }
     void DeactivateVideo() {
         TraceFrameStepTransport(L"video-deactivate");
+        StopVideoFrameStepPump();
         videoFrameStepAwaitingPause_ = false;
         videoFrameStepPending_ = false;
         videoFrameStepResumeRequested_ = false;
+        videoFrameStepFramePublished_ = false;
         videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
         StopVideoControls();
@@ -3534,12 +3543,15 @@ public:
             if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
         } else if (event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED) {
             const bool completedStep = videoFrameStepPending_;
+            StopVideoFrameStepPump();
+            videoFrameStepAwaitingPause_ = false;
             videoFrameStepPending_ = false;
             TraceFrameStepTransport(L"frame-step-pending-cleared", event);
-            if (completedStep && !videoPlayer_.Playing()) {
+            if (completedStep && !videoFrameStepFramePublished_ && !videoPlayer_.Playing()) {
                 const bool refreshed = videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::FrameStep);
                 TraceFrameStepTransport(refreshed ? L"frame-step-refresh-published" : L"frame-step-refresh-no-frame", event);
             }
+            videoFrameStepFramePublished_ = false;
             const bool resumePlayback = videoFrameStepResumeRequested_;
             videoFrameStepResumeRequested_ = false;
             if (completedStep && resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
@@ -3566,6 +3578,31 @@ public:
             if (!resolutionText_.empty()) resolutionText_ += L"  \x2022  " + FormatFramesPerSecond(framesPerSecond);
         }
     }
+    void StartVideoFrameStepPump() {
+        if (!VideoActive() || !videoFrameStepPending_) return;
+        TraceFrameStepTransport(L"frame-step-pump-start");
+        PumpVideoFrameStep();
+    }
+    void StopVideoFrameStepPump() {
+        KillTimer(window_, kVideoFrameStepPumpTimer);
+        TraceFrameStepTransport(L"frame-step-pump-stop");
+    }
+    void PumpVideoFrameStep() {
+        KillTimer(window_, kVideoFrameStepPumpTimer);
+        if (!VideoActive() || !videoFrameStepPending_ || videoPlayer_.Playing()) return;
+        const bool published = videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::FrameStep);
+        if (published) {
+            videoFrameStepFramePublished_ = true;
+            TraceFrameStepTransport(L"frame-step-pump-published");
+            InvalidateRect(window_, nullptr, FALSE);
+        } else if (!videoFrameStepPumpWaitLogged_) {
+            TraceFrameStepTransport(L"frame-step-pump-waiting", 0, S_FALSE);
+            videoFrameStepPumpWaitLogged_ = true;
+        }
+        if (VideoActive() && videoFrameStepPending_ && !videoPlayer_.Playing())
+            SetTimer(window_, kVideoFrameStepPumpTimer, kVideoFrameStepPumpIntervalMs, nullptr);
+    }
+    void VideoFrameStepPumpTimerMessage() { PumpVideoFrameStep(); }
     void VideoPlaybackWakeMessage(uint64_t generation) {
         uint64_t expected = generation;
         videoPlaybackWakePendingGeneration_.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
@@ -7111,6 +7148,8 @@ private:
     bool videoFrameStepAwaitingPause_ = false;
     bool videoFrameStepPending_ = false;
     bool videoFrameStepResumeRequested_ = false;
+    bool videoFrameStepFramePublished_ = false;
+    bool videoFrameStepPumpWaitLogged_ = false;
     bool videoPausedSeekRefreshPending_ = false;
     bool videoScrubSeekLogged_ = false;
 #if defined(_DEBUG)
@@ -7695,6 +7734,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kModelLoadingAnimationTimer) { viewer->ModelLoadingAnimationTimerMessage(); return 0; }
         if (wParam == kTriangleCountTooltipTimer) { viewer->TriangleCountTooltipTimerMessage(); return 0; }
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
+        if (wParam == kVideoFrameStepPumpTimer) { viewer->VideoFrameStepPumpTimerMessage(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {

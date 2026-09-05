@@ -2132,7 +2132,7 @@ public:
         return (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) && PtInRect(&button, point);
     }
     bool CanvasNavigationButtonsVisible() const {
-        return source_ && navigationBuilt_ && navigationFiles_.size() > 1 &&
+        return (source_ || VideoActive()) && navigationBuilt_ && navigationFiles_.size() > 1 &&
             !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
     }
     RECT GetCanvasNavigationZoneBounds(bool next) const {
@@ -2527,8 +2527,9 @@ public:
                 if (videoPausedSeekRefreshPending_ && videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek))
                     videoPausedSeekRefreshPending_ = false;
                 videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds());
+                DrawCanvasNavigationButtons();
+                DrawVideoPlaybackControls();
             }
-            if (VideoActive() && !tutorialPresentation_) DrawVideoPlaybackControls();
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
                 if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
@@ -2545,7 +2546,7 @@ public:
             if (!tutorialPresentation_) DrawCopyFeedback();
             DrawTutorial();
             const HRESULT hr = graphicsHost_.EndDraw();
-            if (SUCCEEDED(hr) && bitmap_ && !tutorialPresentation_) MarkFirstPresentation();
+            if (SUCCEEDED(hr) && (bitmap_ || VideoActive()) && !tutorialPresentation_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
             else if (SUCCEEDED(hr)) {
                 const HRESULT present = graphicsHost_.Present();
@@ -7251,8 +7252,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const FrameMetrics frame = GetFrameMetrics(window);
             viewer->SetHamburgerHover(!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point));
             viewer->UpdateVideoControlsMouse(point);
+            viewer->SetCanvasNavigationHover(viewer->VideoControlsContains(point) ? ButtonKind::None : viewer->CanvasNavigationZoneAt(point));
             TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE, window, 0 };
             TrackMouseEvent(&track);
+            if (viewer->CanvasNavigationPressed()) {
+                viewer->ContinueCanvasNavigationClick(point);
+                return 0;
+            }
             return 0;
         }
         const FrameMetrics frame = GetFrameMetrics(window);

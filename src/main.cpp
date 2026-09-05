@@ -125,7 +125,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoMute };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoFrameForward, VideoMute };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
@@ -670,10 +670,11 @@ struct FrameMetrics {
 
 struct VideoControlsLayout {
     RECT island;
-    RECT playPause;
     RECT currentTime;
     RECT scrubber;
     RECT duration;
+    RECT playPause;
+    RECT frameForward;
     RECT mute;
 };
 
@@ -1090,40 +1091,60 @@ public:
     void ToggleVideoPlayPause() {
         if (!VideoActive()) return;
         videoPlayer_.TogglePlayPause();
-        if (videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = false;
+        if (videoPlayer_.Playing()) {
+            videoFrameStepPending_ = false;
+            videoPausedSeekRefreshPending_ = false;
+        }
         ShowVideoControls();
         ScheduleVideoPlaybackTimer();
         if (!videoPlayer_.Playing()) videoPlayer_.FlushFramePacingDiagnostics();
         InvalidateRect(window_, nullptr, FALSE);
+    }
+    void StepVideoForward() {
+        if (!VideoActive() || videoFrameStepPending_) return;
+        if (!videoPlayer_.StepForward()) {
+            if (!videoPlayer_.Playing()) StopVideoPlaybackScheduler();
+            ShowVideoControls();
+            return;
+        }
+        videoFrameStepPending_ = true;
+        videoPausedSeekRefreshPending_ = false;
+        StopVideoPlaybackScheduler();
+        videoPlayer_.FlushFramePacingDiagnostics();
+        ShowVideoControls();
     }
     VideoControlsLayout GetVideoControlsLayout() const {
         const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int margin = MulDiv(16, dpi, 96);
         const int bottomGap = MulDiv(24, dpi, 96);
-        const int height = MulDiv(48, dpi, 96);
+        const int height = MulDiv(84, dpi, 96);
         const int preferredWidth = MulDiv(600, dpi, 96);
         const LONG availableWidth = std::max(1L, canvas.right - canvas.left - margin * 2);
         const int width = std::min(preferredWidth, static_cast<int>(availableWidth));
         const int left = static_cast<int>(canvas.left + (canvas.right - canvas.left - width) / 2);
         const int top = static_cast<int>(std::max(canvas.top, canvas.bottom - bottomGap - height));
         const int padding = std::min(MulDiv(10, dpi, 96), std::max(2, width / 24));
-        const int buttonWidth = std::min(MulDiv(32, dpi, 96), std::max(MulDiv(24, dpi, 96), height - padding * 2));
+        const int timelineHeight = MulDiv(28, dpi, 96);
+        const int rowGap = std::min(MulDiv(5, dpi, 96), std::max(2, height / 16));
+        const int buttonWidth = std::min(MulDiv(32, dpi, 96), std::max(MulDiv(24, dpi, 96), height - padding * 2 - timelineHeight - rowGap));
         const int gap = std::min(MulDiv(8, dpi, 96), std::max(3, width / 80));
         const int minimumTrackWidth = MulDiv(40, dpi, 96);
-        const int maximumTimeWidth = std::max(MulDiv(16, dpi, 96), (width - padding * 2 - buttonWidth * 2 - gap * 4 - minimumTrackWidth) / 2);
+        const int maximumTimeWidth = std::max(MulDiv(16, dpi, 96), (width - padding * 2 - gap * 2 - minimumTrackWidth) / 2);
         const int timeWidth = std::min(MulDiv(48, dpi, 96), maximumTimeWidth);
-        const int playLeft = left + padding;
-        const int currentLeft = playLeft + buttonWidth + gap;
-        const int durationRight = left + width - padding - buttonWidth - gap;
+        const int currentLeft = left + padding;
+        const int durationRight = left + width - padding;
         const int scrubberLeft = currentLeft + timeWidth + gap;
         const int scrubberRight = std::max(scrubberLeft, durationRight - timeWidth - gap);
-        const int controlTop = top + (height - buttonWidth) / 2;
+        const int controlTop = top + padding + timelineHeight + rowGap;
+        const int playLeft = left + padding;
+        const int frameLeft = playLeft + buttonWidth + gap;
         return { { left, top, left + width, top + height },
+            { currentLeft, top + padding, currentLeft + timeWidth, top + padding + timelineHeight },
+            { scrubberLeft, top + padding, scrubberRight, top + padding + timelineHeight },
+            { durationRight - timeWidth, top + padding, durationRight, top + padding + timelineHeight },
             { playLeft, controlTop, playLeft + buttonWidth, controlTop + buttonWidth },
-            { currentLeft, top, currentLeft + timeWidth, top + height },
-            { scrubberLeft, top, scrubberRight, top + height },
-            { durationRight - timeWidth, top, durationRight, top + height },
+            { frameLeft, controlTop, frameLeft + buttonWidth, controlTop + buttonWidth },
             { left + width - padding - buttonWidth, controlTop, left + width - padding, controlTop + buttonWidth } };
     }
     bool VideoControlsInteractive() const { return VideoActive() && videoControlsOpacity_ > 0.05f; }
@@ -1131,6 +1152,7 @@ public:
         if (!VideoControlsInteractive()) return ButtonKind::None;
         const VideoControlsLayout layout = GetVideoControlsLayout();
         if (PtInRect(&layout.playPause, point)) return ButtonKind::VideoPlayPause;
+        if (!videoFrameStepPending_ && !videoPlayer_.Ended() && PtInRect(&layout.frameForward, point)) return ButtonKind::VideoFrameForward;
         if (PtInRect(&layout.mute, point)) return ButtonKind::VideoMute;
         return ButtonKind::None;
     }
@@ -1209,6 +1231,7 @@ public:
         videoControlsPointerOver_ = true;
         KillTimer(window_, kVideoControlsTimer);
         if (VideoScrubberContains(point)) {
+            videoFrameStepPending_ = false;
             videoWasPlayingBeforeScrub_ = videoPlayer_.Playing();
             if (videoWasPlayingBeforeScrub_) ToggleVideoPlayPause();
             videoScrubbing_ = true;
@@ -1217,6 +1240,7 @@ public:
         }
         const ButtonKind control = VideoControlAt(point);
         if (control == ButtonKind::VideoPlayPause) ToggleVideoPlayPause();
+        else if (control == ButtonKind::VideoFrameForward) StepVideoForward();
         else if (control == ButtonKind::VideoMute) { videoPlayer_.ToggleMute(); ShowVideoControls(); }
         return true;
     }
@@ -3401,6 +3425,7 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DeactivateVideo() {
+        videoFrameStepPending_ = false;
         videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
         StopVideoControls();
@@ -3418,6 +3443,10 @@ public:
         if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
+        } else if (event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED) {
+            const bool completedStep = videoFrameStepPending_;
+            videoFrameStepPending_ = false;
+            if (completedStep && !videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::FrameStep);
         } else if (!videoPlayer_.HasValidFrame() &&
             (event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY || event == MF_MEDIA_ENGINE_EVENT_CANPLAY)) {
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
@@ -3428,7 +3457,8 @@ public:
         } else if (!videoPlayer_.Playing()) {
             StopVideoPlaybackScheduler();
         }
-        if (event == MF_MEDIA_ENGINE_EVENT_ENDED || event == MF_MEDIA_ENGINE_EVENT_CANPLAY || event == MF_MEDIA_ENGINE_EVENT_PLAYING) ShowVideoControls();
+        if (event == MF_MEDIA_ENGINE_EVENT_ENDED || event == MF_MEDIA_ENGINE_EVENT_CANPLAY || event == MF_MEDIA_ENGINE_EVENT_PLAYING ||
+            event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED) ShowVideoControls();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void UpdateVideoTitleMetadata() {
@@ -5473,6 +5503,7 @@ private:
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), 1.0f * scale);
         if (videoControlsHovered_ == ButtonKind::VideoPlayPause) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playPause), 5.0f * scale, 5.0f * scale), hover.Get());
+        if (videoControlsHovered_ == ButtonKind::VideoFrameForward) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.frameForward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoMute) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), hover.Get());
 
         const float playCenterX = (layout.playPause.left + layout.playPause.right) * 0.5f;
@@ -5493,6 +5524,23 @@ private:
                 sink->Close();
                 renderTarget_->FillGeometry(triangle.Get(), text.Get());
             }
+        }
+
+        const float frameCenterX = (layout.frameForward.left + layout.frameForward.right) * 0.5f;
+        const float frameCenterY = (layout.frameForward.top + layout.frameForward.bottom) * 0.5f;
+        ID2D1Brush* const frameBrush = !videoFrameStepPending_ && !videoPlayer_.Ended() ? text.Get() : track.Get();
+        ComPtr<ID2D1PathGeometry> frameTriangle;
+        ComPtr<ID2D1GeometrySink> frameSink;
+        if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&frameTriangle)) && SUCCEEDED(frameTriangle->Open(&frameSink))) {
+            const float half = 6.0f * scale;
+            frameSink->BeginFigure(D2D1::Point2F(frameCenterX - half, frameCenterY - half), D2D1_FIGURE_BEGIN_FILLED);
+            frameSink->AddLine(D2D1::Point2F(frameCenterX - half, frameCenterY + half));
+            frameSink->AddLine(D2D1::Point2F(frameCenterX + half * 0.45f, frameCenterY));
+            frameSink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            frameSink->Close();
+            renderTarget_->FillGeometry(frameTriangle.Get(), frameBrush);
+            renderTarget_->DrawLine(D2D1::Point2F(frameCenterX + half * 0.75f, frameCenterY - half),
+                D2D1::Point2F(frameCenterX + half * 0.75f, frameCenterY + half), frameBrush, 1.6f * scale);
         }
 
         double current = 0.0, duration = 0.0;
@@ -6964,6 +7012,7 @@ private:
     std::atomic<uint64_t> videoPlaybackSchedulerGeneration_{ 0 };
     std::atomic<uint64_t> videoPlaybackWakePendingGeneration_{ 0 };
     std::atomic<LONGLONG> videoPlaybackWakeQpc_{ 0 };
+    bool videoFrameStepPending_ = false;
     bool videoPausedSeekRefreshPending_ = false;
     bool videoPlaybackSchedulerRunning_ = false;
     double videoPlaybackDeadlineQpc_ = 0.0;

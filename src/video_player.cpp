@@ -261,6 +261,8 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
         playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackResume);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ENDED) {
         playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackEnd);
+    } else if (event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED) {
+        playing_ = false; RecordFramePacingEvent(FramePacingEvent::FrameStepComplete);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ERROR) {
         error = L"Viewtrious could not decode this video. It may be corrupt or use an unsupported codec.";
         failed_ = true; playing_ = false;
@@ -278,6 +280,19 @@ void VideoPlayer::TogglePlayPause() {
         }
         const HRESULT play = engine_->Play(); if (SUCCEEDED(play)) { playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackResume); }
     }
+}
+
+bool VideoPlayer::StepForward() {
+    if (!engine_ || !engineEx_ || failed_ || !ready_ || engine_->IsEnded()) return false;
+    if (playing_) {
+        const HRESULT pause = engine_->Pause();
+        if (FAILED(pause)) return false;
+        playing_ = false;
+        RecordFramePacingEvent(FramePacingEvent::PlaybackPause);
+    }
+    const HRESULT step = engineEx_->FrameStep(TRUE);
+    if (SUCCEEDED(step)) RecordFramePacingEvent(FramePacingEvent::FrameStepRequest);
+    return SUCCEEDED(step);
 }
 
 bool VideoPlayer::GetPlaybackTimes(double& currentSeconds, double& durationSeconds) const {
@@ -361,7 +376,8 @@ bool VideoPlayer::TryGetFramesPerSecond(float& framesPerSecond) {
 bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
     const bool frameReady = engine_ && engineEx_ && frameTexture_ && videoWidth_ && videoHeight_ && !failed_;
     const FramePacingEvent acquisition = reason == FrameAcquisitionReason::Scheduler ? FramePacingEvent::SchedulerAcquire :
-        reason == FrameAcquisitionReason::InitialLoad ? FramePacingEvent::InitialLoadAcquire : FramePacingEvent::SeekAcquire;
+        reason == FrameAcquisitionReason::InitialLoad ? FramePacingEvent::InitialLoadAcquire :
+        reason == FrameAcquisitionReason::Seek ? FramePacingEvent::SeekAcquire : FramePacingEvent::FrameStepAcquire;
     RecordFramePacingEvent(acquisition);
     if (!frameReady) return false;
     bool transferred = false;

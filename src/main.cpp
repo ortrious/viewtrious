@@ -2741,8 +2741,15 @@ public:
         if (!VideoActive() || !videoPlayer_.GetNativeVideoSize(nativeWidth, nativeHeight)) return;
         const float oldScale = VideoCurrentScale(), fitScale = VideoFitScale();
         const float newScale = std::clamp(requestedScale, fitScale, std::max(kMaximumZoom, fitScale));
+        if (newScale <= fitScale + 0.0001f) {
+            if (videoFitToWindow_ && std::abs(videoPan_.x) < 0.0001f && std::abs(videoPan_.y) < 0.0001f) return;
+            videoFitToWindow_ = true;
+            videoZoom_ = fitScale;
+            videoPan_ = D2D1::Point2F();
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
         if (std::abs(newScale - oldScale) < 0.0001f) return;
-        if (newScale <= fitScale + 0.0001f) { videoFitToWindow_ = true; videoPan_ = D2D1::Point2F(); InvalidateRect(window_, nullptr, FALSE); return; }
         const RECT canvas = ModelCanvasBounds();
         const float canvasWidth = static_cast<float>(std::max(1L, canvas.right - canvas.left));
         const float canvasHeight = static_cast<float>(std::max(1L, canvas.bottom - canvas.top));

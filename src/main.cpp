@@ -122,7 +122,7 @@ enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm,
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
-    SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
+    SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoMute };
@@ -806,6 +806,9 @@ public:
         DWORD confirmDelete = 1;
         ReadSetting(L"ConfirmBeforeDeleting", confirmDelete);
         confirmBeforeDeleting_ = confirmDelete != 0;
+        DWORD swipeToNavigateWhenFit = 0;
+        ReadSetting(L"SwipeToNavigateWhenFit", swipeToNavigateWhenFit);
+        swipeToNavigateWhenFit_ = swipeToNavigateWhenFit != 0;
         DWORD showZoomHud = 1;
         ReadSetting(L"ShowZoomPercentage", showZoomHud);
         showZoomPercentage_ = showZoomHud != 0;
@@ -1786,7 +1789,8 @@ public:
             const RECT remember = GetSettingsSingleColumnBounds(firstTop, L"remember application position and size");
             const RECT include = GetSettingsSingleColumnBounds(remember.bottom + SettingsStackGap(), L"include hidden images in folder");
             const RECT confirm = GetSettingsSingleColumnBounds(include.bottom + SettingsStackGap(), L"confirm before deleting images");
-            return option == 0 ? remember : option == 1 ? include : confirm;
+            const RECT swipe = GetSettingsSingleColumnBounds(confirm.bottom + SettingsStackGap(), L"swipe to navigate when fit");
+            return option == 0 ? remember : option == 1 ? include : option == 2 ? confirm : swipe;
         }
         if (settingsPage_ == SettingsPage::Image2D) {
             const RECT animations = GetSettingsSingleColumnBounds(firstTop, L"animations and face effects");
@@ -1839,10 +1843,10 @@ public:
     static bool SameGraphicsAdapterLuid(const LUID& left, const LUID& right) { return left.HighPart == right.HighPart && left.LowPart == right.LowPart; }
     std::wstring GraphicsAdapterLabel() const { if (graphicsAdapterAuto_) return L"Auto (High Performance)"; for (const auto& adapter : graphicsAdapters_) if (SameGraphicsAdapterLuid(adapter.luid, graphicsAdapterLuid_)) return adapter.name; return L"Saved adapter unavailable"; }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
-        const RECT confirm = GetSettingsOptionBounds(2);
+        const RECT swipe = GetSettingsOptionBounds(3);
         const int buttonWidth = MulDiv(76, GetDpiForWindow(window_), 96), gap = MulDiv(8, GetDpiForWindow(window_), 96);
         const int left = SettingsContentLeft() + static_cast<int>(preference) * (buttonWidth + gap);
-        RECT result{ left, confirm.bottom + SettingsSectionGap() + MulDiv(static_cast<int>(kSettingsSectionHeadingHeightDips + kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96), left + buttonWidth, 0 };
+        RECT result{ left, swipe.bottom + SettingsSectionGap() + MulDiv(static_cast<int>(kSettingsSectionHeadingHeightDips + kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96), left + buttonWidth, 0 };
         result.bottom = result.top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96);
         return result;
     }
@@ -1970,6 +1974,11 @@ public:
     void ToggleConfirmBeforeDeleting() {
         confirmBeforeDeleting_ = !confirmBeforeDeleting_;
         WriteSetting(L"ConfirmBeforeDeleting", confirmBeforeDeleting_ ? 1 : 0);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ToggleSwipeToNavigateWhenFit() {
+        swipeToNavigateWhenFit_ = !swipeToNavigateWhenFit_;
+        WriteSetting(L"SwipeToNavigateWhenFit", swipeToNavigateWhenFit_ ? 1 : 0);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleShowZoomPercentage() {
@@ -2205,6 +2214,7 @@ public:
                 if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
+                if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsSwipeToNavigateWhenFit;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -2367,6 +2377,7 @@ public:
         else if (button == ButtonKind::SettingsRememberPlacement) ToggleRememberWindowPlacement();
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
+        else if (button == ButtonKind::SettingsSwipeToNavigateWhenFit) ToggleSwipeToNavigateWhenFit();
         else if (button == ButtonKind::SettingsShowZoomHud) ToggleShowZoomPercentage();
         else if (button == ButtonKind::SettingsZoomHudPositionToggle) { zoomHudPositionMenuOpen_ = !zoomHudPositionMenuOpen_; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsZoomHudBottomLeft) SetZoomHudPosition(ZoomHudPosition::BottomLeft);
@@ -2480,6 +2491,7 @@ public:
         rememberWindowPlacement_ = true;
         includeHiddenImages_ = true;
         confirmBeforeDeleting_ = true;
+        swipeToNavigateWhenFit_ = false;
         showZoomPercentage_ = true;
         animationsEnabled_ = true;
         reverseMouseWheelZoom_ = false;
@@ -2850,6 +2862,32 @@ public:
         lastDragPoint_ = point;
         SetCapture(window_);
     }
+
+    bool BeginSwipeNavigation(POINT point) {
+        if (!swipeToNavigateWhenFit_ || ModelActive() || CanPan() || currentPath_.empty() ||
+            CanvasNavigationZoneAt(point) != ButtonKind::None || VideoControlsContains(point) ||
+            !(VideoActive() ? VideoContains(point) : ImageContains(point))) return false;
+        swipeNavigationPending_ = true;
+        swipeNavigationStart_ = point;
+        SetCapture(window_);
+        return true;
+    }
+
+    bool SwipeNavigationPending() const { return swipeNavigationPending_; }
+
+    bool FinishSwipeNavigation(POINT point) {
+        if (!swipeNavigationPending_) return false;
+        swipeNavigationPending_ = false;
+        const LONG deltaX = point.x - swipeNavigationStart_.x;
+        const LONG deltaY = point.y - swipeNavigationStart_.y;
+        const LONG horizontalDistance = std::abs(deltaX);
+        const LONG verticalDistance = std::abs(deltaY);
+        const LONG threshold = MulDiv(72, GetDpiForWindow(window_), 96);
+        if (horizontalDistance >= threshold && horizontalDistance >= verticalDistance * 2) Navigate(deltaX < 0 ? 1 : -1);
+        return true;
+    }
+
+    void CancelSwipeNavigation() { swipeNavigationPending_ = false; }
 
     void PanTo(POINT point) {
         if (!dragging_) return;
@@ -6075,8 +6113,8 @@ private:
                 for(int i=0;i<(int)items.size();++i) { const D2D1_RECT_F item=D2D1::RectF((float)menu.left,(float)(menu.top+i*row),(float)menu.right,(float)(menu.top+(i+1)*row)); const bool active=i==selected, hover=(i<(int)buttons.size()&&hoveredButton_==buttons[i])||i==hoveredItem; if(active)renderTarget_->FillRectangle(item,accent.Get()); else if(hover)renderTarget_->FillRectangle(item,rowHover.Get()); DrawOverlayText(items[i],item.left+kDropdownLeftPaddingDips*dpiScale,item.top,item.right-item.left-kDropdownLeftPaddingDips*dpiScale,item.bottom-item.top,13,DWRITE_FONT_WEIGHT_NORMAL,active?checkmark.Get():primaryBrush.Get(),true); }
             };
             if (settingsPage_ == SettingsPage::General) {
-            const RECT confirmBounds = GetSettingsOptionBounds(2);
-            const float appearanceTop = static_cast<float>(confirmBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
+            const RECT swipeBounds = GetSettingsOptionBounds(3);
+            const float appearanceTop = static_cast<float>(swipeBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
             const RECT themeBounds = GetSettingsThemeBounds(ThemePreference::System);
             const float defaultTypesTop = static_cast<float>(themeBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
             const RECT defaultAppsLayoutBounds = GetSettingsDefaultAppsButtonBounds();
@@ -6085,6 +6123,7 @@ private:
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"remember application position and size", rememberWindowPlacement_);
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden images in folder", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
+            drawToggle(3, ButtonKind::SettingsSwipeToNavigateWhenFit, L"swipe to navigate when fit", swipeToNavigateWhenFit_);
             group(L"THEME", appearanceTop);
             DrawOverlayText(L"", settingsLeft, static_cast<float>(bounds.top) + (appearanceTop + 28.0f) * dpiScale, settingsWidth,
                 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
@@ -6898,6 +6937,7 @@ private:
     D2D1_POINT_2F pan_ = D2D1::Point2F();
     D2D1_POINT_2F videoPan_ = D2D1::Point2F();
     POINT lastDragPoint_{};
+    POINT swipeNavigationStart_{};
     float zoom_ = 1.0f;
     float videoZoom_ = 1.0f;
     bool fitToWindow_ = true;
@@ -6919,6 +6959,7 @@ private:
     bool gifHasLoopExtension_ = false;
     bool committingGifFrame_ = false;
     bool dragging_ = false;
+    bool swipeNavigationPending_ = false;
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
@@ -6943,6 +6984,7 @@ private:
     bool rememberWindowPlacement_ = true;
     bool includeHiddenImages_ = true;
     bool confirmBeforeDeleting_ = true;
+    bool swipeToNavigateWhenFit_ = false;
     bool deleteWarningSuppressOnConfirm_ = false;
     bool showZoomPercentage_ = true;
     ZoomHudPosition zoomHudPosition_ = ZoomHudPosition::BottomRight;
@@ -7298,7 +7340,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetCapture(window);
         } else {
             if (viewer->ModelActive()) { viewer->BeginModelOrbit({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); SetCapture(window); }
-            else viewer->BeginPan(point);
+            else if (!viewer->BeginSwipeNavigation(point)) viewer->BeginPan(point);
         }
         return 0;
     }
@@ -7313,6 +7355,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (!viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen() && viewer->ModelActive()) {
             viewer->BeginAnimatedModelHome();
             return 0;
+        }
+        if (!viewer->TutorialActive() && !viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen()) {
+            const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            if (viewer->HasImage() && viewer->ImageContains(point)) {
+                viewer->ToggleFitActualPixels(point);
+                return 0;
+            }
         }
         break;
     case WM_MOUSEMOVE: {
@@ -7363,6 +7412,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 viewer->ContinueCanvasNavigationClick(point);
                 return 0;
             }
+            if (viewer->SwipeNavigationPending()) return 0;
             if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) viewer->PanTo(point);
             return 0;
         }
@@ -7377,6 +7427,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->ContinueCanvasNavigationClick(point);
             return 0;
         }
+        if (viewer->SwipeNavigationPending()) return 0;
         if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) {
             if (viewer->ModelActive()) {
                 if (wParam & (MK_LBUTTON | MK_MBUTTON)) viewer->ContinueModelDrag(point);
@@ -7395,6 +7446,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const ButtonKind navigation = viewer->FinishCanvasNavigationClick({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
             if (GetCapture() == window) ReleaseCapture();
             if (navigation != ButtonKind::None) viewer->InvokeButton(navigation);
+            return 0;
+        }
+        if (viewer->FinishSwipeNavigation({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
+            if (GetCapture() == window) ReleaseCapture();
             return 0;
         }
         if (viewer->PressedButton() != ButtonKind::None) {
@@ -7456,7 +7511,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         break;
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (!viewer->TutorialActive()) { if (viewer->ModelActive()) viewer->SelectModelFace(point); viewer->OpenContextMenu(point); }

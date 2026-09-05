@@ -678,6 +678,25 @@ struct VideoControlsLayout {
     RECT mute;
 };
 
+#if defined(_DEBUG)
+struct FrameStepTransportRecord {
+    ULONGLONG tick = 0;
+    DWORD mediaEvent = 0;
+    HRESULT result = S_OK;
+    bool awaitingPause = false;
+    bool pending = false;
+    bool resumeRequested = false;
+    bool playing = false;
+    bool paused = false;
+    bool seeking = false;
+    bool ended = false;
+    bool playEnabled = false;
+    bool frameEnabled = false;
+    double currentTime = 0.0;
+    const wchar_t* transition = L"";
+};
+#endif
+
 std::wstring FormatVideoTime(double seconds) {
     if (!std::isfinite(seconds) || seconds < 0.0) return L"--:--";
     const uint64_t total = static_cast<uint64_t>(std::floor(seconds));
@@ -1088,14 +1107,46 @@ public:
     bool HasImage() const { return source_ != nullptr; }
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
     bool VideoActive() const { return contentKind_ == ContentKind::Video2D && videoPlayer_.Active(); }
+#if defined(_DEBUG)
+    static const wchar_t* FrameStepEventName(DWORD event) {
+        switch (event) {
+        case MF_MEDIA_ENGINE_EVENT_PAUSE: return L"PAUSE";
+        case MF_MEDIA_ENGINE_EVENT_PLAY: return L"PLAY";
+        case MF_MEDIA_ENGINE_EVENT_PLAYING: return L"PLAYING";
+        case MF_MEDIA_ENGINE_EVENT_SEEKED: return L"SEEKED";
+        case MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED: return L"FRAMESTEPCOMPLETED";
+        case MF_MEDIA_ENGINE_EVENT_ERROR: return L"ERROR";
+        default: return L"";
+        }
+    }
+    void TraceFrameStepTransport(const wchar_t* transition, DWORD event = 0, HRESULT result = S_OK) {
+        if (!VideoActive()) return;
+        double current = 0.0, duration = 0.0;
+        videoPlayer_.GetPlaybackTimes(current, duration);
+        const bool frameEnabled = !videoFrameStepAwaitingPause_ && !videoFrameStepPending_ && !videoPlayer_.Ended();
+        FrameStepTransportRecord& record = frameStepTransportRecords_[frameStepTransportRecordNext_++ % frameStepTransportRecords_.size()];
+        record = { GetTickCount64(), event, result, videoFrameStepAwaitingPause_, videoFrameStepPending_, videoFrameStepResumeRequested_,
+            videoPlayer_.Playing(), videoPlayer_.Paused(), videoPlayer_.Seeking(), videoPlayer_.Ended(), true, frameEnabled, current, transition };
+        wchar_t line[512]{};
+        swprintf_s(line, L"Viewtrious frame-step: %s event=%lu(%s) hr=0x%08X await=%d pending=%d resume=%d playing=%d paused=%d seeking=%d ended=%d play=%d frame=%d time=%.3f\n",
+            transition, event, FrameStepEventName(event), static_cast<unsigned int>(result), record.awaitingPause, record.pending,
+            record.resumeRequested, record.playing, record.paused, record.seeking, record.ended, record.playEnabled, record.frameEnabled, record.currentTime);
+        OutputDebugStringW(line);
+    }
+#else
+    void TraceFrameStepTransport(const wchar_t*, DWORD = 0, HRESULT = S_OK) {}
+#endif
     void ToggleVideoPlayPause() {
         if (!VideoActive()) return;
+        TraceFrameStepTransport(L"play-click");
         if (videoFrameStepAwaitingPause_ || videoFrameStepPending_) {
             videoFrameStepResumeRequested_ = true;
+            TraceFrameStepTransport(L"play-deferred");
             ShowVideoControls();
             return;
         }
-        videoPlayer_.TogglePlayPause();
+        const HRESULT play = videoPlayer_.TogglePlayPause();
+        TraceFrameStepTransport(L"play-request", 0, play);
         if (videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = false;
         ShowVideoControls();
         ScheduleVideoPlaybackTimer();
@@ -1103,7 +1154,10 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool RequestVideoFrameStep() {
-        if (!VideoActive() || videoFrameStepPending_ || !videoPlayer_.StepForward()) return false;
+        if (!VideoActive() || videoFrameStepPending_) return false;
+        const HRESULT step = videoPlayer_.StepForward();
+        TraceFrameStepTransport(L"frame-step-request", 0, step);
+        if (FAILED(step)) return false;
         videoFrameStepPending_ = true;
         videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
@@ -1113,9 +1167,13 @@ public:
     }
     void StepVideoForward() {
         if (!VideoActive() || videoFrameStepAwaitingPause_ || videoFrameStepPending_) return;
+        TraceFrameStepTransport(L"frame-click");
         if (!videoPlayer_.Playing()) { RequestVideoFrameStep(); return; }
-        if (!videoPlayer_.PauseForFrameStep()) return;
+        const HRESULT pause = videoPlayer_.PauseForFrameStep();
+        TraceFrameStepTransport(L"frame-step-pause-request", 0, pause);
+        if (FAILED(pause)) return;
         videoFrameStepAwaitingPause_ = true;
+        TraceFrameStepTransport(L"frame-step-await-pause");
         StopVideoPlaybackScheduler();
         ShowVideoControls();
     }
@@ -1227,7 +1285,12 @@ public:
         if (scrubber.right <= scrubber.left) return;
         const float fraction = std::clamp(static_cast<float>(point.x - scrubber.left) / static_cast<float>(scrubber.right - scrubber.left), 0.0f, 1.0f);
         videoScrubSeconds_ = duration * fraction;
-        if (videoPlayer_.Seek(videoScrubSeconds_) && !videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = true;
+        const bool seekStarted = videoPlayer_.Seek(videoScrubSeconds_);
+        if (!videoScrubSeekLogged_) {
+            TraceFrameStepTransport(L"scrub-seek-request", 0, seekStarted ? S_OK : E_FAIL);
+            videoScrubSeekLogged_ = true;
+        }
+        if (seekStarted && !videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = true;
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool BeginVideoControlsInteraction(POINT point) {
@@ -1237,12 +1300,14 @@ public:
         videoControlsPointerOver_ = true;
         KillTimer(window_, kVideoControlsTimer);
         if (VideoScrubberContains(point)) {
+            TraceFrameStepTransport(L"scrub-begin");
             videoFrameStepAwaitingPause_ = false;
             videoFrameStepPending_ = false;
             videoFrameStepResumeRequested_ = false;
             videoWasPlayingBeforeScrub_ = videoPlayer_.Playing();
             if (videoWasPlayingBeforeScrub_) ToggleVideoPlayPause();
             videoScrubbing_ = true;
+            videoScrubSeekLogged_ = false;
             UpdateVideoScrub(point);
             return true;
         }
@@ -1263,8 +1328,10 @@ public:
         if (!videoScrubbing_) return false;
         UpdateVideoScrub(point);
         videoScrubbing_ = false;
+        videoScrubSeekLogged_ = false;
         const bool resumePlayback = videoWasPlayingBeforeScrub_;
         videoWasPlayingBeforeScrub_ = false;
+        TraceFrameStepTransport(L"scrub-end");
         if (resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
         else ShowVideoControls();
         return true;
@@ -1288,6 +1355,7 @@ public:
     void CancelVideoControlsInteraction() {
         if (!videoScrubbing_) return;
         videoScrubbing_ = false;
+        videoScrubSeekLogged_ = false;
         const bool resumePlayback = videoWasPlayingBeforeScrub_;
         videoWasPlayingBeforeScrub_ = false;
         if (resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
@@ -3433,6 +3501,7 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DeactivateVideo() {
+        TraceFrameStepTransport(L"video-deactivate");
         videoFrameStepAwaitingPause_ = false;
         videoFrameStepPending_ = false;
         videoFrameStepResumeRequested_ = false;
@@ -3445,6 +3514,9 @@ private:
 public:
     void VideoMediaEngineEvent(DWORD event) {
         if (!VideoActive()) return;
+        if (event == MF_MEDIA_ENGINE_EVENT_PAUSE || event == MF_MEDIA_ENGINE_EVENT_PLAY || event == MF_MEDIA_ENGINE_EVENT_PLAYING ||
+            event == MF_MEDIA_ENGINE_EVENT_SEEKED || event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED || event == MF_MEDIA_ENGINE_EVENT_ERROR)
+            TraceFrameStepTransport(L"media-event-received", event);
         const bool wasPlaying = videoPlayer_.Playing();
         std::wstring videoError;
         videoPlayer_.HandleMediaEvent(event, videoError);
@@ -3453,6 +3525,7 @@ public:
         if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (event == MF_MEDIA_ENGINE_EVENT_PAUSE && videoFrameStepAwaitingPause_) {
             videoFrameStepAwaitingPause_ = false;
+            TraceFrameStepTransport(L"pause-transition-complete", event);
             if (!RequestVideoFrameStep() && videoFrameStepResumeRequested_) {
                 videoFrameStepResumeRequested_ = false;
                 ToggleVideoPlayPause();
@@ -3462,7 +3535,11 @@ public:
         } else if (event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED) {
             const bool completedStep = videoFrameStepPending_;
             videoFrameStepPending_ = false;
-            if (completedStep && !videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::FrameStep);
+            TraceFrameStepTransport(L"frame-step-pending-cleared", event);
+            if (completedStep && !videoPlayer_.Playing()) {
+                const bool refreshed = videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::FrameStep);
+                TraceFrameStepTransport(refreshed ? L"frame-step-refresh-published" : L"frame-step-refresh-no-frame", event);
+            }
             const bool resumePlayback = videoFrameStepResumeRequested_;
             videoFrameStepResumeRequested_ = false;
             if (completedStep && resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
@@ -7035,6 +7112,11 @@ private:
     bool videoFrameStepPending_ = false;
     bool videoFrameStepResumeRequested_ = false;
     bool videoPausedSeekRefreshPending_ = false;
+    bool videoScrubSeekLogged_ = false;
+#if defined(_DEBUG)
+    std::array<FrameStepTransportRecord, 64> frameStepTransportRecords_{};
+    size_t frameStepTransportRecordNext_ = 0;
+#endif
     bool videoPlaybackSchedulerRunning_ = false;
     double videoPlaybackDeadlineQpc_ = 0.0;
     double videoPlaybackFramePeriodQpc_ = 0.0;

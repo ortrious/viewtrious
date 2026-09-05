@@ -270,33 +270,39 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
     return true;
 }
 
-void VideoPlayer::TogglePlayPause() {
-    if (!engine_ || failed_) return;
-    if (playing_) { const HRESULT pause = engine_->Pause(); if (SUCCEEDED(pause)) { playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackPause); } }
+HRESULT VideoPlayer::TogglePlayPause() {
+    if (!engine_ || failed_) return E_FAIL;
+    if (playing_) {
+        const HRESULT pause = engine_->Pause();
+        if (SUCCEEDED(pause)) { playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackPause); }
+        return pause;
+    }
     else {
         if (engine_->IsEnded()) {
             const HRESULT restart = engine_->SetCurrentTime(0.0);
-            if (FAILED(restart)) return;
+            if (FAILED(restart)) return restart;
         }
-        const HRESULT play = engine_->Play(); if (SUCCEEDED(play)) { playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackResume); }
+        const HRESULT play = engine_->Play();
+        if (SUCCEEDED(play)) { playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackResume); }
+        return play;
     }
 }
 
-bool VideoPlayer::PauseForFrameStep() {
-    if (!engine_ || failed_ || !playing_) return false;
+HRESULT VideoPlayer::PauseForFrameStep() {
+    if (!engine_ || failed_ || !playing_) return E_FAIL;
     const HRESULT pause = engine_->Pause();
     if (SUCCEEDED(pause)) {
         playing_ = false;
         RecordFramePacingEvent(FramePacingEvent::PlaybackPause);
     }
-    return SUCCEEDED(pause);
+    return pause;
 }
 
-bool VideoPlayer::StepForward() {
-    if (!engine_ || !engineEx_ || failed_ || !ready_ || engine_->IsEnded() || playing_) return false;
+HRESULT VideoPlayer::StepForward() {
+    if (!engine_ || !engineEx_ || failed_ || !ready_ || engine_->IsEnded() || playing_) return E_FAIL;
     const HRESULT step = engineEx_->FrameStep(TRUE);
     if (SUCCEEDED(step)) RecordFramePacingEvent(FramePacingEvent::FrameStepRequest);
-    return SUCCEEDED(step);
+    return step;
 }
 
 bool VideoPlayer::GetPlaybackTimes(double& currentSeconds, double& durationSeconds) const {

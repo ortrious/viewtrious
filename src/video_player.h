@@ -26,9 +26,9 @@ public:
     bool HandleMediaEvent(DWORD event, std::wstring& error);
     bool UpdateFrame(FrameAcquisitionReason reason);
     bool Draw(ID2D1DeviceContext* context, const RECT& canvas, float scale, D2D1_POINT_2F pan);
-    void TogglePlayPause();
-    bool PauseForFrameStep();
-    bool StepForward();
+    HRESULT TogglePlayPause();
+    HRESULT PauseForFrameStep();
+    HRESULT StepForward();
     bool GetPlaybackTimes(double& currentSeconds, double& durationSeconds) const;
     bool Seek(double seconds);
     bool ToggleMute();
@@ -41,6 +41,8 @@ public:
     void RecordFramePacingPresent(HRESULT result);
     void FlushFramePacingDiagnostics();
     bool Playing() const { return playing_; }
+    bool Paused() const { return engine_ && engine_->IsPaused(); }
+    bool Seeking() const { return engine_ && engine_->IsSeeking(); }
     bool Ended() const { return engine_ && engine_->IsEnded(); }
     bool Active() const { return engine_ != nullptr; }
     bool Failed() const { return failed_; }

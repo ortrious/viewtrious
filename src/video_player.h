@@ -53,7 +53,7 @@ private:
     bool ReadNominalFrameRate(const std::wstring& path);
     bool SetSourceFromPath(const std::wstring& path, std::wstring& error);
     bool EnsureMultithreadProtection(ID3D11Device* device, std::wstring& error);
-    enum class FramePacingEvent : unsigned char { PlaybackBegin, PlaybackPause, PlaybackResume, PlaybackSeek, PlaybackEnd, FrameStepRequest, FrameStepComplete, Schedule, Timer, SchedulerAcquire, InitialLoadAcquire, SeekAcquire, FrameStepAcquire, StreamTick, Transfer, CachePublish, Paint, Present };
+    enum class FramePacingEvent : unsigned char { PlaybackBegin, PlaybackPause, PlaybackResume, PlaybackSeek, PlaybackEnd, FrameStepRequest, FrameStepComplete, Schedule, Timer, SchedulerAcquire, InitialLoadAcquire, SeekAcquire, FrameStepAcquire, StreamTick, Transfer, CachePublish, Paint, Present, Count };
     struct FramePacingRecord { LONGLONG qpc = 0; LONGLONG pts = 0; HRESULT result = S_OK; FramePacingEvent event = FramePacingEvent::PlaybackBegin; double first = 0.0; double second = 0.0; };
     void ResetFramePacingDiagnostics();
     void RecordFramePacingEvent(FramePacingEvent event, LONGLONG pts = 0, HRESULT result = S_OK, double first = 0.0, double second = 0.0);

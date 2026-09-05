@@ -93,9 +93,9 @@ void VideoPlayer::RecordFramePacingPresent(HRESULT result) {
 void VideoPlayer::FlushFramePacingDiagnostics() {
 #if defined(_DEBUG)
     if (!framePacingRecordCount_ || !framePacingFrequency_) return;
-    static const wchar_t* names[] = { L"begin", L"pause", L"resume", L"seek", L"end", L"schedule", L"timer", L"scheduler-acquire", L"initial-acquire", L"seek-acquire", L"tick", L"transfer", L"cache", L"paint", L"present" };
+    static const std::array<const wchar_t*, static_cast<size_t>(FramePacingEvent::Count)> names = { L"begin", L"pause", L"resume", L"seek", L"end", L"frame-step-request", L"frame-step-complete", L"schedule", L"timer", L"scheduler-acquire", L"initial-acquire", L"seek-acquire", L"frame-step-acquire", L"tick", L"transfer", L"cache", L"paint", L"present" };
     OutputDebugStringW(L"Viewtrious VIDEO PACING trace begin\n");
-    std::array<LONGLONG, 15> previous{};
+    std::array<LONGLONG, static_cast<size_t>(FramePacingEvent::Count)> previous{};
     for (size_t index = 0; index < framePacingRecordCount_; ++index) {
         const FramePacingRecord& record = framePacingRecords_[(framePacingRecordStart_ + index) % kFramePacingRecordCapacity];
         const size_t event = static_cast<size_t>(record.event);

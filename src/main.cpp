@@ -3467,17 +3467,17 @@ private:
         const std::wstring executable(modulePath);
         const std::wstring command = L"\"" + executable + L"\" \"%1\"";
         const struct Association { const wchar_t* extension; const wchar_t* progId; const wchar_t* description; int iconResourceId; } associations[] = {
-            { L".jpg", L"Viewtrious.jpg", L"Viewtrious JPG Image", 101 },
-            { L".jpeg", L"Viewtrious.jpeg", L"Viewtrious JPEG Image", 101 },
-            { L".png", L"Viewtrious.png", L"Viewtrious PNG Image", 101 },
-            { L".bmp", L"Viewtrious.bmp", L"Viewtrious BMP Image", 101 },
-            { L".gif", L"Viewtrious.gif", L"Viewtrious GIF Image", 101 },
-            { L".heic", L"Viewtrious.heic", L"Viewtrious HEIC Image", 101 },
-            { L".heif", L"Viewtrious.heif", L"Viewtrious HEIF Image", 101 },
-            { L".dng", L"Viewtrious.dng", L"Viewtrious DNG Image", 101 },
-            { L".mp4", L"Viewtrious.mp4", L"Viewtrious MP4 Video", 104 },
-            { L".stl", L"Viewtrious.stl", L"Viewtrious STL Model", 105 },
-            { L".3mf", L"Viewtrious.3mf", L"Viewtrious 3MF Model", 105 },
+            { L".jpg", L"Viewtrious.jpg", L"JPG File", 101 },
+            { L".jpeg", L"Viewtrious.jpeg", L"JPEG File", 101 },
+            { L".png", L"Viewtrious.png", L"PNG File", 101 },
+            { L".bmp", L"Viewtrious.bmp", L"BMP File", 101 },
+            { L".gif", L"Viewtrious.gif", L"GIF File", 101 },
+            { L".heic", L"Viewtrious.heic", L"HEIC File", 101 },
+            { L".heif", L"Viewtrious.heif", L"HEIF File", 101 },
+            { L".dng", L"Viewtrious.dng", L"DNG File", 101 },
+            { L".mp4", L"Viewtrious.mp4", L"MP4 File", 104 },
+            { L".stl", L"Viewtrious.stl", L"STL File", 105 },
+            { L".3mf", L"Viewtrious.3mf", L"3MF File", 105 },
         };
         const auto registerAssociation = [&](const Association& association) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
@@ -3506,7 +3506,7 @@ private:
         };
         bool success = true;
         if (StepAddonPresent()) {
-            const Association stepAssociations[] = { { L".step", L"Viewtrious.step", L"Viewtrious STEP Model", 105 }, { L".stp", L"Viewtrious.stp", L"Viewtrious STP Model", 105 } };
+            const Association stepAssociations[] = { { L".step", L"Viewtrious.step", L"STEP File", 105 }, { L".stp", L"Viewtrious.stp", L"STP File", 105 } };
             for (const Association& association : stepAssociations) success &= registerAssociation(association);
         }
         for (const Association& association : associations) success &= registerAssociation(association);

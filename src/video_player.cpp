@@ -282,14 +282,18 @@ void VideoPlayer::TogglePlayPause() {
     }
 }
 
-bool VideoPlayer::StepForward() {
-    if (!engine_ || !engineEx_ || failed_ || !ready_ || engine_->IsEnded()) return false;
-    if (playing_) {
-        const HRESULT pause = engine_->Pause();
-        if (FAILED(pause)) return false;
+bool VideoPlayer::PauseForFrameStep() {
+    if (!engine_ || failed_ || !playing_) return false;
+    const HRESULT pause = engine_->Pause();
+    if (SUCCEEDED(pause)) {
         playing_ = false;
         RecordFramePacingEvent(FramePacingEvent::PlaybackPause);
     }
+    return SUCCEEDED(pause);
+}
+
+bool VideoPlayer::StepForward() {
+    if (!engine_ || !engineEx_ || failed_ || !ready_ || engine_->IsEnded() || playing_) return false;
     const HRESULT step = engineEx_->FrameStep(TRUE);
     if (SUCCEEDED(step)) RecordFramePacingEvent(FramePacingEvent::FrameStepRequest);
     return SUCCEEDED(step);

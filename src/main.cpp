@@ -523,11 +523,10 @@ public:
         if (helper_) helper_->DragLeave();
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINTL point, DWORD* effect) override {
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject*, DWORD, POINTL, DWORD* effect) override {
         if (!effect) return E_POINTER;
         *effect = DROPEFFECT_NONE;
-        POINT helperPoint{ point.x, point.y };
-        if (helper_) helper_->Drop(data, &helperPoint, DROPEFFECT_NONE);
+        if (helper_) helper_->DragLeave();
         return S_OK;
     }
 private:
@@ -535,6 +534,23 @@ private:
     HWND window_ = nullptr;
     ComPtr<IDropTargetHelper> helper_;
 };
+
+void SetPreferredCopyDropEffect(IDataObject* data) {
+    if (!data) return;
+    const CLIPFORMAT format = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT));
+    if (!format) return;
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+    if (!memory) return;
+    auto* effect = static_cast<DWORD*>(GlobalLock(memory));
+    if (!effect) { GlobalFree(memory); return; }
+    *effect = DROPEFFECT_COPY;
+    GlobalUnlock(memory);
+    FORMATETC formatEtc{ format, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+    STGMEDIUM medium{};
+    medium.tymed = TYMED_HGLOBAL;
+    medium.hGlobal = memory;
+    if (FAILED(data->SetData(&formatEtc, &medium, TRUE))) GlobalFree(memory);
+}
 
 void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const wchar_t* name, LONG error);
 
@@ -1241,6 +1257,7 @@ public:
         videoControlsFadeActive_ = false;
         videoControlsPointerOver_ = false;
         videoScrubbing_ = false;
+        videoWasPlayingBeforeScrub_ = false;
         videoControlsHovered_ = ButtonKind::None;
         videoControlsLastActivity_ = GetTickCount64();
         RestoreVideoCursor();
@@ -1248,6 +1265,7 @@ public:
     void StopVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
         videoScrubbing_ = false;
+        videoWasPlayingBeforeScrub_ = false;
         videoControlsFadeActive_ = false;
         videoControlsOpacity_ = 0.0f;
         videoControlsHovered_ = ButtonKind::None;
@@ -1270,6 +1288,8 @@ public:
         videoControlsPointerOver_ = true;
         KillTimer(window_, kVideoControlsTimer);
         if (VideoScrubberContains(point)) {
+            videoWasPlayingBeforeScrub_ = videoPlayer_.Playing();
+            if (videoWasPlayingBeforeScrub_) ToggleVideoPlayPause();
             videoScrubbing_ = true;
             UpdateVideoScrub(point);
             return true;
@@ -1290,7 +1310,10 @@ public:
         if (!videoScrubbing_) return false;
         UpdateVideoScrub(point);
         videoScrubbing_ = false;
-        ShowVideoControls();
+        const bool resumePlayback = videoWasPlayingBeforeScrub_;
+        videoWasPlayingBeforeScrub_ = false;
+        if (resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
+        else ShowVideoControls();
         return true;
     }
     void UpdateVideoControlsMouse(POINT point) {
@@ -1312,7 +1335,10 @@ public:
     void CancelVideoControlsInteraction() {
         if (!videoScrubbing_) return;
         videoScrubbing_ = false;
-        ShowVideoControls();
+        const bool resumePlayback = videoWasPlayingBeforeScrub_;
+        videoWasPlayingBeforeScrub_ = false;
+        if (resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
+        else ShowVideoControls();
     }
     void UpdateVideoControlsFade() {
         if (!VideoActive()) { StopVideoControls(); return; }
@@ -3989,6 +4015,7 @@ public:
         DWORD effect = DROPEFFECT_NONE;
         const HRESULT ole = OleInitialize(nullptr);
         if (SUCCEEDED(ole)) {
+            SetPreferredCopyDropEffect(data.Get());
             HBITMAP dragBitmap = nullptr;
             InitializeNativeMediaDragImage(data.Get(), dragBitmap);
             auto* target = new (std::nothrow) RejectingMediaDropTarget(window_);
@@ -7255,6 +7282,7 @@ private:
     ButtonKind videoControlsHovered_ = ButtonKind::None;
     bool videoControlsPointerOver_ = false;
     bool videoScrubbing_ = false;
+    bool videoWasPlayingBeforeScrub_ = false;
     bool videoCursorHidden_ = false;
     float videoControlsOpacity_ = 0.0f;
     float videoControlsFadeStartOpacity_ = 1.0f;

@@ -2857,7 +2857,9 @@ public:
     }
 
     void BeginPan(POINT point) {
-        if (!CanPan()) return;
+        if (swipeToNavigateWhenFit_) {
+            if (!CanPan()) return;
+        } else if (!source_ && !VideoActive()) return;
         dragging_ = true;
         lastDragPoint_ = point;
         SetCapture(window_);
@@ -2894,6 +2896,10 @@ public:
         const LONG deltaX = point.x - lastDragPoint_.x;
         const LONG deltaY = point.y - lastDragPoint_.y;
         if (VideoActive()) {
+            if (videoFitToWindow_ && (deltaX || deltaY)) {
+                videoZoom_ = VideoCurrentScale();
+                videoFitToWindow_ = false;
+            }
             videoPan_.x += static_cast<float>(deltaX);
             videoPan_.y += static_cast<float>(deltaY);
             lastDragPoint_ = point;

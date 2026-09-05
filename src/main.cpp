@@ -492,6 +492,47 @@ private:
     DWORD button_ = 0;
 };
 
+class RejectingMediaDropTarget final : public IDropTarget {
+public:
+    explicit RejectingMediaDropTarget(HWND window) : window_(window) {
+        CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&helper_));
+    }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (!object) return E_POINTER;
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_IDropTarget) { *object = static_cast<IDropTarget*>(this); AddRef(); return S_OK; }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&references_)); }
+    ULONG STDMETHODCALLTYPE Release() override { const ULONG value = static_cast<ULONG>(InterlockedDecrement(&references_)); if (!value) delete this; return value; }
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD, POINT point, DWORD* effect) override {
+        if (!effect) return E_POINTER;
+        *effect = DROPEFFECT_NONE;
+        if (helper_) helper_->DragEnter(window_, data, &point, DROPEFFECT_NONE);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINT point, DWORD* effect) override {
+        if (!effect) return E_POINTER;
+        *effect = DROPEFFECT_NONE;
+        if (helper_) helper_->DragOver(&point, DROPEFFECT_NONE);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DragLeave() override {
+        if (helper_) helper_->DragLeave();
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINT point, DWORD* effect) override {
+        if (!effect) return E_POINTER;
+        *effect = DROPEFFECT_NONE;
+        if (helper_) helper_->Drop(data, &point, DROPEFFECT_NONE);
+        return S_OK;
+    }
+private:
+    LONG references_ = 1;
+    HWND window_ = nullptr;
+    ComPtr<IDropTargetHelper> helper_;
+};
+
 void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const wchar_t* name, LONG error);
 
 bool DeleteSettingsValues() {
@@ -3946,7 +3987,11 @@ public:
         if (SUCCEEDED(ole)) {
             HBITMAP dragBitmap = nullptr;
             InitializeNativeMediaDragImage(data.Get(), dragBitmap);
+            auto* target = new (std::nothrow) RejectingMediaDropTarget(window_);
+            const bool targetRegistered = target && SUCCEEDED(RegisterDragDrop(window_, target));
             DoDragDrop(data.Get(), source, DROPEFFECT_COPY, &effect);
+            if (targetRegistered) RevokeDragDrop(window_);
+            if (target) target->Release();
             if (dragBitmap) DeleteObject(dragBitmap);
             OleUninitialize();
         }

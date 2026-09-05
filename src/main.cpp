@@ -3325,7 +3325,10 @@ public:
         // Advance the stable QPC grid past missed slots instead of replaying stale wakeups.
         while (videoPlaybackDeadlineQpc_ <= static_cast<double>(now.QuadPart))
             videoPlaybackDeadlineQpc_ += videoPlaybackFramePeriodQpc_;
-        ArmVideoPlaybackTimer();
+        if (!ArmVideoPlaybackTimer()) {
+            FailVideoPlaybackScheduler();
+            return;
+        }
         InvalidateRect(window_, nullptr, FALSE);
     }
 private:
@@ -3343,7 +3346,10 @@ private:
         } else {
             framePeriodSeconds = 1.0 / static_cast<double>(framesPerSecond);
         }
-        if (!EnsureVideoPlaybackScheduler()) return;
+        if (!EnsureVideoPlaybackScheduler()) {
+            FailVideoPlaybackScheduler();
+            return;
+        }
 
         LARGE_INTEGER now{}, frequency{};
         QueryPerformanceCounter(&now);
@@ -3353,7 +3359,7 @@ private:
         ++videoPlaybackSchedulerGeneration_;
         videoPlaybackWakePendingGeneration_.store(0, std::memory_order_release);
         videoPlaybackSchedulerRunning_ = true;
-        ArmVideoPlaybackTimer();
+        if (!ArmVideoPlaybackTimer()) FailVideoPlaybackScheduler();
     }
     bool EnsureVideoPlaybackScheduler() {
         if (videoPlaybackTimer_) return true;
@@ -3365,32 +3371,44 @@ private:
             videoPlaybackTimer_ = videoPlaybackStopEvent_ = nullptr;
             return false;
         }
-        videoPlaybackSchedulerThread_ = std::thread([this] {
-            HANDLE handles[] = { videoPlaybackStopEvent_, videoPlaybackTimer_ };
-            for (;;) {
-                const DWORD wait = WaitForMultipleObjects(ARRAYSIZE(handles), handles, FALSE, INFINITE);
-                if (wait != WAIT_OBJECT_0 + 1) return;
-                const uint64_t generation = videoPlaybackSchedulerGeneration_.load(std::memory_order_acquire);
-                uint64_t none = 0;
-                LARGE_INTEGER wake{};
-                QueryPerformanceCounter(&wake);
-                videoPlaybackWakeQpc_.store(wake.QuadPart, std::memory_order_release);
-                // The helper only wakes the UI; Media Foundation and rendering remain on it.
-                if (videoPlaybackWakePendingGeneration_.compare_exchange_strong(none, generation, std::memory_order_acq_rel))
-                    PostMessageW(window_, kVideoPlaybackWakeMessage, static_cast<WPARAM>(generation), 0);
-            }
-        });
+        try {
+            videoPlaybackSchedulerThread_ = std::thread([this] {
+                HANDLE handles[] = { videoPlaybackStopEvent_, videoPlaybackTimer_ };
+                for (;;) {
+                    const DWORD wait = WaitForMultipleObjects(ARRAYSIZE(handles), handles, FALSE, INFINITE);
+                    if (wait != WAIT_OBJECT_0 + 1) return;
+                    const uint64_t generation = videoPlaybackSchedulerGeneration_.load(std::memory_order_acquire);
+                    uint64_t none = 0;
+                    LARGE_INTEGER wake{};
+                    QueryPerformanceCounter(&wake);
+                    videoPlaybackWakeQpc_.store(wake.QuadPart, std::memory_order_release);
+                    // The helper only wakes the UI; Media Foundation and rendering remain on it.
+                    if (videoPlaybackWakePendingGeneration_.compare_exchange_strong(none, generation, std::memory_order_acq_rel))
+                        PostMessageW(window_, kVideoPlaybackWakeMessage, static_cast<WPARAM>(generation), 0);
+                }
+            });
+        } catch (const std::system_error&) {
+            CloseHandle(videoPlaybackTimer_);
+            CloseHandle(videoPlaybackStopEvent_);
+            videoPlaybackTimer_ = videoPlaybackStopEvent_ = nullptr;
+            return false;
+        }
         return true;
     }
-    void ArmVideoPlaybackTimer() {
-        if (!videoPlaybackTimer_ || !videoPlaybackSchedulerRunning_) return;
+    bool ArmVideoPlaybackTimer() {
+        if (!videoPlaybackTimer_ || !videoPlaybackSchedulerRunning_) return false;
         LARGE_INTEGER now{};
         QueryPerformanceCounter(&now);
         const double remainingQpc = std::max(1.0, videoPlaybackDeadlineQpc_ - static_cast<double>(now.QuadPart));
         LARGE_INTEGER due{};
         due.QuadPart = -std::max<LONGLONG>(1, static_cast<LONGLONG>(std::llround(remainingQpc * 10000000.0 / videoPlaybackQpcFrequency())));
         videoPlayer_.RecordFramePacingSchedule(videoPlaybackFramePeriodQpc_ * 1000.0 / videoPlaybackQpcFrequency(), static_cast<LONGLONG>(std::llround(videoPlaybackDeadlineQpc_)));
-        SetWaitableTimer(videoPlaybackTimer_, &due, 0, nullptr, nullptr, FALSE);
+        return SetWaitableTimer(videoPlaybackTimer_, &due, 0, nullptr, nullptr, FALSE) != FALSE;
+    }
+    void FailVideoPlaybackScheduler() {
+        error_ = L"Viewtrious could not start video playback.";
+        DeactivateVideo();
+        InvalidateRect(window_, nullptr, FALSE);
     }
     double videoPlaybackQpcFrequency() const {
         LARGE_INTEGER frequency{};

@@ -10,6 +10,7 @@
 #include <d2d1_1.h>
 #include <dwrite.h>
 #include <gdiplus.h>
+#include <ole2.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 
@@ -121,7 +122,7 @@ enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm,
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
-    SettingsConfirmDelete, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
+    SettingsConfirmDelete, SettingsDragMediaWithLeftMouseWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoMute };
@@ -470,6 +471,27 @@ void WriteSetting(const wchar_t* name, DWORD value) {
     RegCloseKey(key);
 }
 
+class CopyOnlyDropSource final : public IDropSource {
+public:
+    explicit CopyOnlyDropSource(DWORD button) : button_(button) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (!object) return E_POINTER;
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_IDropSource) { *object = static_cast<IDropSource*>(this); AddRef(); return S_OK; }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&references_)); }
+    ULONG STDMETHODCALLTYPE Release() override { const ULONG value = static_cast<ULONG>(InterlockedDecrement(&references_)); if (!value) delete this; return value; }
+    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escapePressed, DWORD keyState) override {
+        if (escapePressed) return DRAGDROP_S_CANCEL;
+        return (keyState & button_) ? S_OK : DRAGDROP_S_DROP;
+    }
+    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
+private:
+    LONG references_ = 1;
+    DWORD button_ = 0;
+};
+
 void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const wchar_t* name, LONG error);
 
 bool DeleteSettingsValues() {
@@ -805,6 +827,9 @@ public:
         DWORD confirmDelete = 1;
         ReadSetting(L"ConfirmBeforeDeleting", confirmDelete);
         confirmBeforeDeleting_ = confirmDelete != 0;
+        DWORD dragMediaWithLeftMouseWhenFit = 0;
+        ReadSetting(L"DragMediaWithLeftMouseWhenFit", dragMediaWithLeftMouseWhenFit);
+        dragMediaWithLeftMouseWhenFit_ = dragMediaWithLeftMouseWhenFit != 0;
         DWORD showZoomHud = 1;
         ReadSetting(L"ShowZoomPercentage", showZoomHud);
         showZoomPercentage_ = showZoomHud != 0;
@@ -1770,8 +1795,9 @@ public:
         if (settingsPage_ == SettingsPage::General) {
             const RECT remember = GetSettingsSingleColumnBounds(firstTop, L"remember application position and size");
             const RECT include = GetSettingsSingleColumnBounds(remember.bottom + SettingsStackGap(), L"include hidden images in folder");
-            return option == 0 ? remember : option == 1 ? include :
-                GetSettingsSingleColumnBounds(include.bottom + SettingsStackGap(), L"confirm before deleting images");
+            const RECT confirm = GetSettingsSingleColumnBounds(include.bottom + SettingsStackGap(), L"confirm before deleting images");
+            return option == 0 ? remember : option == 1 ? include : option == 2 ? confirm :
+                GetSettingsSingleColumnBounds(confirm.bottom + SettingsStackGap(), L"drag media with left mouse button when fit");
         }
         if (settingsPage_ == SettingsPage::Image2D) {
             const RECT animations = GetSettingsSingleColumnBounds(firstTop, L"animations and face effects");
@@ -1824,7 +1850,7 @@ public:
     static bool SameGraphicsAdapterLuid(const LUID& left, const LUID& right) { return left.HighPart == right.HighPart && left.LowPart == right.LowPart; }
     std::wstring GraphicsAdapterLabel() const { if (graphicsAdapterAuto_) return L"Auto (High Performance)"; for (const auto& adapter : graphicsAdapters_) if (SameGraphicsAdapterLuid(adapter.luid, graphicsAdapterLuid_)) return adapter.name; return L"Saved adapter unavailable"; }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
-        const RECT confirm = GetSettingsOptionBounds(2);
+        const RECT confirm = GetSettingsOptionBounds(3);
         const int buttonWidth = MulDiv(76, GetDpiForWindow(window_), 96), gap = MulDiv(8, GetDpiForWindow(window_), 96);
         const int left = SettingsContentLeft() + static_cast<int>(preference) * (buttonWidth + gap);
         RECT result{ left, confirm.bottom + SettingsSectionGap() + MulDiv(static_cast<int>(kSettingsSectionHeadingHeightDips + kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96), left + buttonWidth, 0 };
@@ -1955,6 +1981,11 @@ public:
     void ToggleConfirmBeforeDeleting() {
         confirmBeforeDeleting_ = !confirmBeforeDeleting_;
         WriteSetting(L"ConfirmBeforeDeleting", confirmBeforeDeleting_ ? 1 : 0);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ToggleDragMediaWithLeftMouseWhenFit() {
+        dragMediaWithLeftMouseWhenFit_ = !dragMediaWithLeftMouseWhenFit_;
+        WriteSetting(L"DragMediaWithLeftMouseWhenFit", dragMediaWithLeftMouseWhenFit_ ? 1 : 0);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleShowZoomPercentage() {
@@ -2190,6 +2221,7 @@ public:
                 if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
+                if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsDragMediaWithLeftMouseWhenFit;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -2352,6 +2384,7 @@ public:
         else if (button == ButtonKind::SettingsRememberPlacement) ToggleRememberWindowPlacement();
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
+        else if (button == ButtonKind::SettingsDragMediaWithLeftMouseWhenFit) ToggleDragMediaWithLeftMouseWhenFit();
         else if (button == ButtonKind::SettingsShowZoomHud) ToggleShowZoomPercentage();
         else if (button == ButtonKind::SettingsZoomHudPositionToggle) { zoomHudPositionMenuOpen_ = !zoomHudPositionMenuOpen_; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsZoomHudBottomLeft) SetZoomHudPosition(ZoomHudPosition::BottomLeft);
@@ -2526,7 +2559,7 @@ public:
                 // A paused scrub explicitly owns this retry; ordinary paints stay cache-only.
                 if (videoPausedSeekRefreshPending_ && videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek))
                     videoPausedSeekRefreshPending_ = false;
-                videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds());
+                videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_);
                 DrawCanvasNavigationButtons();
                 DrawVideoPlaybackControls();
             }
@@ -2571,6 +2604,7 @@ public:
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
         helpScroll_ = std::min(helpScroll_, HelpMaximumScroll());
         ClampPan();
+        ClampVideoPan();
         if (lanczosSelected_ && source_) {
             InvalidateLanczosVariant(true);
             QueueLanczosRefinement();
@@ -2686,6 +2720,57 @@ public:
         if (immediatePaint) UpdateWindow(window_);
     }
 
+    float VideoFitScale() const {
+        DWORD width = 0, height = 0;
+        if (!VideoActive() || !videoPlayer_.GetNativeVideoSize(width, height)) return 1.0f;
+        const RECT canvas = ModelCanvasBounds();
+        return std::min(static_cast<float>(std::max(1L, canvas.right - canvas.left)) / width,
+            static_cast<float>(std::max(1L, canvas.bottom - canvas.top)) / height);
+    }
+    float VideoCurrentScale() const { return videoFitToWindow_ ? VideoFitScale() : videoZoom_; }
+    void ClampVideoPan() {
+        DWORD nativeWidth = 0, nativeHeight = 0;
+        if (!VideoActive() || !videoPlayer_.GetNativeVideoSize(nativeWidth, nativeHeight)) return;
+        const RECT canvas = ModelCanvasBounds();
+        const float canvasWidth = static_cast<float>(std::max(1L, canvas.right - canvas.left));
+        const float canvasHeight = static_cast<float>(std::max(1L, canvas.bottom - canvas.top));
+        const float scale = VideoCurrentScale();
+        const float width = nativeWidth * scale, height = nativeHeight * scale;
+        const float inset = 100.0f * static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const float visibleX = std::min(width, inset), visibleY = std::min(height, inset);
+        const float centeredX = (canvasWidth - width) * 0.5f, centeredY = (canvasHeight - height) * 0.5f;
+        videoPan_.x = std::clamp(videoPan_.x, visibleX - centeredX - width, canvasWidth - visibleX - centeredX);
+        videoPan_.y = std::clamp(videoPan_.y, visibleY - centeredY - height, canvasHeight - visibleY - centeredY);
+    }
+    void SetVideoScaleAt(POINT cursor, float requestedScale) {
+        DWORD nativeWidth = 0, nativeHeight = 0;
+        if (!VideoActive() || !videoPlayer_.GetNativeVideoSize(nativeWidth, nativeHeight)) return;
+        const float oldScale = VideoCurrentScale(), fitScale = VideoFitScale();
+        const float newScale = std::clamp(requestedScale, fitScale, std::max(kMaximumZoom, fitScale));
+        if (std::abs(newScale - oldScale) < 0.0001f) return;
+        if (newScale <= fitScale + 0.0001f) { videoFitToWindow_ = true; videoPan_ = D2D1::Point2F(); InvalidateRect(window_, nullptr, FALSE); return; }
+        const RECT canvas = ModelCanvasBounds();
+        const float canvasWidth = static_cast<float>(std::max(1L, canvas.right - canvas.left));
+        const float canvasHeight = static_cast<float>(std::max(1L, canvas.bottom - canvas.top));
+        const float oldLeft = canvas.left + (canvasWidth - nativeWidth * oldScale) * 0.5f + videoPan_.x;
+        const float oldTop = canvas.top + (canvasHeight - nativeHeight * oldScale) * 0.5f + videoPan_.y;
+        const float ratio = newScale / oldScale;
+        videoPan_.x = static_cast<float>(cursor.x) - (static_cast<float>(cursor.x) - oldLeft) * ratio + nativeWidth * newScale * 0.5f - (canvas.left + canvasWidth * 0.5f);
+        videoPan_.y = static_cast<float>(cursor.y) - (static_cast<float>(cursor.y) - oldTop) * ratio + nativeHeight * newScale * 0.5f - (canvas.top + canvasHeight * 0.5f);
+        videoFitToWindow_ = false;
+        videoZoom_ = newScale;
+        ClampVideoPan();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool VideoContains(POINT point) const {
+        DWORD nativeWidth = 0, nativeHeight = 0;
+        if (!VideoActive() || !videoPlayer_.GetNativeVideoSize(nativeWidth, nativeHeight)) return false;
+        const RECT canvas = ModelCanvasBounds();
+        const float scale = VideoCurrentScale(), width = nativeWidth * scale, height = nativeHeight * scale;
+        const float left = canvas.left + (canvas.right - canvas.left - width) * 0.5f + videoPan_.x;
+        const float top = canvas.top + (canvas.bottom - canvas.top - height) * 0.5f + videoPan_.y;
+        return point.x >= left && point.x < left + width && point.y >= top && point.y < top + height;
+    }
     void SetScaleAt(POINT cursor, float requestedScale, bool recenterAtMinimum = true) {
         if (!source_) return;
         const float oldScale = CurrentScale();
@@ -2728,7 +2813,7 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
 
-    void ZoomAt(POINT cursor, float factor) { SetScaleAt(cursor, CurrentScale() * factor); }
+    void ZoomAt(POINT cursor, float factor) { if (VideoActive()) SetVideoScaleAt(cursor, VideoCurrentScale() * factor); else SetScaleAt(cursor, CurrentScale() * factor); }
     float WheelZoomFactor(float wheelUnits) const { return std::pow(kWheelZoomStep, reverseMouseWheelZoom_ ? -wheelUnits : wheelUnits); }
 
     float RenderTargetDpi() const {
@@ -2754,6 +2839,7 @@ public:
     }
 
     void FitToWindow() {
+        if (VideoActive()) { videoFitToWindow_ = true; videoPan_ = D2D1::Point2F(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (!source_) return;
         const float oldScale = CurrentScale();
         const D2D1_POINT_2F oldPan = pan_;
@@ -2787,6 +2873,14 @@ public:
         if (!dragging_) return;
         const LONG deltaX = point.x - lastDragPoint_.x;
         const LONG deltaY = point.y - lastDragPoint_.y;
+        if (VideoActive()) {
+            videoPan_.x += static_cast<float>(deltaX);
+            videoPan_.y += static_cast<float>(deltaY);
+            lastDragPoint_ = point;
+            ClampVideoPan();
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
         if (fitToWindow_ && (deltaX || deltaY)) {
             zoom_ = CurrentScale();
             fitToWindow_ = false;
@@ -3259,6 +3353,7 @@ private:
         DeactivateModel(); DeactivateVideo(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         ++decodeRequestGeneration_; ++modelLoadGeneration_; pendingFullDecode_.reset(); imageDecodePending_ = false;
         source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
+        videoFitToWindow_ = true; videoZoom_ = 1.0f; videoPan_ = D2D1::Point2F();
         currentPath_ = path; displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         fileSizeText_ = FormatFileSize(path); resolutionText_.clear(); error_.clear();
@@ -3742,6 +3837,55 @@ private:
         CloseClipboard();
         StartCopyFeedback();
     }
+
+public:
+    bool MediaSurfaceContains(POINT point) const {
+        return VideoActive() ? VideoContains(point) : ImageContains(point);
+    }
+    bool MediaDragSurfaceContains(POINT point) const {
+        return MediaSurfaceContains(point) && !VideoControlsContains(point) && CanvasNavigationZoneAt(point) == ButtonKind::None;
+    }
+    bool ShouldBeginLeftMediaDrag(POINT point) const {
+        return dragMediaWithLeftMouseWhenFit_ && !CanPan() && !currentPath_.empty() && MediaDragSurfaceContains(point);
+    }
+    bool ShouldBeginMiddleMediaDrag(POINT point) const {
+        return !dragMediaWithLeftMouseWhenFit_ && !currentPath_.empty() && MediaDragSurfaceContains(point);
+    }
+    void BeginMediaDrag(POINT point, DWORD button) {
+        if (currentPath_.empty() || !MediaDragSurfaceContains(point)) return;
+        mediaDragPending_ = true;
+        mediaDragStart_ = point;
+        mediaDragButton_ = button;
+        SetCapture(window_);
+    }
+    bool ContinueMediaDrag(POINT point) {
+        if (!mediaDragPending_) return false;
+        if (std::abs(point.x - mediaDragStart_.x) <= GetSystemMetrics(SM_CXDRAG) &&
+            std::abs(point.y - mediaDragStart_.y) <= GetSystemMetrics(SM_CYDRAG)) return true;
+        mediaDragPending_ = false;
+        if (GetCapture() == window_) ReleaseCapture();
+        ComPtr<IShellItem> item;
+        ComPtr<IDataObject> data;
+        if (FAILED(SHCreateItemFromParsingName(currentPath_.c_str(), nullptr, IID_PPV_ARGS(&item))) ||
+            FAILED(item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&data)))) return true;
+        auto* source = new (std::nothrow) CopyOnlyDropSource(mediaDragButton_);
+        if (!source) return true;
+        DWORD effect = DROPEFFECT_NONE;
+        const HRESULT ole = OleInitialize(nullptr);
+        if (SUCCEEDED(ole)) {
+            DoDragDrop(data.Get(), source, DROPEFFECT_COPY, &effect);
+            OleUninitialize();
+        }
+        source->Release();
+        return true;
+    }
+    bool EndMediaDrag() {
+        if (!mediaDragPending_) return false;
+        mediaDragPending_ = false;
+        return true;
+    }
+    void CancelMediaDrag() { mediaDragPending_ = false; }
+private:
 
     static std::wstring DescribeWallpaperFailure(HRESULT hr) {
         wchar_t value[16]{};
@@ -5185,7 +5329,8 @@ private:
     }
 
     bool CanPan() const {
-        return source_.Get() != nullptr;
+        if (VideoActive()) return VideoCurrentScale() > VideoFitScale() + 0.0001f;
+        return source_ && CurrentScale() > BaseScale() + 0.0001f;
     }
 
     bool DisplayedImageMatchesTarget() const {
@@ -5956,7 +6101,7 @@ private:
                     navigation.bottom - navigation.top, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, selected ? checkmark.Get() : primaryBrush.Get(), true);
             };
             drawNavigation(SettingsPage::General, ButtonKind::SettingsGeneralPage, L"GENERAL");
-            drawNavigation(SettingsPage::Image2D, ButtonKind::SettingsImage2DPage, L"2D SETTINGS");
+            drawNavigation(SettingsPage::Image2D, ButtonKind::SettingsImage2DPage, L"IMAGE SETTINGS");
             drawNavigation(SettingsPage::Video2D, ButtonKind::SettingsVideoPage, L"VIDEO SETTINGS");
             drawNavigation(SettingsPage::Model3D, ButtonKind::SettingsModel3DPage, L"3D SETTINGS");
             const float dividerX = static_cast<float>(bounds.left) + 194.0f * dpiScale;
@@ -5993,7 +6138,7 @@ private:
                 for(int i=0;i<(int)items.size();++i) { const D2D1_RECT_F item=D2D1::RectF((float)menu.left,(float)(menu.top+i*row),(float)menu.right,(float)(menu.top+(i+1)*row)); const bool active=i==selected, hover=(i<(int)buttons.size()&&hoveredButton_==buttons[i])||i==hoveredItem; if(active)renderTarget_->FillRectangle(item,accent.Get()); else if(hover)renderTarget_->FillRectangle(item,rowHover.Get()); DrawOverlayText(items[i],item.left+kDropdownLeftPaddingDips*dpiScale,item.top,item.right-item.left-kDropdownLeftPaddingDips*dpiScale,item.bottom-item.top,13,DWRITE_FONT_WEIGHT_NORMAL,active?checkmark.Get():primaryBrush.Get(),true); }
             };
             if (settingsPage_ == SettingsPage::General) {
-            const RECT confirmBounds = GetSettingsOptionBounds(2);
+            const RECT confirmBounds = GetSettingsOptionBounds(3);
             const float appearanceTop = static_cast<float>(confirmBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
             const RECT themeBounds = GetSettingsThemeBounds(ThemePreference::System);
             const float defaultTypesTop = static_cast<float>(themeBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
@@ -6003,6 +6148,7 @@ private:
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"remember application position and size", rememberWindowPlacement_);
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden images in folder", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
+            drawToggle(3, ButtonKind::SettingsDragMediaWithLeftMouseWhenFit, L"drag media with left mouse button when fit", dragMediaWithLeftMouseWhenFit_);
             group(L"THEME", appearanceTop);
             DrawOverlayText(L"", settingsLeft, static_cast<float>(bounds.top) + (appearanceTop + 28.0f) * dpiScale, settingsWidth,
                 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
@@ -6814,9 +6960,15 @@ private:
     std::wstring feedbackText_ = L"copied to clipboard";
     std::vector<fs::path> navigationFiles_;
     D2D1_POINT_2F pan_ = D2D1::Point2F();
+    D2D1_POINT_2F videoPan_ = D2D1::Point2F();
     POINT lastDragPoint_{};
+    POINT mediaDragStart_{};
     float zoom_ = 1.0f;
+    float videoZoom_ = 1.0f;
     bool fitToWindow_ = true;
+    bool videoFitToWindow_ = true;
+    bool mediaDragPending_ = false;
+    DWORD mediaDragButton_ = 0;
     bool gifPlaying_ = false;
     bool gifPaused_ = false;
     bool gifPlaybackTimerActive_ = false;
@@ -6858,6 +7010,7 @@ private:
     bool rememberWindowPlacement_ = true;
     bool includeHiddenImages_ = true;
     bool confirmBeforeDeleting_ = true;
+    bool dragMediaWithLeftMouseWhenFit_ = false;
     bool deleteWarningSuppressOnConfirm_ = false;
     bool showZoomPercentage_ = true;
     ZoomHudPosition zoomHudPosition_ = ZoomHudPosition::BottomRight;
@@ -7212,7 +7365,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetCapture(window);
         } else {
             if (viewer->ModelActive()) { viewer->BeginModelOrbit({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); SetCapture(window); }
-            else viewer->BeginPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            else if (viewer->ShouldBeginLeftMediaDrag(point)) viewer->BeginMediaDrag(point, MK_LBUTTON);
+            else viewer->BeginPan(point);
         }
         return 0;
     }
@@ -7220,6 +7374,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (!viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen() && viewer->ModelActive()) {
             viewer->BeginModelPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
             SetCapture(window);
+            return 0;
+        }
+        if (!viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen() && !viewer->ModelActive() &&
+            viewer->ShouldBeginMiddleMediaDrag({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
+            viewer->BeginMediaDrag({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }, MK_MBUTTON);
             return 0;
         }
         break;
@@ -7277,6 +7436,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 viewer->ContinueCanvasNavigationClick(point);
                 return 0;
             }
+            if (viewer->ContinueMediaDrag(point)) return 0;
+            if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) viewer->PanTo(point);
             return 0;
         }
         const FrameMetrics frame = GetFrameMetrics(window);
@@ -7290,6 +7451,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->ContinueCanvasNavigationClick(point);
             return 0;
         }
+        if (viewer->ContinueMediaDrag(point)) return 0;
         if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) {
             if (viewer->ModelActive()) {
                 if (wParam & (MK_LBUTTON | MK_MBUTTON)) viewer->ContinueModelDrag(point);
@@ -7308,6 +7470,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const ButtonKind navigation = viewer->FinishCanvasNavigationClick({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
             if (GetCapture() == window) ReleaseCapture();
             if (navigation != ButtonKind::None) viewer->InvokeButton(navigation);
+            return 0;
+        }
+        if (viewer->EndMediaDrag()) {
+            if (GetCapture() == window) ReleaseCapture();
             return 0;
         }
         if (viewer->PressedButton() != ButtonKind::None) {
@@ -7362,6 +7528,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->EndPan(); viewer->EndModelDrag(); if (GetCapture() == window) ReleaseCapture(); return 0;
     }
     case WM_MBUTTONUP:
+        if (viewer->EndMediaDrag()) {
+            if (GetCapture() == window) ReleaseCapture();
+            return 0;
+        }
         if (viewer->ModelActive()) {
             viewer->EndModelDrag();
             if (GetCapture() == window) ReleaseCapture();
@@ -7369,7 +7539,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         break;
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelMediaDrag(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (!viewer->TutorialActive()) { if (viewer->ModelActive()) viewer->SelectModelFace(point); viewer->OpenContextMenu(point); }

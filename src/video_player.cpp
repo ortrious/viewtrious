@@ -382,14 +382,13 @@ bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
     return transferred;
 }
 
-bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas) {
+bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas, float scale, D2D1_POINT_2F pan) {
     if (!context || !frameTexture_ || !videoWidth_ || !videoHeight_ || !hasValidFrame_ || failed_) return false;
     const float canvasWidth = static_cast<float>(std::max(1L, canvas.right - canvas.left));
     const float canvasHeight = static_cast<float>(std::max(1L, canvas.bottom - canvas.top));
-    const float scale = std::min(canvasWidth / static_cast<float>(videoWidth_), canvasHeight / static_cast<float>(videoHeight_));
     const float width = videoWidth_ * scale, height = videoHeight_ * scale;
-    const D2D1_RECT_F destination = D2D1::RectF(canvas.left + (canvasWidth - width) * 0.5f, canvas.top + (canvasHeight - height) * 0.5f,
-        canvas.left + (canvasWidth + width) * 0.5f, canvas.top + (canvasHeight + height) * 0.5f);
+    const D2D1_RECT_F destination = D2D1::RectF(canvas.left + (canvasWidth - width) * 0.5f + pan.x, canvas.top + (canvasHeight - height) * 0.5f + pan.y,
+        canvas.left + (canvasWidth + width) * 0.5f + pan.x, canvas.top + (canvasHeight + height) * 0.5f + pan.y);
     if (!frameBitmap_) {
         ComPtr<IDXGISurface> surface;
         const HRESULT surfaceResult = frameTexture_.As(&surface);

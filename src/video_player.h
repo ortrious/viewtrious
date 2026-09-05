@@ -24,7 +24,7 @@ public:
     void HandleRenderTargetResize();
     bool HandleMediaEvent(DWORD event, std::wstring& error);
     bool UpdateFrame(FrameAcquisitionReason reason);
-    bool Draw(ID2D1DeviceContext* context, const RECT& canvas);
+    bool Draw(ID2D1DeviceContext* context, const RECT& canvas, float scale, D2D1_POINT_2F pan);
     void TogglePlayPause();
     bool GetPlaybackTimes(double& currentSeconds, double& durationSeconds) const;
     bool Seek(double seconds);

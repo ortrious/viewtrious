@@ -174,7 +174,7 @@ constexpr std::array<HelpSection, 1> kQuickTutorialSections{{
 }};
 constexpr std::array<HelpSection, 3> kSupportedFileTypeSections{{
     { L"images", L"PNG, JPEG, BMP, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF" },
-    { L"video", L"MP4, MOV, GIF" },
+    { L"video", L"MP4, MOV, MKV, GIF" },
     { L"3D", L"STL, 3MF; STEP and STP when the optional Open CASCADE Technology add-on is installed." },
 }};
 constexpr std::array<HelpSection, 2> kFileAssociationSections{{
@@ -198,7 +198,7 @@ constexpr std::array<HelpSection, 2> kFeedbackAndAboutSections{{
 }};
 constexpr std::array<HelpSection, 5> kTroubleshootingSections{{
     { L"a file will not open", L"confirm that the file type is supported and that the file itself can be read normally by Windows." },
-    { L"video will not play", L"an MP4 or MOV file can contain a codec unavailable through the Windows media components used by Viewtrious. a supported extension does not guarantee every codec can be decoded." },
+    { L"video will not play", L"a video file can contain a codec unavailable through the Windows media components used by Viewtrious. a supported extension does not guarantee every codec can be decoded." },
     { L"a 3D model will not open", L"confirm that the format is supported and that the file contains valid model geometry." },
     { L"SpaceMouse does not respond", L"confirm that SpaceMouse is enabled under 3D settings and that 3Dconnexion software recognizes the device." },
     { L"Viewtrious behaves unexpectedly", L"use feedback from the main menu and include the file type and steps to reproduce the problem." },
@@ -365,7 +365,7 @@ bool IsSupportedExtension(const fs::path& path) {
         extension == L".tiff" || extension == L".ico" || extension == L".webp" ||
         extension == L".heic" || extension == L".heif" || extension == L".avif" ||
         extension == L".dng" || extension == L".cr2" || extension == L".cr3" ||
-        extension == L".nef" || extension == L".arw" || extension == L".raf" || extension == L".mp4" || extension == L".mov" || extension == L".stl" || extension == L".3mf" || extension == L".step" || extension == L".stp";
+        extension == L".nef" || extension == L".arw" || extension == L".raf" || extension == L".mp4" || extension == L".mov" || extension == L".mkv" || extension == L".stl" || extension == L".3mf" || extension == L".step" || extension == L".stp";
 }
 
 
@@ -380,7 +380,7 @@ bool IsStlPath(const std::wstring& path) { return LowercaseExtension(path) == L"
 bool IsThreeMfPath(const std::wstring& path) { return LowercaseExtension(path) == L".3mf"; }
 bool IsStepPath(const std::wstring& path) { const std::wstring extension=LowercaseExtension(path); return extension == L".step" || extension == L".stp"; }
 bool IsModelPath(const std::wstring& path) { return IsStlPath(path) || IsThreeMfPath(path) || IsStepPath(path); }
-bool IsVideoPath(const std::wstring& path) { const std::wstring extension = LowercaseExtension(path); return extension == L".mp4" || extension == L".mov"; }
+bool IsVideoPath(const std::wstring& path) { const std::wstring extension = LowercaseExtension(path); return extension == L".mp4" || extension == L".mov" || extension == L".mkv"; }
 bool IsTwoDimensionalMediaPath(const fs::path& path) { return IsSupportedExtension(path) && !IsModelPath(path.wstring()); }
 
 bool IsJpegPath(const std::wstring& path) {
@@ -1132,7 +1132,7 @@ public:
         ComPtr<IFileOpenDialog> dialog;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
         static const COMDLG_FILTERSPEC filters[] = {
-            { L"Supported files", StepAddonPresent() ? L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.mp4;*.mov;*.stl;*.3mf;*.step;*.stp" : L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.mp4;*.mov;*.stl;*.3mf" },
+            { L"Supported files", StepAddonPresent() ? L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.mp4;*.mov;*.mkv;*.stl;*.3mf;*.step;*.stp" : L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.mp4;*.mov;*.mkv;*.stl;*.3mf" },
             { L"All files", L"*.*" },
         };
         dialog->SetFileTypes(ARRAYSIZE(filters), filters);
@@ -3653,6 +3653,7 @@ private:
             { L".dng", L"Viewtrious.dng", L"DNG File", 101 },
             { L".mp4", L"Viewtrious.mp4", L"MP4 File", 104 },
             { L".mov", L"Viewtrious.mov", L"MOV File", 104 },
+            { L".mkv", L"Viewtrious.mkv", L"MKV File", 104 },
             { L".stl", L"Viewtrious.stl", L"STL File", 105 },
             { L".3mf", L"Viewtrious.3mf", L"3MF File", 105 },
         };
@@ -6104,7 +6105,7 @@ private:
             const float videoTop = imagesTop + familyHeight + familyGap;
             const float modelsTop = videoTop + familyHeight + familyGap;
             drawFormatFamily(L"images", L"JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", imagesTop);
-            drawFormatFamily(L"video", L"MP4, MOV", videoTop);
+            drawFormatFamily(L"video", L"MP4, MOV, MKV", videoTop);
             drawFormatFamily(L"3D", StepAddonPresent() ? L"STL, 3MF, STEP, STP" : L"STL, 3MF", modelsTop);
             DrawOverlayText(L"STEP/STP require the optional add-on", formatLeft,
                 static_cast<float>(bounds.top) + (modelsTop + familyHeight + noteGap) * dpiScale, formatWidth, 16.0f * dpiScale,

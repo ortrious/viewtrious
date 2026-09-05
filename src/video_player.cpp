@@ -159,7 +159,7 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
     if (SUCCEEDED(hr)) hr = factory->CreateInstance(0, attributes.Get(), &engine_);
     if (SUCCEEDED(hr)) hr = engine_.As(&engineEx_);
     if (FAILED(hr) || !SetSourceFromPath(path, error)) {
-        if (error.empty()) error = L"Windows could not prepare this MP4 for playback.";
+        if (error.empty()) error = L"Windows could not prepare this video for playback.";
         Shutdown();
         return false;
     }
@@ -227,7 +227,7 @@ bool VideoPlayer::SetSourceFromPath(const std::wstring& path, std::wstring& erro
     const HRESULT set = engine_->SetSource(source);
     SysFreeString(source);
     const HRESULT load = SUCCEEDED(set) ? engine_->Load() : set;
-    if (FAILED(set) || FAILED(load)) { error = L"Viewtrious could not open this MP4."; return false; }
+    if (FAILED(set) || FAILED(load)) { error = L"Viewtrious could not open this video."; return false; }
     return true;
 }
 
@@ -249,7 +249,7 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
     if (event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA || event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY) {
         const HRESULT size = engine_->GetNativeVideoSize(&videoWidth_, &videoHeight_);
         if (FAILED(size) || !videoWidth_ || !videoHeight_ || !CreateFrameTexture(error)) {
-            if (error.empty()) error = L"Viewtrious could not read the MP4 video dimensions.";
+            if (error.empty()) error = L"Viewtrious could not read the video dimensions.";
             failed_ = true;
         } else ready_ = true;
     } else if (event == MF_MEDIA_ENGINE_EVENT_CANPLAY && !failed_) {
@@ -261,7 +261,7 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
     } else if (event == MF_MEDIA_ENGINE_EVENT_ENDED) {
         playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackEnd);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ERROR) {
-        error = L"Viewtrious could not decode this MP4. It may be corrupt or use an unsupported codec.";
+        error = L"Viewtrious could not decode this video. It may be corrupt or use an unsupported codec.";
         failed_ = true; playing_ = false;
     }
     return true;

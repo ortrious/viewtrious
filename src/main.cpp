@@ -470,6 +470,37 @@ void WriteSetting(const wchar_t* name, DWORD value) {
     RegCloseKey(key);
 }
 
+void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const wchar_t* name, LONG error);
+
+bool DeleteSettingsValues() {
+    HKEY key = nullptr;
+    LONG result = RegOpenKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &key);
+    if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return true;
+    if (result != ERROR_SUCCESS) { TraceRegistryFailure(L"open for reset", kSettingsKey, L"", result); return false; }
+
+    DWORD maximumNameLength = 0;
+    result = RegQueryInfoKeyW(key, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &maximumNameLength, nullptr, nullptr, nullptr);
+    if (result != ERROR_SUCCESS) {
+        RegCloseKey(key);
+        TraceRegistryFailure(L"query for reset", kSettingsKey, L"", result);
+        return false;
+    }
+
+    std::vector<wchar_t> name(maximumNameLength + 1);
+    while (true) {
+        DWORD nameLength = static_cast<DWORD>(name.size());
+        result = RegEnumValueW(key, 0, name.data(), &nameLength, nullptr, nullptr, nullptr, nullptr);
+        if (result == ERROR_NO_MORE_ITEMS) break;
+        if (result != ERROR_SUCCESS) break;
+        result = RegDeleteValueW(key, name.data());
+        if (result != ERROR_SUCCESS) break;
+    }
+    RegCloseKey(key);
+    if (result == ERROR_NO_MORE_ITEMS) return true;
+    TraceRegistryFailure(L"delete setting", kSettingsKey, L"", result);
+    return false;
+}
+
 void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const wchar_t* name, LONG error) {
 #ifdef _DEBUG
     std::wstring message = L"Viewtrious registry " + std::wstring(operation) + L" failed: path=" + path +
@@ -2425,7 +2456,11 @@ public:
     }
     void ResetToDefaults() {
         resetInProgress_ = true;
-        RegDeleteTreeW(HKEY_CURRENT_USER, kSettingsKey);
+        if (!DeleteSettingsValues()) {
+            resetInProgress_ = false;
+            ShowActionError(L"Viewtrious could not reset its preferences.");
+            return;
+        }
         CleanupWallpaperStaging();
         rememberWindowPlacement_ = true;
         includeHiddenImages_ = true;
@@ -2442,7 +2477,6 @@ public:
         STARTUPINFOW startup{ sizeof(startup) };
         PROCESS_INFORMATION process{};
         if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process)) {
-            resetInProgress_ = false;
             ShowActionError(L"Viewtrious preferences were reset. Please close and reopen Viewtrious to continue.");
             return;
         }

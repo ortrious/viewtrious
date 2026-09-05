@@ -505,26 +505,29 @@ public:
     }
     ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&references_)); }
     ULONG STDMETHODCALLTYPE Release() override { const ULONG value = static_cast<ULONG>(InterlockedDecrement(&references_)); if (!value) delete this; return value; }
-    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD, POINT point, DWORD* effect) override {
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD, POINTL point, DWORD* effect) override {
         if (!effect) return E_POINTER;
         *effect = DROPEFFECT_NONE;
-        if (helper_) helper_->DragEnter(window_, data, &point, DROPEFFECT_NONE);
+        const POINT helperPoint{ point.x, point.y };
+        if (helper_) helper_->DragEnter(window_, data, &helperPoint, DROPEFFECT_NONE);
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINT point, DWORD* effect) override {
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL point, DWORD* effect) override {
         if (!effect) return E_POINTER;
         *effect = DROPEFFECT_NONE;
-        if (helper_) helper_->DragOver(&point, DROPEFFECT_NONE);
+        const POINT helperPoint{ point.x, point.y };
+        if (helper_) helper_->DragOver(&helperPoint, DROPEFFECT_NONE);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE DragLeave() override {
         if (helper_) helper_->DragLeave();
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINT point, DWORD* effect) override {
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINTL point, DWORD* effect) override {
         if (!effect) return E_POINTER;
         *effect = DROPEFFECT_NONE;
-        if (helper_) helper_->Drop(data, &point, DROPEFFECT_NONE);
+        const POINT helperPoint{ point.x, point.y };
+        if (helper_) helper_->Drop(data, &helperPoint, DROPEFFECT_NONE);
         return S_OK;
     }
 private:

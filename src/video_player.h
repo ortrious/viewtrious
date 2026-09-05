@@ -18,7 +18,6 @@ class VideoPlayer {
 public:
     enum class FrameAcquisitionReason : unsigned char { Scheduler, InitialLoad, Seek };
 
-    static void Trace(HWND window, const wchar_t* stage, HRESULT result = S_OK, DWORD event = 0);
     bool Open(HWND window, ID3D11Device* device, const std::wstring& path, std::wstring& error);
     void Shutdown();
     bool RebindDevice(ID3D11Device* device, std::wstring& error);
@@ -54,7 +53,6 @@ private:
     void RecordFramePacingEvent(FramePacingEvent event, LONGLONG pts = 0, HRESULT result = S_OK, double first = 0.0, double second = 0.0);
     void RecordFramePacingEventAtQpc(FramePacingEvent event, LONGLONG qpc, LONGLONG pts = 0, HRESULT result = S_OK, double first = 0.0, double second = 0.0);
 
-    HWND window_ = nullptr;
     Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> deviceManager_;
     Microsoft::WRL::ComPtr<IMFMediaEngine> engine_;
     Microsoft::WRL::ComPtr<IMFMediaEngineEx> engineEx_;
@@ -70,8 +68,6 @@ private:
     bool failed_ = false;
     bool hasValidFrame_ = false;
     bool hasTransferredPts_ = false;
-    bool bitmapRebuildPending_ = false;
-    bool cachedFrameDrawAfterResizePending_ = false;
     bool hasFramesPerSecond_ = false;
     float framesPerSecond_ = 0.0f;
     LONGLONG lastTransferredPts_ = 0;

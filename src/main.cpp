@@ -2517,7 +2517,6 @@ public:
         BeginPaint(window_, &paint);
         const bool videoPaint = VideoActive();
         if (videoPaint) videoPlayer_.RecordFramePacingPaint();
-        if (videoPaint) VideoPlayer::Trace(window_, L"Video2D paint begin");
         EnsureRenderTarget();
         if (renderTarget_ && graphicsHost_.Ready()) {
             if (ModelActive() && !TutorialActive()) modelViewport_.Render(graphicsHost_, ModelCanvasBounds());
@@ -2537,7 +2536,6 @@ public:
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
             if (!tutorialPresentation_) DrawRevisionLabel();
-            if (videoPaint) VideoPlayer::Trace(window_, L"Video2D overlay drawing begin");
             DrawTitleBar();
             DrawTriangleCountTooltip();
             DrawDropdown();
@@ -2546,21 +2544,15 @@ public:
             DrawOverlay();
             if (!tutorialPresentation_) DrawCopyFeedback();
             DrawTutorial();
-            if (videoPaint) VideoPlayer::Trace(window_, L"Video2D overlay drawing end");
-            if (videoPaint) VideoPlayer::Trace(window_, L"Video2D EndDraw begin");
             const HRESULT hr = graphicsHost_.EndDraw();
-            if (videoPaint) VideoPlayer::Trace(window_, L"Video2D EndDraw end", hr);
             if (SUCCEEDED(hr) && bitmap_ && !tutorialPresentation_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
             else if (SUCCEEDED(hr)) {
-                if (videoPaint) VideoPlayer::Trace(window_, L"Video2D Present begin");
                 const HRESULT present = graphicsHost_.Present();
                 if (videoPaint) videoPlayer_.RecordFramePacingPresent(present);
-                if (videoPaint) VideoPlayer::Trace(window_, L"Video2D Present end", present);
             }
         }
         EndPaint(window_, &paint);
-        if (videoPaint) VideoPlayer::Trace(window_, L"Video2D paint end/return");
     }
 
     void Resize() {
@@ -3263,13 +3255,12 @@ private:
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
     void BeginVideoLoad(const std::wstring& path) {
-        VideoPlayer::Trace(window_, L"Viewer entering Video2D open");
         DeactivateModel(); DeactivateVideo(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         ++decodeRequestGeneration_; ++modelLoadGeneration_; pendingFullDecode_.reset(); imageDecodePending_ = false;
         source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         currentPath_ = path; displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
-        fileSizeText_ = FormatFileSize(path); resolutionText_.clear(); videoFramesPerSecondText_.clear(); error_.clear();
+        fileSizeText_ = FormatFileSize(path); resolutionText_.clear(); error_.clear();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false; contentKind_ = ContentKind::Video2D;
         ResetVideoControls();
         EnsureRenderTarget();
@@ -3278,28 +3269,24 @@ private:
             contentKind_ = ContentKind::None;
             error_ = videoError.empty() ? L"Viewtrious could not open this MP4." : videoError;
         }
-        VideoPlayer::Trace(window_, L"Video2D render invalidation after open");
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DeactivateVideo() {
-        VideoPlayer::Trace(window_, L"Viewer Video2D teardown");
         videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
         StopVideoControls();
         videoPlayer_.Shutdown();
-        videoFramesPerSecondText_.clear();
         if (contentKind_ == ContentKind::Video2D) { resolutionText_.clear(); contentKind_ = ContentKind::None; }
     }
 public:
     void VideoMediaEngineEvent(DWORD event) {
         if (!VideoActive()) return;
-        VideoPlayer::Trace(window_, L"Video2D event received by UI", S_OK, event);
         const bool wasPlaying = videoPlayer_.Playing();
         std::wstring videoError;
         videoPlayer_.HandleMediaEvent(event, videoError);
         UpdateVideoTitleMetadata();
         if (!videoError.empty()) error_ = videoError;
-        if (videoPlayer_.Failed()) { DeactivateVideo(); VideoPlayer::Trace(window_, L"Video2D render invalidation after failure", S_OK, event); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
         } else if (!videoPlayer_.HasValidFrame() &&
@@ -3313,7 +3300,6 @@ public:
             StopVideoPlaybackScheduler();
         }
         if (event == MF_MEDIA_ENGINE_EVENT_ENDED || event == MF_MEDIA_ENGINE_EVENT_CANPLAY || event == MF_MEDIA_ENGINE_EVENT_PLAYING) ShowVideoControls();
-        VideoPlayer::Trace(window_, L"Video2D render invalidation after event", S_OK, event);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void UpdateVideoTitleMetadata() {
@@ -3322,8 +3308,7 @@ public:
         if (videoPlayer_.GetNativeVideoSize(width, height)) resolutionText_ = std::to_wstring(width) + L" x " + std::to_wstring(height);
         float framesPerSecond = 0.0f;
         if (videoPlayer_.TryGetFramesPerSecond(framesPerSecond)) {
-            videoFramesPerSecondText_ = FormatFramesPerSecond(framesPerSecond);
-            if (!resolutionText_.empty()) resolutionText_ += L"  \x2022  " + videoFramesPerSecondText_;
+            if (!resolutionText_.empty()) resolutionText_ += L"  \x2022  " + FormatFramesPerSecond(framesPerSecond);
         }
     }
     void VideoPlaybackWakeMessage(uint64_t generation) {
@@ -3340,7 +3325,6 @@ public:
         while (videoPlaybackDeadlineQpc_ <= static_cast<double>(now.QuadPart))
             videoPlaybackDeadlineQpc_ += videoPlaybackFramePeriodQpc_;
         ArmVideoPlaybackTimer();
-        VideoPlayer::Trace(window_, L"Video2D render invalidation from high-resolution timer");
         InvalidateRect(window_, nullptr, FALSE);
     }
 private:
@@ -6802,7 +6786,6 @@ private:
     std::wstring displayedPath_;
     FileIdentity currentFileIdentity_{};
     std::wstring resolutionText_;
-    std::wstring videoFramesPerSecondText_;
     uint64_t modelTriangleCount_ = 0;
     std::wstring fileSizeText_;
     std::wstring filenameText_;

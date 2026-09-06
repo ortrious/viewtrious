@@ -129,7 +129,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAdjustments, VideoPlaybackSpeed };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAdjustments, VideoPlaybackSpeed, VideoFullscreen };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
@@ -683,6 +683,7 @@ struct VideoControlsLayout {
     RECT mute;
     RECT playbackSpeed;
     RECT adjustments;
+    RECT fullscreen;
 };
 
 struct VideoAdjustmentsPanelLayout {
@@ -1225,7 +1226,8 @@ public:
         const int stepForwardLeft = stepBackwardLeft + buttonWidth + gap;
         const int muteLeft = stepForwardLeft + buttonWidth + gap;
         const int speedWidth = std::min(MulDiv(46, dpi, 96), std::max(MulDiv(34, dpi, 96), buttonWidth + gap));
-        const int adjustmentsLeft = left + width - padding - buttonWidth;
+        const int fullscreenLeft = left + width - padding - buttonWidth;
+        const int adjustmentsLeft = fullscreenLeft - gap - buttonWidth;
         const int speedLeft = adjustmentsLeft - gap - speedWidth;
         return { { left, top, left + width, top + height },
             { currentLeft, top + padding, currentLeft + timeWidth, top + padding + timelineHeight },
@@ -1236,7 +1238,8 @@ public:
             { stepForwardLeft, controlTop, stepForwardLeft + buttonWidth, controlTop + buttonWidth },
             { muteLeft, controlTop, muteLeft + buttonWidth, controlTop + buttonWidth },
             { speedLeft, controlTop, speedLeft + speedWidth, controlTop + buttonWidth },
-            { adjustmentsLeft, controlTop, adjustmentsLeft + buttonWidth, controlTop + buttonWidth } };
+            { adjustmentsLeft, controlTop, adjustmentsLeft + buttonWidth, controlTop + buttonWidth },
+            { fullscreenLeft, controlTop, fullscreenLeft + buttonWidth, controlTop + buttonWidth } };
     }
     VideoPlaybackSpeedPanelLayout GetVideoPlaybackSpeedPanelLayout() const {
         const VideoControlsLayout controls = GetVideoControlsLayout();
@@ -1263,7 +1266,7 @@ public:
         const int gap = MulDiv(8, dpi, 96);
         const LONG width = std::min<LONG>(MulDiv(300, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)));
         const LONG height = MulDiv(218, dpi, 96);
-        const LONG right = std::min<LONG>(controls.island.right, canvas.right - MulDiv(8, dpi, 96));
+        const LONG right = std::min<LONG>(controls.adjustments.right, canvas.right - MulDiv(8, dpi, 96));
         const LONG left = std::max<LONG>(canvas.left + MulDiv(8, dpi, 96), right - width);
         const LONG bottom = std::max<LONG>(canvas.top + height, controls.island.top - gap);
         const LONG top = bottom - height;
@@ -1348,6 +1351,7 @@ public:
         if (PtInRect(&layout.mute, point)) return ButtonKind::VideoMute;
         if (PtInRect(&layout.playbackSpeed, point)) return ButtonKind::VideoPlaybackSpeed;
         if (PtInRect(&layout.adjustments, point)) return ButtonKind::VideoAdjustments;
+        if (PtInRect(&layout.fullscreen, point)) return ButtonKind::VideoFullscreen;
         return ButtonKind::None;
     }
     bool VideoScrubberContains(POINT point) const {
@@ -1478,6 +1482,7 @@ public:
         else if (control == ButtonKind::VideoMute) { videoPlayer_.ToggleMute(); ShowVideoControls(); }
         else if (control == ButtonKind::VideoPlaybackSpeed) SetVideoPlaybackSpeedPanelOpen(!videoPlaybackSpeedPanelOpen_);
         else if (control == ButtonKind::VideoAdjustments) { if (videoAdjustmentsPanelOpen_) SetVideoAdjustmentsPanelOpen(false); else { videoPlaybackSpeedPanelOpen_ = false; SetVideoAdjustmentsPanelOpen(true); } }
+        else if (control == ButtonKind::VideoFullscreen) { videoFullscreenToggleTick_ = GetTickCount64(); ToggleVideoFullscreen(); }
         return true;
     }
     bool ContinueVideoControlsInteraction(POINT point) {
@@ -2793,15 +2798,33 @@ public:
         const RECT bounds = GetEmptyOpenFileButtonBounds();
         return PtInRect(&bounds, point);
     }
+    void ToggleVideoFullscreen() {
+        if (!VideoActive()) return;
+        ToggleFullscreen();
+    }
+    bool ConsumeVideoFullscreenButtonDoubleClick() {
+        if (videoFullscreenToggleTick_ == 0) return false;
+        const ULONGLONG elapsed = GetTickCount64() - videoFullscreenToggleTick_;
+        videoFullscreenToggleTick_ = 0;
+        return elapsed <= GetDoubleClickTime();
+    }
     void ToggleFullscreen() {
         DismissContextMenu();
         if (!fullscreen_) DismissOverlay();
+        if (VideoActive()) {
+            SetVideoPlaybackSpeedPanelOpen(false);
+            SetVideoAdjustmentsPanelOpen(false);
+        }
         if (!fullscreen_) {
             fullscreenStyle_ = GetWindowLongPtrW(window_, GWL_STYLE);
+            fullscreenExStyle_ = GetWindowLongPtrW(window_, GWL_EXSTYLE);
+            fullscreenPlacement_ = { sizeof(fullscreenPlacement_) };
+            if (!GetWindowPlacement(window_, &fullscreenPlacement_)) return;
             GetWindowRect(window_, &fullscreenRect_);
             MONITORINFO monitor{ sizeof(monitor) };
             GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor);
             SetWindowLongPtrW(window_, GWL_STYLE, fullscreenStyle_ & ~WS_OVERLAPPEDWINDOW);
+            SetWindowLongPtrW(window_, GWL_EXSTYLE, fullscreenExStyle_);
             fullscreen_ = true;
             SetWindowPos(window_, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
                 monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top,
@@ -2809,12 +2832,15 @@ public:
             ApplyWindowCornerPreference(window_, false);
         } else {
             SetWindowLongPtrW(window_, GWL_STYLE, fullscreenStyle_);
+            SetWindowLongPtrW(window_, GWL_EXSTYLE, fullscreenExStyle_);
             fullscreen_ = false;
-            SetWindowPos(window_, HWND_NOTOPMOST, fullscreenRect_.left, fullscreenRect_.top,
-                fullscreenRect_.right - fullscreenRect_.left, fullscreenRect_.bottom - fullscreenRect_.top,
-                SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+            SetWindowPos(window_, HWND_NOTOPMOST, 0, 0, 0, 0,
+                SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER);
+            SetWindowPlacement(window_, &fullscreenPlacement_);
             ApplyWindowCornerPreference(window_, !IsZoomed(window_));
         }
+        if (VideoActive()) ShowVideoControls();
+        InvalidateRect(window_, nullptr, FALSE);
     }
     void Paint() {
         PAINTSTRUCT paint{};
@@ -3361,7 +3387,8 @@ public:
     void SaveWindowPlacement() const {
         if (resetInProgress_ || tutorialPlacementSuppressed_ || !rememberWindowPlacement_ || IsLikelySnappedWindow(window_)) return;
         WINDOWPLACEMENT placement{ sizeof(placement) };
-        if (!GetWindowPlacement(window_, &placement)) return;
+        if (fullscreen_) placement = fullscreenPlacement_;
+        else if (!GetWindowPlacement(window_, &placement)) return;
         const RECT& rect = placement.rcNormalPosition;
         HKEY key = nullptr;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
@@ -3682,6 +3709,7 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DeactivateVideo() {
+        if (fullscreen_ && !shuttingDown_) ToggleFullscreen();
         videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
         StopVideoControls();
@@ -5799,6 +5827,7 @@ private:
         if (videoControlsHovered_ == ButtonKind::VideoMute) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoPlaybackSpeed || videoPlaybackSpeedPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playbackSpeed), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoAdjustments || videoAdjustmentsPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.adjustments), 5.0f * scale, 5.0f * scale), hover.Get());
+        if (videoControlsHovered_ == ButtonKind::VideoFullscreen) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.fullscreen), 5.0f * scale, 5.0f * scale), hover.Get());
 
         const float playCenterX = (layout.playPause.left + layout.playPause.right) * 0.5f;
         const float playCenterY = (layout.playPause.top + layout.playPause.bottom) * 0.5f;
@@ -5846,6 +5875,32 @@ private:
             const float tooltipTop = static_cast<float>(layout.island.top) - tooltipHeight - 6.0f * scale;
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(tooltipLeft, tooltipTop, tooltipLeft + tooltipWidth, tooltipTop + tooltipHeight), 5.0f * scale, 5.0f * scale), surface.Get());
             DrawOverlayText(L"adjustments", tooltipLeft, tooltipTop, tooltipWidth, tooltipHeight, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
+        }
+
+        const float fullscreenCenterX = (layout.fullscreen.left + layout.fullscreen.right) * 0.5f;
+        const float fullscreenCenterY = (layout.fullscreen.top + layout.fullscreen.bottom) * 0.5f;
+        const float fullscreenArm = 7.0f * scale, fullscreenInset = 3.0f * scale;
+        const auto drawFullscreenCorner = [&](float x, float y, float horizontal, float vertical) {
+            renderTarget_->DrawLine(D2D1::Point2F(x, y), D2D1::Point2F(x + horizontal * fullscreenArm, y), text.Get(), 1.5f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(x, y), D2D1::Point2F(x, y + vertical * fullscreenArm), text.Get(), 1.5f * scale);
+        };
+        if (fullscreen_) {
+            drawFullscreenCorner(fullscreenCenterX - fullscreenInset, fullscreenCenterY - fullscreenInset, -1.0f, -1.0f);
+            drawFullscreenCorner(fullscreenCenterX + fullscreenInset, fullscreenCenterY - fullscreenInset, 1.0f, -1.0f);
+            drawFullscreenCorner(fullscreenCenterX - fullscreenInset, fullscreenCenterY + fullscreenInset, -1.0f, 1.0f);
+            drawFullscreenCorner(fullscreenCenterX + fullscreenInset, fullscreenCenterY + fullscreenInset, 1.0f, 1.0f);
+        } else {
+            drawFullscreenCorner(fullscreenCenterX - fullscreenArm, fullscreenCenterY - fullscreenArm, 1.0f, 1.0f);
+            drawFullscreenCorner(fullscreenCenterX + fullscreenArm, fullscreenCenterY - fullscreenArm, -1.0f, 1.0f);
+            drawFullscreenCorner(fullscreenCenterX - fullscreenArm, fullscreenCenterY + fullscreenArm, 1.0f, -1.0f);
+            drawFullscreenCorner(fullscreenCenterX + fullscreenArm, fullscreenCenterY + fullscreenArm, -1.0f, -1.0f);
+        }
+        if (videoControlsHovered_ == ButtonKind::VideoFullscreen) {
+            const float tooltipWidth = fullscreen_ ? 98.0f * scale : 72.0f * scale, tooltipHeight = 24.0f * scale;
+            const float tooltipLeft = fullscreenCenterX - tooltipWidth * 0.5f;
+            const float tooltipTop = static_cast<float>(layout.island.top) - tooltipHeight - 6.0f * scale;
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(tooltipLeft, tooltipTop, tooltipLeft + tooltipWidth, tooltipTop + tooltipHeight), 5.0f * scale, 5.0f * scale), surface.Get());
+            DrawOverlayText(fullscreen_ ? L"exit fullscreen" : L"fullscreen", tooltipLeft, tooltipTop, tooltipWidth, tooltipHeight, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
 
         double current = 0.0, duration = 0.0;
@@ -7493,11 +7548,14 @@ private:
     ULONGLONG videoControlsLastActivity_ = 0;
     ULONGLONG videoControlsFadeStart_ = 0;
     bool videoControlsFadeActive_ = false;
+    ULONGLONG videoFullscreenToggleTick_ = 0;
     ButtonKind hoveredButton_ = ButtonKind::None;
     ButtonKind pressedButton_ = ButtonKind::None;
     bool resetInProgress_ = false;
     LONG_PTR fullscreenStyle_ = 0;
+    LONG_PTR fullscreenExStyle_ = 0;
     RECT fullscreenRect_{};
+    WINDOWPLACEMENT fullscreenPlacement_{ sizeof(WINDOWPLACEMENT) };
 };
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -7601,6 +7659,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->ConsumeVideoFullscreenButtonDoubleClick()) return 0;
         const ButtonKind videoControl = viewer->VideoControlAt(point);
         if (videoControl == ButtonKind::VideoStepBackward || videoControl == ButtonKind::VideoStepForward) {
             const int direction = videoControl == ButtonKind::VideoStepBackward ? -1 : 1;
@@ -7608,11 +7667,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (viewer->BeginVideoStepHold(direction, false)) SetCapture(window);
             return 0;
         }
+        if (viewer->VideoActive() && viewer->VideoControlsContains(point)) return 0;
         const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point);
         if (navigation != ButtonKind::None) {
             viewer->BeginCanvasNavigationClick(navigation, point);
             SetCapture(window);
             return 0;
+        }
+        if (viewer->VideoActive()) {
+            const RECT canvas = viewer->ModelCanvasBounds();
+            if (PtInRect(&canvas, point)) { viewer->ToggleVideoFullscreen(); return 0; }
         }
         const ButtonKind button = viewer->ButtonAt(point);
         if (button != ButtonKind::None) {
@@ -7744,6 +7808,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (!viewer->TutorialActive() && !viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen()) {
             const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            if (viewer->VideoActive()) {
+                const RECT canvas = viewer->ModelCanvasBounds();
+                if (!viewer->VideoControlsContains(point) && PtInRect(&canvas, point)) { viewer->ToggleVideoFullscreen(); return 0; }
+            }
             if (viewer->HasImage() && viewer->ImageContains(point)) {
                 viewer->ToggleFitActualPixels(point);
                 return 0;

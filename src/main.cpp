@@ -6080,8 +6080,7 @@ private:
         const RECT bounds = FilmstripBounds(); if (!PtInRect(&bounds, point)) return -1;
         const int current = CurrentFilmstripIndex(); if (current < 0) return -1;
         const LONG itemWidth = std::max<LONG>(1, (bounds.right - bounds.left) / kFilmstripVisibleItemCount);
-        const LONG slot = std::clamp<LONG>((point.x - bounds.left) / itemWidth, 0, kFilmstripVisibleItemCount - 1);
-        const int offset = static_cast<int>(slot) - kFilmstripVisibleItemCount / 2;
+        const int offset = std::clamp((point.x - bounds.left) / itemWidth, 0, kFilmstripVisibleItemCount - 1) - kFilmstripVisibleItemCount / 2;
         const int count = static_cast<int>(filmstripThumbnails_.size()); return (current + offset + count) % count;
     }
     HRESULT DecodeFilmstripThumbnail(const fs::path& path, PixelBuffer& decoded) const {

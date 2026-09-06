@@ -87,12 +87,10 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
     tone = saturate((tone - 0.5) * (1.0 + color.x * 0.72) + 0.5);
 
     const float targetLuminance = SrgbToLinear(tone.xxx).x;
-    // Always reconstruct the requested luminance. Only cap the chroma gain in
-    // extremely dark pixels: limiting the complete RGB gain pinned shadows
-    // below the tone curve's target and created a visible Brightness dead zone.
-    const float chromaGain = min(targetLuminance / max(luminance, 0.0005), 12.0);
-    const float3 sourceChroma = linearRgb - luminance.xxx;
-    float3 adjusted = targetLuminance.xxx + sourceChroma * chromaGain;
+    // Preserve chroma with a common gain. Capping only extreme near-black
+    // amplification avoids colored noise from unstable luminance division.
+    const float gain = min(targetLuminance / max(luminance, 0.0005), 12.0);
+    float3 adjusted = linearRgb * gain;
 
     const float adjustedLuminance = dot(adjusted, lumaWeights);
     adjusted = lerp(adjustedLuminance.xxx, adjusted, 1.0 + color.y);

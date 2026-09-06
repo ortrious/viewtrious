@@ -1416,8 +1416,9 @@ public:
     void UpdateImageAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 6) return;
         const RECT slider = GetImageAdjustmentsPanelLayout().sliders[index];
-        const float value = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f) * 2.0f - 1.0f;
-        if (index == 0) imageAdjustments_.exposure = value;
+        const float position = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f);
+        const float value = position * 2.0f - 1.0f;
+        if (index == 0) imageAdjustments_.exposure = position * 4.0f - 2.0f;
         else if (index == 1) imageAdjustments_.brightness = value;
         else if (index == 2) imageAdjustments_.contrast = value;
         else if (index == 3) imageAdjustments_.shadows = value;
@@ -6103,7 +6104,8 @@ private:
             DrawOverlayText(labels[index], static_cast<float>(panel.panel.left + MulDiv(12, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(slider.left - panel.panel.left - MulDiv(18, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), false, false, true);
             const float centerY = (slider.top + slider.bottom) * 0.5f;
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
-            const float thumbX = slider.left + (slider.right - slider.left) * (values[index] + 1.0f) * 0.5f;
+            const float normalizedValue = index == 0 ? (values[index] + 2.0f) * 0.25f : (values[index] + 1.0f) * 0.5f;
+            const float thumbX = slider.left + (slider.right - slider.left) * normalizedValue;
             renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, centerY), 5.0f * scale, 5.0f * scale), accent.Get());
             const std::wstring value = std::to_wstring(static_cast<int>(std::lround(values[index] * 100.0f)));
             DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);

@@ -10,6 +10,8 @@
 #include <mfmediaengine.h>
 #include <wrl/client.h>
 
+#include "media_adjustments.h"
+
 #include <array>
 #include <string>
 #include <vector>
@@ -33,6 +35,8 @@ public:
     bool Muted() const;
     bool GetNativeVideoSize(DWORD& width, DWORD& height) const;
     bool TryGetFramesPerSecond(float& framesPerSecond);
+    void SetDisplayAdjustments(const MediaAdjustments& adjustments);
+    bool AutoDisplayAdjustments(MediaAdjustments& adjustments);
     void RecordFramePacingSchedule(double intervalMs, LONGLONG deadlineQpc);
     void RecordFramePacingTimer(LONGLONG wakeQpc, LONGLONG deadlineQpc);
     void RecordFramePacingPaint();
@@ -61,6 +65,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> frameTexture_;
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> frameBitmap_;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1> adjustedFrameBitmap_;
+    MediaAdjustmentProcessor adjustmentProcessor_;
+    MediaAdjustments displayAdjustments_;
     UINT deviceResetToken_ = 0;
     DWORD videoWidth_ = 0;
     DWORD videoHeight_ = 0;
@@ -69,6 +76,7 @@ private:
     bool playing_ = false;
     bool failed_ = false;
     bool hasValidFrame_ = false;
+    bool adjustedFrameValid_ = false;
     bool hasTransferredPts_ = false;
     bool hasFramesPerSecond_ = false;
     float framesPerSecond_ = 0.0f;

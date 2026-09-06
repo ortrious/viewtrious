@@ -169,10 +169,10 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
 
 void VideoPlayer::Shutdown() {
     FlushFramePacingDiagnostics();
-    playing_ = ready_ = failed_ = hasValidFrame_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
+    playing_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
     lastTransferredPts_ = 0;
     framesPerSecond_ = 0.0f;
-    frameBitmap_.Reset(); frameTexture_.Reset(); engineEx_.Reset();
+    adjustedFrameBitmap_.Reset(); frameBitmap_.Reset(); frameTexture_.Reset(); adjustmentProcessor_.Reset(); engineEx_.Reset();
     if (engine_) engine_->Shutdown();
     engine_.Reset(); deviceManager_.Reset(); device_.Reset();
     videoWidth_ = videoHeight_ = 0;
@@ -190,11 +190,12 @@ bool VideoPlayer::RebindDevice(ID3D11Device* device, std::wstring& error) {
     if (FAILED(reset)) {
         error = L"Windows could not bind the video decoder to the graphics device."; return false;
     }
-    device_ = device; frameBitmap_.Reset(); frameTexture_.Reset(); hasValidFrame_ = hasTransferredPts_ = false; lastTransferredPts_ = 0;
+    device_ = device; adjustedFrameBitmap_.Reset(); frameBitmap_.Reset(); frameTexture_.Reset(); adjustmentProcessor_.Initialize(device); hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = false; lastTransferredPts_ = 0;
     return !ready_ || CreateFrameTexture(error);
 }
 
 void VideoPlayer::HandleRenderTargetResize() {
+    adjustedFrameBitmap_.Reset();
     if (frameBitmap_) frameBitmap_.Reset();
 }
 
@@ -364,6 +365,19 @@ bool VideoPlayer::TryGetFramesPerSecond(float& framesPerSecond) {
     return true;
 }
 
+void VideoPlayer::SetDisplayAdjustments(const MediaAdjustments& adjustments) {
+    displayAdjustments_ = adjustments;
+    adjustedFrameValid_ = false;
+    adjustedFrameBitmap_.Reset();
+    if (hasValidFrame_ && !displayAdjustments_.IsNeutral()) adjustedFrameValid_ = adjustmentProcessor_.Process(frameTexture_.Get(), videoWidth_, videoHeight_, displayAdjustments_);
+}
+
+bool VideoPlayer::AutoDisplayAdjustments(MediaAdjustments& adjustments) {
+    if (!hasValidFrame_ || !adjustmentProcessor_.Analyze(frameTexture_.Get(), adjustments)) return false;
+    SetDisplayAdjustments(adjustments);
+    return true;
+}
+
 bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
     const bool frameReady = engine_ && engineEx_ && frameTexture_ && videoWidth_ && videoHeight_ && !failed_;
     const FramePacingEvent acquisition = reason == FrameAcquisitionReason::Scheduler ? FramePacingEvent::SchedulerAcquire :
@@ -382,6 +396,8 @@ bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
             RecordFramePacingEvent(FramePacingEvent::Transfer, pts, transfer);
             hasValidFrame_ = hasTransferredPts_ = true;
             lastTransferredPts_ = pts;
+            adjustedFrameBitmap_.Reset();
+            adjustedFrameValid_ = !displayAdjustments_.IsNeutral() && adjustmentProcessor_.Process(frameTexture_.Get(), videoWidth_, videoHeight_, displayAdjustments_);
             RecordFramePacingEvent(FramePacingEvent::CachePublish, pts);
             transferred = true;
         }
@@ -396,15 +412,21 @@ bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas, float sc
     const float width = videoWidth_ * scale, height = videoHeight_ * scale;
     const D2D1_RECT_F destination = D2D1::RectF(canvas.left + (canvasWidth - width) * 0.5f + pan.x, canvas.top + (canvasHeight - height) * 0.5f + pan.y,
         canvas.left + (canvasWidth + width) * 0.5f + pan.x, canvas.top + (canvasHeight + height) * 0.5f + pan.y);
-    if (!frameBitmap_) {
+    ID3D11Texture2D* displayTexture = frameTexture_.Get();
+    ComPtr<ID2D1Bitmap1>* displayBitmap = &frameBitmap_;
+    if (adjustedFrameValid_ && adjustmentProcessor_.OutputTexture()) {
+        displayTexture = adjustmentProcessor_.OutputTexture();
+        displayBitmap = &adjustedFrameBitmap_;
+    }
+    if (!*displayBitmap) {
         ComPtr<IDXGISurface> surface;
-        const HRESULT surfaceResult = frameTexture_.As(&surface);
+        const HRESULT surfaceResult = displayTexture->QueryInterface(IID_PPV_ARGS(&surface));
         if (FAILED(surfaceResult)) return false;
         const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE,
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
-        const HRESULT bitmapResult = context->CreateBitmapFromDxgiSurface(surface.Get(), &properties, &frameBitmap_);
+        const HRESULT bitmapResult = context->CreateBitmapFromDxgiSurface(surface.Get(), &properties, displayBitmap->GetAddressOf());
         if (FAILED(bitmapResult)) return false;
     }
-    context->DrawBitmap(frameBitmap_.Get(), destination, 1.0f, D2D1_INTERPOLATION_MODE_LINEAR);
+    context->DrawBitmap(displayBitmap->Get(), destination, 1.0f, D2D1_INTERPOLATION_MODE_LINEAR);
     return true;
 }

@@ -5641,27 +5641,32 @@ private:
         renderTarget_->CreateBitmapFromWicBitmap(source_.Get(), nullptr, &bitmap_);
     }
 
-    bool EnsureImageAdjustmentSource() {
+    bool EnsureImageAdjustmentSource(bool useLanczos = false) {
         if (!source_ || !graphicsHost_.Device() || !graphicsHost_.Context()) return false;
+        const bool canUseLanczos = useLanczos && !gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent();
+        const UINT sourceWidth = canUseLanczos ? lanczosWidth_ : imageWidth_;
+        const UINT sourceHeight = canUseLanczos ? lanczosHeight_ : imageHeight_;
+        if (!sourceWidth || !sourceHeight) return false;
         if (!imageAdjustmentProcessorReady_) {
             if (!imageAdjustmentProcessor_.Initialize(graphicsHost_.Device())) return false;
             imageAdjustmentProcessorReady_ = true;
         }
-        if (!imageAdjustmentSourceTexture_ || imageAdjustmentSourceWidth_ != imageWidth_ || imageAdjustmentSourceHeight_ != imageHeight_) {
+        if (!imageAdjustmentSourceTexture_ || imageAdjustmentSourceWidth_ != sourceWidth || imageAdjustmentSourceHeight_ != sourceHeight) {
             imageAdjustmentSourceTexture_.Reset();
             D3D11_TEXTURE2D_DESC description{};
-            description.Width = imageWidth_; description.Height = imageHeight_; description.MipLevels = 1; description.ArraySize = 1;
+            description.Width = sourceWidth; description.Height = sourceHeight; description.MipLevels = 1; description.ArraySize = 1;
             description.Format = DXGI_FORMAT_B8G8R8A8_UNORM; description.SampleDesc.Count = 1;
             description.Usage = D3D11_USAGE_DEFAULT; description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
             if (FAILED(graphicsHost_.Device()->CreateTexture2D(&description, nullptr, &imageAdjustmentSourceTexture_))) return false;
-            imageAdjustmentSourceWidth_ = imageWidth_; imageAdjustmentSourceHeight_ = imageHeight_;
+            imageAdjustmentSourceWidth_ = sourceWidth; imageAdjustmentSourceHeight_ = sourceHeight;
             imageAdjustmentSourceDirty_ = true;
         }
-        if (!imageAdjustmentSourceDirty_ && imageAdjustmentSourceWic_ == source_.Get()) return true;
-        const UINT stride = imageWidth_ * 4;
-        const size_t bytes = static_cast<size_t>(stride) * imageHeight_;
+        if (!imageAdjustmentSourceDirty_ && imageAdjustmentSourceWic_ == source_.Get() && imageAdjustmentUsesLanczos_ == canUseLanczos) return true;
+        const UINT stride = sourceWidth * 4;
+        const size_t bytes = static_cast<size_t>(stride) * sourceHeight;
         const BYTE* pixels = nullptr;
-        if (displayedPixels_ && displayedPixels_->size() >= bytes) pixels = displayedPixels_->data();
+        if (canUseLanczos && lanczosPixels_ && lanczosPixels_->size() >= bytes) pixels = lanczosPixels_->data();
+        else if (!canUseLanczos && displayedPixels_ && displayedPixels_->size() >= bytes) pixels = displayedPixels_->data();
         else {
             imageAdjustmentPixels_.resize(bytes);
             if (FAILED(source_->CopyPixels(nullptr, stride, static_cast<UINT>(bytes), imageAdjustmentPixels_.data()))) return false;
@@ -5669,14 +5674,17 @@ private:
         }
         graphicsHost_.Context()->UpdateSubresource(imageAdjustmentSourceTexture_.Get(), 0, nullptr, pixels, stride, 0);
         imageAdjustmentSourceWic_ = source_.Get();
+        imageAdjustmentUsesLanczos_ = canUseLanczos;
         imageAdjustmentSourceDirty_ = false;
         return true;
     }
 
     bool EnsureImageAdjustedBitmap() {
         if (imageAdjustments_.IsNeutral()) return false;
-        if (imageAdjustedBitmap_) return true;
-        if (!EnsureImageAdjustmentSource() || !imageAdjustmentProcessor_.Process(imageAdjustmentSourceTexture_.Get(), imageWidth_, imageHeight_, imageAdjustments_)) return false;
+        const bool useLanczos = !gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent();
+        if (imageAdjustedBitmap_ && imageAdjustmentUsesLanczos_ == useLanczos) return true;
+        imageAdjustedBitmap_.Reset();
+        if (!EnsureImageAdjustmentSource(useLanczos) || !imageAdjustmentProcessor_.Process(imageAdjustmentSourceTexture_.Get(), imageAdjustmentSourceWidth_, imageAdjustmentSourceHeight_, imageAdjustments_)) return false;
         ComPtr<IDXGISurface> surface;
         if (FAILED(imageAdjustmentProcessor_.OutputTexture()->QueryInterface(IID_PPV_ARGS(&surface)))) return false;
         const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE,
@@ -5843,8 +5851,9 @@ private:
             renderTarget_->DrawBitmap(lanczosBitmap_.Get(), lanczosDestination_, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         else {
             ID2D1Bitmap* displayed = bitmap_.Get();
-            if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) displayed = imageAdjustedBitmap_.Get();
-            renderTarget_->DrawBitmap(displayed, destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            D2D1_RECT_F adjustedDestination = destination;
+            if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) { displayed = imageAdjustedBitmap_.Get(); if (imageAdjustmentUsesLanczos_) adjustedDestination = lanczosDestination_; }
+            renderTarget_->DrawBitmap(displayed, adjustedDestination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         }
         renderTarget_->PopAxisAlignedClip();
     }
@@ -7488,6 +7497,7 @@ private:
         imageAdjustedBitmap_.Reset();
         imageAdjustmentSourceTexture_.Reset();
         imageAdjustmentSourceWic_ = nullptr;
+        imageAdjustmentUsesLanczos_ = false;
         imageAdjustmentProcessor_.Reset();
         imageAdjustmentProcessorReady_ = false;
         aboutLogo_.Reset();
@@ -7531,6 +7541,7 @@ private:
     UINT imageAdjustmentSourceWidth_ = 0;
     UINT imageAdjustmentSourceHeight_ = 0;
     bool imageAdjustmentSourceDirty_ = true;
+    bool imageAdjustmentUsesLanczos_ = false;
     bool imageAdjustmentProcessorReady_ = false;
     ComPtr<ID2D1Bitmap> aboutLogo_;
     UINT aboutLogoWidth_ = 0;

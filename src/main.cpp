@@ -3302,36 +3302,7 @@ public:
         const D2D1_RECT_F panel = D2D1::RectF(static_cast<float>(strip.left),static_cast<float>(strip.top),static_cast<float>(strip.right),static_cast<float>(strip.bottom)); renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(panel,12*scale,12*scale),surface.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(panel,12*scale,12*scale),border.Get(),scale);
         const RECT hint = GetFilmstripHintBounds(); const D2D1_RECT_F hintRect = D2D1::RectF(static_cast<float>(hint.left),static_cast<float>(hint.top),static_cast<float>(hint.right),static_cast<float>(hint.bottom)); renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(hintRect,6*scale,6*scale),hintBacking.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(hintRect,6*scale,6*scale),hintBorder.Get(),scale); DrawOverlayText(L"‹   Scroll to browse   ›",hintRect.left,hintRect.top,hintRect.right-hintRect.left,hintRect.bottom-hintRect.top,13,DWRITE_FONT_WEIGHT_NORMAL,hintText.Get(),true,false,true);
         renderTarget_->PushAxisAlignedClip(panel,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE); const size_t current = CurrentNavigationIndex(); const auto [first,last] = FilmstripVisibleRange();
-        for (size_t index = first; index < last; ++index) {
-            const RECT bounds = GetFilmstripThumbnailBounds(index);
-            const D2D1_RECT_F box = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top),
-                static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
-            const D2D1_RECT_F selected = D2D1::RectF(box.left - 4 * scale, box.top - 4 * scale,
-                box.right + 4 * scale, box.bottom + 4 * scale);
-            if (index == current) {
-                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(selected, 8 * scale, 8 * scale), selectedBacking.Get());
-                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(selected, 8 * scale, 8 * scale), selectedGlow.Get(), 4 * scale);
-            } else if (index == static_cast<size_t>(filmstripHoveredIndex_)) {
-                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6 * scale, 6 * scale), hover.Get(), scale);
-            }
-            FilmstripThumbnail* thumbnail = FindFilmstripThumbnail(navigationFiles_[index]);
-            if (thumbnail && thumbnail->source) {
-                if (!thumbnail->bitmap) renderTarget_->CreateBitmapFromWicBitmap(thumbnail->source.Get(), nullptr, &thumbnail->bitmap);
-                if (thumbnail->bitmap) {
-                    ComPtr<ID2D1RoundedRectangleGeometry> clip;
-                    if (SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box, 6 * scale, 6 * scale), &clip))) {
-                        renderTarget_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clip.Get()), nullptr);
-                        renderTarget_->DrawBitmap(thumbnail->bitmap.Get(), box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                        renderTarget_->PopLayer();
-                    } else {
-                        renderTarget_->DrawBitmap(thumbnail->bitmap.Get(), box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                    }
-                }
-            } else {
-                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(box, 6 * scale, 6 * scale), placeholder.Get());
-            }
-            if (index == current) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6 * scale, 6 * scale), selectedOutline.Get(), 2 * scale);
-        }
+        for(size_t index=first; index<last; ++index) { const RECT bounds=GetFilmstripThumbnailBounds(index); const D2D1_RECT_F box=D2D1::RectF(static_cast<float>(bounds.left),static_cast<float>(bounds.top),static_cast<float>(bounds.right),static_cast<float>(bounds.bottom)); const D2D1_RECT_F selected=D2D1::RectF(box.left-4*scale,box.top-4*scale,box.right+4*scale,box.bottom+4*scale); if(index==current){renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(selected,8*scale,8*scale),selectedBacking.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(selected,8*scale,8*scale),selectedGlow.Get(),4*scale);}else if(index==static_cast<size_t>(filmstripHoveredIndex_))renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box,6*scale,6*scale),hover.Get(),scale); FilmstripThumbnail* thumbnail=FindFilmstripThumbnail(navigationFiles_[index]); if(thumbnail&&thumbnail->source){if(!thumbnail->bitmap)renderTarget_->CreateBitmapFromWicBitmap(thumbnail->source.Get(),nullptr,&thumbnail->bitmap);if(thumbnail->bitmap){ComPtr<ID2D1RoundedRectangleGeometry> clip;if(SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box,6*scale,6*scale),&clip)){renderTarget_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),clip.Get()),nullptr);renderTarget_->DrawBitmap(thumbnail->bitmap.Get(),box,opacity,D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);renderTarget_->PopLayer();}else renderTarget_->DrawBitmap(thumbnail->bitmap.Get(),box,opacity,D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);}}else renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(box,6*scale,6*scale),placeholder.Get()); if(index==current)renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box,6*scale,6*scale),selectedOutline.Get(),2*scale); }
         renderTarget_->PopAxisAlignedClip(); QueueFilmstripPopulate();
     }
 

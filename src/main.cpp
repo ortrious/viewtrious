@@ -1378,7 +1378,7 @@ public:
         const int height = MulDiv(218, dpi, 96);
         const bool left = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::TopLeft;
         const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
-        const int panelLeft = left ? std::max(static_cast<int>(canvas.left) + gap, hud.combined.left) : std::min(static_cast<int>(canvas.right) - gap - width, hud.combined.right - width);
+        const int panelLeft = left ? std::max(static_cast<int>(canvas.left) + gap, static_cast<int>(hud.combined.left)) : std::min(static_cast<int>(canvas.right) - gap - width, static_cast<int>(hud.combined.right) - width);
         int panelTop = top ? hud.combined.bottom + gap : hud.combined.top - gap - height;
         panelTop = std::clamp(panelTop, static_cast<int>(canvas.top) + gap, std::max(static_cast<int>(canvas.top) + gap, static_cast<int>(canvas.bottom) - gap - height));
         const RECT panel{ panelLeft, panelTop, panelLeft + width, panelTop + height };

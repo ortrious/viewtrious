@@ -77,6 +77,7 @@ constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
 constexpr UINT_PTR kVideoControlsTimer = 15;
 constexpr UINT_PTR kVideoFrameStepPumpTimer = 16;
 constexpr UINT kVideoFrameStepPumpIntervalMs = 16;
+constexpr unsigned int kMaxQueuedVideoForwardSteps = 16;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
@@ -695,6 +696,7 @@ struct FrameStepTransportRecord {
     bool playEnabled = false;
     bool frameEnabled = false;
     double currentTime = 0.0;
+    unsigned int queuedForwardSteps = 0;
     const wchar_t* transition = L"";
 };
 #endif
@@ -1125,23 +1127,35 @@ public:
         if (!VideoActive()) return;
         double current = 0.0, duration = 0.0;
         videoPlayer_.GetPlaybackTimes(current, duration);
-        const bool frameEnabled = !videoFrameStepAwaitingPause_ && !videoFrameStepPending_ && !videoPlayer_.Ended();
+        const bool frameEnabled = !videoPlayer_.Ended();
         FrameStepTransportRecord& record = frameStepTransportRecords_[frameStepTransportRecordNext_++ % frameStepTransportRecords_.size()];
         record = { GetTickCount64(), event, result, videoFrameStepAwaitingPause_, videoFrameStepPending_, videoFrameStepResumeRequested_,
-            videoPlayer_.Playing(), videoPlayer_.Paused(), videoPlayer_.Seeking(), videoPlayer_.Ended(), true, frameEnabled, current, transition };
+            videoPlayer_.Playing(), videoPlayer_.Paused(), videoPlayer_.Seeking(), videoPlayer_.Ended(), true, frameEnabled, current, videoQueuedForwardSteps_, transition };
         wchar_t line[512]{};
-        swprintf_s(line, L"Viewtrious frame-step: %s event=%lu(%s) hr=0x%08X await=%d pending=%d resume=%d playing=%d paused=%d seeking=%d ended=%d play=%d frame=%d time=%.3f\n",
+        swprintf_s(line, L"Viewtrious frame-step: %s event=%lu(%s) hr=0x%08X await=%d pending=%d resume=%d playing=%d paused=%d seeking=%d ended=%d play=%d frame=%d queued=%u time=%.3f\n",
             transition, event, FrameStepEventName(event), static_cast<unsigned int>(result), record.awaitingPause, record.pending,
-            record.resumeRequested, record.playing, record.paused, record.seeking, record.ended, record.playEnabled, record.frameEnabled, record.currentTime);
+            record.resumeRequested, record.playing, record.paused, record.seeking, record.ended, record.playEnabled, record.frameEnabled, record.queuedForwardSteps, record.currentTime);
         OutputDebugStringW(line);
     }
 #else
     void TraceFrameStepTransport(const wchar_t*, DWORD = 0, HRESULT = S_OK) {}
 #endif
+    void ClearQueuedVideoForwardSteps(const wchar_t* transition) {
+        if (!videoQueuedForwardSteps_) return;
+        videoQueuedForwardSteps_ = 0;
+        TraceFrameStepTransport(transition);
+    }
+    void QueueVideoForwardStep() {
+        if (videoQueuedForwardSteps_ >= kMaxQueuedVideoForwardSteps) return;
+        ++videoQueuedForwardSteps_;
+        TraceFrameStepTransport(L"frame-step-queued");
+        ShowVideoControls();
+    }
     void ToggleVideoPlayPause() {
         if (!VideoActive()) return;
         TraceFrameStepTransport(L"play-click");
         if (videoFrameStepAwaitingPause_ || videoFrameStepPending_) {
+            ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-play");
             videoFrameStepResumeRequested_ = true;
             TraceFrameStepTransport(L"play-deferred");
             ShowVideoControls();
@@ -1171,8 +1185,12 @@ public:
         return true;
     }
     void StepVideoForward() {
-        if (!VideoActive() || videoFrameStepAwaitingPause_ || videoFrameStepPending_) return;
+        if (!VideoActive() || videoPlayer_.Ended()) return;
         TraceFrameStepTransport(L"frame-click");
+        if (videoFrameStepAwaitingPause_ || videoFrameStepPending_) {
+            QueueVideoForwardStep();
+            return;
+        }
         if (!videoPlayer_.Playing()) { RequestVideoFrameStep(); return; }
         const HRESULT pause = videoPlayer_.PauseForFrameStep();
         TraceFrameStepTransport(L"frame-step-pause-request", 0, pause);
@@ -1221,7 +1239,7 @@ public:
         if (!VideoControlsInteractive()) return ButtonKind::None;
         const VideoControlsLayout layout = GetVideoControlsLayout();
         if (PtInRect(&layout.playPause, point)) return ButtonKind::VideoPlayPause;
-        if (!videoFrameStepAwaitingPause_ && !videoFrameStepPending_ && !videoPlayer_.Ended() && PtInRect(&layout.frameForward, point)) return ButtonKind::VideoFrameForward;
+        if (!videoPlayer_.Ended() && PtInRect(&layout.frameForward, point)) return ButtonKind::VideoFrameForward;
         if (PtInRect(&layout.mute, point)) return ButtonKind::VideoMute;
         return ButtonKind::None;
     }
@@ -1307,6 +1325,7 @@ public:
         if (VideoScrubberContains(point)) {
             TraceFrameStepTransport(L"scrub-begin");
             StopVideoFrameStepPump();
+            ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-scrub");
             videoFrameStepAwaitingPause_ = false;
             videoFrameStepPending_ = false;
             videoFrameStepResumeRequested_ = false;
@@ -3510,6 +3529,7 @@ private:
     void DeactivateVideo() {
         TraceFrameStepTransport(L"video-deactivate");
         StopVideoFrameStepPump();
+        ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-deactivate");
         videoFrameStepAwaitingPause_ = false;
         videoFrameStepPending_ = false;
         videoFrameStepResumeRequested_ = false;
@@ -3535,9 +3555,12 @@ public:
         if (event == MF_MEDIA_ENGINE_EVENT_PAUSE && videoFrameStepAwaitingPause_) {
             videoFrameStepAwaitingPause_ = false;
             TraceFrameStepTransport(L"pause-transition-complete", event);
-            if (!RequestVideoFrameStep() && videoFrameStepResumeRequested_) {
-                videoFrameStepResumeRequested_ = false;
-                ToggleVideoPlayPause();
+            if (!RequestVideoFrameStep()) {
+                ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-request-failed");
+                if (videoFrameStepResumeRequested_) {
+                    videoFrameStepResumeRequested_ = false;
+                    ToggleVideoPlayPause();
+                }
             }
         } else if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
@@ -3554,7 +3577,23 @@ public:
             videoFrameStepFramePublished_ = false;
             const bool resumePlayback = videoFrameStepResumeRequested_;
             videoFrameStepResumeRequested_ = false;
-            if (completedStep && resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
+            if (completedStep && resumePlayback && VideoActive() && !videoPlayer_.Playing()) {
+                ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-play");
+                ToggleVideoPlayPause();
+            } else if (completedStep && videoPlayer_.Ended()) {
+                ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-eof");
+            } else if (completedStep && videoQueuedForwardSteps_) {
+                --videoQueuedForwardSteps_;
+                TraceFrameStepTransport(L"frame-step-queue-dequeue");
+                if (!RequestVideoFrameStep()) ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-request-failed");
+            }
+        } else if (event == MF_MEDIA_ENGINE_EVENT_ENDED) {
+            StopVideoFrameStepPump();
+            videoFrameStepAwaitingPause_ = false;
+            videoFrameStepPending_ = false;
+            videoFrameStepResumeRequested_ = false;
+            videoFrameStepFramePublished_ = false;
+            ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-eof");
         } else if (!videoPlayer_.HasValidFrame() &&
             (event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY || event == MF_MEDIA_ENGINE_EVENT_CANPLAY)) {
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
@@ -5661,7 +5700,7 @@ private:
 
         const float frameCenterX = (layout.frameForward.left + layout.frameForward.right) * 0.5f;
         const float frameCenterY = (layout.frameForward.top + layout.frameForward.bottom) * 0.5f;
-        ID2D1Brush* const frameBrush = !videoFrameStepAwaitingPause_ && !videoFrameStepPending_ && !videoPlayer_.Ended() ? text.Get() : track.Get();
+        ID2D1Brush* const frameBrush = !videoPlayer_.Ended() ? text.Get() : track.Get();
         ComPtr<ID2D1PathGeometry> frameTriangle;
         ComPtr<ID2D1GeometrySink> frameSink;
         if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&frameTriangle)) && SUCCEEDED(frameTriangle->Open(&frameSink))) {
@@ -7150,6 +7189,7 @@ private:
     bool videoFrameStepResumeRequested_ = false;
     bool videoFrameStepFramePublished_ = false;
     bool videoFrameStepPumpWaitLogged_ = false;
+    unsigned int videoQueuedForwardSteps_ = 0;
     bool videoPausedSeekRefreshPending_ = false;
     bool videoScrubSeekLogged_ = false;
 #if defined(_DEBUG)
@@ -7426,6 +7466,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->VideoControlAt(point) == ButtonKind::VideoFrameForward) {
+            viewer->StepVideoForward();
+            return 0;
+        }
         const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point);
         if (navigation != ButtonKind::None) {
             viewer->BeginCanvasNavigationClick(navigation, point);

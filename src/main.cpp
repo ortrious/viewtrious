@@ -3412,7 +3412,10 @@ public:
         const D2D1_RECT_F hintRect = D2D1::RectF(static_cast<float>(hint.left), static_cast<float>(hint.top), static_cast<float>(hint.right), static_cast<float>(hint.bottom));
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(hintRect, 6.0f * scale, 6.0f * scale), hintBacking.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(hintRect, 6.0f * scale, 6.0f * scale), hintBorder.Get(), scale);
+        if constexpr (false) {
         DrawOverlayText(L"‹   Scroll to browse   ›", hintRect.left, hintRect.top, hintRect.right - hintRect.left, hintRect.bottom - hintRect.top, 13.0f, DWRITE_FONT_WEIGHT_NORMAL, hintText.Get(), true, false, true);
+        }
+        DrawOverlayText(L"\u2039   Scroll to browse   \u203A", hintRect.left, hintRect.top, hintRect.right - hintRect.left, hintRect.bottom - hintRect.top, 13.0f, DWRITE_FONT_WEIGHT_NORMAL, hintText.Get(), true, false, true);
         renderTarget_->PushAxisAlignedClip(panel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         const size_t current = CurrentNavigationIndex();
         const auto [first, last] = FilmstripVisibleRange();
@@ -6043,6 +6046,9 @@ private:
             filmstripScroll_ = 0.0f;
             filmstripInitialPresentationPending_ = true;
         } else if (navigationBuilt_) {
+            // A video sibling can build navigation while Image2D has no source. Rebuild after
+            // the image commit so stale compact placeholder widths cannot reach the first paint.
+            RebuildFilmstripLayout();
             RevealFilmstripForNavigation();
         }
         BeginStillDissolveIfReady(path);

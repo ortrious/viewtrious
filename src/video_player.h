@@ -37,6 +37,9 @@ public:
     bool TryGetFramesPerSecond(float& framesPerSecond);
     void SetDisplayAdjustments(const MediaAdjustments& adjustments);
     bool AutoDisplayAdjustments(MediaAdjustments& adjustments);
+    bool SetPreferredPlaybackRate(double rate);
+    bool PlaybackRateSupported(double rate) const;
+    double EffectivePlaybackRate() const { return effectivePlaybackRate_; }
     void RecordFramePacingSchedule(double intervalMs, LONGLONG deadlineQpc);
     void RecordFramePacingTimer(LONGLONG wakeQpc, LONGLONG deadlineQpc);
     void RecordFramePacingPaint();
@@ -53,6 +56,7 @@ private:
     bool ReadNominalFrameRate(const std::wstring& path);
     bool SetSourceFromPath(const std::wstring& path, std::wstring& error);
     bool EnsureMultithreadProtection(ID3D11Device* device, std::wstring& error);
+    bool ApplyPreferredPlaybackRate();
     enum class FramePacingEvent : unsigned char { PlaybackBegin, PlaybackPause, PlaybackResume, PlaybackSeek, PlaybackEnd, Schedule, Timer, SchedulerAcquire, InitialLoadAcquire, SeekAcquire, StreamTick, Transfer, CachePublish, Paint, Present, Count };
     struct FramePacingRecord { LONGLONG qpc = 0; LONGLONG pts = 0; HRESULT result = S_OK; FramePacingEvent event = FramePacingEvent::PlaybackBegin; double first = 0.0; double second = 0.0; };
     void ResetFramePacingDiagnostics();
@@ -68,6 +72,8 @@ private:
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> adjustedFrameBitmap_;
     MediaAdjustmentProcessor adjustmentProcessor_;
     MediaAdjustments displayAdjustments_;
+    double preferredPlaybackRate_ = 1.0;
+    double effectivePlaybackRate_ = 1.0;
     UINT deviceResetToken_ = 0;
     DWORD videoWidth_ = 0;
     DWORD videoHeight_ = 0;

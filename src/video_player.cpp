@@ -172,6 +172,7 @@ void VideoPlayer::Shutdown() {
     playing_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
     lastTransferredPts_ = 0;
     framesPerSecond_ = 0.0f;
+    effectivePlaybackRate_ = 1.0;
     adjustedFrameBitmap_.Reset(); frameBitmap_.Reset(); frameTexture_.Reset(); adjustmentProcessor_.Reset(); engineEx_.Reset();
     if (engine_) engine_->Shutdown();
     engine_.Reset(); deviceManager_.Reset(); device_.Reset();
@@ -255,6 +256,7 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
             failed_ = true;
         } else ready_ = true;
     } else if (event == MF_MEDIA_ENGINE_EVENT_CANPLAY && !failed_) {
+        ApplyPreferredPlaybackRate();
         const HRESULT play = engine_->Play();
         if (FAILED(play)) { error = L"Viewtrious could not start video playback."; failed_ = true; }
         else { playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackBegin); }
@@ -376,6 +378,27 @@ bool VideoPlayer::AutoDisplayAdjustments(MediaAdjustments& adjustments) {
     if (!hasValidFrame_ || !adjustmentProcessor_.Analyze(frameTexture_.Get(), adjustments)) return false;
     SetDisplayAdjustments(adjustments);
     return true;
+}
+
+bool VideoPlayer::PlaybackRateSupported(double rate) const {
+    if (std::abs(rate - 1.0) < 0.001) return true;
+    if (!engineEx_) return true;
+    return engineEx_->IsPlaybackRateSupported(rate) != FALSE;
+}
+
+bool VideoPlayer::ApplyPreferredPlaybackRate() {
+    if (!engine_ || !PlaybackRateSupported(preferredPlaybackRate_)) return false;
+    const HRESULT defaultResult = engine_->SetDefaultPlaybackRate(preferredPlaybackRate_);
+    const HRESULT currentResult = SUCCEEDED(defaultResult) ? engine_->SetPlaybackRate(preferredPlaybackRate_) : defaultResult;
+    if (FAILED(currentResult)) return false;
+    effectivePlaybackRate_ = preferredPlaybackRate_;
+    return true;
+}
+
+bool VideoPlayer::SetPreferredPlaybackRate(double rate) {
+    preferredPlaybackRate_ = rate;
+    if (!ready_) return true;
+    return ApplyPreferredPlaybackRate();
 }
 
 bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {

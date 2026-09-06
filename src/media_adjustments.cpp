@@ -47,11 +47,59 @@ Texture2D inputTexture : register(t0); SamplerState inputSampler : register(s0);
 cbuffer Parameters : register(b0) { float4 light; float4 color; };
 struct VertexOutput { float4 position : SV_POSITION; float2 uv : TEXCOORD0; };
 VertexOutput VSMain(uint index : SV_VertexID) { float2 positions[3] = { float2(-1,-1), float2(-1,3), float2(3,-1) }; float2 uvs[3] = { float2(0,1), float2(0,-1), float2(2,1) }; VertexOutput output; output.position=float4(positions[index],0,1); output.uv=uvs[index]; return output; }
+
+float3 SrgbToLinear(float3 value) {
+    const float3 threshold = float3(0.04045, 0.04045, 0.04045);
+    const float3 low = value / 12.92;
+    const float3 high = pow(max((value + 0.055) / 1.055, 0.0), 2.4);
+    return lerp(high, low, step(value, threshold));
+}
+
+float3 LinearToSrgb(float3 value) {
+    const float3 threshold = float3(0.0031308, 0.0031308, 0.0031308);
+    value = max(value, 0.0);
+    const float3 low = value * 12.92;
+    const float3 high = 1.055 * pow(value, 1.0 / 2.4) - 0.055;
+    return lerp(high, low, step(value, threshold));
+}
+
+float ShadowMask(float tone) { return 1.0 - smoothstep(0.06, 0.60, tone); }
+float HighlightMask(float tone) { return smoothstep(0.40, 0.96, tone); }
+
 float4 PSMain(VertexOutput input) : SV_TARGET {
-    float4 sample=inputTexture.Sample(inputSampler,input.uv); float alpha=sample.a; float3 source=alpha>.001 ? sample.rgb/alpha : float3(0,0,0); source*=exp2(light.x*2.0);
-    float luminance=dot(source,float3(.2126,.7152,.0722)); float perceptual=pow(saturate(luminance),.82); perceptual+=light.y*(.18+.28*(1.0-perceptual));
-    perceptual+=light.z*.58*(1.0-smoothstep(.04,.55,saturate(perceptual))); perceptual+=light.w*.42*smoothstep(.45,.96,saturate(perceptual)); perceptual=saturate((perceptual-.5)*(1.0+color.x*.72)+.5);
-    float targetLuminance=pow(perceptual,1.0/.82); float3 chroma=luminance>.0001 ? source/luminance : float3(1,1,1); float3 adjusted=saturate(chroma*targetLuminance); float gray=dot(adjusted,float3(.2126,.7152,.0722)); return float4(saturate(lerp(gray.xxx,adjusted,1.0+color.y))*alpha,alpha);
+    const float4 sample = inputTexture.Sample(inputSampler, input.uv);
+    if (sample.a <= 0.0001) return float4(0.0, 0.0, 0.0, 0.0);
+
+    // WIC supplies premultiplied sRGB. Work on straight, linear RGB so tone
+    // operations act on light rather than independently on encoded channels.
+    float3 linearRgb = SrgbToLinear(saturate(sample.rgb / sample.a));
+    linearRgb *= exp2(light.x * 2.0);
+
+    const float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
+    const float luminance = dot(linearRgb, lumaWeights);
+    float tone = LinearToSrgb(luminance.xxx).x;
+
+    // The explicit Image2D order is exposure, brightness, shadows/highlights,
+    // contrast, then saturation. Every tonal control addresses this one tone.
+    tone += light.y * (0.22 + 0.28 * (1.0 - tone));
+    tone += light.z * 0.62 * ShadowMask(tone);
+    tone += light.w * 0.46 * HighlightMask(tone);
+    tone = saturate((tone - 0.5) * (1.0 + color.x * 0.72) + 0.5);
+
+    const float targetLuminance = SrgbToLinear(tone.xxx).x;
+    // Preserve chroma with a common gain. Capping only extreme near-black
+    // amplification avoids colored noise from unstable luminance division.
+    const float gain = min(targetLuminance / max(luminance, 0.0005), 12.0);
+    float3 adjusted = linearRgb * gain;
+
+    const float adjustedLuminance = dot(adjusted, lumaWeights);
+    adjusted = lerp(adjustedLuminance.xxx, adjusted, 1.0 + color.y);
+
+    // Compress gamut jointly rather than clipping individual channels, which
+    // keeps bright saturated colors from abruptly shifting hue.
+    const float peak = max(adjusted.r, max(adjusted.g, adjusted.b));
+    adjusted /= max(1.0, peak);
+    return float4(LinearToSrgb(adjusted) * sample.a, sample.a);
 }
 )";
 

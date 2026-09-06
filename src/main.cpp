@@ -1106,12 +1106,13 @@ public:
         KillTimer(window_, kVideoStepHoldTimer);
         videoStepHoldDirection_ = 0;
         videoStepHoldActive_ = false;
+        videoStepHoldTapPending_ = false;
         videoStepHoldAnchorSeconds_ = 0.0;
         videoStepHoldDurationSeconds_ = 0.0;
         videoStepHoldStartQpc_ = 0;
         videoStepHoldQpcFrequency_ = 0;
     }
-    bool BeginVideoStepHold(int direction) {
+    bool BeginVideoStepHold(int direction, bool nudgeOnRelease = true) {
         if (!VideoActive() || !direction) return false;
         StopVideoStepHold();
         if (videoPlayer_.Playing()) {
@@ -1124,6 +1125,7 @@ public:
         LARGE_INTEGER frequency{};
         if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return false;
         videoStepHoldDirection_ = direction < 0 ? -1 : 1;
+        videoStepHoldTapPending_ = nudgeOnRelease;
         videoStepHoldAnchorSeconds_ = videoPausedSeekRefreshPending_ ? videoScrubSeconds_ : current;
         videoStepHoldDurationSeconds_ = duration;
         videoStepHoldQpcFrequency_ = frequency.QuadPart;
@@ -1316,9 +1318,10 @@ public:
         if (videoStepHoldDirection_) {
             const int direction = videoStepHoldDirection_;
             const bool held = videoStepHoldActive_;
+            const bool nudgeOnRelease = videoStepHoldTapPending_;
             StopVideoStepHold();
             if (held) ShowVideoControls();
-            else NudgeVideoPosition(direction);
+            else if (nudgeOnRelease) NudgeVideoPosition(direction);
             return true;
         }
         if (!videoScrubbing_) return false;
@@ -7067,6 +7070,7 @@ private:
     bool videoPausedSeekRefreshPending_ = false;
     int videoStepHoldDirection_ = 0;
     bool videoStepHoldActive_ = false;
+    bool videoStepHoldTapPending_ = false;
     double videoStepHoldAnchorSeconds_ = 0.0;
     double videoStepHoldDurationSeconds_ = 0.0;
     LONGLONG videoStepHoldStartQpc_ = 0;
@@ -7343,7 +7347,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         const ButtonKind videoControl = viewer->VideoControlAt(point);
         if (videoControl == ButtonKind::VideoStepBackward || videoControl == ButtonKind::VideoStepForward) {
-            viewer->NudgeVideoPosition(videoControl == ButtonKind::VideoStepBackward ? -1 : 1);
+            const int direction = videoControl == ButtonKind::VideoStepBackward ? -1 : 1;
+            viewer->NudgeVideoPosition(direction);
+            if (viewer->BeginVideoStepHold(direction, false)) SetCapture(window);
             return 0;
         }
         const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point);

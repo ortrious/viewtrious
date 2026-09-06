@@ -76,6 +76,7 @@ constexpr UINT_PTR kModelLoadingAnimationTimer = 12;
 constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
 constexpr UINT_PTR kVideoControlsTimer = 15;
 constexpr UINT_PTR kVideoStepHoldTimer = 16;
+constexpr UINT_PTR kStillDissolveTimer = 17;
 constexpr UINT kVideoStepHoldThresholdMs = 250;
 constexpr UINT kVideoStepHoldIntervalMs = 16;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
@@ -93,6 +94,8 @@ constexpr ULONGLONG kModelLoadingOverlayDelayMs = 150;
 constexpr UINT kTriangleCountTooltipDelayMs = 450;
 constexpr ULONGLONG kVideoControlsIdleDelayMs = 1500;
 constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
+constexpr ULONGLONG kStillDissolveDurationMs = 160;
+constexpr ULONGLONG kStillDissolvePreviewWaitMaxMs = 450;
 constexpr std::array<DWORD, 6> kVideoPlaybackRatePercents{ 25, 50, 100, 125, 150, 200 };
 // Shared Settings grid geometry. Every page uses these values for section and control placement.
 constexpr float kSettingsContentLeftPaddingDips = 206.0f;
@@ -910,6 +913,7 @@ public:
     }
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
+        ClearStillDissolve();
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
         if (IsVideoPath(path)) { BeginVideoLoad(path); return S_OK; }
         DeactivateVideo();
@@ -2973,7 +2977,7 @@ public:
             }
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
-                if (bitmap_) { DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
+                if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); }
             } else if (EmptyStatePresentationActive()) DrawEmptyState();
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
@@ -3111,9 +3115,17 @@ public:
     }
 
     void Navigate(int direction, bool immediatePaint = true) {
-        if (currentPath_.empty() || ModelActive()) return;
+        ClearStillDissolve();
+        const std::optional<std::wstring> path = NavigationTargetPath(direction);
+        if (!path) return;
+        LoadContent(*path, false);
+        if (immediatePaint) UpdateWindow(window_);
+    }
+
+    std::optional<std::wstring> NavigationTargetPath(int direction) {
+        if (currentPath_.empty() || ModelActive()) return std::nullopt;
         BuildNavigation(true);
-        if (navigationFiles_.size() < 2) return;
+        if (navigationFiles_.size() < 2) return std::nullopt;
 
         const fs::path current(currentPath_);
         auto currentIt = std::find_if(navigationFiles_.begin(), navigationFiles_.end(),
@@ -3123,9 +3135,7 @@ public:
         const ptrdiff_t start = currentMissing ? (direction > 0 ? -1 : 0) : std::distance(navigationFiles_.begin(), currentIt);
         ptrdiff_t index = (start + direction) % count;
         if (index < 0) index += count;
-        const std::wstring path = navigationFiles_[index].wstring();
-        LoadContent(path, false);
-        if (immediatePaint) UpdateWindow(window_);
+        return navigationFiles_[index].wstring();
     }
 
     float VideoFitScale() const {
@@ -3306,11 +3316,82 @@ public:
         const LONG horizontalDistance = std::abs(deltaX);
         const LONG verticalDistance = std::abs(deltaY);
         const LONG threshold = MulDiv(72, GetDpiForWindow(window_), 96);
-        if (horizontalDistance >= threshold && horizontalDistance >= verticalDistance * 2) Navigate(deltaX < 0 ? 1 : -1);
+        if (horizontalDistance >= threshold && horizontalDistance >= verticalDistance * 2) {
+            const int direction = deltaX < 0 ? 1 : -1;
+            if (BeginStillDissolveNavigation(direction)) SelectNavigationTarget(dissolveTargetPath_, direction);
+            else Navigate(direction);
+        }
         return true;
     }
 
     void CancelSwipeNavigation() { swipeNavigationPending_ = false; }
+
+    bool BeginStillDissolveNavigation(int direction) {
+        if (!source_ || gifPlaying_ || VideoActive() || ModelActive() || dissolveAwaitingTarget_ || dissolveActive_) return false;
+        const std::optional<std::wstring> target = NavigationTargetPath(direction);
+        if (!target || IsGifPath(*target) || IsVideoPath(*target) || IsModelPath(*target)) return false;
+
+        EnsureBitmap();
+        if (!bitmap_) return false;
+        dissolveOldBitmap_ = bitmap_;
+        if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) dissolveOldBitmap_ = imageAdjustedBitmap_;
+        if (!dissolveOldBitmap_) return false;
+
+        dissolveOldWidth_ = imageWidth_;
+        dissolveOldHeight_ = imageHeight_;
+        dissolveTargetPath_ = *target;
+        if (!QueryPerformanceFrequency(&dissolveQpcFrequency_) || dissolveQpcFrequency_.QuadPart <= 0) { ClearStillDissolve(); return false; }
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        dissolveStartQpc_ = now.QuadPart;
+        dissolveAwaitingTarget_ = true;
+        SetTimer(window_, kStillDissolveTimer, 15, nullptr);
+        return true;
+    }
+
+    void BeginStillDissolveIfReady(const std::wstring& path) {
+        if (!dissolveAwaitingTarget_ || !PathsEqual(fs::path(path), fs::path(dissolveTargetPath_))) return;
+        dissolveAwaitingTarget_ = false;
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        dissolveStartQpc_ = now.QuadPart;
+        dissolveActive_ = true;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void ClearStillDissolve() {
+        KillTimer(window_, kStillDissolveTimer);
+        dissolveActive_ = false;
+        dissolveAwaitingTarget_ = false;
+        dissolveOldBitmap_.Reset();
+        dissolveOldWidth_ = dissolveOldHeight_ = 0;
+        dissolveTargetPath_.clear();
+    }
+
+    float StillDissolveProgress() const {
+        if (!dissolveActive_ || dissolveQpcFrequency_.QuadPart <= 0) return 1.0f;
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        const double elapsedMs = static_cast<double>(now.QuadPart - dissolveStartQpc_) * 1000.0 / static_cast<double>(dissolveQpcFrequency_.QuadPart);
+        return std::clamp(static_cast<float>(elapsedMs / kStillDissolveDurationMs), 0.0f, 1.0f);
+    }
+
+    double StillDissolveElapsedMs() const {
+        if (dissolveQpcFrequency_.QuadPart <= 0) return 0.0;
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        return static_cast<double>(now.QuadPart - dissolveStartQpc_) * 1000.0 / static_cast<double>(dissolveQpcFrequency_.QuadPart);
+    }
+
+    void UpdateStillDissolve() {
+        if (dissolveAwaitingTarget_) {
+            if (StillDissolveElapsedMs() >= kStillDissolvePreviewWaitMaxMs) ClearStillDissolve();
+            return;
+        }
+        if (!dissolveActive_) return;
+        if (StillDissolveProgress() >= 1.0f) ClearStillDissolve();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
 
     void PanTo(POINT point) {
         if (!dragging_) return;
@@ -3537,6 +3618,7 @@ public:
         StopDirectoryWatcher();
         KillTimer(window_, kShellRotationCheckTimer);
         KillTimer(window_, kHeifRotationMenuRefreshTimer);
+        ClearStillDissolve();
         decodeShuttingDown_ = true;
         KillTimer(window_, kNavigationDecodeDebounceTimer);
         ++decodeRequestGeneration_;
@@ -5625,6 +5707,7 @@ private:
             navigationBuilt_ = false;
             navigationBuildQueued_ = false;
         }
+        BeginStillDissolveIfReady(path);
     }
 
     void EnsureRenderTarget() {
@@ -5860,6 +5943,34 @@ private:
             if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) { displayed = imageAdjustedBitmap_.Get(); if (imageAdjustmentUsesLanczos_) adjustedDestination = lanczosDestination_; }
             renderTarget_->DrawBitmap(displayed, adjustedDestination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         }
+        renderTarget_->PopAxisAlignedClip();
+    }
+
+    void DrawStillDissolve() {
+        if (!dissolveActive_ || !dissolveOldBitmap_ || !dissolveOldWidth_ || !dissolveOldHeight_) { DrawImage(); return; }
+        const D2D1_SIZE_F target = ImageCanvasSize();
+        const D2D1_RECT_F canvas = ImageCanvasBounds();
+        const float oldScale = std::min(target.width / dissolveOldWidth_, target.height / dissolveOldHeight_);
+        const float newScale = CurrentScale();
+        const D2D1_POINT_2F oldTopLeft = D2D1::Point2F(canvas.left + (target.width - dissolveOldWidth_ * oldScale) * 0.5f,
+            canvas.top + (target.height - dissolveOldHeight_ * oldScale) * 0.5f);
+        const D2D1_POINT_2F newTopLeft = ImageTopLeft(newScale, target);
+        const D2D1_RECT_F oldDestination = D2D1::RectF(oldTopLeft.x, oldTopLeft.y, oldTopLeft.x + dissolveOldWidth_ * oldScale, oldTopLeft.y + dissolveOldHeight_ * oldScale);
+        const D2D1_RECT_F newDestination = D2D1::RectF(newTopLeft.x, newTopLeft.y, newTopLeft.x + imageWidth_ * newScale, newTopLeft.y + imageHeight_ * newScale);
+        const float progress = StillDissolveProgress();
+        const float eased = progress * progress * (3.0f - 2.0f * progress);
+
+        renderTarget_->PushAxisAlignedClip(canvas, D2D1_ANTIALIAS_MODE_ALIASED);
+        DrawCheckerboard(oldDestination);
+        DrawCheckerboard(newDestination);
+        renderTarget_->DrawBitmap(dissolveOldBitmap_.Get(), oldDestination, 1.0f - eased, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        ID2D1Bitmap* displayed = bitmap_.Get();
+        D2D1_RECT_F adjustedDestination = newDestination;
+        if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) {
+            displayed = imageAdjustedBitmap_.Get();
+            if (imageAdjustmentUsesLanczos_) adjustedDestination = lanczosDestination_;
+        }
+        if (displayed) renderTarget_->DrawBitmap(displayed, adjustedDestination, eased, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         renderTarget_->PopAxisAlignedClip();
     }
 
@@ -7629,6 +7740,14 @@ private:
     bool committingGifFrame_ = false;
     bool dragging_ = false;
     bool swipeNavigationPending_ = false;
+    bool dissolveAwaitingTarget_ = false;
+    bool dissolveActive_ = false;
+    LONGLONG dissolveStartQpc_ = 0;
+    LARGE_INTEGER dissolveQpcFrequency_{};
+    UINT dissolveOldWidth_ = 0;
+    UINT dissolveOldHeight_ = 0;
+    std::wstring dissolveTargetPath_;
+    ComPtr<ID2D1Bitmap> dissolveOldBitmap_;
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
@@ -8227,6 +8346,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kTriangleCountTooltipTimer) { viewer->TriangleCountTooltipTimerMessage(); return 0; }
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
+        if (wParam == kStillDissolveTimer) { viewer->UpdateStillDissolve(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {

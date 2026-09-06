@@ -27,7 +27,8 @@ VertexOutput VSMain(uint index : SV_VertexID) {
 }
 float4 PSMain(VertexOutput input) : SV_TARGET {
     float4 sample = inputTexture.Sample(inputSampler, input.uv);
-    float3 color = sample.rgb;
+    float alpha = sample.a;
+    float3 color = alpha > 0.001 ? sample.rgb / alpha : float3(0.0, 0.0, 0.0);
     float luminance = dot(color, float3(0.2126, 0.7152, 0.0722));
     float adjusted = luminance;
     adjusted = adjusted * exp2(adjustments.x * 0.60) + max(adjustments.x, 0.0) * 0.035 * (1.0 - adjusted);
@@ -38,7 +39,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
     adjusted += adjustments.w * 0.30 * highlightWeight;
     adjusted = saturate(adjusted);
     float3 chroma = luminance > 0.001 ? color / luminance : float3(1.0, 1.0, 1.0);
-    return float4(saturate(chroma * adjusted), sample.a);
+    return float4(saturate(chroma * adjusted) * alpha, alpha);
 }
 )";
 
@@ -147,20 +148,25 @@ bool MediaAdjustmentProcessor::Analyze(ID3D11Texture2D* source, MediaAdjustments
     context_->CopyResource(analysisStaging_.Get(), analysisTexture_.Get());
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(analysisStaging_.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return false;
-    std::array<unsigned, 256> histogram{};
+    std::array<uint64_t, 256> histogram{};
+    uint64_t total = 0;
     for (UINT y = 0; y < kAnalysisHeight; ++y) {
         const BYTE* row = static_cast<const BYTE*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch;
         for (UINT x = 0; x < kAnalysisWidth; ++x) {
             const BYTE* pixel = row + x * 4;
-            const float luminance = (0.0722f * pixel[0] + 0.7152f * pixel[1] + 0.2126f * pixel[2]) / 255.0f;
-            ++histogram[std::clamp(static_cast<int>(std::lround(luminance * 255.0f)), 0, 255)];
+            const float alpha = static_cast<float>(pixel[3]) / 255.0f;
+            if (alpha <= (8.0f / 255.0f)) continue;
+            const float luminance = std::clamp((0.0722f * pixel[0] + 0.7152f * pixel[1] + 0.2126f * pixel[2]) / (255.0f * alpha), 0.0f, 1.0f);
+            const uint64_t weight = pixel[3];
+            histogram[std::clamp(static_cast<int>(std::lround(luminance * 255.0f)), 0, 255)] += weight;
+            total += weight;
         }
     }
     context_->Unmap(analysisStaging_.Get(), 0);
-    const unsigned total = kAnalysisWidth * kAnalysisHeight;
+    if (!total) return false;
     const auto percentile = [&](float fraction) {
-        const unsigned target = static_cast<unsigned>(fraction * static_cast<float>(total));
-        unsigned cumulative = 0;
+        const uint64_t target = std::max<uint64_t>(1, static_cast<uint64_t>(fraction * static_cast<float>(total)));
+        uint64_t cumulative = 0;
         for (unsigned index = 0; index < histogram.size(); ++index) { cumulative += histogram[index]; if (cumulative >= target) return static_cast<float>(index) / 255.0f; }
         return 1.0f;
     };

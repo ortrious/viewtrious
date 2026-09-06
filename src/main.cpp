@@ -129,7 +129,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAdjustments, VideoPlaybackSpeed, VideoFullscreen };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAdjustments, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
@@ -687,6 +687,20 @@ struct VideoControlsLayout {
 };
 
 struct VideoAdjustmentsPanelLayout {
+    RECT panel;
+    std::array<RECT, 4> sliders;
+    RECT autoButton;
+    RECT resetButton;
+};
+
+struct ImageZoomHudLayout {
+    RECT combined;
+    RECT zoom;
+    RECT adjustments;
+    bool hasZoom;
+};
+
+struct ImageAdjustmentsPanelLayout {
     RECT panel;
     std::array<RECT, 4> sliders;
     RECT autoButton;
@@ -1335,6 +1349,100 @@ public:
         else if (index == 2) videoAdjustments_.shadows = value;
         else videoAdjustments_.highlights = value;
         ApplyVideoAdjustments();
+    }
+    ImageZoomHudLayout GetImageZoomHudLayout() const {
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const int zoomWidth = showZoomPercentage_ ? static_cast<int>(std::lround(72.0f * scale)) : 0;
+        const int height = static_cast<int>(std::lround(30.0f * scale));
+        const int buttonWidth = height;
+        const int gap = static_cast<int>(std::lround(2.0f * scale));
+        const int margin = static_cast<int>(std::lround(14.0f * scale));
+        const D2D1_SIZE_F target = renderTarget_->GetSize();
+        const bool left = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::TopLeft;
+        const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
+        const int totalWidth = buttonWidth + (zoomWidth ? gap + zoomWidth : 0);
+        const int x = left ? margin : static_cast<int>(target.width) - margin - totalWidth;
+        const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
+        const int y = top ? canvasTop + margin : static_cast<int>(target.height) - margin - height;
+        const RECT combined{ x, y, x + totalWidth, y + height };
+        const RECT zoom = left ? RECT{ x, y, x + zoomWidth, y + height } : RECT{ combined.right - zoomWidth, y, combined.right, y + height };
+        const RECT adjustments = left ? RECT{ zoom.right + (zoomWidth ? gap : 0), y, combined.right, y + height } : RECT{ x, y, x + buttonWidth, y + height };
+        return { combined, zoom, adjustments, zoomWidth != 0 };
+    }
+    ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelLayout() const {
+        const ImageZoomHudLayout hud = GetImageZoomHudLayout();
+        const D2D1_RECT_F canvas = ImageCanvasBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const int gap = MulDiv(8, dpi, 96);
+        const int width = std::min(MulDiv(300, dpi, 96), std::max(MulDiv(220, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
+        const int height = MulDiv(218, dpi, 96);
+        const bool left = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::TopLeft;
+        const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
+        const int panelLeft = left ? std::max(static_cast<int>(canvas.left) + gap, hud.combined.left) : std::min(static_cast<int>(canvas.right) - gap - width, hud.combined.right - width);
+        int panelTop = top ? hud.combined.bottom + gap : hud.combined.top - gap - height;
+        panelTop = std::clamp(panelTop, static_cast<int>(canvas.top) + gap, std::max(static_cast<int>(canvas.top) + gap, static_cast<int>(canvas.bottom) - gap - height));
+        const RECT panel{ panelLeft, panelTop, panelLeft + width, panelTop + height };
+        const int labelWidth = MulDiv(72, dpi, 96);
+        const int valueWidth = MulDiv(38, dpi, 96);
+        const int rowHeight = MulDiv(30, dpi, 96);
+        std::array<RECT, 4> sliders{};
+        for (int index = 0; index < 4; ++index) {
+            const int y = panel.top + MulDiv(18, dpi, 96) + index * rowHeight;
+            sliders[index] = { panel.left + labelWidth, y, panel.right - valueWidth - MulDiv(12, dpi, 96), y + MulDiv(20, dpi, 96) };
+        }
+        const int buttonTop = panel.top + MulDiv(150, dpi, 96);
+        const int buttonWidth = MulDiv(74, dpi, 96);
+        return { panel, sliders, { panel.right - buttonWidth * 2 - gap, buttonTop, panel.right - buttonWidth - gap, buttonTop + MulDiv(30, dpi, 96) }, { panel.right - buttonWidth, buttonTop, panel.right, buttonTop + MulDiv(30, dpi, 96) } };
+    }
+    void ApplyImageAdjustments() {
+        imageAdjustedBitmap_.Reset();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ResetImageAdjustments() { imageAdjustments_ = {}; ApplyImageAdjustments(); }
+    bool ImageAdjustmentsPanelOpen() const { return imageAdjustmentsPanelOpen_; }
+    void SetImageAdjustmentsPanelOpen(bool open) { imageAdjustmentsPanelOpen_ = open; imageAdjustmentsDragging_ = -1; InvalidateRect(window_, nullptr, FALSE); }
+    void UpdateImageAdjustmentSlider(int index, POINT point) {
+        if (index < 0 || index >= 4) return;
+        const RECT slider = GetImageAdjustmentsPanelLayout().sliders[index];
+        const float value = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f) * 2.0f - 1.0f;
+        if (index == 0) imageAdjustments_.brightness = value;
+        else if (index == 1) imageAdjustments_.contrast = value;
+        else if (index == 2) imageAdjustments_.shadows = value;
+        else imageAdjustments_.highlights = value;
+        ApplyImageAdjustments();
+    }
+    void AutoImageAdjustments() {
+        if (!EnsureImageAdjustmentSource()) return;
+        MediaAdjustments automatic;
+        if (imageAdjustmentProcessor_.Analyze(imageAdjustmentSourceTexture_.Get(), automatic)) { imageAdjustments_ = automatic; ApplyImageAdjustments(); }
+    }
+    bool BeginImageAdjustmentsInteraction(POINT point) {
+        if (!source_) return false;
+        if (imageAdjustmentsPanelOpen_) {
+            const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
+            if (PtInRect(&panel.panel, point)) {
+                for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
+                    const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
+                    if (PtInRect(&hit, point)) { imageAdjustmentsDragging_ = index; UpdateImageAdjustmentSlider(index, point); return true; }
+                }
+                if (PtInRect(&panel.autoButton, point)) { AutoImageAdjustments(); return true; }
+                if (PtInRect(&panel.resetButton, point)) { ResetImageAdjustments(); return true; }
+                return true;
+            }
+            if (ButtonAt(point) != ButtonKind::ImageAdjustments) { SetImageAdjustmentsPanelOpen(false); return true; }
+        }
+        return false;
+    }
+    bool ContinueImageAdjustmentsInteraction(POINT point) {
+        if (imageAdjustmentsDragging_ < 0) return false;
+        UpdateImageAdjustmentSlider(imageAdjustmentsDragging_, point);
+        return true;
+    }
+    bool EndImageAdjustmentsInteraction(POINT point) {
+        if (imageAdjustmentsDragging_ < 0) return false;
+        UpdateImageAdjustmentSlider(imageAdjustmentsDragging_, point);
+        imageAdjustmentsDragging_ = -1;
+        return true;
     }
     bool VideoControlsInteractive() const { return VideoActive() && videoControlsOpacity_ > 0.05f; }
     ButtonKind VideoControlAt(POINT point) const {
@@ -2529,6 +2637,7 @@ public:
             if (viewBarVisualStyleMenuOpen_) { const RECT menu = GetModelViewBarStyleMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top+row ? ButtonKind::ViewBarVisualStyleShaded : point.y < menu.top+row*2 ? ButtonKind::ViewBarVisualStyleVisibleEdges : ButtonKind::ViewBarVisualStyleWireframe; }
             const RECT projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();if(PtInRect(&projection,point))return ButtonKind::ViewBarProjectionToggle;if(PtInRect(&style,point))return ButtonKind::ViewBarVisualStyleToggle;
         }
+        if (source_ && renderTarget_) { const ImageZoomHudLayout hud = GetImageZoomHudLayout(); if (PtInRect(&hud.adjustments, point)) return ButtonKind::ImageAdjustments; }
         if (settingsPage_ == SettingsPage::General && SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
         if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
         if (ResetConfirmationButtonContains(point, true)) return ButtonKind::ResetConfirm;
@@ -2703,6 +2812,7 @@ public:
         else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
         else if (button == ButtonKind::SettingsScalingPerformance) SetImageScaling(ImageScaling::Performance);
         else if (button == ButtonKind::SettingsScalingQuality) SetImageScaling(ImageScaling::Quality);
+        else if (button == ButtonKind::ImageAdjustments) SetImageAdjustmentsPanelOpen(!imageAdjustmentsPanelOpen_);
         else if (button == ButtonKind::SettingsDefaultApps) OpenRegisteredDefaultApps();
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
         else if (button == ButtonKind::ResetCancel) DismissOverlay();
@@ -2889,7 +2999,7 @@ public:
             std::wstring error;
             if (!graphicsHost_.Resize(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top), static_cast<float>(GetDpiForWindow(window_)), error)) error_ = error;
             renderTarget_ = graphicsHost_.D2DContext();
-            bitmap_.Reset(); lanczosBitmap_.Reset(); aboutLogo_.Reset(); aboutLogoWidth_ = 0; aboutLogoHeight_ = 0;
+            bitmap_.Reset(); lanczosBitmap_.Reset(); imageAdjustedBitmap_.Reset(); aboutLogo_.Reset(); aboutLogoWidth_ = 0; aboutLogoHeight_ = 0;
             topBarLogo_.Reset(); topBarLogoWidth_ = 0; topBarLogoHeight_ = 0; checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
             if (VideoActive()) videoPlayer_.HandleRenderTargetResize();
         }
@@ -4446,6 +4556,8 @@ private:
         source_ = detached;
         displayedPixels_.reset();
         bitmap_.Reset();
+        imageAdjustmentSourceDirty_ = true;
+        imageAdjustedBitmap_.Reset();
         return S_OK;
     }
 
@@ -5080,7 +5192,7 @@ private:
             committingGifFrame_ = false;
         } else {
             InvalidateLanczosVariant(false);
-            source_ = bitmap; bitmap_.Reset(); imageWidth_ = gifCanvasWidth_; imageHeight_ = gifCanvasHeight_;
+            source_ = bitmap; bitmap_.Reset(); imageWidth_ = gifCanvasWidth_; imageHeight_ = gifCanvasHeight_; imageAdjustmentSourceDirty_ = true; imageAdjustedBitmap_.Reset();
         }
         displayedPixels_ = gifCanvas_;
         InvalidateRect(window_, nullptr, FALSE);
@@ -5486,6 +5598,8 @@ private:
         displayedPixels_.reset();
         source_ = source;
         bitmap_.Reset();
+        imageAdjustmentSourceDirty_ = true;
+        imageAdjustedBitmap_.Reset();
         imageWidth_ = width;
         imageHeight_ = height;
         currentPath_ = path;
@@ -5525,6 +5639,50 @@ private:
     void EnsureBitmap() {
         if (!renderTarget_ || bitmap_) return;
         renderTarget_->CreateBitmapFromWicBitmap(source_.Get(), nullptr, &bitmap_);
+    }
+
+    bool EnsureImageAdjustmentSource() {
+        if (!source_ || !graphicsHost_.Device() || !graphicsHost_.Context()) return false;
+        if (!imageAdjustmentProcessorReady_) {
+            if (!imageAdjustmentProcessor_.Initialize(graphicsHost_.Device())) return false;
+            imageAdjustmentProcessorReady_ = true;
+        }
+        if (!imageAdjustmentSourceTexture_ || imageAdjustmentSourceWidth_ != imageWidth_ || imageAdjustmentSourceHeight_ != imageHeight_) {
+            imageAdjustmentSourceTexture_.Reset();
+            D3D11_TEXTURE2D_DESC description{};
+            description.Width = imageWidth_; description.Height = imageHeight_; description.MipLevels = 1; description.ArraySize = 1;
+            description.Format = DXGI_FORMAT_B8G8R8A8_UNORM; description.SampleDesc.Count = 1;
+            description.Usage = D3D11_USAGE_DEFAULT; description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (FAILED(graphicsHost_.Device()->CreateTexture2D(&description, nullptr, &imageAdjustmentSourceTexture_))) return false;
+            imageAdjustmentSourceWidth_ = imageWidth_; imageAdjustmentSourceHeight_ = imageHeight_;
+            imageAdjustmentSourceDirty_ = true;
+        }
+        if (!imageAdjustmentSourceDirty_ && imageAdjustmentSourceWic_ == source_.Get()) return true;
+        const UINT stride = imageWidth_ * 4;
+        const size_t bytes = static_cast<size_t>(stride) * imageHeight_;
+        const BYTE* pixels = nullptr;
+        if (displayedPixels_ && displayedPixels_->size() >= bytes) pixels = displayedPixels_->data();
+        else {
+            imageAdjustmentPixels_.resize(bytes);
+            if (FAILED(source_->CopyPixels(nullptr, stride, static_cast<UINT>(bytes), imageAdjustmentPixels_.data()))) return false;
+            pixels = imageAdjustmentPixels_.data();
+        }
+        graphicsHost_.Context()->UpdateSubresource(imageAdjustmentSourceTexture_.Get(), 0, nullptr, pixels, stride, 0);
+        imageAdjustmentSourceWic_ = source_.Get();
+        imageAdjustmentSourceDirty_ = false;
+        return true;
+    }
+
+    bool EnsureImageAdjustedBitmap() {
+        if (imageAdjustments_.IsNeutral()) return false;
+        if (imageAdjustedBitmap_) return true;
+        if (!EnsureImageAdjustmentSource() || !imageAdjustmentProcessor_.Process(imageAdjustmentSourceTexture_.Get(), imageWidth_, imageHeight_, imageAdjustments_)) return false;
+        ComPtr<IDXGISurface> surface;
+        if (FAILED(imageAdjustmentProcessor_.OutputTexture()->QueryInterface(IID_PPV_ARGS(&surface)))) return false;
+        const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), RenderTargetDpi(), RenderTargetDpi());
+        imageAdjustedBitmap_.Reset();
+        return SUCCEEDED(renderTarget_->CreateBitmapFromDxgiSurface(surface.Get(), &properties, &imageAdjustedBitmap_));
     }
 
     D2D1_SIZE_F ClientSize() const {
@@ -5681,9 +5839,13 @@ private:
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
         renderTarget_->PushAxisAlignedClip(canvas, D2D1_ANTIALIAS_MODE_ALIASED);
         DrawCheckerboard(destination);
-        if (!gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
+        if (imageAdjustments_.IsNeutral() && !gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
             renderTarget_->DrawBitmap(lanczosBitmap_.Get(), lanczosDestination_, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        else renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        else {
+            ID2D1Bitmap* displayed = bitmap_.Get();
+            if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) displayed = imageAdjustedBitmap_.Get();
+            renderTarget_->DrawBitmap(displayed, destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
         renderTarget_->PopAxisAlignedClip();
     }
 
@@ -5703,27 +5865,72 @@ private:
     }
 
     void DrawZoomHud() {
-        if (!source_ || !showZoomPercentage_ || !EnsureZoomHudFormat()) return;
-        wchar_t label[16]{};
-        const float percent = PhysicalPixelScale() * 100.0f;
-        if (percent < 10.0f) swprintf_s(label, L"%.1f%%", percent);
-        else swprintf_s(label, L"%.0f%%", percent);
+        if (!source_) return;
+        const ImageZoomHudLayout hud = GetImageZoomHudLayout();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const D2D1_SIZE_F target = renderTarget_->GetSize();
-        const float width = 72.0f * scale, height = 30.0f * scale, margin = 14.0f * scale;
-        const bool left = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::TopLeft;
-        const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
-        const float leftEdge = left ? margin : target.width - margin - width;
-        const float canvasTop = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
-        const float topEdge = top ? canvasTop + margin : target.height - margin - height;
-        const D2D1_RECT_F bounds = D2D1::RectF(leftEdge, topEdge, leftEdge + width, topEdge + height);
-        ComPtr<ID2D1SolidColorBrush> backing, text;
+        ComPtr<ID2D1SolidColorBrush> backing, text, hover;
         if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f), &backing)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.50f), &text))) return;
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bounds, 6.0f * scale, 6.0f * scale), backing.Get());
-        ComPtr<IDWriteTextLayout> layout;
-        if (SUCCEEDED(dwriteFactory_->CreateTextLayout(label, static_cast<UINT32>(wcslen(label)), zoomHudFormat_.Get(), width, height, &layout)))
-            renderTarget_->DrawTextLayout(D2D1::Point2F(bounds.left, bounds.top), layout.Get(), text.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.62f), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f), &hover))) return;
+        const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(hud.combined), 6.0f * scale, 6.0f * scale), backing.Get());
+        if (hoveredButton_ == ButtonKind::ImageAdjustments || imageAdjustmentsPanelOpen_)
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(hud.adjustments), 5.0f * scale, 5.0f * scale), hover.Get());
+        const float centerX = (hud.adjustments.left + hud.adjustments.right) * 0.5f;
+        const float centerY = (hud.adjustments.top + hud.adjustments.bottom) * 0.5f;
+        for (int index = -1; index <= 1; ++index) {
+            const float x = centerX + index * 4.5f * scale;
+            renderTarget_->DrawLine(D2D1::Point2F(x, centerY - 6.0f * scale), D2D1::Point2F(x, centerY + 6.0f * scale), text.Get(), 1.15f * scale);
+            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x, centerY + (index == 0 ? 2.5f : -2.5f) * scale), 1.9f * scale, 1.9f * scale), text.Get());
+        }
+        if (hud.hasZoom && EnsureZoomHudFormat()) {
+            wchar_t label[16]{};
+            const float percent = PhysicalPixelScale() * 100.0f;
+            if (percent < 10.0f) swprintf_s(label, L"%.1f%%", percent); else swprintf_s(label, L"%.0f%%", percent);
+            ComPtr<IDWriteTextLayout> layout;
+            const float width = static_cast<float>(hud.zoom.right - hud.zoom.left), height = static_cast<float>(hud.zoom.bottom - hud.zoom.top);
+            if (SUCCEEDED(dwriteFactory_->CreateTextLayout(label, static_cast<UINT32>(wcslen(label)), zoomHudFormat_.Get(), width, height, &layout)))
+                renderTarget_->DrawTextLayout(D2D1::Point2F(static_cast<float>(hud.zoom.left), static_cast<float>(hud.zoom.top)), layout.Get(), text.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+        if (hoveredButton_ == ButtonKind::ImageAdjustments && !imageAdjustmentsPanelOpen_) {
+            const float width = 78.0f * scale, height = 24.0f * scale;
+            const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
+            const float left = centerX - width * 0.5f;
+            const float topEdge = top ? static_cast<float>(hud.combined.bottom) + 6.0f * scale : static_cast<float>(hud.combined.top) - height - 6.0f * scale;
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, topEdge, left + width, topEdge + height), 5.0f * scale, 5.0f * scale), backing.Get());
+            DrawOverlayText(L"adjustments", left, topEdge, width, height, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
+        }
+        if (imageAdjustmentsPanelOpen_) DrawImageAdjustmentsPanel();
+    }
+
+    void DrawImageAdjustmentsPanel() {
+        const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const bool dark = UseDarkAppMode();
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 35.0f / 255.0f : 246.0f / 255.0f, dark ? 38.0f / 255.0f : 246.0f / 255.0f, dark ? 45.0f / 255.0f : 246.0f / 255.0f, 0.94f), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 78.0f / 255.0f : 180.0f / 255.0f, dark ? 82.0f / 255.0f : 180.0f / 255.0f, dark ? 92.0f / 255.0f : 180.0f / 255.0f, 0.55f), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 1.0f), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, 1.0f), &accent)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f), &track)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 1.0f), &hover))) return;
+        const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), scale);
+        const std::array<const wchar_t*, 4> labels{ L"brightness", L"contrast", L"shadows", L"highlights" };
+        const std::array<float, 4> values{ imageAdjustments_.brightness, imageAdjustments_.contrast, imageAdjustments_.shadows, imageAdjustments_.highlights };
+        for (size_t index = 0; index < panel.sliders.size(); ++index) {
+            const RECT slider = panel.sliders[index];
+            DrawOverlayText(labels[index], static_cast<float>(panel.panel.left + MulDiv(12, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(slider.left - panel.panel.left - MulDiv(18, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), false, false, true);
+            const float centerY = (slider.top + slider.bottom) * 0.5f;
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
+            const float thumbX = slider.left + (slider.right - slider.left) * (values[index] + 1.0f) * 0.5f;
+            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, centerY), 5.0f * scale, 5.0f * scale), accent.Get());
+            const std::wstring value = std::to_wstring(static_cast<int>(std::lround(values[index] * 100.0f)));
+            DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
+        }
+        const auto drawButton = [&](const RECT& bounds, const wchar_t* label) { renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), hover.Get()); DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true); };
+        drawButton(panel.autoButton, L"auto"); drawButton(panel.resetButton, L"reset");
     }
 
     void DrawRevisionLabel() {
@@ -7278,6 +7485,11 @@ private:
     void DiscardRenderResources() {
         bitmap_.Reset();
         lanczosBitmap_.Reset();
+        imageAdjustedBitmap_.Reset();
+        imageAdjustmentSourceTexture_.Reset();
+        imageAdjustmentSourceWic_ = nullptr;
+        imageAdjustmentProcessor_.Reset();
+        imageAdjustmentProcessorReady_ = false;
         aboutLogo_.Reset();
         aboutLogoWidth_ = 0;
         aboutLogoHeight_ = 0;
@@ -7311,6 +7523,15 @@ private:
     ComPtr<ID2D1DeviceContext> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
     ComPtr<ID2D1Bitmap> lanczosBitmap_;
+    ComPtr<ID2D1Bitmap1> imageAdjustedBitmap_;
+    ComPtr<ID3D11Texture2D> imageAdjustmentSourceTexture_;
+    MediaAdjustmentProcessor imageAdjustmentProcessor_;
+    IWICBitmapSource* imageAdjustmentSourceWic_ = nullptr;
+    std::vector<BYTE> imageAdjustmentPixels_;
+    UINT imageAdjustmentSourceWidth_ = 0;
+    UINT imageAdjustmentSourceHeight_ = 0;
+    bool imageAdjustmentSourceDirty_ = true;
+    bool imageAdjustmentProcessorReady_ = false;
     ComPtr<ID2D1Bitmap> aboutLogo_;
     UINT aboutLogoWidth_ = 0;
     UINT aboutLogoHeight_ = 0;
@@ -7370,6 +7591,9 @@ private:
     std::atomic<LONGLONG> videoPlaybackWakeQpc_{ 0 };
     bool videoPausedSeekRefreshPending_ = false;
     MediaAdjustments videoAdjustments_;
+    MediaAdjustments imageAdjustments_;
+    bool imageAdjustmentsPanelOpen_ = false;
+    int imageAdjustmentsDragging_ = -1;
     bool videoAdjustmentsPanelOpen_ = false;
     int videoAdjustmentsDragging_ = -1;
     DWORD videoPreferredPlaybackRatePercent_ = 100;
@@ -7768,6 +7992,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetCapture(window);
             return 0;
         }
+        if (viewer->BeginImageAdjustmentsInteraction(point)) {
+            SetCapture(window);
+            return 0;
+        }
         const ButtonKind button = viewer->ButtonAt(point);
         if (button != ButtonKind::None) {
             viewer->SetButtonPressed(button);
@@ -7874,6 +8102,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->SwipeNavigationPending()) return 0;
+        if (viewer->ContinueImageAdjustmentsInteraction(point)) return 0;
         if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) {
             if (viewer->ModelActive()) {
                 if (wParam & (MK_LBUTTON | MK_MBUTTON)) viewer->ContinueModelDrag(point);
@@ -7885,6 +8114,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); viewer->VideoControlsMouseLeave(); return 0;
     case WM_LBUTTONUP: {
         if (viewer->EndVideoControlsInteraction({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
+            if (GetCapture() == window) ReleaseCapture();
+            return 0;
+        }
+        if (viewer->EndImageAdjustmentsInteraction({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
             if (GetCapture() == window) ReleaseCapture();
             return 0;
         }
@@ -8002,6 +8235,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE && viewer->VideoPlaybackSpeedPanelOpen()) { viewer->SetVideoPlaybackSpeedPanelOpen(false); return 0; }
         if (wParam == VK_ESCAPE && viewer->VideoAdjustmentsPanelOpen()) { viewer->SetVideoAdjustmentsPanelOpen(false); return 0; }
+        if (wParam == VK_ESCAPE && viewer->ImageAdjustmentsPanelOpen()) { viewer->SetImageAdjustmentsPanelOpen(false); return 0; }
         if (viewer->TutorialActive()) { if (wParam == VK_ESCAPE) viewer->StopTutorial(); return 0; }
         if (viewer->OpenWithSubmenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissOpenWithSubmenu(); return 0; }
         if (viewer->ModelViewBarMenuOpen()) { if (wParam == VK_ESCAPE) viewer->DismissModelViewBarMenu(); return 0; }

@@ -1361,6 +1361,11 @@ public:
             layout.scrubber.right, layout.scrubber.top + (layout.scrubber.bottom - layout.scrubber.top) / 2 + MulDiv(12, GetDpiForWindow(window_), 96) };
         return hit.right > hit.left && PtInRect(&hit, point);
     }
+    bool VideoCanvasContains(POINT point) const {
+        if (!VideoActive()) return false;
+        const RECT canvas = ModelCanvasBounds();
+        return PtInRect(&canvas, point) != FALSE;
+    }
     bool VideoControlsContains(POINT point) const {
         if (!VideoControlsInteractive()) return false;
         const RECT island = GetVideoControlsLayout().island;
@@ -7675,8 +7680,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->VideoActive()) {
-            const RECT canvas = viewer->ModelCanvasBounds();
-            if (PtInRect(&canvas, point)) { viewer->ToggleVideoFullscreen(); return 0; }
+            if (viewer->VideoCanvasContains(point)) { viewer->ToggleVideoFullscreen(); return 0; }
         }
         const ButtonKind button = viewer->ButtonAt(point);
         if (button != ButtonKind::None) {
@@ -7809,8 +7813,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (!viewer->TutorialActive() && !viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen()) {
             const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             if (viewer->VideoActive()) {
-                const RECT canvas = viewer->ModelCanvasBounds();
-                if (!viewer->VideoControlsContains(point) && PtInRect(&canvas, point)) { viewer->ToggleVideoFullscreen(); return 0; }
+                if (!viewer->VideoControlsContains(point) && viewer->VideoCanvasContains(point)) { viewer->ToggleVideoFullscreen(); return 0; }
             }
             if (viewer->HasImage() && viewer->ImageContains(point)) {
                 viewer->ToggleFitActualPixels(point);

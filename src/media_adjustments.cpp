@@ -73,10 +73,9 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
     // WIC supplies premultiplied sRGB. Work on straight, linear RGB so tone
     // operations act on light rather than independently on encoded channels.
     float3 linearRgb = SrgbToLinear(saturate(sample.rgb / sample.a));
-    const float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
-    const float sourceLuminance = dot(linearRgb, lumaWeights);
     linearRgb *= exp2(light.x * 2.0);
 
+    const float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
     const float luminance = dot(linearRgb, lumaWeights);
     float tone = LinearToSrgb(luminance.xxx).x;
 
@@ -94,13 +93,6 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
     float3 adjusted = linearRgb * gain;
 
     const float adjustedLuminance = dot(adjusted, lumaWeights);
-    // Only the combination of very dark source light and high reconstruction
-    // gain is chroma-unstable. Blend that noise smoothly toward luminance;
-    // ordinary shadows and all midtones retain their original chroma.
-    const float sourceShadowRisk = 1.0 - smoothstep(0.0015, 0.0100, sourceLuminance);
-    const float reconstructionRisk = smoothstep(5.0, 10.0, gain);
-    const float chromaRetention = 1.0 - 0.78 * sourceShadowRisk * reconstructionRisk;
-    adjusted = lerp(adjustedLuminance.xxx, adjusted, chromaRetention);
     adjusted = lerp(adjustedLuminance.xxx, adjusted, 1.0 + color.y);
 
     // Compress gamut jointly rather than clipping individual channels, which

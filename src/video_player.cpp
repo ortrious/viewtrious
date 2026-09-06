@@ -93,7 +93,7 @@ void VideoPlayer::RecordFramePacingPresent(HRESULT result) {
 void VideoPlayer::FlushFramePacingDiagnostics() {
 #if defined(_DEBUG)
     if (!framePacingRecordCount_ || !framePacingFrequency_) return;
-    static const std::array<const wchar_t*, static_cast<size_t>(FramePacingEvent::Count)> names = { L"begin", L"pause", L"resume", L"seek", L"end", L"frame-step-request", L"frame-step-complete", L"schedule", L"timer", L"scheduler-acquire", L"initial-acquire", L"seek-acquire", L"frame-step-acquire", L"tick", L"transfer", L"cache", L"paint", L"present" };
+    static const std::array<const wchar_t*, static_cast<size_t>(FramePacingEvent::Count)> names = { L"begin", L"pause", L"resume", L"seek", L"end", L"schedule", L"timer", L"scheduler-acquire", L"initial-acquire", L"seek-acquire", L"tick", L"transfer", L"cache", L"paint", L"present" };
     OutputDebugStringW(L"Viewtrious VIDEO PACING trace begin\n");
     std::array<LONGLONG, static_cast<size_t>(FramePacingEvent::Count)> previous{};
     for (size_t index = 0; index < framePacingRecordCount_; ++index) {
@@ -261,8 +261,6 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
         playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackResume);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ENDED) {
         playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackEnd);
-    } else if (event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED) {
-        playing_ = false; RecordFramePacingEvent(FramePacingEvent::FrameStepComplete);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ERROR) {
         error = L"Viewtrious could not decode this video. It may be corrupt or use an unsupported codec.";
         failed_ = true; playing_ = false;
@@ -286,23 +284,6 @@ HRESULT VideoPlayer::TogglePlayPause() {
         if (SUCCEEDED(play)) { playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackResume); }
         return play;
     }
-}
-
-HRESULT VideoPlayer::PauseForFrameStep() {
-    if (!engine_ || failed_ || !playing_) return E_FAIL;
-    const HRESULT pause = engine_->Pause();
-    if (SUCCEEDED(pause)) {
-        playing_ = false;
-        RecordFramePacingEvent(FramePacingEvent::PlaybackPause);
-    }
-    return pause;
-}
-
-HRESULT VideoPlayer::StepForward() {
-    if (!engine_ || !engineEx_ || failed_ || !ready_ || engine_->IsEnded() || playing_) return E_FAIL;
-    const HRESULT step = engineEx_->FrameStep(TRUE);
-    if (SUCCEEDED(step)) RecordFramePacingEvent(FramePacingEvent::FrameStepRequest);
-    return step;
 }
 
 bool VideoPlayer::GetPlaybackTimes(double& currentSeconds, double& durationSeconds) const {
@@ -386,8 +367,7 @@ bool VideoPlayer::TryGetFramesPerSecond(float& framesPerSecond) {
 bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
     const bool frameReady = engine_ && engineEx_ && frameTexture_ && videoWidth_ && videoHeight_ && !failed_;
     const FramePacingEvent acquisition = reason == FrameAcquisitionReason::Scheduler ? FramePacingEvent::SchedulerAcquire :
-        reason == FrameAcquisitionReason::InitialLoad ? FramePacingEvent::InitialLoadAcquire :
-        reason == FrameAcquisitionReason::Seek ? FramePacingEvent::SeekAcquire : FramePacingEvent::FrameStepAcquire;
+        reason == FrameAcquisitionReason::InitialLoad ? FramePacingEvent::InitialLoadAcquire : FramePacingEvent::SeekAcquire;
     RecordFramePacingEvent(acquisition);
     if (!frameReady) return false;
     bool transferred = false;

@@ -75,9 +75,6 @@ constexpr UINT_PTR kModelHomeAnimationTimer = 11;
 constexpr UINT_PTR kModelLoadingAnimationTimer = 12;
 constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
 constexpr UINT_PTR kVideoControlsTimer = 15;
-constexpr UINT_PTR kVideoFrameStepPumpTimer = 16;
-constexpr UINT kVideoFrameStepPumpIntervalMs = 16;
-constexpr unsigned int kMaxQueuedVideoForwardSteps = 16;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
@@ -128,7 +125,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoFrameForward, VideoMute };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
@@ -677,29 +674,10 @@ struct VideoControlsLayout {
     RECT scrubber;
     RECT duration;
     RECT playPause;
-    RECT frameForward;
+    RECT stepBackward;
+    RECT stepForward;
     RECT mute;
 };
-
-#if defined(_DEBUG)
-struct FrameStepTransportRecord {
-    ULONGLONG tick = 0;
-    DWORD mediaEvent = 0;
-    HRESULT result = S_OK;
-    bool awaitingPause = false;
-    bool pending = false;
-    bool resumeRequested = false;
-    bool playing = false;
-    bool paused = false;
-    bool seeking = false;
-    bool ended = false;
-    bool playEnabled = false;
-    bool frameEnabled = false;
-    double currentTime = 0.0;
-    unsigned int queuedForwardSteps = 0;
-    const wchar_t* transition = L"";
-};
-#endif
 
 std::wstring FormatVideoTime(double seconds) {
     if (!std::isfinite(seconds) || seconds < 0.0) return L"--:--";
@@ -1111,94 +1089,32 @@ public:
     bool HasImage() const { return source_ != nullptr; }
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
     bool VideoActive() const { return contentKind_ == ContentKind::Video2D && videoPlayer_.Active(); }
-#if defined(_DEBUG)
-    static const wchar_t* FrameStepEventName(DWORD event) {
-        switch (event) {
-        case MF_MEDIA_ENGINE_EVENT_PAUSE: return L"PAUSE";
-        case MF_MEDIA_ENGINE_EVENT_PLAY: return L"PLAY";
-        case MF_MEDIA_ENGINE_EVENT_PLAYING: return L"PLAYING";
-        case MF_MEDIA_ENGINE_EVENT_SEEKED: return L"SEEKED";
-        case MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED: return L"FRAMESTEPCOMPLETED";
-        case MF_MEDIA_ENGINE_EVENT_ERROR: return L"ERROR";
-        default: return L"";
-        }
-    }
-    void TraceFrameStepTransport(const wchar_t* transition, DWORD event = 0, HRESULT result = S_OK) {
-        if (!VideoActive()) return;
-        double current = 0.0, duration = 0.0;
-        videoPlayer_.GetPlaybackTimes(current, duration);
-        const bool frameEnabled = !videoPlayer_.Ended();
-        FrameStepTransportRecord& record = frameStepTransportRecords_[frameStepTransportRecordNext_++ % frameStepTransportRecords_.size()];
-        record = { GetTickCount64(), event, result, videoFrameStepAwaitingPause_, videoFrameStepPending_, videoFrameStepResumeRequested_,
-            videoPlayer_.Playing(), videoPlayer_.Paused(), videoPlayer_.Seeking(), videoPlayer_.Ended(), true, frameEnabled, current, videoQueuedForwardSteps_, transition };
-        wchar_t line[512]{};
-        swprintf_s(line, L"Viewtrious frame-step: %s event=%lu(%s) hr=0x%08X await=%d pending=%d resume=%d playing=%d paused=%d seeking=%d ended=%d play=%d frame=%d queued=%u time=%.3f\n",
-            transition, event, FrameStepEventName(event), static_cast<unsigned int>(result), record.awaitingPause, record.pending,
-            record.resumeRequested, record.playing, record.paused, record.seeking, record.ended, record.playEnabled, record.frameEnabled, record.queuedForwardSteps, record.currentTime);
-        OutputDebugStringW(line);
-    }
-#else
-    void TraceFrameStepTransport(const wchar_t*, DWORD = 0, HRESULT = S_OK) {}
-#endif
-    void ClearQueuedVideoForwardSteps(const wchar_t* transition) {
-        if (!videoQueuedForwardSteps_) return;
-        videoQueuedForwardSteps_ = 0;
-        TraceFrameStepTransport(transition);
-    }
-    void QueueVideoForwardStep() {
-        if (videoQueuedForwardSteps_ >= kMaxQueuedVideoForwardSteps) return;
-        ++videoQueuedForwardSteps_;
-        TraceFrameStepTransport(L"frame-step-queued");
-        ShowVideoControls();
-    }
     void ToggleVideoPlayPause() {
         if (!VideoActive()) return;
-        TraceFrameStepTransport(L"play-click");
-        if (videoFrameStepAwaitingPause_ || videoFrameStepPending_) {
-            ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-play");
-            videoFrameStepResumeRequested_ = true;
-            TraceFrameStepTransport(L"play-deferred");
-            ShowVideoControls();
-            return;
-        }
-        const HRESULT play = videoPlayer_.TogglePlayPause();
-        TraceFrameStepTransport(L"play-request", 0, play);
+        videoPlayer_.TogglePlayPause();
         if (videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = false;
         ShowVideoControls();
         ScheduleVideoPlaybackTimer();
         if (!videoPlayer_.Playing()) videoPlayer_.FlushFramePacingDiagnostics();
         InvalidateRect(window_, nullptr, FALSE);
     }
-    bool RequestVideoFrameStep() {
-        if (!VideoActive() || videoFrameStepPending_) return false;
-        const HRESULT step = videoPlayer_.StepForward();
-        TraceFrameStepTransport(L"frame-step-request", 0, step);
-        if (FAILED(step)) return false;
-        videoFrameStepPending_ = true;
-        videoFrameStepFramePublished_ = false;
-        videoFrameStepPumpWaitLogged_ = false;
-        videoPausedSeekRefreshPending_ = false;
-        StopVideoPlaybackScheduler();
-        StartVideoFrameStepPump();
-        videoPlayer_.FlushFramePacingDiagnostics();
-        ShowVideoControls();
-        return true;
-    }
-    void StepVideoForward() {
-        if (!VideoActive() || videoPlayer_.Ended()) return;
-        TraceFrameStepTransport(L"frame-click");
-        if (videoFrameStepAwaitingPause_ || videoFrameStepPending_) {
-            QueueVideoForwardStep();
-            return;
+    void NudgeVideoPosition(int direction) {
+        if (!VideoActive() || !direction) return;
+        if (videoPlayer_.Playing()) {
+            ToggleVideoPlayPause();
+            videoPausedSeekRefreshPending_ = false;
+            if (videoPlayer_.Playing()) return;
         }
-        if (!videoPlayer_.Playing()) { RequestVideoFrameStep(); return; }
-        const HRESULT pause = videoPlayer_.PauseForFrameStep();
-        TraceFrameStepTransport(L"frame-step-pause-request", 0, pause);
-        if (FAILED(pause)) return;
-        videoFrameStepAwaitingPause_ = true;
-        TraceFrameStepTransport(L"frame-step-await-pause");
-        StopVideoPlaybackScheduler();
+        double current = 0.0, duration = 0.0;
+        if (!videoPlayer_.GetPlaybackTimes(current, duration)) return;
+        float framesPerSecond = 0.0f;
+        const double stepSeconds = videoPlayer_.TryGetFramesPerSecond(framesPerSecond) && std::isfinite(framesPerSecond) && framesPerSecond >= 1.0f && framesPerSecond <= 240.0f
+            ? 1.0 / static_cast<double>(framesPerSecond) : 1.0 / 30.0;
+        const double anchor = videoPausedSeekRefreshPending_ ? videoScrubSeconds_ : current;
+        videoScrubSeconds_ = std::clamp(anchor + direction * stepSeconds, 0.0, duration);
+        if (videoPlayer_.Seek(videoScrubSeconds_) && !videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = true;
         ShowVideoControls();
+        InvalidateRect(window_, nullptr, FALSE);
     }
     VideoControlsLayout GetVideoControlsLayout() const {
         const RECT canvas = ModelCanvasBounds();
@@ -1225,21 +1141,25 @@ public:
         const int scrubberRight = std::max(scrubberLeft, durationRight - timeWidth - gap);
         const int controlTop = top + padding + timelineHeight + rowGap;
         const int playLeft = left + padding;
-        const int frameLeft = playLeft + buttonWidth + gap;
+        const int stepBackwardLeft = playLeft + buttonWidth + gap;
+        const int stepForwardLeft = stepBackwardLeft + buttonWidth + gap;
+        const int muteLeft = stepForwardLeft + buttonWidth + gap;
         return { { left, top, left + width, top + height },
             { currentLeft, top + padding, currentLeft + timeWidth, top + padding + timelineHeight },
             { scrubberLeft, top + padding, scrubberRight, top + padding + timelineHeight },
             { durationRight - timeWidth, top + padding, durationRight, top + padding + timelineHeight },
             { playLeft, controlTop, playLeft + buttonWidth, controlTop + buttonWidth },
-            { frameLeft, controlTop, frameLeft + buttonWidth, controlTop + buttonWidth },
-            { left + width - padding - buttonWidth, controlTop, left + width - padding, controlTop + buttonWidth } };
+            { stepBackwardLeft, controlTop, stepBackwardLeft + buttonWidth, controlTop + buttonWidth },
+            { stepForwardLeft, controlTop, stepForwardLeft + buttonWidth, controlTop + buttonWidth },
+            { muteLeft, controlTop, muteLeft + buttonWidth, controlTop + buttonWidth } };
     }
     bool VideoControlsInteractive() const { return VideoActive() && videoControlsOpacity_ > 0.05f; }
     ButtonKind VideoControlAt(POINT point) const {
         if (!VideoControlsInteractive()) return ButtonKind::None;
         const VideoControlsLayout layout = GetVideoControlsLayout();
         if (PtInRect(&layout.playPause, point)) return ButtonKind::VideoPlayPause;
-        if (!videoPlayer_.Ended() && PtInRect(&layout.frameForward, point)) return ButtonKind::VideoFrameForward;
+        if (PtInRect(&layout.stepBackward, point)) return ButtonKind::VideoStepBackward;
+        if (PtInRect(&layout.stepForward, point)) return ButtonKind::VideoStepForward;
         if (PtInRect(&layout.mute, point)) return ButtonKind::VideoMute;
         return ButtonKind::None;
     }
@@ -1309,10 +1229,6 @@ public:
         const float fraction = std::clamp(static_cast<float>(point.x - scrubber.left) / static_cast<float>(scrubber.right - scrubber.left), 0.0f, 1.0f);
         videoScrubSeconds_ = duration * fraction;
         const bool seekStarted = videoPlayer_.Seek(videoScrubSeconds_);
-        if (!videoScrubSeekLogged_) {
-            TraceFrameStepTransport(L"scrub-seek-request", 0, seekStarted ? S_OK : E_FAIL);
-            videoScrubSeekLogged_ = true;
-        }
         if (seekStarted && !videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = true;
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -1323,23 +1239,16 @@ public:
         videoControlsPointerOver_ = true;
         KillTimer(window_, kVideoControlsTimer);
         if (VideoScrubberContains(point)) {
-            TraceFrameStepTransport(L"scrub-begin");
-            StopVideoFrameStepPump();
-            ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-scrub");
-            videoFrameStepAwaitingPause_ = false;
-            videoFrameStepPending_ = false;
-            videoFrameStepResumeRequested_ = false;
-            videoFrameStepFramePublished_ = false;
             videoWasPlayingBeforeScrub_ = videoPlayer_.Playing();
             if (videoWasPlayingBeforeScrub_) ToggleVideoPlayPause();
             videoScrubbing_ = true;
-            videoScrubSeekLogged_ = false;
             UpdateVideoScrub(point);
             return true;
         }
         const ButtonKind control = VideoControlAt(point);
         if (control == ButtonKind::VideoPlayPause) ToggleVideoPlayPause();
-        else if (control == ButtonKind::VideoFrameForward) StepVideoForward();
+        else if (control == ButtonKind::VideoStepBackward) NudgeVideoPosition(-1);
+        else if (control == ButtonKind::VideoStepForward) NudgeVideoPosition(1);
         else if (control == ButtonKind::VideoMute) { videoPlayer_.ToggleMute(); ShowVideoControls(); }
         return true;
     }
@@ -1354,10 +1263,8 @@ public:
         if (!videoScrubbing_) return false;
         UpdateVideoScrub(point);
         videoScrubbing_ = false;
-        videoScrubSeekLogged_ = false;
         const bool resumePlayback = videoWasPlayingBeforeScrub_;
         videoWasPlayingBeforeScrub_ = false;
-        TraceFrameStepTransport(L"scrub-end");
         if (resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
         else ShowVideoControls();
         return true;
@@ -1381,7 +1288,6 @@ public:
     void CancelVideoControlsInteraction() {
         if (!videoScrubbing_) return;
         videoScrubbing_ = false;
-        videoScrubSeekLogged_ = false;
         const bool resumePlayback = videoWasPlayingBeforeScrub_;
         videoWasPlayingBeforeScrub_ = false;
         if (resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
@@ -3527,13 +3433,6 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DeactivateVideo() {
-        TraceFrameStepTransport(L"video-deactivate");
-        StopVideoFrameStepPump();
-        ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-deactivate");
-        videoFrameStepAwaitingPause_ = false;
-        videoFrameStepPending_ = false;
-        videoFrameStepResumeRequested_ = false;
-        videoFrameStepFramePublished_ = false;
         videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
         StopVideoControls();
@@ -3543,57 +3442,14 @@ private:
 public:
     void VideoMediaEngineEvent(DWORD event) {
         if (!VideoActive()) return;
-        if (event == MF_MEDIA_ENGINE_EVENT_PAUSE || event == MF_MEDIA_ENGINE_EVENT_PLAY || event == MF_MEDIA_ENGINE_EVENT_PLAYING ||
-            event == MF_MEDIA_ENGINE_EVENT_SEEKED || event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED || event == MF_MEDIA_ENGINE_EVENT_ERROR)
-            TraceFrameStepTransport(L"media-event-received", event);
         const bool wasPlaying = videoPlayer_.Playing();
         std::wstring videoError;
         videoPlayer_.HandleMediaEvent(event, videoError);
         UpdateVideoTitleMetadata();
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
-        if (event == MF_MEDIA_ENGINE_EVENT_PAUSE && videoFrameStepAwaitingPause_) {
-            videoFrameStepAwaitingPause_ = false;
-            TraceFrameStepTransport(L"pause-transition-complete", event);
-            if (!RequestVideoFrameStep()) {
-                ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-request-failed");
-                if (videoFrameStepResumeRequested_) {
-                    videoFrameStepResumeRequested_ = false;
-                    ToggleVideoPlayPause();
-                }
-            }
-        } else if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
+        if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
-        } else if (event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED) {
-            const bool completedStep = videoFrameStepPending_;
-            StopVideoFrameStepPump();
-            videoFrameStepAwaitingPause_ = false;
-            videoFrameStepPending_ = false;
-            TraceFrameStepTransport(L"frame-step-pending-cleared", event);
-            if (completedStep && !videoFrameStepFramePublished_ && !videoPlayer_.Playing()) {
-                const bool refreshed = videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::FrameStep);
-                TraceFrameStepTransport(refreshed ? L"frame-step-refresh-published" : L"frame-step-refresh-no-frame", event);
-            }
-            videoFrameStepFramePublished_ = false;
-            const bool resumePlayback = videoFrameStepResumeRequested_;
-            videoFrameStepResumeRequested_ = false;
-            if (completedStep && resumePlayback && VideoActive() && !videoPlayer_.Playing()) {
-                ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-play");
-                ToggleVideoPlayPause();
-            } else if (completedStep && videoPlayer_.Ended()) {
-                ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-eof");
-            } else if (completedStep && videoQueuedForwardSteps_) {
-                --videoQueuedForwardSteps_;
-                TraceFrameStepTransport(L"frame-step-queue-dequeue");
-                if (!RequestVideoFrameStep()) ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-request-failed");
-            }
-        } else if (event == MF_MEDIA_ENGINE_EVENT_ENDED) {
-            StopVideoFrameStepPump();
-            videoFrameStepAwaitingPause_ = false;
-            videoFrameStepPending_ = false;
-            videoFrameStepResumeRequested_ = false;
-            videoFrameStepFramePublished_ = false;
-            ClearQueuedVideoForwardSteps(L"frame-step-queue-cleared-eof");
         } else if (!videoPlayer_.HasValidFrame() &&
             (event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY || event == MF_MEDIA_ENGINE_EVENT_CANPLAY)) {
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
@@ -3604,8 +3460,7 @@ public:
         } else if (!videoPlayer_.Playing()) {
             StopVideoPlaybackScheduler();
         }
-        if (event == MF_MEDIA_ENGINE_EVENT_ENDED || event == MF_MEDIA_ENGINE_EVENT_CANPLAY || event == MF_MEDIA_ENGINE_EVENT_PLAYING ||
-            event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED) ShowVideoControls();
+        if (event == MF_MEDIA_ENGINE_EVENT_ENDED || event == MF_MEDIA_ENGINE_EVENT_CANPLAY || event == MF_MEDIA_ENGINE_EVENT_PLAYING) ShowVideoControls();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void UpdateVideoTitleMetadata() {
@@ -3617,31 +3472,6 @@ public:
             if (!resolutionText_.empty()) resolutionText_ += L"  \x2022  " + FormatFramesPerSecond(framesPerSecond);
         }
     }
-    void StartVideoFrameStepPump() {
-        if (!VideoActive() || !videoFrameStepPending_) return;
-        TraceFrameStepTransport(L"frame-step-pump-start");
-        PumpVideoFrameStep();
-    }
-    void StopVideoFrameStepPump() {
-        KillTimer(window_, kVideoFrameStepPumpTimer);
-        TraceFrameStepTransport(L"frame-step-pump-stop");
-    }
-    void PumpVideoFrameStep() {
-        KillTimer(window_, kVideoFrameStepPumpTimer);
-        if (!VideoActive() || !videoFrameStepPending_ || videoPlayer_.Playing()) return;
-        const bool published = videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::FrameStep);
-        if (published) {
-            videoFrameStepFramePublished_ = true;
-            TraceFrameStepTransport(L"frame-step-pump-published");
-            InvalidateRect(window_, nullptr, FALSE);
-        } else if (!videoFrameStepPumpWaitLogged_) {
-            TraceFrameStepTransport(L"frame-step-pump-waiting", 0, S_FALSE);
-            videoFrameStepPumpWaitLogged_ = true;
-        }
-        if (VideoActive() && videoFrameStepPending_ && !videoPlayer_.Playing())
-            SetTimer(window_, kVideoFrameStepPumpTimer, kVideoFrameStepPumpIntervalMs, nullptr);
-    }
-    void VideoFrameStepPumpTimerMessage() { PumpVideoFrameStep(); }
     void VideoPlaybackWakeMessage(uint64_t generation) {
         uint64_t expected = generation;
         videoPlaybackWakePendingGeneration_.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
@@ -5675,7 +5505,8 @@ private:
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), 1.0f * scale);
         if (videoControlsHovered_ == ButtonKind::VideoPlayPause) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playPause), 5.0f * scale, 5.0f * scale), hover.Get());
-        if (videoControlsHovered_ == ButtonKind::VideoFrameForward) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.frameForward), 5.0f * scale, 5.0f * scale), hover.Get());
+        if (videoControlsHovered_ == ButtonKind::VideoStepBackward) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
+        if (videoControlsHovered_ == ButtonKind::VideoStepForward) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoMute) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), hover.Get());
 
         const float playCenterX = (layout.playPause.left + layout.playPause.right) * 0.5f;
@@ -5698,22 +5529,8 @@ private:
             }
         }
 
-        const float frameCenterX = (layout.frameForward.left + layout.frameForward.right) * 0.5f;
-        const float frameCenterY = (layout.frameForward.top + layout.frameForward.bottom) * 0.5f;
-        ID2D1Brush* const frameBrush = !videoPlayer_.Ended() ? text.Get() : track.Get();
-        ComPtr<ID2D1PathGeometry> frameTriangle;
-        ComPtr<ID2D1GeometrySink> frameSink;
-        if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&frameTriangle)) && SUCCEEDED(frameTriangle->Open(&frameSink))) {
-            const float half = 6.0f * scale;
-            frameSink->BeginFigure(D2D1::Point2F(frameCenterX - half, frameCenterY - half), D2D1_FIGURE_BEGIN_FILLED);
-            frameSink->AddLine(D2D1::Point2F(frameCenterX - half, frameCenterY + half));
-            frameSink->AddLine(D2D1::Point2F(frameCenterX + half * 0.45f, frameCenterY));
-            frameSink->EndFigure(D2D1_FIGURE_END_CLOSED);
-            frameSink->Close();
-            renderTarget_->FillGeometry(frameTriangle.Get(), frameBrush);
-            renderTarget_->DrawLine(D2D1::Point2F(frameCenterX + half * 0.75f, frameCenterY - half),
-                D2D1::Point2F(frameCenterX + half * 0.75f, frameCenterY + half), frameBrush, 1.6f * scale);
-        }
+        DrawOverlayText(L"-1", static_cast<float>(layout.stepBackward.left), static_cast<float>(layout.stepBackward.top), static_cast<float>(layout.stepBackward.right - layout.stepBackward.left), static_cast<float>(layout.stepBackward.bottom - layout.stepBackward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
 
         double current = 0.0, duration = 0.0;
         const bool hasTimes = videoPlayer_.GetPlaybackTimes(current, duration);
@@ -7184,18 +7001,7 @@ private:
     std::atomic<uint64_t> videoPlaybackSchedulerGeneration_{ 0 };
     std::atomic<uint64_t> videoPlaybackWakePendingGeneration_{ 0 };
     std::atomic<LONGLONG> videoPlaybackWakeQpc_{ 0 };
-    bool videoFrameStepAwaitingPause_ = false;
-    bool videoFrameStepPending_ = false;
-    bool videoFrameStepResumeRequested_ = false;
-    bool videoFrameStepFramePublished_ = false;
-    bool videoFrameStepPumpWaitLogged_ = false;
-    unsigned int videoQueuedForwardSteps_ = 0;
     bool videoPausedSeekRefreshPending_ = false;
-    bool videoScrubSeekLogged_ = false;
-#if defined(_DEBUG)
-    std::array<FrameStepTransportRecord, 64> frameStepTransportRecords_{};
-    size_t frameStepTransportRecordNext_ = 0;
-#endif
     bool videoPlaybackSchedulerRunning_ = false;
     double videoPlaybackDeadlineQpc_ = 0.0;
     double videoPlaybackFramePeriodQpc_ = 0.0;
@@ -7466,8 +7272,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        if (viewer->VideoControlAt(point) == ButtonKind::VideoFrameForward) {
-            viewer->StepVideoForward();
+        const ButtonKind videoControl = viewer->VideoControlAt(point);
+        if (videoControl == ButtonKind::VideoStepBackward || videoControl == ButtonKind::VideoStepForward) {
+            viewer->NudgeVideoPosition(videoControl == ButtonKind::VideoStepBackward ? -1 : 1);
             return 0;
         }
         const ButtonKind navigation = viewer->CanvasNavigationZoneAt(point);
@@ -7778,7 +7585,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kModelLoadingAnimationTimer) { viewer->ModelLoadingAnimationTimerMessage(); return 0; }
         if (wParam == kTriangleCountTooltipTimer) { viewer->TriangleCountTooltipTimerMessage(); return 0; }
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
-        if (wParam == kVideoFrameStepPumpTimer) { viewer->VideoFrameStepPumpTimerMessage(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {

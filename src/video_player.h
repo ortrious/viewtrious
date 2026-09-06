@@ -17,7 +17,7 @@
 // Small Media Foundation wrapper which leaves final composition to GraphicsHost.
 class VideoPlayer {
 public:
-    enum class FrameAcquisitionReason : unsigned char { Scheduler, InitialLoad, Seek, FrameStep };
+    enum class FrameAcquisitionReason : unsigned char { Scheduler, InitialLoad, Seek };
 
     bool Open(HWND window, ID3D11Device* device, const std::wstring& path, std::wstring& error);
     void Shutdown();
@@ -27,8 +27,6 @@ public:
     bool UpdateFrame(FrameAcquisitionReason reason);
     bool Draw(ID2D1DeviceContext* context, const RECT& canvas, float scale, D2D1_POINT_2F pan);
     HRESULT TogglePlayPause();
-    HRESULT PauseForFrameStep();
-    HRESULT StepForward();
     bool GetPlaybackTimes(double& currentSeconds, double& durationSeconds) const;
     bool Seek(double seconds);
     bool ToggleMute();
@@ -41,8 +39,6 @@ public:
     void RecordFramePacingPresent(HRESULT result);
     void FlushFramePacingDiagnostics();
     bool Playing() const { return playing_; }
-    bool Paused() const { return engine_ && engine_->IsPaused(); }
-    bool Seeking() const { return engine_ && engine_->IsSeeking(); }
     bool Ended() const { return engine_ && engine_->IsEnded(); }
     bool Active() const { return engine_ != nullptr; }
     bool Failed() const { return failed_; }
@@ -53,7 +49,7 @@ private:
     bool ReadNominalFrameRate(const std::wstring& path);
     bool SetSourceFromPath(const std::wstring& path, std::wstring& error);
     bool EnsureMultithreadProtection(ID3D11Device* device, std::wstring& error);
-    enum class FramePacingEvent : unsigned char { PlaybackBegin, PlaybackPause, PlaybackResume, PlaybackSeek, PlaybackEnd, FrameStepRequest, FrameStepComplete, Schedule, Timer, SchedulerAcquire, InitialLoadAcquire, SeekAcquire, FrameStepAcquire, StreamTick, Transfer, CachePublish, Paint, Present, Count };
+    enum class FramePacingEvent : unsigned char { PlaybackBegin, PlaybackPause, PlaybackResume, PlaybackSeek, PlaybackEnd, Schedule, Timer, SchedulerAcquire, InitialLoadAcquire, SeekAcquire, StreamTick, Transfer, CachePublish, Paint, Present, Count };
     struct FramePacingRecord { LONGLONG qpc = 0; LONGLONG pts = 0; HRESULT result = S_OK; FramePacingEvent event = FramePacingEvent::PlaybackBegin; double first = 0.0; double second = 0.0; };
     void ResetFramePacingDiagnostics();
     void RecordFramePacingEvent(FramePacingEvent event, LONGLONG pts = 0, HRESULT result = S_OK, double first = 0.0, double second = 0.0);

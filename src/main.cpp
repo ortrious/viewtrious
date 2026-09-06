@@ -1400,6 +1400,11 @@ public:
     }
     void ResetImageAdjustments() { imageAdjustments_ = {}; ApplyImageAdjustments(); }
     bool ImageAdjustmentsPanelOpen() const { return imageAdjustmentsPanelOpen_; }
+    bool ImageAdjustmentsPanelContains(POINT point) const {
+        if (!imageAdjustmentsPanelOpen_) return false;
+        const RECT panel = GetImageAdjustmentsPanelLayout().panel;
+        return PtInRect(&panel, point) != FALSE;
+    }
     void SetImageAdjustmentsPanelOpen(bool open) { imageAdjustmentsPanelOpen_ = open; imageAdjustmentsDragging_ = -1; InvalidateRect(window_, nullptr, FALSE); }
     void UpdateImageAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 4) return;
@@ -7889,6 +7894,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->ImageAdjustmentsPanelContains(point)) return 0;
         if (viewer->ConsumeVideoFullscreenButtonDoubleClick()) return 0;
         const ButtonKind videoControl = viewer->VideoControlAt(point);
         if (videoControl == ButtonKind::VideoStepBackward || videoControl == ButtonKind::VideoStepForward) {

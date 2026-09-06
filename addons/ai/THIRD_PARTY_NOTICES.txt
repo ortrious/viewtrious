@@ -1,0 +1,6 @@
+Viewtrious AI add-on third-party notices
+
+This optional package is designed for ONNX Runtime CPU inference and the u2netp
+salient-object model. The distributor must include the applicable ONNX Runtime
+license and the verified u2netp/U^2-Net model attribution and license before
+shipping this package. Model weights are intentionally not included here.

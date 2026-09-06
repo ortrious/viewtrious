@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.8.21.0 LANGUAGES CXX)
+project(Viewtrious VERSION 0.8.22.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -8,7 +8,9 @@ endif()
 
 set(VIEWTRIOUS_3DXWARE_SDK_ROOT "" CACHE PATH "Root of the 3Dconnexion 3DxWare SDK (required for SpaceMouse support)")
 option(VIEWTRIOUS_BUILD_STEP_ADDON "Build the optional OCCT STEP/STP importer add-on" OFF)
+option(VIEWTRIOUS_BUILD_AI_ADDON "Build the optional local AI adjustment add-on" OFF)
 set(VIEWTRIOUS_OCCT_ROOT "" CACHE PATH "Root of the OCCT 8.0.1 dynamic install (required only for the STEP add-on)")
+set(VIEWTRIOUS_ONNXRUNTIME_ROOT "" CACHE PATH "Root of the ONNX Runtime SDK (required only for the AI add-on)")
 if(NOT VIEWTRIOUS_3DXWARE_SDK_ROOT)
     message(FATAL_ERROR "Set VIEWTRIOUS_3DXWARE_SDK_ROOT to a 3DxWare SDK installation.")
 endif()
@@ -35,6 +37,7 @@ add_executable(Viewtrious WIN32
     src/d3d11_model_viewport.cpp
     src/graphics_host.cpp
     src/media_adjustments.cpp
+    src/ai_addon_loader.cpp
     src/video_player.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc"
 )
@@ -85,6 +88,24 @@ if(VIEWTRIOUS_BUILD_STEP_ADDON)
         add_custom_command(TARGET ViewtriousStep POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VIEWTRIOUS_OCCT_BINARY_DIR}/${occt_toolkit}.dll" "$<TARGET_FILE_DIR:ViewtriousStep>/${occt_toolkit}.dll")
     endforeach()
     add_custom_command(TARGET ViewtriousStep POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ViewtriousStep>/LICENSES" COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third_party/occt/LICENSE_LGPL_21.txt" "$<TARGET_FILE_DIR:ViewtriousStep>/LICENSES/LICENSE_LGPL_21.txt" COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third_party/occt/OCCT_LGPL_EXCEPTION.txt" "$<TARGET_FILE_DIR:ViewtriousStep>/LICENSES/OCCT_LGPL_EXCEPTION.txt")
+endif()
+
+if(VIEWTRIOUS_BUILD_AI_ADDON)
+    set(VIEWTRIOUS_ONNXRUNTIME_INCLUDE_DIR "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/include")
+    set(VIEWTRIOUS_ONNXRUNTIME_LIBRARY "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/lib/onnxruntime.lib")
+    if(NOT VIEWTRIOUS_ONNXRUNTIME_ROOT OR NOT EXISTS "${VIEWTRIOUS_ONNXRUNTIME_INCLUDE_DIR}/onnxruntime_cxx_api.h" OR NOT EXISTS "${VIEWTRIOUS_ONNXRUNTIME_LIBRARY}")
+        message(FATAL_ERROR "VIEWTRIOUS_BUILD_AI_ADDON requires VIEWTRIOUS_ONNXRUNTIME_ROOT with the ONNX Runtime SDK.")
+    endif()
+    add_library(ViewtriousAI SHARED addons/ai/viewtrious_ai_addon.cpp)
+    target_compile_features(ViewtriousAI PRIVATE cxx_std_20)
+    target_compile_definitions(ViewtriousAI PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_include_directories(ViewtriousAI PRIVATE src "${VIEWTRIOUS_ONNXRUNTIME_INCLUDE_DIR}")
+    target_link_libraries(ViewtriousAI PRIVATE "${VIEWTRIOUS_ONNXRUNTIME_LIBRARY}")
+    if(MSVC)
+        target_compile_options(ViewtriousAI PRIVATE /W4 /permissive- /EHsc)
+    endif()
+    set_target_properties(ViewtriousAI PROPERTIES OUTPUT_NAME ViewtriousAI RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:Viewtrious>/Addons/AI")
+    add_custom_command(TARGET ViewtriousAI POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/lib/onnxruntime.dll" "$<TARGET_FILE_DIR:ViewtriousAI>/onnxruntime.dll" COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/addons/ai/THIRD_PARTY_NOTICES.txt" "$<TARGET_FILE_DIR:ViewtriousAI>/THIRD_PARTY_NOTICES.txt")
 endif()
 target_compile_features(ViewtriousLanczosBenchmark PRIVATE cxx_std_20)
 target_compile_definitions(ViewtriousLanczosBenchmark PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)

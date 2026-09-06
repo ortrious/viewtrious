@@ -36,7 +36,7 @@ public:
     bool GetNativeVideoSize(DWORD& width, DWORD& height) const;
     bool TryGetFramesPerSecond(float& framesPerSecond);
     void SetDisplayAdjustments(const MediaAdjustments& adjustments);
-    bool AutoDisplayAdjustments(MediaAdjustments& adjustments);
+    bool CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
     bool SetPreferredPlaybackRate(double rate);
     bool PlaybackRateSupported(double rate) const;
     double EffectivePlaybackRate() const { return effectivePlaybackRate_; }

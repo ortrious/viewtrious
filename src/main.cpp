@@ -22,6 +22,7 @@
 #include "stl_loader.h"
 #include "three_mf_loader.h"
 #include "model_importer.h"
+#include "ai_addon_loader.h"
 
 #include <algorithm>
 #include <atomic>
@@ -61,6 +62,7 @@ constexpr UINT kLanczosCompleteMessage = WM_APP + 7;
 constexpr UINT kModelLoadCompleteMessage = WM_APP + 8;
 constexpr UINT kVideoMediaEngineEventMessage = WM_APP + 9;
 constexpr UINT kVideoPlaybackWakeMessage = WM_APP + 10;
+constexpr UINT kAiAnalysisCompleteMessage = WM_APP + 11;
 // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is available on Windows 10 version 1803 and later.
 constexpr DWORD kHighResolutionWaitableTimerFlag = 0x00000002;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
@@ -244,6 +246,7 @@ struct FullDecodeResult : PixelBuffer {
     std::thread::id workerId{};
     bool deliveredSynchronously = false;
 };
+struct AiAnalysisResult { uint64_t generation = 0; std::wstring path; ContentKind contentKind = ContentKind::None; std::thread::id workerId{}; ViewtriousAiAdjustmentResultV1 adjustments{}; bool succeeded = false; };
 struct DecodeWorkerFinished { std::thread::id workerId{}; };
 struct ModelLoadResult { std::wstring path; uint64_t generation = 0; std::shared_ptr<ModelDocument> document; std::wstring error; bool IsSuccess() const { return document != nullptr; } };
 struct ModelLoadWorker { uint64_t generation = 0; std::thread thread; };
@@ -908,11 +911,13 @@ public:
         DWORD tourPending = 0;
         ReadSetting(L"TourPending", tourPending);
         tourPending_ = tourPending != 0;
+        aiAddon_.Initialize();
         startupPath_ = path;
         return S_OK;
     }
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
+        ++aiRequestGeneration_;
         ClearStillDissolve();
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
         if (IsVideoPath(path)) { BeginVideoLoad(path); return S_OK; }
@@ -1295,9 +1300,9 @@ public:
         }
         const int buttonTop = top + MulDiv(150, dpi, 96);
         const int buttonWidth = MulDiv(74, dpi, 96);
-        return { { left, top, right, bottom }, sliders,
-            { right - buttonWidth * 2 - gap, buttonTop, right - buttonWidth - gap, buttonTop + MulDiv(30, dpi, 96) },
-            { right - buttonWidth, buttonTop, right, buttonTop + MulDiv(30, dpi, 96) } };
+        const RECT reset{ right - buttonWidth, buttonTop, right, buttonTop + MulDiv(30, dpi, 96) };
+        const RECT ai = aiAddon_.Available() ? RECT{ right - buttonWidth * 2 - gap, buttonTop, right - buttonWidth - gap, buttonTop + MulDiv(30, dpi, 96) } : RECT{};
+        return { { left, top, right, bottom }, sliders, ai, reset };
     }
     bool VideoAdjustmentsPanelContains(POINT point) const {
         if (!videoAdjustmentsPanelOpen_) return false;
@@ -1340,10 +1345,6 @@ public:
         ShowVideoControls();
     }
     void ResetVideoAdjustments() { videoAdjustments_ = {}; ApplyVideoAdjustments(); }
-    void AutoVideoAdjustments() {
-        MediaAdjustments automatic;
-        if (videoPlayer_.AutoDisplayAdjustments(automatic)) { videoAdjustments_ = automatic; InvalidateRect(window_, nullptr, FALSE); }
-    }
     void UpdateVideoAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 4) return;
         const RECT slider = GetVideoAdjustmentsPanelLayout().sliders[index];
@@ -1396,7 +1397,9 @@ public:
         }
         const int buttonTop = panel.top + MulDiv(150, dpi, 96);
         const int buttonWidth = MulDiv(74, dpi, 96);
-        return { panel, sliders, { panel.right - buttonWidth * 2 - gap, buttonTop, panel.right - buttonWidth - gap, buttonTop + MulDiv(30, dpi, 96) }, { panel.right - buttonWidth, buttonTop, panel.right, buttonTop + MulDiv(30, dpi, 96) } };
+        const RECT reset{ panel.right - buttonWidth, buttonTop, panel.right, buttonTop + MulDiv(30, dpi, 96) };
+        const RECT ai = aiAddon_.Available() ? RECT{ panel.right - buttonWidth * 2 - gap, buttonTop, panel.right - buttonWidth - gap, buttonTop + MulDiv(30, dpi, 96) } : RECT{};
+        return { panel, sliders, ai, reset };
     }
     void ApplyImageAdjustments() {
         imageAdjustedBitmap_.Reset();
@@ -1420,10 +1423,52 @@ public:
         else imageAdjustments_.highlights = value;
         ApplyImageAdjustments();
     }
-    void AutoImageAdjustments() {
-        if (!EnsureImageAdjustmentSource()) return;
-        MediaAdjustments automatic;
-        if (imageAdjustmentProcessor_.Analyze(imageAdjustmentSourceTexture_.Get(), automatic)) { imageAdjustments_ = automatic; ApplyImageAdjustments(); }
+    bool BuildAiImage(AiImageBuffer& image) {
+        std::vector<BYTE> sourcePixels;
+        UINT sourceWidth = 0, sourceHeight = 0;
+        if (VideoActive()) {
+            if (!videoPlayer_.CopyCurrentFrameBgra(sourcePixels, sourceWidth, sourceHeight)) return false;
+        } else {
+            if (!source_ || FAILED(source_->GetSize(&sourceWidth, &sourceHeight)) || !sourceWidth || !sourceHeight) return false;
+            sourcePixels.resize(static_cast<size_t>(sourceWidth) * sourceHeight * 4);
+            if (FAILED(source_->CopyPixels(nullptr, sourceWidth * 4, static_cast<UINT>(sourcePixels.size()), sourcePixels.data()))) return false;
+        }
+        constexpr UINT maxEdge = 640;
+        const float scale = std::min(1.0f, static_cast<float>(maxEdge) / std::max(sourceWidth, sourceHeight));
+        image.width = std::max(1u, static_cast<UINT>(std::lround(sourceWidth * scale)));
+        image.height = std::max(1u, static_cast<UINT>(std::lround(sourceHeight * scale)));
+        image.stride = image.width * 4; image.pixels.resize(static_cast<size_t>(image.stride) * image.height);
+        for (UINT y = 0; y < image.height; ++y) for (UINT x = 0; x < image.width; ++x) {
+            const UINT sx = std::min(sourceWidth - 1, static_cast<UINT>(x / scale));
+            const UINT sy = std::min(sourceHeight - 1, static_cast<UINT>(y / scale));
+            std::memcpy(image.pixels.data() + static_cast<size_t>(y) * image.stride + x * 4, sourcePixels.data() + (static_cast<size_t>(sy) * sourceWidth + sx) * 4, 4);
+        }
+        return true;
+    }
+
+    void StartAiAnalysis() {
+        if (!aiAddon_.Available()) return;
+        if (aiAnalysisRunning_.exchange(true)) return;
+        AiImageBuffer image;
+        if (!BuildAiImage(image)) { aiAnalysisRunning_ = false; return; }
+        if (aiAnalysisThread_.joinable()) aiAnalysisThread_.join();
+        const uint64_t generation = ++aiRequestGeneration_;
+        const std::wstring path = currentPath_; const ContentKind kind = contentKind_;
+        aiAnalysisThread_ = std::thread([this, generation, path, kind, image = std::move(image)]() mutable {
+            auto* result = new AiAnalysisResult{}; result->generation = generation; result->path = path; result->contentKind = kind; result->workerId = std::this_thread::get_id();
+            result->succeeded = aiAddon_.Analyze(image, result->adjustments);
+            if (!PostMessageW(window_, kAiAnalysisCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) { delete result; aiAnalysisRunning_ = false; }
+        });
+    }
+
+    void AiAnalysisCompleteMessage(AiAnalysisResult* result) {
+        std::unique_ptr<AiAnalysisResult> owned(result);
+        if (!result) return;
+        if (aiAnalysisThread_.joinable() && aiAnalysisThread_.get_id() == result->workerId) aiAnalysisThread_.join();
+        aiAnalysisRunning_ = false;
+        if (!result->succeeded || result->generation != aiRequestGeneration_ || result->contentKind != contentKind_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_)) || result->adjustments.confidence < .15f) return;
+        MediaAdjustments adjusted{ std::clamp(result->adjustments.brightness, -.35f, .45f), std::clamp(result->adjustments.contrast, -.35f, .30f), std::clamp(result->adjustments.shadows, -.20f, .65f), std::clamp(result->adjustments.highlights, -.50f, .25f) };
+        if (VideoActive()) { videoAdjustments_ = adjusted; ApplyVideoAdjustments(); } else { imageAdjustments_ = adjusted; ApplyImageAdjustments(); }
     }
     bool BeginImageAdjustmentsInteraction(POINT point) {
         if (!source_) return false;
@@ -1434,7 +1479,7 @@ public:
                     const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
                     if (PtInRect(&hit, point)) { imageAdjustmentsDragging_ = index; UpdateImageAdjustmentSlider(index, point); return true; }
                 }
-                if (PtInRect(&panel.autoButton, point)) { AutoImageAdjustments(); return true; }
+                if (aiAddon_.Available() && PtInRect(&panel.autoButton, point)) { StartAiAnalysis(); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetImageAdjustments(); return true; }
                 return true;
             }
@@ -1575,7 +1620,7 @@ public:
                     const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
                     if (PtInRect(&hit, point)) { videoAdjustmentsDragging_ = index; UpdateVideoAdjustmentSlider(index, point); return true; }
                 }
-                if (PtInRect(&panel.autoButton, point)) { AutoVideoAdjustments(); return true; }
+                if (aiAddon_.Available() && PtInRect(&panel.autoButton, point)) { StartAiAnalysis(); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetVideoAdjustments(); return true; }
                 return true;
             }
@@ -3619,6 +3664,12 @@ public:
         KillTimer(window_, kShellRotationCheckTimer);
         KillTimer(window_, kHeifRotationMenuRefreshTimer);
         ClearStillDissolve();
+        ++aiRequestGeneration_;
+        if (aiAnalysisThread_.joinable()) aiAnalysisThread_.join();
+        MSG aiMessage{};
+        while (PeekMessageW(&aiMessage, window_, kAiAnalysisCompleteMessage, kAiAnalysisCompleteMessage, PM_REMOVE))
+            delete reinterpret_cast<AiAnalysisResult*>(aiMessage.lParam);
+        aiAddon_.Shutdown();
         decodeShuttingDown_ = true;
         KillTimer(window_, kNavigationDecodeDebounceTimer);
         ++decodeRequestGeneration_;
@@ -6055,7 +6106,7 @@ private:
             DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
         const auto drawButton = [&](const RECT& bounds, const wchar_t* label) { renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), hover.Get()); DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true); };
-        drawButton(panel.autoButton, L"auto"); drawButton(panel.resetButton, L"reset");
+        if (aiAddon_.Available()) drawButton(panel.autoButton, aiAnalysisRunning_ ? L"AI..." : L"AI Auto"); drawButton(panel.resetButton, L"reset");
     }
 
     void DrawRevisionLabel() {
@@ -6143,7 +6194,7 @@ private:
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), hover.Get());
                 DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
             };
-            drawPanelButton(panel.autoButton, L"auto");
+            if (aiAddon_.Available()) drawPanelButton(panel.autoButton, aiAnalysisRunning_ ? L"AI..." : L"AI Auto");
             drawPanelButton(panel.resetButton, L"reset");
         }
         const D2D1_RECT_F island = rect(layout.island);
@@ -7719,6 +7770,10 @@ private:
     bool videoPausedSeekRefreshPending_ = false;
     MediaAdjustments videoAdjustments_;
     MediaAdjustments imageAdjustments_;
+    AiAddonLoader aiAddon_;
+    std::thread aiAnalysisThread_;
+    std::atomic<uint64_t> aiRequestGeneration_{ 0 };
+    std::atomic<bool> aiAnalysisRunning_{ false };
     bool imageAdjustmentsPanelOpen_ = false;
     int imageAdjustmentsDragging_ = -1;
     bool videoAdjustmentsPanelOpen_ = false;
@@ -8369,6 +8424,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kModelLoadCompleteMessage: viewer->ModelLoadCompleteMessage(reinterpret_cast<ModelLoadResult*>(lParam)); return 0;
     case kVideoMediaEngineEventMessage: viewer->VideoMediaEngineEvent(static_cast<DWORD>(wParam)); return 0;
     case kVideoPlaybackWakeMessage: viewer->VideoPlaybackWakeMessage(static_cast<uint64_t>(wParam)); return 0;
+    case kAiAnalysisCompleteMessage: viewer->AiAnalysisCompleteMessage(reinterpret_cast<AiAnalysisResult*>(lParam)); return 0;
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE && viewer->VideoPlaybackSpeedPanelOpen()) { viewer->SetVideoPlaybackSpeedPanelOpen(false); return 0; }
         if (wParam == VK_ESCAPE && viewer->VideoAdjustmentsPanelOpen()) { viewer->SetVideoAdjustmentsPanelOpen(false); return 0; }

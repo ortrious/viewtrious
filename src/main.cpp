@@ -3324,6 +3324,14 @@ public:
         (void)event; (void)request; (void)result;
 #endif
     }
+#ifdef _DEBUG
+    void TraceFilmstripThumbnailStage(const wchar_t* event, const std::wstring& path, ULONGLONG started, HRESULT result) const {
+        wchar_t message[768]{};
+        swprintf_s(message, L"[Viewtrious] %ls tid=%lu elapsed=%llums hr=0x%08X path=%ls\n", event, GetCurrentThreadId(),
+            static_cast<unsigned long long>(GetTickCount64() - started), static_cast<unsigned int>(result), path.c_str());
+        OutputDebugStringW(message);
+    }
+#endif
     void StartFilmstripThumbnailWorker() {
         if (shuttingDown_ || filmstripThumbnailStopping_.load(std::memory_order_acquire) || filmstripThumbnailWorker_.joinable()) return;
         filmstripThumbnailStopping_.store(false, std::memory_order_release);
@@ -3350,8 +3358,10 @@ public:
                 // DecodeFilmstripThumbnailPixels releases its complete WIC source chain before
                 // returning, so only copied RAM pixels can cross onto the UI thread.
                 TraceFilmstripThumbnailJob(SUCCEEDED(result->result) ? L"THUMB_JOB_SUCCESS" : L"THUMB_JOB_FAILED", request, result->result);
-                if (filmstripThumbnailStopping_.load(std::memory_order_acquire) ||
-                    !PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
+                if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) delete result;
+                else if (PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result)))
+                    TraceFilmstripThumbnailJob(L"THUMB_RAM_PUBLISHED", request, result->result);
+                else delete result;
             }
             if (SUCCEEDED(apartment)) CoUninitialize();
         });
@@ -5994,6 +6004,10 @@ private:
     HRESULT DecodeFilmstripThumbnailPixels(const std::wstring& path, UINT targetHeight, PixelBuffer& decoded, float& aspect) const {
         if (targetHeight == 0) return E_INVALIDARG;
         HRESULT hr = E_FAIL;
+#ifdef _DEBUG
+        const ULONGLONG decodeStarted = GetTickCount64();
+        const ULONGLONG decoderStarted = GetTickCount64();
+#endif
         // All WIC objects stay inside this scope. Once it returns, the result contains only
         // Viewtrious-owned PBGRA bytes and has no source-file ownership.
         {
@@ -6002,9 +6016,22 @@ private:
             ComPtr<IWICBitmapFrameDecode> frame;
             hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
             if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
+#ifdef _DEBUG
+            TraceFilmstripThumbnailStage(L"DECODER_CREATE_END", path, decoderStarted, hr);
+            const ULONGLONG frameStarted = GetTickCount64();
+#endif
             if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+#ifdef _DEBUG
+            TraceFilmstripThumbnailStage(L"GET_FRAME_END", path, frameStarted, hr);
+#endif
             if (FAILED(hr)) return hr;
+#ifdef _DEBUG
+            const ULONGLONG orientationStarted = GetTickCount64();
+#endif
             const UINT orientation = ReadPhotoOrientation(frame.Get());
+#ifdef _DEBUG
+            TraceFilmstripThumbnailStage(L"ORIENTATION_END", path, orientationStarted, S_OK);
+#endif
             const auto decodeSource = [&](IWICBitmapSource* source) -> HRESULT {
                 if (!source) return E_FAIL;
                 UINT sourceWidth = 0, sourceHeight = 0;
@@ -6044,7 +6071,13 @@ private:
                 const UINT stride = targetWidth * 4;
                 const size_t bytes = static_cast<size_t>(stride) * targetHeight;
                 auto pixels = std::make_shared<std::vector<BYTE>>(bytes);
+#ifdef _DEBUG
+                const ULONGLONG copyStarted = GetTickCount64();
+#endif
                 attempt = finalConverter->CopyPixels(nullptr, stride, static_cast<UINT>(bytes), pixels->data());
+#ifdef _DEBUG
+                TraceFilmstripThumbnailStage(L"COPYPIXELS_END", path, copyStarted, attempt);
+#endif
                 if (SUCCEEDED(attempt)) {
                     decoded.width = targetWidth;
                     decoded.height = targetHeight;
@@ -6054,20 +6087,17 @@ private:
                 }
                 return attempt;
             };
-            ComPtr<IWICBitmapSource> embedded;
-            if (SUCCEEDED(frame->GetThumbnail(&embedded))) {
-                hr = decodeSource(embedded.Get());
-                embedded.Reset();
-                if (SUCCEEDED(hr)) return hr;
-            }
-            ComPtr<IWICBitmapSource> preview;
-            if (SUCCEEDED(decoder->GetPreview(&preview))) {
-                hr = decodeSource(preview.Get());
-                preview.Reset();
-                if (SUCCEEDED(hr)) return hr;
-            }
+#ifdef _DEBUG
+            const ULONGLONG scaleStarted = GetTickCount64();
+#endif
             hr = decodeSource(frame.Get());
+#ifdef _DEBUG
+            TraceFilmstripThumbnailStage(L"SCALE_END", path, scaleStarted, hr);
+#endif
         }
+#ifdef _DEBUG
+        TraceFilmstripThumbnailStage(L"SOURCE_RELEASED", path, decodeStarted, hr);
+#endif
         return hr;
     }
 

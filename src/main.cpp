@@ -105,6 +105,7 @@ constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kStillDissolveDurationMs = 160;
 constexpr ULONGLONG kStillDissolvePreviewWaitMaxMs = 450;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
+constexpr UINT_PTR kFilmstripHoverPreviewTimer = 16;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
 constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
@@ -901,9 +902,6 @@ public:
         DWORD alwaysShowFilmstrip = 0;
         ReadSetting(L"AlwaysShowFilmstrip", alwaysShowFilmstrip);
         alwaysShowFilmstrip_ = alwaysShowFilmstrip != 0;
-        DWORD filmstripHeightDips = 0;
-        ReadSetting(L"FilmstripHeightDips", filmstripHeightDips);
-        filmstripHeightDips_ = filmstripHeightDips >= 78 && filmstripHeightDips <= 196 ? static_cast<int>(filmstripHeightDips) : 0;
         DWORD reverseWheelZoom = 0;
         ReadSetting(L"ReverseMouseWheelZoom", reverseWheelZoom);
         reverseMouseWheelZoom_ = reverseWheelZoom != 0;
@@ -2987,7 +2985,6 @@ public:
         showZoomPercentage_ = true;
         animationsEnabled_ = true;
         alwaysShowFilmstrip_ = false;
-        filmstripHeightDips_ = 0;
         reverseMouseWheelZoom_ = false;
         themePreference_ = ThemePreference::System;
         graphicsAdapterAuto_ = true;
@@ -3234,18 +3231,9 @@ public:
         return source_ && navigationBuilt_ && navigationFiles_.size() > 1 && !HasOverlay() && !TutorialActive() && !tutorialPresentation_;
     }
     bool FilmstripVisible() const { return FilmstripEligible() && filmstripOpacity_ > 0.001f; }
-    int DefaultFilmstripHeight() const {
-        if (!FilmstripEligible()) return 0;
-        RECT client{};
-        GetClientRect(window_, &client);
-        const UINT dpi = GetDpiForWindow(window_);
-        const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
-        return client.bottom - canvasTop < MulDiv(560, dpi, 96) ? MulDiv(96, dpi, 96) : MulDiv(112, dpi, 96);
-    }
     int FilmstripHeight() const {
         if (!FilmstripEligible()) return 0;
-        const int requested = filmstripHeightDips_ ? MulDiv(filmstripHeightDips_, GetDpiForWindow(window_), 96) : DefaultFilmstripHeight();
-        return std::max(MulDiv(70, GetDpiForWindow(window_), 96), std::min(requested, MulDiv(196, GetDpiForWindow(window_), 96)));
+        return MulDiv(78, GetDpiForWindow(window_), 96);
     }
     int FilmstripThumbnailHeight() const {
         return std::max(1, std::min(MulDiv(92, GetDpiForWindow(window_), 96), FilmstripHeight() - MulDiv(20, GetDpiForWindow(window_), 96)));
@@ -3864,24 +3852,7 @@ public:
         return { previous.right, top, next.left, client.bottom };
     }
     bool FilmstripRevealContains(POINT point) const { const RECT bounds = GetFilmstripRevealBounds(); return FilmstripEligible() && PtInRect(&bounds, point); }
-    RECT GetFilmstripHintBounds() const {
-        const RECT strip = GetFilmstripBounds();
-        const int width = MulDiv(174, GetDpiForWindow(window_), 96);
-        const int height = MulDiv(28, GetDpiForWindow(window_), 96);
-        const int gap = MulDiv(7, GetDpiForWindow(window_), 96);
-        const int left = strip.left + (strip.right - strip.left - width) / 2;
-        return { left, strip.top - gap - height, left + width, strip.top - gap };
-    }
-    bool FilmstripHintContains(POINT point) const { const RECT bounds = GetFilmstripHintBounds(); return FilmstripVisible() && PtInRect(&bounds, point); }
     bool BeginFilmstripInteraction(POINT point) {
-        if (FilmstripHintContains(point)) {
-            filmstripResizeCandidate_ = true;
-            filmstripResizeStartY_ = point.y;
-            filmstripResizeStartHeightDips_ = filmstripHeightDips_ ? filmstripHeightDips_ :
-                static_cast<int>(std::lround(static_cast<double>(FilmstripHeight()) * 96.0 / GetDpiForWindow(window_)));
-            StartFilmstripHold(UINT_MAX);
-            return true;
-        }
         if (!FilmstripContains(point)) return false;
         filmstripDragCandidate_ = true;
         filmstripDragStart_ = point;
@@ -3891,17 +3862,6 @@ public:
         return true;
     }
     bool ContinueFilmstripInteraction(POINT point) {
-        if (filmstripResizeCandidate_) {
-            filmstripResizing_ = true;
-            const int height = std::clamp(filmstripResizeStartHeightDips_ + MulDiv(filmstripResizeStartY_ - point.y, 96, GetDpiForWindow(window_)), 78, 196);
-            if (height != filmstripHeightDips_) {
-                filmstripHeightDips_ = height;
-                ApplyFilmstripAspectRelayout(false, true);
-                UpdateFilmstripThumbnailDemand(true);
-                InvalidateRect(window_, nullptr, FALSE);
-            }
-            return true;
-        }
         if (!filmstripDragCandidate_) return false;
         const int dx = point.x - filmstripDragStart_.x;
         const int dy = point.y - filmstripDragStart_.y;
@@ -3918,28 +3878,19 @@ public:
         return true;
     }
     bool EndFilmstripInteraction(POINT point) {
-        const bool resizing = filmstripResizeCandidate_;
         const bool dragging = filmstripDragging_;
         const int click = filmstripDragItem_;
-        filmstripResizeCandidate_ = filmstripResizing_ = false;
         filmstripDragCandidate_ = filmstripDragging_ = false;
         filmstripDragItem_ = -1;
-        if (resizing) {
-            WriteSetting(L"FilmstripHeightDips", static_cast<DWORD>(filmstripHeightDips_));
-            BeginFilmstripFadeSequence();
-            return true;
-        }
         if (dragging) { UpdateFilmstripThumbnailDemand(true); BeginFilmstripFadeSequence(); return true; }
         if (click >= 0 && FilmstripContains(point)) SelectFilmstripItem(click);
         return true;
     }
     void CancelFilmstripInteraction() {
-        filmstripResizeCandidate_ = filmstripResizing_ = false;
         filmstripDragCandidate_ = filmstripDragging_ = false;
         filmstripDragItem_ = -1;
     }
-    bool FilmstripInteractionActive() const { return filmstripResizeCandidate_ || filmstripDragCandidate_; }
-    bool FilmstripResizeHandleContains(POINT point) const { return FilmstripHintContains(point); }
+    bool FilmstripInteractionActive() const { return filmstripDragCandidate_; }
     void StopFilmstripVisibilityTimer() { KillTimer(window_, kFilmstripVisibilityTimer); }
     void StartFilmstripHold(UINT holdDurationMs = 2000) {
         if (!FilmstripEligible()) return;
@@ -3970,7 +3921,7 @@ public:
     void SetFilmstripPointerState(POINT point) {
         const bool panel = FilmstripContains(point);
         const bool reveal = FilmstripRevealContains(point);
-        const bool hint = FilmstripHintContains(point);
+        const bool hint = false;
         const bool wasHeld = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
         filmstripPanelHovered_ = panel;
         filmstripRevealHovered_ = reveal;
@@ -4025,7 +3976,17 @@ public:
         const int index = FilmstripItemAt(point);
         if (filmstripHoveredIndex_ == index) return;
         filmstripHoveredIndex_ = index;
+        filmstripPreviewIndex_ = -1;
+        if (index >= 0 && !filmstripDragging_ && !filmstripScrollAnimating_) SetTimer(window_, kFilmstripHoverPreviewTimer, 175, nullptr);
+        else KillTimer(window_, kFilmstripHoverPreviewTimer);
         InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ShowFilmstripHoverPreview() {
+        KillTimer(window_, kFilmstripHoverPreviewTimer);
+        if (filmstripHoveredIndex_ >= 0 && !filmstripDragging_ && !filmstripScrollAnimating_) {
+            filmstripPreviewIndex_ = filmstripHoveredIndex_;
+            InvalidateRect(window_, nullptr, FALSE);
+        }
     }
 #ifdef _DEBUG
     void TraceFilmstripPostStopPaint(const RECT& strip, size_t first, size_t last) {
@@ -4049,11 +4010,25 @@ public:
     }
 #endif
     void DrawFilmstrip() {
-        if (!FilmstripVisible()) return;
+        if (!FilmstripVisible()) {
+            if (FilmstripEligible() && !alwaysShowFilmstrip_ && filmstripOpacity_ <= 0.001f) {
+                RECT client{}; GetClientRect(window_, &client);
+                const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+                const float frameWidth = 12.0f * scale, frameHeight = 8.0f * scale, gap = 3.0f * scale;
+                const float total = frameWidth * 5.0f + gap * 4.0f;
+                const float left = (client.right - total) * 0.5f;
+                const float top = static_cast<float>(client.bottom) - 18.0f * scale;
+                ComPtr<ID2D1SolidColorBrush> glyph;
+                if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, filmstripRevealHovered_ ? 0.20f : 0.15f), &glyph))) {
+                    for (int i = 0; i < 5; ++i) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left + i * (frameWidth + gap), top, left + i * (frameWidth + gap) + frameWidth, top + frameHeight), 1.5f * scale, 1.5f * scale), glyph.Get(), scale);
+                }
+            }
+            return;
+        }
         const RECT strip = GetFilmstripBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float opacity = filmstripOpacity_;
-        ComPtr<ID2D1SolidColorBrush> surface, border, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, hintBacking, hintBorder, hintText, placeholderText;
+        ComPtr<ID2D1SolidColorBrush> surface, border, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, placeholderText;
         if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(15.f / 255, 17.f / 255, 21.f / 255, 0.78f * opacity), &surface)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(91.f / 255, 102.f / 255, 120.f / 255, 0.70f * opacity), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 90.f / 255, 160.f / 255, 0.22f * opacity), &selectedBacking)) ||
@@ -4061,21 +4036,10 @@ public:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 150.f / 255, 255.f / 255, opacity), &selectedOutline)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.16f * opacity), &hover)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(24.f / 255, 26.f / 255, 30.f / 255, opacity), &placeholder)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.50f * opacity), &hintBacking)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(91.f / 255, 102.f / 255, 120.f / 255, 0.25f * opacity), &hintBorder)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.50f * opacity), &hintText)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.42f * opacity), &placeholderText))) return;
         const D2D1_RECT_F panel = D2D1::RectF(static_cast<float>(strip.left), static_cast<float>(strip.top), static_cast<float>(strip.right), static_cast<float>(strip.bottom));
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), border.Get(), scale);
-        const RECT hint = GetFilmstripHintBounds();
-        const D2D1_RECT_F hintRect = D2D1::RectF(static_cast<float>(hint.left), static_cast<float>(hint.top), static_cast<float>(hint.right), static_cast<float>(hint.bottom));
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(hintRect, 6.0f * scale, 6.0f * scale), hintBacking.Get());
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(hintRect, 6.0f * scale, 6.0f * scale), hintBorder.Get(), scale);
-        if constexpr (false) {
-        DrawOverlayText(L"‹   Scroll to browse   ›", hintRect.left, hintRect.top, hintRect.right - hintRect.left, hintRect.bottom - hintRect.top, 13.0f, DWRITE_FONT_WEIGHT_NORMAL, hintText.Get(), true, false, true);
-        }
-        DrawOverlayText(L"\u2039   Scroll to browse   \u203A", hintRect.left, hintRect.top, hintRect.right - hintRect.left, hintRect.bottom - hintRect.top, 13.0f, DWRITE_FONT_WEIGHT_NORMAL, hintText.Get(), true, false, true);
         renderTarget_->PushAxisAlignedClip(panel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         const size_t current = CurrentNavigationIndex();
         const auto [first, last] = FilmstripVisibleRange();
@@ -4105,6 +4069,16 @@ public:
             if (index == current) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), selectedOutline.Get(), 2.0f * scale);
         }
         renderTarget_->PopAxisAlignedClip();
+        if (filmstripPreviewIndex_ >= 0 && filmstripPreviewIndex_ < static_cast<int>(navigationFiles_.size()) && !filmstripDragging_ && !filmstripScrollAnimating_) {
+            if (ID2D1Bitmap* thumbnail = FilmstripThumbnailBitmap(static_cast<size_t>(filmstripPreviewIndex_))) {
+                const D2D1_SIZE_F size = thumbnail->GetSize();
+                const float height = std::min(320.0f * scale, std::max(1.0f, static_cast<float>(strip.top) - 24.0f * scale));
+                const float width = height * size.width / std::max(1.0f, size.height);
+                const float left = std::clamp((strip.left + strip.right - width) * 0.5f, 8.0f * scale, std::max(8.0f * scale, static_cast<float>(strip.right) - width));
+                const D2D1_RECT_F preview = D2D1::RectF(left, strip.top - 8.0f * scale - height, left + width, strip.top - 8.0f * scale);
+                renderTarget_->DrawBitmap(thumbnail, preview, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            }
+        }
     }
 
     void RefreshNavigationFromFileSystem() {
@@ -9067,6 +9041,7 @@ private:
     UINT filmstripHoldDurationMs_ = 2000;
     FilmstripVisibilityState filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
     int filmstripHoveredIndex_ = -1;
+    int filmstripPreviewIndex_ = -1;
     std::optional<size_t> filmstripClickedRevealTarget_;
     bool filmstripPanelHovered_ = false;
     bool filmstripRevealHovered_ = false;
@@ -9110,16 +9085,11 @@ private:
     bool animationsEnabled_ = true;
     bool reverseMouseWheelZoom_ = false;
     bool alwaysShowFilmstrip_ = false;
-    int filmstripHeightDips_ = 0;
     bool filmstripDragCandidate_ = false;
     bool filmstripDragging_ = false;
     POINT filmstripDragStart_{};
     double filmstripDragStartScroll_ = 0.0;
     int filmstripDragItem_ = -1;
-    bool filmstripResizeCandidate_ = false;
-    bool filmstripResizing_ = false;
-    int filmstripResizeStartY_ = 0;
-    int filmstripResizeStartHeightDips_ = 0;
     size_t filmstripDemandFirst_ = std::numeric_limits<size_t>::max();
     size_t filmstripDemandLast_ = std::numeric_limits<size_t>::max();
     size_t filmstripDemandCurrent_ = std::numeric_limits<size_t>::max();
@@ -9337,18 +9307,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_DROPFILES: viewer->DropFile(reinterpret_cast<HDROP>(wParam)); return 0;
-    case WM_SETCURSOR: {
-        if (LOWORD(lParam) == HTCLIENT) {
-            POINT point{};
-            GetCursorPos(&point);
-            ScreenToClient(window, &point);
-            if (viewer->FilmstripResizeHandleContains(point)) {
-                SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
-                return TRUE;
-            }
-        }
-        break;
-    }
     case WM_MOUSEWHEEL: {
         POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(window, &point);
@@ -9723,6 +9681,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
         if (wParam == kStillDissolveTimer) { viewer->UpdateStillDissolve(); return 0; }
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }
+        if (wParam == kFilmstripHoverPreviewTimer) { viewer->ShowFilmstripHoverPreview(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {

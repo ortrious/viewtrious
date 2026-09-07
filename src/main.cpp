@@ -3557,7 +3557,10 @@ public:
     }
     void ScrollFilmstripByWheelDelta(int wheelDelta) {
         if (!FilmstripVisible()) return;
-        filmstripWheelDelta_ += wheelDelta;
+        // Some mouse drivers report several wheel quanta for one physical notch. The
+        // filmstrip is intentionally one thumbnail boundary per wheel message.
+        const int admittedDelta = std::clamp(wheelDelta, -WHEEL_DELTA, WHEEL_DELTA);
+        filmstripWheelDelta_ += admittedDelta;
         bool moved = false;
         while (filmstripWheelDelta_ >= WHEEL_DELTA) {
 #ifdef _DEBUG
@@ -3567,7 +3570,7 @@ public:
             filmstripWheelDelta_ -= WHEEL_DELTA;
 #ifdef _DEBUG
             wchar_t message[160]{};
-            swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL_INPUT raw=%d accum=%d->%d\n", wheelDelta, accumulatedBefore, filmstripWheelDelta_);
+            swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL_INPUT raw=%d admitted=%d accum=%d->%d\n", wheelDelta, admittedDelta, accumulatedBefore, filmstripWheelDelta_);
             OutputDebugStringW(message);
 #endif
         }
@@ -3579,7 +3582,7 @@ public:
             filmstripWheelDelta_ += WHEEL_DELTA;
 #ifdef _DEBUG
             wchar_t message[160]{};
-            swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL_INPUT raw=%d accum=%d->%d\n", wheelDelta, accumulatedBefore, filmstripWheelDelta_);
+            swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL_INPUT raw=%d admitted=%d accum=%d->%d\n", wheelDelta, admittedDelta, accumulatedBefore, filmstripWheelDelta_);
             OutputDebugStringW(message);
 #endif
         }

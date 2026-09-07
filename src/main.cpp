@@ -271,9 +271,6 @@ struct LanczosResult {
     D2D1_RECT_F destination{};
 };
 struct FilmstripThumbnailReadState {
-    FilmstripThumbnailReadState() : releasedEvent(CreateEventW(nullptr, TRUE, TRUE, nullptr)) {}
-    ~FilmstripThumbnailReadState() { if (releasedEvent) CloseHandle(releasedEvent); }
-    HANDLE releasedEvent = nullptr;
     std::atomic<bool> sourceReadActive{ false };
     std::atomic<bool> cancelled{ false };
 };
@@ -295,7 +292,6 @@ struct FilmstripThumbnailEntry : PixelBuffer {
     float aspect = 1.0f;
     ComPtr<ID2D1Bitmap> bitmap;
 };
-
 // The official NavLib wrapper owns device calibration and its event-driven input loop.  This
 // accessor deliberately exposes only the orthographic state Viewtrious actually has: camera
 // translation becomes image pan and view extents become center-anchored zoom.
@@ -499,6 +495,14 @@ bool SameFileIdentity(const FileIdentity& left, const FileIdentity& right) {
     return left.valid && right.valid && left.volumeSerial == right.volumeSerial &&
         left.fileIndexHigh == right.fileIndexHigh && left.fileIndexLow == right.fileIndexLow;
 }
+
+struct PendingFilmstripRotation {
+    std::wstring path;
+    FileIdentity mediaIdentity{};
+    uint64_t folderGeneration = 0;
+    uint64_t itemGeneration = 0;
+    bool clockwise = false;
+};
 
 bool ReadSetting(const wchar_t* name, DWORD& value) {
     DWORD size = sizeof(value);
@@ -952,6 +956,8 @@ public:
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
         ++aiRequestGeneration_;
+        if (pendingFilmstripRotation_ && !PathsEqual(fs::path(path), fs::path(pendingFilmstripRotation_->path)))
+            CancelPendingFilmstripRotation();
         ClearStillDissolve();
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
         if (IsVideoPath(path)) { BeginVideoLoad(path); return S_OK; }
@@ -3343,11 +3349,11 @@ public:
                 result->request = request;
                 if (!request.readState->cancelled.load(std::memory_order_acquire)) {
                     request.readState->sourceReadActive.store(true, std::memory_order_release);
-                    ResetEvent(request.readState->releasedEvent);
                     if (!request.readState->cancelled.load(std::memory_order_acquire))
                         result->result = DecodeFilmstripThumbnailPixels(request.path, request.targetHeight, *result, result->aspect);
+                    // DecodeFilmstripThumbnailPixels owns every source-backed WIC object locally.
+                    // Its return therefore means the source file is fully released before this post.
                     request.readState->sourceReadActive.store(false, std::memory_order_release);
-                    SetEvent(request.readState->releasedEvent);
                 }
                 if (filmstripThumbnailStopping_.load(std::memory_order_acquire) ||
                     !PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
@@ -3383,7 +3389,6 @@ public:
             request.itemGeneration = itemGeneration;
             request.targetHeight = static_cast<UINT>(FilmstripThumbnailHeight());
             request.readState = std::make_shared<FilmstripThumbnailReadState>();
-            if (!request.readState->releasedEvent) continue;
             filmstripThumbnailPending_.push_back(request);
             {
                 std::lock_guard<std::mutex> lock(filmstripThumbnailMutex_);
@@ -3419,11 +3424,12 @@ public:
         filmstripThumbnailPending_.erase(std::remove_if(filmstripThumbnailPending_.begin(), filmstripThumbnailPending_.end(), [&](const FilmstripThumbnailRequest& request) {
             return request.itemGeneration == result->request.itemGeneration && PathsEqual(fs::path(request.path), fs::path(result->request.path));
         }), filmstripThumbnailPending_.end());
+        const bool discardStaleRotationResult = ContinuePendingFilmstripRotation(*result);
         const auto item = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&](const fs::path& path) {
             return PathsEqual(path, fs::path(result->request.path));
         });
         const size_t index = item == navigationFiles_.end() ? navigationFiles_.size() : static_cast<size_t>(std::distance(navigationFiles_.begin(), item));
-        const bool current = SUCCEEDED(result->result) && result->pixels && result->width && result->height &&
+        const bool current = !discardStaleRotationResult && SUCCEEDED(result->result) && result->pixels && result->width && result->height &&
             result->request.folderGeneration == navigationFolderGeneration_ && index < filmstripThumbnailGenerations_.size() &&
             filmstripThumbnailGenerations_[index] == result->request.itemGeneration && !FilmstripThumbnailDecodeBlocked(result->request.path);
         if (current) {
@@ -5597,15 +5603,29 @@ private:
         return SUCCEEDED(reload);
     }
 
-    void BeginFilmstripThumbnailRotation(const std::wstring& path) {
-        if (FilmstripThumbnailDecodeBlocked(path)) return;
+    void CancelPendingFilmstripRotation() {
+        if (!pendingFilmstripRotation_) return;
+        const std::wstring path = pendingFilmstripRotation_->path;
+        pendingFilmstripRotation_.reset();
+        EndFilmstripThumbnailRotation(path, false);
+    }
+    bool BeginFilmstripThumbnailRotation(const std::wstring& path, bool clockwise) {
+        if (pendingFilmstripRotation_ || FilmstripThumbnailDecodeBlocked(path)) return true;
+        const auto item = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&](const fs::path& candidate) {
+            return PathsEqual(candidate, fs::path(path));
+        });
+        const size_t index = item == navigationFiles_.end() ? navigationFiles_.size() : static_cast<size_t>(std::distance(navigationFiles_.begin(), item));
+        const uint64_t itemGeneration = index < filmstripThumbnailGenerations_.size() ? filmstripThumbnailGenerations_[index] : 0;
         filmstripThumbnailBlockedPaths_.push_back(path);
+        bool sourceReadActive = false;
         for (FilmstripThumbnailRequest& request : filmstripThumbnailPending_) {
             if (!PathsEqual(fs::path(request.path), fs::path(path))) continue;
             request.readState->cancelled.store(true, std::memory_order_release);
-            if (request.readState->sourceReadActive.load(std::memory_order_acquire))
-                WaitForSingleObject(request.readState->releasedEvent, INFINITE);
+            sourceReadActive = sourceReadActive || request.readState->sourceReadActive.load(std::memory_order_acquire);
         }
+        if (!sourceReadActive) return false;
+        pendingFilmstripRotation_ = PendingFilmstripRotation{ path, currentFileIdentity_, navigationFolderGeneration_, itemGeneration, clockwise };
+        return true;
     }
     void EndFilmstripThumbnailRotation(const std::wstring& path, bool changed) {
         filmstripThumbnailBlockedPaths_.erase(std::remove_if(filmstripThumbnailBlockedPaths_.begin(), filmstripThumbnailBlockedPaths_.end(), [&](const std::wstring& blocked) {
@@ -5624,11 +5644,32 @@ private:
         }), filmstripThumbnails_.end());
         QueueFilmstripThumbnails();
     }
+    bool ContinuePendingFilmstripRotation(const FilmstripThumbnailResult& result) {
+        if (!pendingFilmstripRotation_ || !PathsEqual(fs::path(pendingFilmstripRotation_->path), fs::path(result.request.path))) return false;
+        const PendingFilmstripRotation pending = *pendingFilmstripRotation_;
+        pendingFilmstripRotation_.reset();
+        const auto item = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&](const fs::path& candidate) {
+            return PathsEqual(candidate, fs::path(pending.path));
+        });
+        const size_t index = item == navigationFiles_.end() ? navigationFiles_.size() : static_cast<size_t>(std::distance(navigationFiles_.begin(), item));
+        const bool current = PathsEqual(fs::path(currentPath_), fs::path(pending.path)) &&
+            SameFileIdentity(pending.mediaIdentity, currentFileIdentity_) &&
+            pending.folderGeneration == navigationFolderGeneration_ && index < filmstripThumbnailGenerations_.size() &&
+            filmstripThumbnailGenerations_[index] == pending.itemGeneration;
+        if (!current) {
+            EndFilmstripThumbnailRotation(pending.path, false);
+            return true;
+        }
+        const bool changed = ExecuteRotationBackend(pending.clockwise);
+        if (!IsHeifPath(pending.path) || !changed) EndFilmstripThumbnailRotation(pending.path, changed);
+        return false;
+    }
     void RotateImage(bool clockwise) {
         if (currentPath_.empty()) return;
         if (IsHeifPath(currentPath_) && IsHeifRotationGateActive()) return;
+        if (pendingFilmstripRotation_) return;
         const std::wstring path = currentPath_;
-        BeginFilmstripThumbnailRotation(path);
+        if (BeginFilmstripThumbnailRotation(path, clockwise)) return;
         const bool changed = ExecuteRotationBackend(clockwise);
         if (!IsHeifPath(path) || !changed) EndFilmstripThumbnailRotation(path, changed);
     }
@@ -5645,6 +5686,7 @@ private:
         source_.Reset(); bitmap_.Reset(); imageWidth_ = imageHeight_ = 0;
         displayedPixels_.reset();
         currentPath_.clear(); displayedPath_.clear(); currentFileIdentity_ = {}; resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
+        CancelPendingFilmstripRotation();
         CancelQueuedFilmstripThumbnails();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear();
@@ -8439,6 +8481,7 @@ private:
     std::vector<FilmstripThumbnailEntry> filmstripThumbnails_;
     std::vector<FilmstripThumbnailRequest> filmstripThumbnailPending_;
     std::vector<std::wstring> filmstripThumbnailBlockedPaths_;
+    std::optional<PendingFilmstripRotation> pendingFilmstripRotation_;
     std::mutex filmstripThumbnailMutex_;
     std::condition_variable filmstripThumbnailWake_;
     std::deque<FilmstripThumbnailRequest> filmstripThumbnailQueue_;

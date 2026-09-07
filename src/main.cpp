@@ -3195,6 +3195,7 @@ public:
             filmstripAutoRevealTarget_.reset();
             filmstripThumbnailGenerations_.assign(navigationFiles_.size(), ++filmstripThumbnailGenerationSeed_);
             filmstripThumbnails_.clear();
+            filmstripThumbnailFailures_.clear();
             filmstripScroll_ = 0.0f;
         }
         if ((changed || currentRenamed) && imageDecodePending_) {
@@ -3241,6 +3242,11 @@ public:
     }
     bool FilmstripThumbnailPending(const std::wstring& path, uint64_t itemGeneration) const {
         return std::any_of(filmstripThumbnailPending_.begin(), filmstripThumbnailPending_.end(), [&](const FilmstripThumbnailRequest& request) {
+            return request.itemGeneration == itemGeneration && PathsEqual(fs::path(request.path), fs::path(path));
+        });
+    }
+    bool FilmstripThumbnailFailed(const std::wstring& path, uint64_t itemGeneration) const {
+        return std::any_of(filmstripThumbnailFailures_.begin(), filmstripThumbnailFailures_.end(), [&](const FilmstripThumbnailRequest& request) {
             return request.itemGeneration == itemGeneration && PathsEqual(fs::path(request.path), fs::path(path));
         });
     }
@@ -3308,6 +3314,16 @@ public:
         while (last < navigationFiles_.size() && filmstripItemOffsets_[last] <= visibleRight) ++last;
         return { first, last };
     }
+    void TraceFilmstripThumbnailJob(const wchar_t* event, const FilmstripThumbnailRequest& request, HRESULT result = S_OK) const {
+#ifdef _DEBUG
+        wchar_t message[768]{};
+        swprintf_s(message, L"[Viewtrious] %ls tid=%lu hr=0x%08X path=%ls\n", event, GetCurrentThreadId(),
+            static_cast<unsigned int>(result), request.path.c_str());
+        OutputDebugStringW(message);
+#else
+        (void)event; (void)request; (void)result;
+#endif
+    }
     void StartFilmstripThumbnailWorker() {
         if (shuttingDown_ || filmstripThumbnailStopping_.load(std::memory_order_acquire) || filmstripThumbnailWorker_.joinable()) return;
         filmstripThumbnailStopping_.store(false, std::memory_order_release);
@@ -3327,11 +3343,13 @@ public:
                 }
                 if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) continue;
                 if (request.folderGeneration != filmstripThumbnailFolderGeneration_.load(std::memory_order_acquire)) continue;
+                TraceFilmstripThumbnailJob(L"THUMB_JOB_DEQUEUED", request);
                 auto* result = new FilmstripThumbnailResult{};
                 result->request = request;
                 result->result = DecodeFilmstripThumbnailPixels(request.path, request.targetHeight, *result, result->aspect);
                 // DecodeFilmstripThumbnailPixels releases its complete WIC source chain before
                 // returning, so only copied RAM pixels can cross onto the UI thread.
+                TraceFilmstripThumbnailJob(SUCCEEDED(result->result) ? L"THUMB_JOB_SUCCESS" : L"THUMB_JOB_FAILED", request, result->result);
                 if (filmstripThumbnailStopping_.load(std::memory_order_acquire) ||
                     !PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
             }
@@ -3351,6 +3369,7 @@ public:
         filmstripThumbnailPending_.clear();
         filmstripThumbnailGenerations_.clear();
         filmstripThumbnails_.clear();
+        filmstripThumbnailFailures_.clear();
         MSG message{};
         while (PeekMessageW(&message, window_, kFilmstripThumbnailCompleteMessage, kFilmstripThumbnailCompleteMessage, PM_REMOVE))
             delete reinterpret_cast<FilmstripThumbnailResult*>(message.lParam);
@@ -3368,7 +3387,8 @@ public:
         for (size_t index : requested) {
             const std::wstring path = navigationFiles_[index].wstring();
             const uint64_t itemGeneration = filmstripThumbnailGenerations_[index];
-            if (IsVideoPath(path) || FindFilmstripThumbnail(path, itemGeneration) >= 0 || FilmstripThumbnailPending(path, itemGeneration)) continue;
+            if (IsVideoPath(path) || FindFilmstripThumbnail(path, itemGeneration) >= 0 ||
+                FilmstripThumbnailPending(path, itemGeneration) || FilmstripThumbnailFailed(path, itemGeneration)) continue;
             FilmstripThumbnailRequest request{};
             request.path = path;
             request.folderGeneration = navigationFolderGeneration_;
@@ -3413,10 +3433,10 @@ public:
             return PathsEqual(path, fs::path(result->request.path));
         });
         const size_t index = item == navigationFiles_.end() ? navigationFiles_.size() : static_cast<size_t>(std::distance(navigationFiles_.begin(), item));
-        const bool current = SUCCEEDED(result->result) && result->pixels && result->width && result->height &&
-            result->request.folderGeneration == navigationFolderGeneration_ && index < filmstripThumbnailGenerations_.size() &&
+        const bool current = result->request.folderGeneration == navigationFolderGeneration_ && index < filmstripThumbnailGenerations_.size() &&
             filmstripThumbnailGenerations_[index] == result->request.itemGeneration;
-        if (current) {
+        const bool succeeded = current && SUCCEEDED(result->result) && result->pixels && result->width && result->height;
+        if (succeeded) {
             filmstripThumbnails_.erase(std::remove_if(filmstripThumbnails_.begin(), filmstripThumbnails_.end(), [&](const FilmstripThumbnailEntry& entry) {
                 return PathsEqual(fs::path(entry.path), fs::path(result->request.path));
             }), filmstripThumbnails_.end());
@@ -3431,7 +3451,10 @@ public:
             filmstripThumbnails_.push_back(std::move(entry));
             RebuildFilmstripLayout();
             InvalidateRect(window_, nullptr, FALSE);
-        } else QueueFilmstripThumbnails();
+        } else {
+            if (current) filmstripThumbnailFailures_.push_back(result->request);
+            QueueFilmstripThumbnails();
+        }
         delete result;
     }
     ID2D1Bitmap* FilmstripThumbnailBitmap(size_t index) {
@@ -5616,7 +5639,7 @@ private:
         CancelQueuedFilmstripThumbnails();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         filmstripAutoRevealTarget_.reset();
-        filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear();
+        filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear(); filmstripThumbnailFailures_.clear();
         filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0f;
         filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer();
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
@@ -5637,6 +5660,7 @@ private:
         filmstripThumbnailFolderGeneration_.store(navigationFolderGeneration_, std::memory_order_release);
         filmstripThumbnailGenerations_.assign(navigationFiles_.size(), ++filmstripThumbnailGenerationSeed_);
         filmstripThumbnails_.clear();
+        filmstripThumbnailFailures_.clear();
         navigationBuilt_ = true;
         for (size_t offset = 0; offset < navigationFiles_.size(); ++offset) {
             const size_t candidate = (index + offset) % navigationFiles_.size();
@@ -5979,60 +6003,70 @@ private:
             hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
             if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
             if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
-            ComPtr<IWICBitmapSource> source;
+            if (FAILED(hr)) return hr;
+            const UINT orientation = ReadPhotoOrientation(frame.Get());
+            const auto decodeSource = [&](IWICBitmapSource* source) -> HRESULT {
+                if (!source) return E_FAIL;
+                UINT sourceWidth = 0, sourceHeight = 0;
+                HRESULT attempt = source->GetSize(&sourceWidth, &sourceHeight);
+                ComPtr<IWICFormatConverter> converter;
+                if (SUCCEEDED(attempt)) attempt = factory->CreateFormatConverter(&converter);
+                if (SUCCEEDED(attempt)) attempt = converter->Initialize(source, GUID_WICPixelFormat32bppPBGRA,
+                    WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+                ComPtr<IWICBitmapSource> transformed = converter;
+                ComPtr<IWICBitmapFlipRotator> rotator;
+                if (SUCCEEDED(attempt) && orientation != 1) {
+                    attempt = factory->CreateBitmapFlipRotator(&rotator);
+                    if (SUCCEEDED(attempt)) attempt = rotator->Initialize(converter.Get(), TransformForOrientation(orientation));
+                    if (SUCCEEDED(attempt)) transformed = rotator;
+                    if (orientation >= 5 && orientation <= 8) std::swap(sourceWidth, sourceHeight);
+                }
+                if (FAILED(attempt) || !sourceWidth || !sourceHeight) return FAILED(attempt) ? attempt : E_FAIL;
+                const float naturalAspect = static_cast<float>(sourceWidth) / static_cast<float>(sourceHeight);
+                const float croppedAspect = std::clamp(naturalAspect, 2.0f / 3.0f, 16.0f / 9.0f);
+                UINT cropWidth = sourceWidth, cropHeight = sourceHeight;
+                if (naturalAspect > croppedAspect) cropWidth = std::max(1u, static_cast<UINT>(std::lround(sourceHeight * croppedAspect)));
+                else if (naturalAspect < croppedAspect) cropHeight = std::max(1u, static_cast<UINT>(std::lround(sourceWidth / croppedAspect)));
+                const WICRect crop{ static_cast<INT>((sourceWidth - cropWidth) / 2), static_cast<INT>((sourceHeight - cropHeight) / 2),
+                    static_cast<INT>(cropWidth), static_cast<INT>(cropHeight) };
+                ComPtr<IWICBitmapClipper> clipper;
+                if (SUCCEEDED(attempt)) attempt = factory->CreateBitmapClipper(&clipper);
+                if (SUCCEEDED(attempt)) attempt = clipper->Initialize(transformed.Get(), &crop);
+                const UINT targetWidth = std::max(1u, static_cast<UINT>(std::lround(targetHeight * croppedAspect)));
+                ComPtr<IWICBitmapScaler> scaler;
+                if (SUCCEEDED(attempt)) attempt = factory->CreateBitmapScaler(&scaler);
+                if (SUCCEEDED(attempt)) attempt = scaler->Initialize(clipper.Get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant);
+                ComPtr<IWICFormatConverter> finalConverter;
+                if (SUCCEEDED(attempt)) attempt = factory->CreateFormatConverter(&finalConverter);
+                if (SUCCEEDED(attempt)) attempt = finalConverter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA,
+                    WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+                if (FAILED(attempt) || targetWidth > UINT_MAX / 4 || targetHeight > UINT_MAX / (targetWidth * 4)) return FAILED(attempt) ? attempt : E_OUTOFMEMORY;
+                const UINT stride = targetWidth * 4;
+                const size_t bytes = static_cast<size_t>(stride) * targetHeight;
+                auto pixels = std::make_shared<std::vector<BYTE>>(bytes);
+                attempt = finalConverter->CopyPixels(nullptr, stride, static_cast<UINT>(bytes), pixels->data());
+                if (SUCCEEDED(attempt)) {
+                    decoded.width = targetWidth;
+                    decoded.height = targetHeight;
+                    decoded.stride = stride;
+                    decoded.pixels = std::move(pixels);
+                    aspect = static_cast<float>(targetWidth) / static_cast<float>(targetHeight);
+                }
+                return attempt;
+            };
             ComPtr<IWICBitmapSource> embedded;
-            UINT sourceWidth = 0, sourceHeight = 0;
-            if (SUCCEEDED(hr) && SUCCEEDED(frame->GetThumbnail(&embedded)) &&
-                SUCCEEDED(embedded->GetSize(&sourceWidth, &sourceHeight)) && sourceWidth && sourceHeight) {
-                source = embedded;
-            } else if (SUCCEEDED(hr)) {
-                source = frame;
-                hr = source->GetSize(&sourceWidth, &sourceHeight);
+            if (SUCCEEDED(frame->GetThumbnail(&embedded))) {
+                hr = decodeSource(embedded.Get());
+                embedded.Reset();
+                if (SUCCEEDED(hr)) return hr;
             }
-            const UINT orientation = SUCCEEDED(hr) ? ReadPhotoOrientation(frame.Get()) : 1;
-            ComPtr<IWICFormatConverter> converter;
-            if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
-            if (SUCCEEDED(hr)) hr = converter->Initialize(source.Get(), GUID_WICPixelFormat32bppPBGRA,
-                WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-            ComPtr<IWICBitmapSource> transformed = converter;
-            ComPtr<IWICBitmapFlipRotator> rotator;
-            if (SUCCEEDED(hr) && orientation != 1) {
-                hr = factory->CreateBitmapFlipRotator(&rotator);
-                if (SUCCEEDED(hr)) hr = rotator->Initialize(converter.Get(), TransformForOrientation(orientation));
-                if (SUCCEEDED(hr)) transformed = rotator;
-                if (orientation >= 5 && orientation <= 8) std::swap(sourceWidth, sourceHeight);
+            ComPtr<IWICBitmapSource> preview;
+            if (SUCCEEDED(decoder->GetPreview(&preview))) {
+                hr = decodeSource(preview.Get());
+                preview.Reset();
+                if (SUCCEEDED(hr)) return hr;
             }
-            if (FAILED(hr) || !sourceWidth || !sourceHeight) return FAILED(hr) ? hr : E_FAIL;
-            const float naturalAspect = static_cast<float>(sourceWidth) / static_cast<float>(sourceHeight);
-            const float croppedAspect = std::clamp(naturalAspect, 2.0f / 3.0f, 16.0f / 9.0f);
-            UINT cropWidth = sourceWidth, cropHeight = sourceHeight;
-            if (naturalAspect > croppedAspect) cropWidth = std::max(1u, static_cast<UINT>(std::lround(sourceHeight * croppedAspect)));
-            else if (naturalAspect < croppedAspect) cropHeight = std::max(1u, static_cast<UINT>(std::lround(sourceWidth / croppedAspect)));
-            const WICRect crop{ static_cast<INT>((sourceWidth - cropWidth) / 2), static_cast<INT>((sourceHeight - cropHeight) / 2),
-                static_cast<INT>(cropWidth), static_cast<INT>(cropHeight) };
-            ComPtr<IWICBitmapClipper> clipper;
-            if (SUCCEEDED(hr)) hr = factory->CreateBitmapClipper(&clipper);
-            if (SUCCEEDED(hr)) hr = clipper->Initialize(transformed.Get(), &crop);
-            const UINT targetWidth = std::max(1u, static_cast<UINT>(std::lround(targetHeight * croppedAspect)));
-            ComPtr<IWICBitmapScaler> scaler;
-            if (SUCCEEDED(hr)) hr = factory->CreateBitmapScaler(&scaler);
-            if (SUCCEEDED(hr)) hr = scaler->Initialize(clipper.Get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant);
-            ComPtr<IWICFormatConverter> finalConverter;
-            if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&finalConverter);
-            if (SUCCEEDED(hr)) hr = finalConverter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA,
-                WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-            if (FAILED(hr) || targetWidth > UINT_MAX / 4 || targetHeight > UINT_MAX / (targetWidth * 4)) return FAILED(hr) ? hr : E_OUTOFMEMORY;
-            const UINT stride = targetWidth * 4;
-            const size_t bytes = static_cast<size_t>(stride) * targetHeight;
-            auto pixels = std::make_shared<std::vector<BYTE>>(bytes);
-            hr = finalConverter->CopyPixels(nullptr, stride, static_cast<UINT>(bytes), pixels->data());
-            if (SUCCEEDED(hr)) {
-                decoded.width = targetWidth;
-                decoded.height = targetHeight;
-                decoded.stride = stride;
-                decoded.pixels = std::move(pixels);
-                aspect = static_cast<float>(targetWidth) / static_cast<float>(targetHeight);
-            }
+            hr = decodeSource(frame.Get());
         }
         return hr;
     }
@@ -6341,6 +6375,7 @@ private:
             filmstripThumbnailGenerations_.clear();
             filmstripThumbnails_.clear();
             filmstripThumbnailPending_.clear();
+            filmstripThumbnailFailures_.clear();
             filmstripAutoRevealTarget_.reset();
             filmstripScroll_ = 0.0f;
             filmstripInitialPresentationPending_ = true;
@@ -8419,6 +8454,7 @@ private:
     std::vector<uint64_t> filmstripThumbnailGenerations_;
     std::vector<FilmstripThumbnailEntry> filmstripThumbnails_;
     std::vector<FilmstripThumbnailRequest> filmstripThumbnailPending_;
+    std::vector<FilmstripThumbnailRequest> filmstripThumbnailFailures_;
     std::mutex filmstripThumbnailMutex_;
     std::condition_variable filmstripThumbnailWake_;
     std::deque<FilmstripThumbnailRequest> filmstripThumbnailQueue_;

@@ -3203,6 +3203,7 @@ public:
             filmstripThumbnails_.clear();
             filmstripThumbnailFailures_.clear();
             filmstripScroll_ = 0.0;
+            filmstripLayoutRebuildPending_ = false;
             StopFilmstripScrollAnimation();
         }
         if ((changed || currentRenamed) && imageDecodePending_) {
@@ -3308,6 +3309,11 @@ public:
             }
         }
         if (queueThumbnails) QueueFilmstripThumbnails();
+    }
+    void ApplyDeferredFilmstripLayout() {
+        if (!filmstripLayoutRebuildPending_) return;
+        filmstripLayoutRebuildPending_ = false;
+        RebuildFilmstripLayout();
     }
     std::pair<size_t, size_t> FilmstripVisibleRange() const {
         if (navigationFiles_.empty() || filmstripItemOffsets_.empty()) return { 0, 0 };
@@ -3465,7 +3471,8 @@ public:
             entry.stride = result->stride;
             entry.pixels = std::move(result->pixels);
             filmstripThumbnails_.push_back(std::move(entry));
-            RebuildFilmstripLayout();
+            if (filmstripScrollAnimating_) filmstripLayoutRebuildPending_ = true;
+            else RebuildFilmstripLayout();
             InvalidateRect(window_, nullptr, FALSE);
         } else {
             if (current) filmstripThumbnailFailures_.push_back(result->request);
@@ -3586,6 +3593,10 @@ public:
         const double dt = std::clamp(static_cast<double>(nowQpc - filmstripScrollLastQpc_) / static_cast<double>(filmstripScrollQpcFrequency_), 0.0, 0.050);
         filmstripScrollLastQpc_ = nowQpc;
         if (dt <= 0.0) return std::abs(filmstripScrollVelocity_) > kFilmstripVelocityStopEpsilon;
+#ifdef _DEBUG
+        const double previousPosition = filmstripScroll_;
+        const double previousVelocity = filmstripScrollVelocity_;
+#endif
         filmstripScroll_ += filmstripScrollVelocity_ * dt;
         const double maximum = FilmstripMaximumScroll();
         bool hitBound = false;
@@ -3603,6 +3614,12 @@ public:
         filmstripScrollTickMinimumMs_ = std::min(filmstripScrollTickMinimumMs_, dt * 1000.0);
         filmstripScrollTickMaximumMs_ = std::max(filmstripScrollTickMaximumMs_, dt * 1000.0);
         if (hitBound) OutputDebugStringW(L"Viewtrious filmstrip scroll: bound collision\n");
+        wchar_t message[320]{};
+        swprintf_s(message, L"Viewtrious filmstrip scroll: qpc=%lld dt=%.3fms position=%.3f->%.3f delta=%.3f velocity=%.3f->%.3f bound=%d reversed=%d\n",
+            nowQpc, dt * 1000.0, previousPosition, filmstripScroll_, filmstripScroll_ - previousPosition,
+            previousVelocity, filmstripScrollVelocity_, hitBound ? 1 : 0,
+            previousVelocity * filmstripScrollVelocity_ < 0.0 ? 1 : 0);
+        OutputDebugStringW(message);
 #endif
         if (std::abs(filmstripScrollVelocity_) <= kFilmstripVelocityStopEpsilon) {
             filmstripScrollVelocity_ = 0.0;
@@ -3618,6 +3635,7 @@ public:
     }
     void ScrollFilmstrip(int rawWheelDelta) {
         if (!FilmstripVisible() || rawWheelDelta == 0) return;
+        if (!filmstripScrollAnimating_) ApplyDeferredFilmstripLayout();
         LARGE_INTEGER now{}, frequency{};
         if (!QueryPerformanceCounter(&now) || !QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return;
         if (filmstripScrollAnimating_) AdvanceFilmstripScroll(now.QuadPart);
@@ -3641,7 +3659,8 @@ public:
         }
 #ifdef _DEBUG
         wchar_t message[256]{};
-        swprintf_s(message, L"Viewtrious filmstrip scroll: raw=%d units=%.3f velocity=%.1f->%.1f\n", rawWheelDelta, units, before, filmstripScrollVelocity_);
+        swprintf_s(message, L"Viewtrious filmstrip scroll: qpc=%lld raw=%d units=%.3f position=%.3f velocity=%.1f->%.1f impulse=%.1f\n",
+            now.QuadPart, rawWheelDelta, units, filmstripScroll_, before, filmstripScrollVelocity_, filmstripScrollVelocity_ - before);
         OutputDebugStringW(message);
 #endif
         if (!EnsureFilmstripScrollScheduler() || !ArmFilmstripScrollWake()) StopFilmstripScrollAnimation();
@@ -3652,9 +3671,19 @@ public:
     void FilmstripScrollWakeMessage(uint64_t generation) {
         uint64_t expected = generation;
         filmstripScrollWakePendingGeneration_.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
-        if (generation != filmstripScrollGeneration_.load(std::memory_order_acquire) || !filmstripScrollAnimating_ || !FilmstripEligible()) return;
+        if (generation != filmstripScrollGeneration_.load(std::memory_order_acquire) || !filmstripScrollAnimating_) return;
+        if (!FilmstripEligible()) {
+            StopFilmstripScrollAnimation();
+            ApplyDeferredFilmstripLayout();
+            return;
+        }
         LARGE_INTEGER now{};
-        if (!QueryPerformanceCounter(&now) || !AdvanceFilmstripScroll(now.QuadPart)) { StopFilmstripScrollAnimation(); return; }
+        if (!QueryPerformanceCounter(&now) || !AdvanceFilmstripScroll(now.QuadPart)) {
+            StopFilmstripScrollAnimation();
+            ApplyDeferredFilmstripLayout();
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
         QueueFilmstripThumbnails();
         InvalidateRect(window_, nullptr, FALSE);
         if (!ArmFilmstripScrollWake()) StopFilmstripScrollAnimation();
@@ -5814,6 +5843,7 @@ private:
         filmstripClickedRevealTarget_.reset();
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear(); filmstripThumbnailFailures_.clear();
         filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0;
+        filmstripLayoutRebuildPending_ = false;
         StopFilmstripScrollAnimation();
         filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer();
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
@@ -6681,6 +6711,7 @@ private:
             filmstripThumbnailFailures_.clear();
             filmstripClickedRevealTarget_.reset();
             filmstripScroll_ = 0.0;
+            filmstripLayoutRebuildPending_ = false;
             StopFilmstripScrollAnimation();
         } else if (navigationBuilt_) {
             // A video sibling can build navigation while Image2D has no source. Rebuild after
@@ -8751,6 +8782,7 @@ private:
     std::atomic<uint64_t> filmstripScrollGeneration_{ 0 };
     std::atomic<uint64_t> filmstripScrollWakePendingGeneration_{ 0 };
     bool filmstripScrollAnimating_ = false;
+    bool filmstripLayoutRebuildPending_ = false;
 #ifdef _DEBUG
     UINT filmstripScrollTickCount_ = 0;
     double filmstripScrollTickTotalMs_ = 0.0;

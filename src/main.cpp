@@ -3197,6 +3197,7 @@ public:
             filmstripThumbnails_.clear();
             filmstripThumbnailFailures_.clear();
             filmstripScroll_ = 0.0f;
+            filmstripWheelDelta_ = 0;
         }
         if ((changed || currentRenamed) && imageDecodePending_) {
             ++decodeRequestGeneration_;
@@ -3510,9 +3511,50 @@ public:
         }
         return -1;
     }
-    void ScrollFilmstrip(float delta) {
+    bool ScrollFilmstripOneThumbnail(bool rightward) {
+        if (!FilmstripVisible() || filmstripItemOffsets_.size() != navigationFiles_.size() + 1 ||
+            filmstripItemWidths_.size() != navigationFiles_.size()) return false;
+        constexpr float epsilon = 0.01f;
+        const RECT bounds = GetFilmstripBounds();
+        const float viewportWidth = static_cast<float>(bounds.right - bounds.left);
+        const float viewportLeft = filmstripScroll_;
+        const float viewportRight = viewportLeft + viewportWidth;
+        float targetScroll = filmstripScroll_;
+        if (rightward) {
+            for (size_t index = 0; index < navigationFiles_.size(); ++index) {
+                const float itemRight = filmstripItemOffsets_[index] + filmstripItemWidths_[index];
+                if (itemRight > viewportRight + epsilon) {
+                    targetScroll = itemRight - viewportWidth;
+                    break;
+                }
+            }
+        } else {
+            for (size_t index = navigationFiles_.size(); index-- > 0;) {
+                const float itemLeft = filmstripItemOffsets_[index];
+                if (itemLeft < viewportLeft - epsilon) {
+                    targetScroll = itemLeft;
+                    break;
+                }
+            }
+        }
+        targetScroll = std::clamp(targetScroll, 0.0f, FilmstripMaximumScroll());
+        if (std::abs(targetScroll - filmstripScroll_) <= epsilon) return false;
+        filmstripScroll_ = targetScroll;
+        return true;
+    }
+    void ScrollFilmstripByWheelDelta(int wheelDelta) {
         if (!FilmstripVisible()) return;
-        filmstripScroll_ = std::clamp(filmstripScroll_ + delta, 0.0f, FilmstripMaximumScroll());
+        filmstripWheelDelta_ += wheelDelta;
+        bool moved = false;
+        while (filmstripWheelDelta_ >= WHEEL_DELTA) {
+            moved = ScrollFilmstripOneThumbnail(false) || moved;
+            filmstripWheelDelta_ -= WHEEL_DELTA;
+        }
+        while (filmstripWheelDelta_ <= -WHEEL_DELTA) {
+            moved = ScrollFilmstripOneThumbnail(true) || moved;
+            filmstripWheelDelta_ += WHEEL_DELTA;
+        }
+        if (!moved) return;
         QueueFilmstripThumbnails();
         StartFilmstripHold();
         InvalidateRect(window_, nullptr, FALSE);
@@ -5672,7 +5714,7 @@ private:
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         filmstripAutoRevealTarget_.reset();
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear(); filmstripThumbnailFailures_.clear();
-        filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0f;
+        filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0f; filmstripWheelDelta_ = 0;
         filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer();
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
         error_ = L"Drop an image here, or launch Viewtrious with an image path.";
@@ -6542,6 +6584,7 @@ private:
             filmstripThumbnailFailures_.clear();
             filmstripAutoRevealTarget_.reset();
             filmstripScroll_ = 0.0f;
+            filmstripWheelDelta_ = 0;
             filmstripInitialPresentationPending_ = true;
         } else if (navigationBuilt_) {
             // A video sibling can build navigation while Image2D has no source. Rebuild after
@@ -8603,6 +8646,7 @@ private:
     std::vector<float> filmstripItemWidths_;
     std::vector<float> filmstripItemOffsets_;
     float filmstripScroll_ = 0.0f;
+    int filmstripWheelDelta_ = 0;
     float filmstripOpacity_ = 0.0f;
     float filmstripRevealStartOpacity_ = 0.0f;
     ULONGLONG filmstripVisibilityStart_ = 0;
@@ -8881,8 +8925,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->FilmstripContains(point)) {
-            const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
-            viewer->ScrollFilmstrip(-wheelUnits * MulDiv(92, GetDpiForWindow(window), 96));
+            viewer->ScrollFilmstripByWheelDelta(GET_WHEEL_DELTA_WPARAM(wParam));
             return 0;
         }
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen() || viewer->ModelViewBarMenuOpen()) return 0;

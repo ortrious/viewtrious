@@ -84,7 +84,6 @@ constexpr UINT_PTR kVideoControlsTimer = 15;
 constexpr UINT_PTR kVideoStepHoldTimer = 16;
 constexpr UINT_PTR kStillDissolveTimer = 17;
 constexpr UINT_PTR kFilmstripScrollTimer = 18;
-constexpr int kFilmstripWheelReversalThreshold = WHEEL_DELTA / 2;
 constexpr UINT kVideoStepHoldThresholdMs = 250;
 constexpr UINT kVideoStepHoldIntervalMs = 16;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
@@ -3488,7 +3487,8 @@ public:
         if (left < filmstripScroll_) filmstripScroll_ = left;
         else if (right > visibleRight) filmstripScroll_ = right - static_cast<float>(bounds.right - bounds.left);
         filmstripScroll_ = std::clamp(filmstripScroll_, 0.0f, FilmstripMaximumScroll());
-        CancelFilmstripScrollSmoothing();
+        filmstripScrollTarget_ = filmstripScroll_;
+        KillTimer(window_, kFilmstripScrollTimer);
     }
     RECT GetFilmstripThumbnailBounds(size_t index) const {
         const RECT strip = GetFilmstripBounds();
@@ -3507,48 +3507,11 @@ public:
         }
         return -1;
     }
-    void CancelFilmstripScrollSmoothing() {
-        KillTimer(window_, kFilmstripScrollTimer);
-        filmstripScrollTarget_ = filmstripScroll_;
-        filmstripScrollSmoothing_ = false;
-        filmstripWheelDirection_ = 0;
-        filmstripOppositeWheelDelta_ = 0;
-    }
-    void ScrollFilmstrip(int wheelDelta) {
+    void ScrollFilmstrip(float delta) {
         if (!FilmstripVisible()) return;
-        const float wheelUnits = static_cast<float>(wheelDelta) / WHEEL_DELTA;
-        const float delta = -wheelUnits * MulDiv(60, GetDpiForWindow(window_), 96);
-        if (delta == 0.0f) return;
-        const int direction = delta > 0.0f ? 1 : -1;
-        const bool smoothing = filmstripScrollSmoothing_ && std::abs(filmstripScrollTarget_ - filmstripScroll_) > 0.1f;
-        float acceptedDelta = delta;
-        if (!smoothing) {
-            filmstripWheelDirection_ = direction;
-            filmstripOppositeWheelDelta_ = 0;
-        } else if (direction == filmstripWheelDirection_) {
-            filmstripOppositeWheelDelta_ = 0;
-        } else {
-            filmstripOppositeWheelDelta_ += wheelDelta;
-            if (std::abs(filmstripOppositeWheelDelta_) < kFilmstripWheelReversalThreshold) acceptedDelta = 0.0f;
-            else {
-                acceptedDelta = -static_cast<float>(filmstripOppositeWheelDelta_) / WHEEL_DELTA * MulDiv(60, GetDpiForWindow(window_), 96);
-                filmstripWheelDirection_ = direction;
-                filmstripOppositeWheelDelta_ = 0;
-            }
-        }
-#ifdef _DEBUG
-        const float previousTarget = filmstripScrollTarget_;
-#endif
-        filmstripScrollTarget_ = std::clamp(filmstripScrollTarget_ + acceptedDelta, 0.0f, FilmstripMaximumScroll());
-#ifdef _DEBUG
-        wchar_t message[320]{};
-        swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL raw=%d units=%.3f dip=%.2f target=%.2f->%.2f current=%.2f direction=%d\n",
-            wheelDelta, wheelUnits, acceptedDelta, previousTarget, filmstripScrollTarget_, filmstripScroll_, filmstripWheelDirection_);
-        OutputDebugStringW(message);
-#endif
+        filmstripScrollTarget_ = std::clamp(filmstripScrollTarget_ + delta, 0.0f, FilmstripMaximumScroll());
         if (std::abs(filmstripScrollTarget_ - filmstripScroll_) > 0.01f) {
-            if (!filmstripScrollSmoothing_) filmstripScrollLastTick_ = GetTickCount64();
-            filmstripScrollSmoothing_ = true;
+            filmstripScrollLastTick_ = GetTickCount64();
             SetTimer(window_, kFilmstripScrollTimer, 16, nullptr);
         }
         QueueFilmstripThumbnails();
@@ -3557,7 +3520,8 @@ public:
     }
     void UpdateFilmstripScroll() {
         if (!FilmstripEligible()) {
-            CancelFilmstripScrollSmoothing();
+            KillTimer(window_, kFilmstripScrollTimer);
+            filmstripScrollTarget_ = filmstripScroll_;
             return;
         }
         const ULONGLONG now = GetTickCount64();
@@ -3566,20 +3530,10 @@ public:
         const float maximum = FilmstripMaximumScroll();
         filmstripScrollTarget_ = std::clamp(filmstripScrollTarget_, 0.0f, maximum);
         const float alpha = 1.0f - std::exp(-elapsedMs / 25.0f);
-#ifdef _DEBUG
-        const float previousScroll = filmstripScroll_;
-#endif
         filmstripScroll_ = std::clamp(filmstripScroll_ + (filmstripScrollTarget_ - filmstripScroll_) * alpha, 0.0f, maximum);
-#ifdef _DEBUG
-        const float targetDelta = filmstripScrollTarget_ - previousScroll;
-        const float renderedDelta = filmstripScroll_ - previousScroll;
-        if ((targetDelta > 0.0f && (renderedDelta < 0.0f || filmstripScroll_ > filmstripScrollTarget_)) ||
-            (targetDelta < 0.0f && (renderedDelta > 0.0f || filmstripScroll_ < filmstripScrollTarget_)))
-            OutputDebugStringW(L"[Viewtrious] FILMSTRIP_SCROLL_NON_MONOTONIC\n");
-#endif
         if (std::abs(filmstripScrollTarget_ - filmstripScroll_) <= 0.1f) {
             filmstripScroll_ = filmstripScrollTarget_;
-            CancelFilmstripScrollSmoothing();
+            KillTimer(window_, kFilmstripScrollTimer);
         } else {
             QueueFilmstripThumbnails();
         }
@@ -5738,7 +5692,7 @@ private:
         filmstripClickedRevealTarget_.reset();
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear(); filmstripThumbnailFailures_.clear();
         filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = filmstripScrollTarget_ = 0.0f;
-        CancelFilmstripScrollSmoothing();
+        KillTimer(window_, kFilmstripScrollTimer);
         filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer();
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
         error_ = L"Drop an image here, or launch Viewtrious with an image path.";
@@ -6605,7 +6559,7 @@ private:
             filmstripThumbnailFailures_.clear();
             filmstripClickedRevealTarget_.reset();
             filmstripScroll_ = filmstripScrollTarget_ = 0.0f;
-            CancelFilmstripScrollSmoothing();
+            KillTimer(window_, kFilmstripScrollTimer);
         } else if (navigationBuilt_) {
             // A video sibling can build navigation while Image2D has no source. Rebuild after
             // the image commit so stale compact placeholder widths cannot reach the first paint.
@@ -8668,9 +8622,6 @@ private:
     float filmstripScroll_ = 0.0f;
     float filmstripScrollTarget_ = 0.0f;
     ULONGLONG filmstripScrollLastTick_ = 0;
-    bool filmstripScrollSmoothing_ = false;
-    int filmstripWheelDirection_ = 0;
-    int filmstripOppositeWheelDelta_ = 0;
     float filmstripOpacity_ = 0.0f;
     float filmstripRevealStartOpacity_ = 0.0f;
     ULONGLONG filmstripVisibilityStart_ = 0;
@@ -8948,7 +8899,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->FilmstripContains(point)) {
-            viewer->ScrollFilmstrip(GET_WHEEL_DELTA_WPARAM(wParam));
+            const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+            viewer->ScrollFilmstrip(-wheelUnits * MulDiv(60, GetDpiForWindow(window), 96));
             return 0;
         }
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen() || viewer->ModelViewBarMenuOpen()) return 0;

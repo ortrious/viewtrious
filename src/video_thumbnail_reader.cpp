@@ -57,7 +57,7 @@ HRESULT CopyVideoSamplePixels(IMFSample* sample, IMFMediaType* mediaType, std::v
     return S_OK;
 }
 
-HRESULT ScaleVideoThumbnail(const std::vector<BYTE>& sourcePixels, UINT sourceWidth, UINT sourceHeight,
+HRESULT ScaleVideoThumbnail(std::vector<BYTE>& sourcePixels, UINT sourceWidth, UINT sourceHeight,
     UINT targetHeight, VideoThumbnailPixels& decoded, float& aspect) {
     if (sourcePixels.empty() || !sourceWidth || !sourceHeight || !targetHeight) return E_INVALIDARG;
     const float naturalAspect = static_cast<float>(sourceWidth) / sourceHeight;
@@ -118,21 +118,8 @@ HRESULT DecodeVideoThumbnailPixels(const std::wstring& path, UINT targetHeight, 
         if (SUCCEEDED(hr)) hr = attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
         if (SUCCEEDED(hr)) hr = MFCreateSourceReaderFromURL(path.c_str(), attributes.Get(), &reader);
 
-        DWORD videoStream = MF_SOURCE_READER_FIRST_VIDEO_STREAM;
-        if (SUCCEEDED(hr)) {
-            for (DWORD stream = 0;; ++stream) {
-                ComPtr<IMFMediaType> nativeType;
-                const HRESULT native = reader->GetNativeMediaType(stream, 0, &nativeType);
-                if (native == MF_E_INVALIDSTREAMNUMBER) { hr = MF_E_INVALIDMEDIATYPE; break; }
-                if (FAILED(native)) continue;
-                GUID majorType{};
-                if (SUCCEEDED(nativeType->GetGUID(MF_MT_MAJOR_TYPE, &majorType)) && majorType == MFMediaType_Video) {
-                    videoStream = stream;
-                    break;
-                }
-            }
-        }
-        if (SUCCEEDED(hr)) hr = reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
+        const DWORD videoStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+        if (SUCCEEDED(hr)) hr = reader->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE);
         if (SUCCEEDED(hr)) hr = reader->SetStreamSelection(videoStream, TRUE);
         if (SUCCEEDED(hr)) hr = MFCreateMediaType(&outputType);
         if (SUCCEEDED(hr)) hr = outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -142,7 +129,7 @@ HRESULT DecodeVideoThumbnailPixels(const std::wstring& path, UINT targetHeight, 
 
         PROPVARIANT duration{};
         PropVariantInit(&duration);
-        if (SUCCEEDED(hr) && SUCCEEDED(reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &duration)) &&
+        if (SUCCEEDED(hr) && SUCCEEDED(reader->GetPresentationAttribute(static_cast<DWORD>(MF_SOURCE_READER_MEDIASOURCE), MF_PD_DURATION, &duration)) &&
             duration.vt == VT_UI8 && duration.uhVal.QuadPart > 0) {
             const LONGLONG position = std::min<LONGLONG>(static_cast<LONGLONG>(duration.uhVal.QuadPart / 10), kHundredNanosecondsPerSecond);
             if (position > 0) {
@@ -161,11 +148,11 @@ HRESULT DecodeVideoThumbnailPixels(const std::wstring& path, UINT targetHeight, 
             LONGLONG timestamp = 0;
             ComPtr<IMFSample> sample;
             hr = reader->ReadSample(videoStream, 0, &stream, &flags, &timestamp, &sample);
-            if (FAILED(hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) break;
+            if (FAILED(hr) || (flags & static_cast<DWORD>(MF_SOURCE_READERF_ENDOFSTREAM))) break;
             if (sample) { hr = CopyVideoSamplePixels(sample.Get(), outputType.Get(), sourcePixels, sourceWidth, sourceHeight); break; }
         }
     }
     MFShutdown();
-    if (FAILED(hr) || sourcePixels.empty()) return FAILED(hr) ? hr : MF_E_END_OF_STREAM;
+    if (FAILED(hr) || sourcePixels.empty()) return FAILED(hr) ? hr : E_FAIL;
     return ScaleVideoThumbnail(sourcePixels, sourceWidth, sourceHeight, targetHeight, decoded, aspect);
 }

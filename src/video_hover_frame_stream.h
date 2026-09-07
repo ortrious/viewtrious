@@ -15,5 +15,5 @@ public:
     void Close();
     double DurationSeconds() const { return durationSeconds_; } double StartSeconds() const { return startSeconds_; }
 private:
-    struct Impl; std::unique_ptr<Impl> impl_; const std::atomic<uint64_t>* generation_ = nullptr; uint64_t requestGeneration_ = 0; double durationSeconds_ = 0, startSeconds_ = 0;
+    struct Impl; std::unique_ptr<Impl> impl_; const std::atomic<uint64_t>* generation_ = nullptr; uint64_t requestGeneration_ = 0; LONGLONG requestedStartTimestamp_ = 0; double durationSeconds_ = 0, startSeconds_ = 0;
 };

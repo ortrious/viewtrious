@@ -9,12 +9,12 @@
 #include <cmath>
 #include <cstring>
 using Microsoft::WRL::ComPtr;
-struct VideoHoverFrameStream::Impl { ComPtr<IMFSourceReader> reader; ComPtr<IMFMediaType> type; bool mf = false; UINT max = 768; };
+struct VideoHoverFrameStream::Impl { ComPtr<IMFSourceReader> reader; ComPtr<IMFMediaType> type; bool mf = false; UINT max = 768, skippedBeforeStart = 0; };
 VideoHoverFrameStream::VideoHoverFrameStream() = default;
 VideoHoverFrameStream::~VideoHoverFrameStream() { Close(); }
 void VideoHoverFrameStream::Close() { if (!impl_) return; impl_->reader.Reset(); impl_->type.Reset(); if (impl_->mf) MFShutdown(); impl_.reset(); generation_ = nullptr; }
 HRESULT VideoHoverFrameStream::Open(const VideoHoverPreviewRequest& r, const std::atomic<uint64_t>* g) {
-    Close(); durationSeconds_ = 0.0; startSeconds_ = 0.0; if (r.path.empty() || !g || g->load(std::memory_order_acquire) != r.generation) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
+    Close(); requestedStartTimestamp_ = 0; durationSeconds_ = 0.0; startSeconds_ = 0.0; if (r.path.empty() || !g || g->load(std::memory_order_acquire) != r.generation) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
     auto p = std::make_unique<Impl>(); p->max = std::clamp(r.maximumDimension, 64u, 1024u); HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE); if (FAILED(hr)) return hr; p->mf = true;
     ComPtr<IMFAttributes> a; if (SUCCEEDED(hr)) hr = MFCreateAttributes(&a, 1); if (SUCCEEDED(hr)) hr = a->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE); if (SUCCEEDED(hr)) hr = MFCreateSourceReaderFromURL(r.path.c_str(), a.Get(), &p->reader);
     const DWORD s = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM); if (SUCCEEDED(hr)) hr = p->reader->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE); if (SUCCEEDED(hr)) hr = p->reader->SetStreamSelection(s, TRUE); if (SUCCEEDED(hr)) hr = MFCreateMediaType(&p->type); if (SUCCEEDED(hr)) hr = p->type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); if (SUCCEEDED(hr)) hr = p->type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32); if (SUCCEEDED(hr)) hr = p->reader->SetCurrentMediaType(s, nullptr, p->type.Get()); if (SUCCEEDED(hr)) hr = p->reader->GetCurrentMediaType(s, &p->type);
@@ -28,7 +28,8 @@ HRESULT VideoHoverFrameStream::Open(const VideoHoverPreviewRequest& r, const std
     }
     if (SUCCEEDED(hr) && startSeconds_ > 0.0) {
         PROPVARIANT v{}; v.vt = VT_I8; v.hVal.QuadPart = static_cast<LONGLONG>(startSeconds_ * 10000000.0);
-        if (FAILED(p->reader->SetCurrentPosition(GUID_NULL, v))) { startSeconds_ = 0.0; v.hVal.QuadPart = 0; p->reader->SetCurrentPosition(GUID_NULL, v); }
+        if (SUCCEEDED(p->reader->SetCurrentPosition(GUID_NULL, v))) requestedStartTimestamp_ = v.hVal.QuadPart;
+        else { startSeconds_ = 0.0; v.hVal.QuadPart = 0; p->reader->SetCurrentPosition(GUID_NULL, v); }
     }
 #ifdef _DEBUG
     wchar_t trace[256]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_SEEK_POLICY duration=%.3fs start=%.3fs path=%ls\\n", durationSeconds_, startSeconds_, r.path.c_str()); OutputDebugStringW(trace);
@@ -37,7 +38,19 @@ HRESULT VideoHoverFrameStream::Open(const VideoHoverPreviewRequest& r, const std
 }
 HRESULT VideoHoverFrameStream::ReadNext(VideoHoverPreviewFrame& f) {
     f = {}; if (!impl_ || generation_->load(std::memory_order_acquire) != requestGeneration_) { Close(); return HRESULT_FROM_WIN32(ERROR_CANCELLED); }
-    DWORD stream=0, flags=0; ComPtr<IMFSample> sample; HRESULT hr=impl_->reader->ReadSample(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),0,&stream,&flags,&f.timestamp,&sample); if (FAILED(hr) || (flags & static_cast<DWORD>(MF_SOURCE_READERF_ENDOFSTREAM)) || !sample) { Close(); return FAILED(hr)?hr:S_FALSE; }
+    DWORD stream=0, flags=0; ComPtr<IMFSample> sample; HRESULT hr=S_OK;
+    for (;;) {
+        if (generation_->load(std::memory_order_acquire) != requestGeneration_) { Close(); return HRESULT_FROM_WIN32(ERROR_CANCELLED); }
+        sample.Reset(); flags = 0;
+        hr=impl_->reader->ReadSample(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),0,&stream,&flags,&f.timestamp,&sample);
+        if (FAILED(hr) || (flags & static_cast<DWORD>(MF_SOURCE_READERF_ENDOFSTREAM))) { Close(); return FAILED(hr)?hr:S_FALSE; }
+        if (!sample) continue; // A seek may surface a stream tick without a media sample.
+        if (f.timestamp >= requestedStartTimestamp_) break;
+        ++impl_->skippedBeforeStart;
+#ifdef _DEBUG
+        if (impl_->skippedBeforeStart == 1 || impl_->skippedBeforeStart % 30 == 0) { wchar_t trace[224]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_SEEK_DISCARD timestamp=%lld target=%lld count=%u\\n", f.timestamp, requestedStartTimestamp_, impl_->skippedBeforeStart); OutputDebugStringW(trace); }
+#endif
+    }
     UINT w=0,h=0; if (FAILED(MFGetAttributeSize(impl_->type.Get(),MF_MT_FRAME_SIZE,&w,&h)) || !w || !h) return E_FAIL; float scale=std::min(1.f,static_cast<float>(impl_->max)/std::max(w,h)); f.width=std::max(1u,static_cast<UINT>(std::lround(w*scale))); f.height=std::max(1u,static_cast<UINT>(std::lround(h*scale))); f.stride=f.width*4;
     ComPtr<IMFMediaBuffer>b; hr=sample->ConvertToContiguousBuffer(&b); BYTE* src=nullptr; DWORD mx=0, len=0; if(SUCCEEDED(hr))hr=b->Lock(&src,&mx,&len);
     // MFVideoFormat_RGB32 is BGRX in memory: its fourth byte is padding, not alpha.

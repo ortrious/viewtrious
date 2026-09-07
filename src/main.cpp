@@ -901,6 +901,9 @@ public:
         DWORD alwaysShowFilmstrip = 0;
         ReadSetting(L"AlwaysShowFilmstrip", alwaysShowFilmstrip);
         alwaysShowFilmstrip_ = alwaysShowFilmstrip != 0;
+        DWORD filmstripHeightDips = 0;
+        ReadSetting(L"FilmstripHeightDips", filmstripHeightDips);
+        filmstripHeightDips_ = filmstripHeightDips >= 78 && filmstripHeightDips <= 196 ? static_cast<int>(filmstripHeightDips) : 0;
         DWORD reverseWheelZoom = 0;
         ReadSetting(L"ReverseMouseWheelZoom", reverseWheelZoom);
         reverseMouseWheelZoom_ = reverseWheelZoom != 0;
@@ -2984,6 +2987,7 @@ public:
         showZoomPercentage_ = true;
         animationsEnabled_ = true;
         alwaysShowFilmstrip_ = false;
+        filmstripHeightDips_ = 0;
         reverseMouseWheelZoom_ = false;
         themePreference_ = ThemePreference::System;
         graphicsAdapterAuto_ = true;
@@ -3229,13 +3233,18 @@ public:
         return source_ && navigationBuilt_ && navigationFiles_.size() > 1 && !HasOverlay() && !TutorialActive() && !tutorialPresentation_;
     }
     bool FilmstripVisible() const { return FilmstripEligible() && filmstripOpacity_ > 0.001f; }
-    int FilmstripHeight() const {
+    int DefaultFilmstripHeight() const {
         if (!FilmstripEligible()) return 0;
         RECT client{};
         GetClientRect(window_, &client);
         const UINT dpi = GetDpiForWindow(window_);
         const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         return client.bottom - canvasTop < MulDiv(560, dpi, 96) ? MulDiv(96, dpi, 96) : MulDiv(112, dpi, 96);
+    }
+    int FilmstripHeight() const {
+        if (!FilmstripEligible()) return 0;
+        const int requested = filmstripHeightDips_ ? MulDiv(filmstripHeightDips_, GetDpiForWindow(window_), 96) : DefaultFilmstripHeight();
+        return std::max(MulDiv(70, GetDpiForWindow(window_), 96), std::min(requested, MulDiv(196, GetDpiForWindow(window_), 96)));
     }
     int FilmstripThumbnailHeight() const {
         return std::max(1, std::min(MulDiv(92, GetDpiForWindow(window_), 96), FilmstripHeight() - MulDiv(20, GetDpiForWindow(window_), 96)));
@@ -3373,9 +3382,9 @@ public:
         OutputDebugStringW(message);
     }
 #endif
-    void ApplyFilmstripAspectRelayout(bool queueThumbnails = true) {
+    void ApplyFilmstripAspectRelayout(bool queueThumbnails = true, bool force = false) {
         const size_t pendingCount = static_cast<size_t>(std::count(filmstripAspectRelayoutPending_.begin(), filmstripAspectRelayoutPending_.end(), true));
-        if (!pendingCount) return;
+        if (!pendingCount && !force) return;
         const std::optional<FilmstripLayoutAnchor> anchor = CaptureFilmstripLayoutAnchor();
         const RECT oldBounds = GetFilmstripBounds();
         const double oldScroll = filmstripScroll_;
@@ -3851,6 +3860,71 @@ public:
         return { left, strip.top - gap - height, left + width, strip.top - gap };
     }
     bool FilmstripHintContains(POINT point) const { const RECT bounds = GetFilmstripHintBounds(); return FilmstripVisible() && PtInRect(&bounds, point); }
+    bool BeginFilmstripInteraction(POINT point) {
+        if (FilmstripHintContains(point)) {
+            filmstripResizeCandidate_ = true;
+            filmstripResizeStartY_ = point.y;
+            filmstripResizeStartHeightDips_ = filmstripHeightDips_ ? filmstripHeightDips_ :
+                static_cast<int>(std::lround(static_cast<double>(FilmstripHeight()) * 96.0 / GetDpiForWindow(window_)));
+            StartFilmstripHold(UINT_MAX);
+            return true;
+        }
+        if (!FilmstripContains(point)) return false;
+        filmstripDragCandidate_ = true;
+        filmstripDragStart_ = point;
+        filmstripDragStartScroll_ = filmstripScroll_;
+        filmstripDragItem_ = FilmstripItemAt(point);
+        StartFilmstripHold(UINT_MAX);
+        return true;
+    }
+    bool ContinueFilmstripInteraction(POINT point) {
+        if (filmstripResizeCandidate_) {
+            filmstripResizing_ = true;
+            const int height = std::clamp(filmstripResizeStartHeightDips_ + MulDiv(filmstripResizeStartY_ - point.y, 96, GetDpiForWindow(window_)), 78, 196);
+            if (height != filmstripHeightDips_) {
+                filmstripHeightDips_ = height;
+                ApplyFilmstripAspectRelayout(false, true);
+                InvalidateRect(window_, nullptr, FALSE);
+            }
+            return true;
+        }
+        if (!filmstripDragCandidate_) return false;
+        const int dx = point.x - filmstripDragStart_.x;
+        const int dy = point.y - filmstripDragStart_.y;
+        if (!filmstripDragging_ && (std::abs(dx) >= GetSystemMetrics(SM_CXDRAG) || std::abs(dy) >= GetSystemMetrics(SM_CYDRAG))) {
+            filmstripDragging_ = true;
+            StopFilmstripScrollAnimation();
+            filmstripDragStart_ = point;
+            filmstripDragStartScroll_ = filmstripScroll_;
+        }
+        if (!filmstripDragging_) return true;
+        filmstripScroll_ = std::clamp(filmstripDragStartScroll_ - static_cast<double>(dx), 0.0, static_cast<double>(FilmstripMaximumScroll()));
+        InvalidateRect(window_, nullptr, FALSE);
+        return true;
+    }
+    bool EndFilmstripInteraction(POINT point) {
+        const bool resizing = filmstripResizeCandidate_;
+        const bool dragging = filmstripDragging_;
+        const int click = filmstripDragItem_;
+        filmstripResizeCandidate_ = filmstripResizing_ = false;
+        filmstripDragCandidate_ = filmstripDragging_ = false;
+        filmstripDragItem_ = -1;
+        if (resizing) {
+            WriteSetting(L"FilmstripHeightDips", static_cast<DWORD>(filmstripHeightDips_));
+            BeginFilmstripFadeSequence();
+            return true;
+        }
+        if (dragging) { BeginFilmstripFadeSequence(); return true; }
+        if (click >= 0 && FilmstripContains(point)) SelectFilmstripItem(click);
+        return true;
+    }
+    void CancelFilmstripInteraction() {
+        filmstripResizeCandidate_ = filmstripResizing_ = false;
+        filmstripDragCandidate_ = filmstripDragging_ = false;
+        filmstripDragItem_ = -1;
+    }
+    bool FilmstripInteractionActive() const { return filmstripResizeCandidate_ || filmstripDragCandidate_; }
+    bool FilmstripResizeHandleContains(POINT point) const { return FilmstripHintContains(point); }
     void StopFilmstripVisibilityTimer() { KillTimer(window_, kFilmstripVisibilityTimer); }
     void StartFilmstripHold(UINT holdDurationMs = 2000) {
         if (!FilmstripEligible()) return;
@@ -9020,6 +9094,16 @@ private:
     bool animationsEnabled_ = true;
     bool reverseMouseWheelZoom_ = false;
     bool alwaysShowFilmstrip_ = false;
+    int filmstripHeightDips_ = 0;
+    bool filmstripDragCandidate_ = false;
+    bool filmstripDragging_ = false;
+    POINT filmstripDragStart_{};
+    double filmstripDragStartScroll_ = 0.0;
+    int filmstripDragItem_ = -1;
+    bool filmstripResizeCandidate_ = false;
+    bool filmstripResizing_ = false;
+    int filmstripResizeStartY_ = 0;
+    int filmstripResizeStartHeightDips_ = 0;
     bool spaceMouseEnabled_ = true;
     bool spaceMouseRuntimeAvailable_ = false;
     bool spaceMouseMotionActive_ = false;
@@ -9234,6 +9318,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_DROPFILES: viewer->DropFile(reinterpret_cast<HDROP>(wParam)); return 0;
+    case WM_SETCURSOR: {
+        if (LOWORD(lParam) == HTCLIENT) {
+            POINT point{};
+            GetCursorPos(&point);
+            ScreenToClient(window, &point);
+            if (viewer->FilmstripResizeHandleContains(point)) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+                return TRUE;
+            }
+        }
+        break;
+    }
     case WM_MOUSEWHEEL: {
         POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(window, &point);
@@ -9372,8 +9468,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             else viewer->DismissModelViewBarMenu();
             return 0;
         }
-        if (viewer->FilmstripContains(point)) {
-            viewer->SelectFilmstripItem(viewer->FilmstripItemAt(point));
+        if (viewer->BeginFilmstripInteraction(point)) {
+            SetCapture(window);
             return 0;
         }
         if (viewer->BeginVideoControlsInteraction(point)) {
@@ -9482,6 +9578,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         viewer->SetFilmstripPointerState(point);
         viewer->SetFilmstripHover(point);
+        if (viewer->ContinueFilmstripInteraction(point)) return 0;
         viewer->SetButtonHover(viewer->ButtonAt(point));
         viewer->SetCanvasNavigationHover(viewer->CanvasNavigationZoneAt(point));
         viewer->SetHamburgerHover(!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point));
@@ -9503,6 +9600,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->VideoControlsMouseLeave(); return 0;
     case WM_LBUTTONUP: {
+        if (viewer->FilmstripInteractionActive()) {
+            viewer->EndFilmstripInteraction({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            if (GetCapture() == window) ReleaseCapture();
+            return 0;
+        }
         if (viewer->EndVideoControlsInteraction({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
             if (GetCapture() == window) ReleaseCapture();
             return 0;
@@ -9580,7 +9682,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         break;
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->EndModelDrag(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (!viewer->TutorialActive()) { if (viewer->ModelActive()) viewer->SelectModelFace(point); viewer->OpenContextMenu(point); }

@@ -3192,12 +3192,11 @@ public:
             ++navigationFolderGeneration_;
             filmstripThumbnailFolderGeneration_.store(navigationFolderGeneration_, std::memory_order_release);
             navigationFiles_ = std::move(scannedFiles);
-            filmstripAutoRevealTarget_.reset();
+            filmstripClickedRevealTarget_.reset();
             filmstripThumbnailGenerations_.assign(navigationFiles_.size(), ++filmstripThumbnailGenerationSeed_);
             filmstripThumbnails_.clear();
             filmstripThumbnailFailures_.clear();
             filmstripScroll_ = 0.0f;
-            filmstripWheelDelta_ = 0;
         }
         if ((changed || currentRenamed) && imageDecodePending_) {
             ++decodeRequestGeneration_;
@@ -3206,13 +3205,6 @@ public:
         }
         navigationBuilt_ = true;
         RebuildFilmstripLayout();
-        if (filmstripInitialPresentationPending_) {
-            filmstripInitialPresentationPending_ = false;
-            RequestFilmstripAutoReveal(CurrentNavigationIndex());
-            RevealFilmstripForNavigation();
-        } else if (changed) {
-            StartFilmstripHold(1000);
-        }
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -3480,9 +3472,6 @@ public:
         }
         return entry.bitmap.Get();
     }
-    void RequestFilmstripAutoReveal(size_t index) {
-        if (index < navigationFiles_.size()) filmstripAutoRevealTarget_ = index;
-    }
     void EnsureFilmstripItemVisible(size_t index) {
         if (!FilmstripEligible() || filmstripItemOffsets_.size() < 2 || index >= navigationFiles_.size() ||
             index >= filmstripItemWidths_.size() || index + 1 >= filmstripItemOffsets_.size()) return;
@@ -3511,82 +3500,9 @@ public:
         }
         return -1;
     }
-    bool ScrollFilmstripOneThumbnail(bool rightward) {
-        if (!FilmstripVisible() || filmstripItemOffsets_.size() != navigationFiles_.size() + 1 ||
-            filmstripItemWidths_.size() != navigationFiles_.size()) return false;
-        const RECT clip = GetFilmstripBounds();
-        const float oldScroll = filmstripScroll_;
-        float targetScroll = oldScroll;
-        int targetIndex = -1;
-        RECT target{};
-        if (rightward) {
-            for (size_t index = 0; index < navigationFiles_.size(); ++index) {
-                const RECT item = GetFilmstripThumbnailBounds(index);
-                if (item.right > clip.right) {
-                    targetIndex = static_cast<int>(index);
-                    target = item;
-                    targetScroll = oldScroll + static_cast<float>(item.right - clip.right);
-                    break;
-                }
-            }
-        } else {
-            for (size_t index = navigationFiles_.size(); index-- > 0;) {
-                const RECT item = GetFilmstripThumbnailBounds(index);
-                if (item.left < clip.left) {
-                    targetIndex = static_cast<int>(index);
-                    target = item;
-                    targetScroll = oldScroll + static_cast<float>(item.left - clip.left);
-                    break;
-                }
-            }
-        }
-        targetScroll = std::clamp(targetScroll, 0.0f, FilmstripMaximumScroll());
-#ifdef _DEBUG
-        if (targetIndex >= 0) {
-            wchar_t message[768]{};
-            swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL_STEP dir=%ls oldScroll=%.1f clip=[%ld,%ld] target=%d item=[%ld,%ld] desired=%.1f final=%.1f path=%ls\n",
-                rightward ? L"right" : L"left", oldScroll, clip.left, clip.right, targetIndex, target.left, target.right,
-                rightward ? oldScroll + static_cast<float>(target.right - clip.right) : oldScroll + static_cast<float>(target.left - clip.left),
-                targetScroll, navigationFiles_[targetIndex].c_str());
-            OutputDebugStringW(message);
-        }
-#endif
-        if (targetScroll == oldScroll) return false;
-        filmstripScroll_ = targetScroll;
-        return true;
-    }
-    void ScrollFilmstripByWheelDelta(int wheelDelta) {
+    void ScrollFilmstrip(float delta) {
         if (!FilmstripVisible()) return;
-        // Some mouse drivers report several wheel quanta for one physical notch. The
-        // filmstrip is intentionally one thumbnail boundary per wheel message.
-        const int admittedDelta = std::clamp(wheelDelta, -WHEEL_DELTA, WHEEL_DELTA);
-        filmstripWheelDelta_ += admittedDelta;
-        bool moved = false;
-        while (filmstripWheelDelta_ >= WHEEL_DELTA) {
-#ifdef _DEBUG
-            const int accumulatedBefore = filmstripWheelDelta_;
-#endif
-            moved = ScrollFilmstripOneThumbnail(false) || moved;
-            filmstripWheelDelta_ -= WHEEL_DELTA;
-#ifdef _DEBUG
-            wchar_t message[160]{};
-            swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL_INPUT raw=%d admitted=%d accum=%d->%d\n", wheelDelta, admittedDelta, accumulatedBefore, filmstripWheelDelta_);
-            OutputDebugStringW(message);
-#endif
-        }
-        while (filmstripWheelDelta_ <= -WHEEL_DELTA) {
-#ifdef _DEBUG
-            const int accumulatedBefore = filmstripWheelDelta_;
-#endif
-            moved = ScrollFilmstripOneThumbnail(true) || moved;
-            filmstripWheelDelta_ += WHEEL_DELTA;
-#ifdef _DEBUG
-            wchar_t message[160]{};
-            swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL_INPUT raw=%d admitted=%d accum=%d->%d\n", wheelDelta, admittedDelta, accumulatedBefore, filmstripWheelDelta_);
-            OutputDebugStringW(message);
-#endif
-        }
-        if (!moved) return;
+        filmstripScroll_ = std::clamp(filmstripScroll_ + delta, 0.0f, FilmstripMaximumScroll());
         QueueFilmstripThumbnails();
         StartFilmstripHold();
         InvalidateRect(window_, nullptr, FALSE);
@@ -3669,22 +3585,23 @@ public:
         if (std::abs(opacity - filmstripOpacity_) > 0.001f) { filmstripOpacity_ = opacity; InvalidateRect(window_, nullptr, FALSE); }
         if (opacity <= 0.001f) { filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); }
     }
-    void RevealFilmstripForNavigation() {
-        if (filmstripAutoRevealTarget_) {
-            const size_t target = *filmstripAutoRevealTarget_;
-            filmstripAutoRevealTarget_.reset();
+    void RevealClickedFilmstripItem() {
+        if (filmstripClickedRevealTarget_) {
+            const size_t target = *filmstripClickedRevealTarget_;
+            filmstripClickedRevealTarget_.reset();
             EnsureFilmstripItemVisible(target);
+            StartFilmstripHold(1000);
         }
-        StartFilmstripHold(1000);
     }
     void SelectFilmstripItem(int index) {
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
-        RequestFilmstripAutoReveal(static_cast<size_t>(index));
+        filmstripClickedRevealTarget_ = static_cast<size_t>(index);
         const std::wstring path = navigationFiles_[index].wstring();
         if (!PathsEqual(fs::path(path), fs::path(currentPath_))) {
-            if (FAILED(LoadContent(path, false))) filmstripAutoRevealTarget_.reset();
+            if (FAILED(LoadContent(path, false))) filmstripClickedRevealTarget_.reset();
+            else if (!imageDecodePending_) RevealClickedFilmstripItem();
         }
-        else RevealFilmstripForNavigation();
+        else RevealClickedFilmstripItem();
     }
     void SetFilmstripHover(POINT point) {
         const int index = FilmstripItemAt(point);
@@ -3756,11 +3673,7 @@ public:
         ClearStillDissolve();
         const std::optional<std::wstring> path = NavigationTargetPath(direction);
         if (!path) return;
-        const auto target = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&](const fs::path& candidate) {
-            return PathsEqual(candidate, fs::path(*path));
-        });
-        if (target != navigationFiles_.end()) RequestFilmstripAutoReveal(static_cast<size_t>(std::distance(navigationFiles_.begin(), target)));
-        if (FAILED(LoadContent(*path, false))) filmstripAutoRevealTarget_.reset();
+        LoadContent(*path, false);
         if (immediatePaint) UpdateWindow(window_);
     }
 
@@ -5744,9 +5657,9 @@ private:
         currentPath_.clear(); displayedPath_.clear(); currentFileIdentity_ = {}; resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
         CancelQueuedFilmstripThumbnails();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
-        filmstripAutoRevealTarget_.reset();
+        filmstripClickedRevealTarget_.reset();
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear(); filmstripThumbnailFailures_.clear();
-        filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0f; filmstripWheelDelta_ = 0;
+        filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0f;
         filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer();
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
         error_ = L"Drop an image here, or launch Viewtrious with an image path.";
@@ -5771,17 +5684,14 @@ private:
         for (size_t offset = 0; offset < navigationFiles_.size(); ++offset) {
             const size_t candidate = (index + offset) % navigationFiles_.size();
             if (IsGifPath(navigationFiles_[candidate].wstring())) {
-                RequestFilmstripAutoReveal(candidate);
                 if (SUCCEEDED(LoadAnimatedGif(navigationFiles_[candidate].wstring(), false))) {
                     InvalidateRect(window_, nullptr, FALSE);
                     return;
                 }
-                filmstripAutoRevealTarget_.reset();
             }
             ComPtr<IWICBitmapSource> source;
             UINT width = 0, height = 0;
             if (SUCCEEDED(DecodeImage(navigationFiles_[candidate].wstring(), source, width, height))) {
-                RequestFilmstripAutoReveal(candidate);
                 CommitImage(navigationFiles_[candidate].wstring(), source, width, height, false);
                 InvalidateRect(window_, nullptr, FALSE);
                 return;
@@ -6614,15 +6524,13 @@ private:
             filmstripThumbnails_.clear();
             filmstripThumbnailPending_.clear();
             filmstripThumbnailFailures_.clear();
-            filmstripAutoRevealTarget_.reset();
+            filmstripClickedRevealTarget_.reset();
             filmstripScroll_ = 0.0f;
-            filmstripWheelDelta_ = 0;
-            filmstripInitialPresentationPending_ = true;
         } else if (navigationBuilt_) {
             // A video sibling can build navigation while Image2D has no source. Rebuild after
             // the image commit so stale compact placeholder widths cannot reach the first paint.
             RebuildFilmstripLayout();
-            RevealFilmstripForNavigation();
+            RevealClickedFilmstripItem();
         }
         BeginStillDissolveIfReady(path);
     }
@@ -8678,15 +8586,13 @@ private:
     std::vector<float> filmstripItemWidths_;
     std::vector<float> filmstripItemOffsets_;
     float filmstripScroll_ = 0.0f;
-    int filmstripWheelDelta_ = 0;
     float filmstripOpacity_ = 0.0f;
     float filmstripRevealStartOpacity_ = 0.0f;
     ULONGLONG filmstripVisibilityStart_ = 0;
     UINT filmstripHoldDurationMs_ = 2000;
     FilmstripVisibilityState filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
     int filmstripHoveredIndex_ = -1;
-    bool filmstripInitialPresentationPending_ = false;
-    std::optional<size_t> filmstripAutoRevealTarget_;
+    std::optional<size_t> filmstripClickedRevealTarget_;
     bool filmstripPanelHovered_ = false;
     bool filmstripRevealHovered_ = false;
     bool filmstripHintHovered_ = false;
@@ -8957,7 +8863,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->FilmstripContains(point)) {
-            viewer->ScrollFilmstripByWheelDelta(GET_WHEEL_DELTA_WPARAM(wParam));
+            const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+            viewer->ScrollFilmstrip(-wheelUnits * MulDiv(92, GetDpiForWindow(window), 96));
             return 0;
         }
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen() || viewer->ModelViewBarMenuOpen()) return 0;

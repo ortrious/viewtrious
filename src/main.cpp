@@ -5243,12 +5243,13 @@ private:
         return S_OK;
     }
 
-    void BeginShellRotationRefresh() {
+    void BeginShellRotationRefresh(bool clockwise) {
         ++decodeRequestGeneration_;
         pendingFullDecode_.reset();
         imageDecodePending_ = false;
         KillTimer(window_, kNavigationDecodeDebounceTimer);
         shellRotationPath_ = currentPath_;
+        shellRotationClockwise_ = clockwise;
         shellRotationStarted_ = GetTickCount64();
         shellRotationInitialStateValid_ = ReadShellRotationFileState(shellRotationPath_, shellRotationInitialState_);
         shellRotationPending_ = true;
@@ -5291,6 +5292,7 @@ private:
         if (!PathsEqual(fs::path(shellRotationPath_), fs::path(currentPath_))) return;
         currentFileIdentity_ = ReadFileIdentity(fs::path(currentPath_));
         fileSizeText_ = FormatFileSize(currentPath_);
+        RotateResidentFilmstripThumbnail(shellRotationClockwise_);
         imageDecodePending_ = true;
         pendingFullDecode_ = DecodeRequest{ currentPath_, decodeRequestGeneration_, navigationFolderGeneration_ };
         QueueLatestFullDecode();
@@ -5348,7 +5350,7 @@ private:
         if (!found) { FailShellRotationRefresh(); return HRESULT_FROM_WIN32(ERROR_NOT_FOUND); }
         hr = DetachDisplayedImageForShellWrite();
         if (FAILED(hr)) { FailShellRotationRefresh(); return hr; }
-        BeginShellRotationRefresh();
+        BeginShellRotationRefresh(clockwise);
         CMINVOKECOMMANDINFOEX invoke{ sizeof(invoke) };
         // Do not authorize asynchronous execution here. The Shell handler may otherwise
         // report a timestamp change before its own HEIC writer has released the file.
@@ -8745,6 +8747,7 @@ private:
     UINT shellRotationStableChecks_ = 0;
     UINT shellRotationProbeCount_ = 0;
     ULONGLONG shellRotationStarted_ = 0;
+    bool shellRotationClockwise_ = false;
     bool openWithSubmenuOpen_ = false;
     int openWithHovered_ = -1;
     std::wstring openWithExtension_;

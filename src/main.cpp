@@ -3379,8 +3379,8 @@ public:
         const std::optional<FilmstripLayoutAnchor> anchor = CaptureFilmstripLayoutAnchor();
         const RECT oldBounds = GetFilmstripBounds();
         const double oldScroll = filmstripScroll_;
-        const float oldContentWidth = FilmstripContentWidth();
 #ifdef _DEBUG
+        const float oldContentWidth = FilmstripContentWidth();
         TraceFilmstripAspectRelayoutBegin(pendingCount, anchor, oldScroll, oldContentWidth);
 #endif
         for (size_t index = 0; index < filmstripLayoutAspects_.size() && index < filmstripKnownAspects_.size(); ++index) {
@@ -3390,7 +3390,9 @@ public:
         std::fill(filmstripAspectRelayoutPending_.begin(), filmstripAspectRelayoutPending_.end(), false);
         filmstripLayoutRebuildPending_ = false;
         RebuildFilmstripLayout(false, queueThumbnails);
+#ifdef _DEBUG
         const double scrollBeforeCompensation = filmstripScroll_;
+#endif
         double compensatedScroll = filmstripScroll_;
         if (anchor && anchor->index < filmstripItemOffsets_.size()) {
             const RECT newBounds = GetFilmstripBounds();
@@ -3398,11 +3400,11 @@ public:
                 (static_cast<double>(filmstripItemOffsets_[anchor->index]) - anchor->contentX);
         }
         const double clampedScroll = std::clamp(compensatedScroll, 0.0, static_cast<double>(FilmstripMaximumScroll()));
-        const bool boundPrevented = std::abs(clampedScroll - compensatedScroll) > 0.01;
         filmstripScroll_ = clampedScroll;
         if ((filmstripScroll_ <= 0.0 && filmstripScrollVelocity_ < 0.0) ||
             (filmstripScroll_ >= FilmstripMaximumScroll() && filmstripScrollVelocity_ > 0.0)) filmstripScrollVelocity_ = 0.0;
 #ifdef _DEBUG
+        const bool boundPrevented = std::abs(clampedScroll - compensatedScroll) > 0.01;
         const double renderedX = anchor && anchor->index < filmstripItemOffsets_.size()
             ? static_cast<double>(GetFilmstripBounds().left) + filmstripItemOffsets_[anchor->index] - filmstripScroll_ : 0.0;
         TraceFilmstripAspectRelayoutEnd(anchor, scrollBeforeCompensation, compensatedScroll - scrollBeforeCompensation,
@@ -3775,7 +3777,9 @@ public:
         if (filmstripScrollAnimating_) AdvanceFilmstripScroll(now.QuadPart);
         const double units = -static_cast<double>(rawWheelDelta) / static_cast<double>(WHEEL_DELTA);
         const double scale = static_cast<double>(GetDpiForWindow(window_)) / 96.0;
+#ifdef _DEBUG
         const double before = filmstripScrollVelocity_;
+#endif
         filmstripScrollVelocity_ = std::clamp(filmstripScrollVelocity_ + units * kFilmstripWheelImpulseDipsPerSecond * scale,
             -kFilmstripMaximumVelocityDipsPerSecond * scale, kFilmstripMaximumVelocityDipsPerSecond * scale);
         if (!filmstripScrollAnimating_) {

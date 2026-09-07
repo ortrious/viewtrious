@@ -3514,31 +3514,44 @@ public:
     bool ScrollFilmstripOneThumbnail(bool rightward) {
         if (!FilmstripVisible() || filmstripItemOffsets_.size() != navigationFiles_.size() + 1 ||
             filmstripItemWidths_.size() != navigationFiles_.size()) return false;
-        constexpr float epsilon = 0.01f;
-        const RECT bounds = GetFilmstripBounds();
-        const float viewportWidth = static_cast<float>(bounds.right - bounds.left);
-        const float viewportLeft = filmstripScroll_;
-        const float viewportRight = viewportLeft + viewportWidth;
-        float targetScroll = filmstripScroll_;
+        const RECT clip = GetFilmstripBounds();
+        const float oldScroll = filmstripScroll_;
+        float targetScroll = oldScroll;
+        int targetIndex = -1;
+        RECT target{};
         if (rightward) {
             for (size_t index = 0; index < navigationFiles_.size(); ++index) {
-                const float itemRight = filmstripItemOffsets_[index] + filmstripItemWidths_[index];
-                if (itemRight > viewportRight + epsilon) {
-                    targetScroll = itemRight - viewportWidth;
+                const RECT item = GetFilmstripThumbnailBounds(index);
+                if (item.right > clip.right) {
+                    targetIndex = static_cast<int>(index);
+                    target = item;
+                    targetScroll = oldScroll + static_cast<float>(item.right - clip.right);
                     break;
                 }
             }
         } else {
             for (size_t index = navigationFiles_.size(); index-- > 0;) {
-                const float itemLeft = filmstripItemOffsets_[index];
-                if (itemLeft < viewportLeft - epsilon) {
-                    targetScroll = itemLeft;
+                const RECT item = GetFilmstripThumbnailBounds(index);
+                if (item.left < clip.left) {
+                    targetIndex = static_cast<int>(index);
+                    target = item;
+                    targetScroll = oldScroll + static_cast<float>(item.left - clip.left);
                     break;
                 }
             }
         }
         targetScroll = std::clamp(targetScroll, 0.0f, FilmstripMaximumScroll());
-        if (std::abs(targetScroll - filmstripScroll_) <= epsilon) return false;
+#ifdef _DEBUG
+        if (targetIndex >= 0) {
+            wchar_t message[768]{};
+            swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL_STEP dir=%ls oldScroll=%.1f clip=[%ld,%ld] target=%d item=[%ld,%ld] desired=%.1f final=%.1f path=%ls\n",
+                rightward ? L"right" : L"left", oldScroll, clip.left, clip.right, targetIndex, target.left, target.right,
+                rightward ? oldScroll + static_cast<float>(target.right - clip.right) : oldScroll + static_cast<float>(target.left - clip.left),
+                targetScroll, navigationFiles_[targetIndex].c_str());
+            OutputDebugStringW(message);
+        }
+#endif
+        if (targetScroll == oldScroll) return false;
         filmstripScroll_ = targetScroll;
         return true;
     }
@@ -3547,12 +3560,28 @@ public:
         filmstripWheelDelta_ += wheelDelta;
         bool moved = false;
         while (filmstripWheelDelta_ >= WHEEL_DELTA) {
+#ifdef _DEBUG
+            const int accumulatedBefore = filmstripWheelDelta_;
+#endif
             moved = ScrollFilmstripOneThumbnail(false) || moved;
             filmstripWheelDelta_ -= WHEEL_DELTA;
+#ifdef _DEBUG
+            wchar_t message[160]{};
+            swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL_INPUT raw=%d accum=%d->%d\n", wheelDelta, accumulatedBefore, filmstripWheelDelta_);
+            OutputDebugStringW(message);
+#endif
         }
         while (filmstripWheelDelta_ <= -WHEEL_DELTA) {
+#ifdef _DEBUG
+            const int accumulatedBefore = filmstripWheelDelta_;
+#endif
             moved = ScrollFilmstripOneThumbnail(true) || moved;
             filmstripWheelDelta_ += WHEEL_DELTA;
+#ifdef _DEBUG
+            wchar_t message[160]{};
+            swprintf_s(message, L"[Viewtrious] FILMSTRIP_WHEEL_INPUT raw=%d accum=%d->%d\n", wheelDelta, accumulatedBefore, filmstripWheelDelta_);
+            OutputDebugStringW(message);
+#endif
         }
         if (!moved) return;
         QueueFilmstripThumbnails();

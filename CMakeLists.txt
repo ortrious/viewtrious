@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.8.28.2 LANGUAGES CXX)
+project(Viewtrious VERSION 0.8.28.3 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -40,6 +40,7 @@ add_executable(Viewtrious WIN32
     src/ai_addon_loader.cpp
     src/video_player.cpp
     src/shell_thumbnail_reader.cpp
+    src/video_hover_frame_stream.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc"
 )
 
@@ -65,7 +66,7 @@ target_compile_features(Viewtrious PRIVATE cxx_std_20)
 target_compile_definitions(Viewtrious PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX VIEWTRIOUS_VERSION=L\"${PROJECT_VERSION}\")
 target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_3DXWARE_INCLUDE_DIR}")
 target_include_directories(Viewtrious PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz")
-target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 d3d11 dxgi d3dcompiler xmllite ole32 oleaut32 mfplat mf mfuuid "${VIEWTRIOUS_3DXWARE_LIBRARY}")
+target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 d3d11 dxgi d3dcompiler xmllite ole32 oleaut32 mfplat mf mfreadwrite mfuuid "${VIEWTRIOUS_3DXWARE_LIBRARY}")
 
 if(VIEWTRIOUS_BUILD_STEP_ADDON)
     set(VIEWTRIOUS_OCCT_INCLUDE_DIR "${VIEWTRIOUS_OCCT_ROOT}/inc")

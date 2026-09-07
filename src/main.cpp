@@ -3625,6 +3625,14 @@ public:
         OutputDebugStringW(message);
 #endif
         if (std::abs(filmstripScrollVelocity_) <= kFilmstripVelocityStopEpsilon) {
+#ifdef _DEBUG
+            filmstripPostStopPosition_ = filmstripScroll_;
+            filmstripPostStopPaintCount_ = 0;
+            wchar_t stopMessage[256]{};
+            swprintf_s(stopMessage, L"Viewtrious filmstrip scroll: stop position=%.3f velocity=%.3f->0.000 animating=1->0 timer=1\n",
+                filmstripScroll_, filmstripScrollVelocity_);
+            OutputDebugStringW(stopMessage);
+#endif
             filmstripScrollVelocity_ = 0.0;
 #ifdef _DEBUG
             wchar_t message[256]{};
@@ -3638,6 +3646,9 @@ public:
     }
     void ScrollFilmstrip(int rawWheelDelta) {
         if (!FilmstripVisible() || rawWheelDelta == 0) return;
+#ifdef _DEBUG
+        filmstripPostStopPosition_.reset();
+#endif
         LARGE_INTEGER now{}, frequency{};
         if (!QueryPerformanceCounter(&now) || !QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return;
         if (filmstripScrollAnimating_) AdvanceFilmstripScroll(now.QuadPart);
@@ -3776,6 +3787,9 @@ public:
     }
     void SelectFilmstripItem(int index) {
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
+#ifdef _DEBUG
+        filmstripPostStopPosition_.reset();
+#endif
         StopFilmstripScrollAnimation();
         filmstripClickedRevealTarget_ = static_cast<size_t>(index);
         const std::wstring path = navigationFiles_[index].wstring();
@@ -3791,6 +3805,27 @@ public:
         filmstripHoveredIndex_ = index;
         InvalidateRect(window_, nullptr, FALSE);
     }
+#ifdef _DEBUG
+    void TraceFilmstripPostStopPaint(const RECT& strip, size_t first, size_t last) {
+        if (!filmstripPostStopPosition_ || filmstripScrollAnimating_) return;
+        const double difference = filmstripScroll_ - *filmstripPostStopPosition_;
+        if (std::abs(difference) > 0.01) {
+            wchar_t mutation[256]{};
+            swprintf_s(mutation, L"Viewtrious FILMSTRIP_POST_STOP_MUTATION old=%.3f new=%.3f delta=%.3f animating=0\n",
+                *filmstripPostStopPosition_, filmstripScroll_, difference);
+            OutputDebugStringW(mutation);
+            filmstripPostStopPosition_ = filmstripScroll_;
+        }
+        if (filmstripPostStopPaintCount_ >= 3) return;
+        const size_t anchor = first < last ? first : 0;
+        const RECT item = anchor < navigationFiles_.size() ? GetFilmstripThumbnailBounds(anchor) : RECT{};
+        wchar_t message[320]{};
+        swprintf_s(message, L"Viewtrious filmstrip scroll: idlePaint=%u position=%.3f clip=[%ld,%ld] anchor=%zu slot=%.3f drawX=%ld\n",
+            ++filmstripPostStopPaintCount_, filmstripScroll_, strip.left, strip.right, anchor,
+            anchor < filmstripItemOffsets_.size() ? filmstripItemOffsets_[anchor] : 0.0f, item.left);
+        OutputDebugStringW(message);
+    }
+#endif
     void DrawFilmstrip() {
         if (!FilmstripVisible()) return;
         const RECT strip = GetFilmstripBounds();
@@ -3822,6 +3857,9 @@ public:
         renderTarget_->PushAxisAlignedClip(panel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         const size_t current = CurrentNavigationIndex();
         const auto [first, last] = FilmstripVisibleRange();
+#ifdef _DEBUG
+        TraceFilmstripPostStopPaint(strip, first, last);
+#endif
         for (size_t index = first; index < last; ++index) {
             const RECT bounds = GetFilmstripThumbnailBounds(index);
             const D2D1_RECT_F box = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
@@ -8798,6 +8836,8 @@ private:
     double filmstripScrollTickTotalMs_ = 0.0;
     double filmstripScrollTickMinimumMs_ = 0.0;
     double filmstripScrollTickMaximumMs_ = 0.0;
+    std::optional<double> filmstripPostStopPosition_;
+    UINT filmstripPostStopPaintCount_ = 0;
 #endif
     float filmstripOpacity_ = 0.0f;
     float filmstripRevealStartOpacity_ = 0.0f;

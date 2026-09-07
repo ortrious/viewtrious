@@ -105,7 +105,7 @@ constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kStillDissolveDurationMs = 160;
 constexpr ULONGLONG kStillDissolvePreviewWaitMaxMs = 450;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
-constexpr UINT_PTR kFilmstripHoverPreviewTimer = 16;
+constexpr UINT_PTR kFilmstripHoverPreviewTimer = 17;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
 constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
@@ -4074,7 +4074,8 @@ public:
                 const D2D1_SIZE_F size = thumbnail->GetSize();
                 const float height = std::min(320.0f * scale, std::max(1.0f, static_cast<float>(strip.top) - 24.0f * scale));
                 const float width = height * size.width / std::max(1.0f, size.height);
-                const float left = std::clamp((strip.left + strip.right - width) * 0.5f, 8.0f * scale, std::max(8.0f * scale, static_cast<float>(strip.right) - width));
+                const RECT hovered = GetFilmstripThumbnailBounds(static_cast<size_t>(filmstripPreviewIndex_));
+                const float left = std::clamp((hovered.left + hovered.right - width) * 0.5f, 8.0f * scale, std::max(8.0f * scale, static_cast<float>(strip.right) - width));
                 const D2D1_RECT_F preview = D2D1::RectF(left, strip.top - 8.0f * scale - height, left + width, strip.top - 8.0f * scale);
                 renderTarget_->DrawBitmap(thumbnail, preview, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
             }

@@ -3585,19 +3585,68 @@ public:
                 if (IsVideoPath(request.path)) {
                     VideoHoverFrameStream stream;
                     const HRESULT opened = stream.Open({ request.path, request.hoverGeneration, 768 }, &videoHoverPreviewGeneration_);
-                    const ULONGLONG started = GetTickCount64();
-                    for (bool first = true; SUCCEEDED(opened) && !filmstripHoverPreviewStopping_.load(std::memory_order_acquire); first = false) {
-                        VideoHoverPreviewFrame frame;
-                        const HRESULT next = stream.ReadNext(frame);
-                        if (next != S_OK || (stream.DurationSeconds() > 4.0 && GetTickCount64() - started >= 3000)) break;
-                        auto* video = first ? result : new FilmstripHoverPreviewResult{};
+                    constexpr LONGLONG kVideoHoverHnsPerSecond = 10000000;
+                    constexpr LONGLONG kVideoHoverPresentationInterval = kVideoHoverHnsPerSecond / 24;
+                    LARGE_INTEGER qpcFrequency{};
+                    LARGE_INTEGER qpcStart{};
+                    QueryPerformanceFrequency(&qpcFrequency);
+                    const auto waitForSourceTime = [&](LONGLONG sourceTime) {
+                        for (;;) {
+                            if (filmstripHoverPreviewStopping_.load(std::memory_order_acquire) ||
+                                videoHoverPreviewGeneration_.load(std::memory_order_acquire) != request.hoverGeneration) return false;
+                            LARGE_INTEGER now{}; QueryPerformanceCounter(&now);
+                            const LONGLONG deadline = qpcStart.QuadPart + sourceTime * qpcFrequency.QuadPart / kVideoHoverHnsPerSecond;
+                            if (now.QuadPart >= deadline) return true;
+                            const LONGLONG remainingTicks = deadline - now.QuadPart;
+                            const DWORD waitMs = static_cast<DWORD>(std::clamp<LONGLONG>((remainingTicks * 1000 + qpcFrequency.QuadPart - 1) / qpcFrequency.QuadPart, 1, 4));
+                            Sleep(waitMs);
+                        }
+                    };
+                    bool timelineStarted = false;
+                    LONGLONG timelineStart = 0;
+                    LONGLONG nextPresentationTime = 0;
+                    VideoHoverPreviewFrame pendingFrame;
+                    const auto publish = [&](VideoHoverPreviewFrame&& frame, LONGLONG presentationTime) {
+                        if (!waitForSourceTime(presentationTime)) return false;
+                        auto* video = result ? result : new FilmstripHoverPreviewResult{};
                         video->request = request; video->result = S_OK; video->videoFrame = true; video->videoTimestamp = frame.timestamp; video->aspect = static_cast<float>(frame.width) / std::max(1u, frame.height);
                         video->width = frame.width; video->height = frame.height; video->stride = frame.stride; video->pixels = std::move(frame.pixels);
-                        if (!PostMessageW(window_, kFilmstripHoverPreviewCompleteMessage, 0, reinterpret_cast<LPARAM>(video))) { delete video; break; }
+                        if (!PostMessageW(window_, kFilmstripHoverPreviewCompleteMessage, 0, reinterpret_cast<LPARAM>(video))) { delete video; return false; }
                         result = nullptr;
-                        if (videoHoverPreviewGeneration_.load(std::memory_order_acquire) != request.hoverGeneration) break;
-                        Sleep(42);
+                        return true;
+                    };
+                    for (; SUCCEEDED(opened) && !filmstripHoverPreviewStopping_.load(std::memory_order_acquire);) {
+                        VideoHoverPreviewFrame frame;
+                        const HRESULT next = stream.ReadNext(frame);
+                        if (next != S_OK) break;
+                        if (!timelineStarted) {
+                            timelineStarted = true;
+                            timelineStart = frame.timestamp;
+                            nextPresentationTime = timelineStart + kVideoHoverPresentationInterval;
+                            QueryPerformanceCounter(&qpcStart);
+                            if (!publish(std::move(frame), 0)) break;
+                            continue;
+                        }
+                        const LONGLONG sourceTime = std::max<LONGLONG>(0, frame.timestamp - timelineStart);
+                        if (stream.DurationSeconds() > 4.0 && sourceTime >= 3 * kVideoHoverHnsPerSecond) break;
+                        if (frame.timestamp < nextPresentationTime) {
+                            pendingFrame = std::move(frame); // Keep only the newest source frame before the 24 fps presentation deadline.
+                            continue;
+                        }
+                        if (pendingFrame.pixels) {
+                            if (!publish(std::move(pendingFrame), nextPresentationTime - timelineStart)) break;
+                            nextPresentationTime += kVideoHoverPresentationInterval;
+                            if (frame.timestamp < nextPresentationTime) {
+                                pendingFrame = std::move(frame);
+                                continue;
+                            }
+                        }
+                        if (!publish(std::move(frame), sourceTime)) break;
+                        nextPresentationTime = timelineStart + sourceTime + kVideoHoverPresentationInterval;
                     }
+                    if (pendingFrame.pixels && !filmstripHoverPreviewStopping_.load(std::memory_order_acquire) &&
+                        videoHoverPreviewGeneration_.load(std::memory_order_acquire) == request.hoverGeneration)
+                        publish(std::move(pendingFrame), nextPresentationTime - timelineStart);
                     stream.Close();
                     auto* finished = new FilmstripHoverPreviewResult{};
                     finished->request = request; finished->result = S_OK; finished->videoFinished = true;

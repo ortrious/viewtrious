@@ -3203,7 +3203,6 @@ public:
             filmstripThumbnails_.clear();
             filmstripThumbnailFailures_.clear();
             filmstripScroll_ = 0.0;
-            filmstripLayoutRebuildPending_ = false;
             StopFilmstripScrollAnimation();
         }
         if ((changed || currentRenamed) && imageDecodePending_) {
@@ -3310,11 +3309,6 @@ public:
         }
         if (queueThumbnails) QueueFilmstripThumbnails();
     }
-    void ApplyDeferredFilmstripLayout() {
-        if (!filmstripLayoutRebuildPending_) return;
-        filmstripLayoutRebuildPending_ = false;
-        RebuildFilmstripLayout();
-    }
     std::pair<size_t, size_t> FilmstripVisibleRange() const {
         if (navigationFiles_.empty() || filmstripItemOffsets_.empty()) return { 0, 0 };
         const RECT bounds = GetFilmstripBounds();
@@ -3341,6 +3335,14 @@ public:
         wchar_t message[768]{};
         swprintf_s(message, L"[Viewtrious] %ls tid=%lu elapsed=%llums hr=0x%08X path=%ls\n", event, GetCurrentThreadId(),
             static_cast<unsigned long long>(GetTickCount64() - started), static_cast<unsigned int>(result), path.c_str());
+        OutputDebugStringW(message);
+    }
+    void TraceFilmstripThumbnailPublication(size_t index, const FilmstripThumbnailEntry& entry) const {
+        const float slotWidth = index < filmstripItemWidths_.size() ? filmstripItemWidths_[index] : 0.0f;
+        const float contentWidth = filmstripItemOffsets_.empty() ? 0.0f : filmstripItemOffsets_.back() - FilmstripGap() + FilmstripPadding();
+        wchar_t message[512]{};
+        swprintf_s(message, L"[Viewtrious] THUMB_RAM_PUBLISHED_UI index=%zu slotWidth=%.2f bitmap=%ux%u aspect=%.3f contentWidth=%.2f scroll=%.3f layout=unchanged path=%ls\n",
+            index, slotWidth, entry.width, entry.height, entry.aspect, contentWidth, filmstripScroll_, entry.path.c_str());
         OutputDebugStringW(message);
     }
 #endif
@@ -3471,8 +3473,9 @@ public:
             entry.stride = result->stride;
             entry.pixels = std::move(result->pixels);
             filmstripThumbnails_.push_back(std::move(entry));
-            if (filmstripScrollAnimating_) filmstripLayoutRebuildPending_ = true;
-            else RebuildFilmstripLayout();
+#ifdef _DEBUG
+            TraceFilmstripThumbnailPublication(index, filmstripThumbnails_.back());
+#endif
             InvalidateRect(window_, nullptr, FALSE);
         } else {
             if (current) filmstripThumbnailFailures_.push_back(result->request);
@@ -3635,7 +3638,6 @@ public:
     }
     void ScrollFilmstrip(int rawWheelDelta) {
         if (!FilmstripVisible() || rawWheelDelta == 0) return;
-        if (!filmstripScrollAnimating_) ApplyDeferredFilmstripLayout();
         LARGE_INTEGER now{}, frequency{};
         if (!QueryPerformanceCounter(&now) || !QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return;
         if (filmstripScrollAnimating_) AdvanceFilmstripScroll(now.QuadPart);
@@ -3674,13 +3676,11 @@ public:
         if (generation != filmstripScrollGeneration_.load(std::memory_order_acquire) || !filmstripScrollAnimating_) return;
         if (!FilmstripEligible()) {
             StopFilmstripScrollAnimation();
-            ApplyDeferredFilmstripLayout();
             return;
         }
         LARGE_INTEGER now{};
         if (!QueryPerformanceCounter(&now) || !AdvanceFilmstripScroll(now.QuadPart)) {
             StopFilmstripScrollAnimation();
-            ApplyDeferredFilmstripLayout();
             InvalidateRect(window_, nullptr, FALSE);
             return;
         }
@@ -3835,7 +3835,20 @@ public:
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), placeholder.Get());
             if (!IsVideoPath(navigationFiles_[index].wstring())) {
                 if (ID2D1Bitmap* thumbnail = FilmstripThumbnailBitmap(index)) {
-                    renderTarget_->DrawBitmap(thumbnail, box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                    const D2D1_SIZE_F size = thumbnail->GetSize();
+                    D2D1_RECT_F source = D2D1::RectF(0.0f, 0.0f, size.width, size.height);
+                    const float slotAspect = (box.right - box.left) / std::max(1.0f, box.bottom - box.top);
+                    const float bitmapAspect = size.width / std::max(1.0f, size.height);
+                    if (bitmapAspect > slotAspect) {
+                        const float width = size.height * slotAspect;
+                        source.left = (size.width - width) * 0.5f;
+                        source.right = source.left + width;
+                    } else if (bitmapAspect < slotAspect) {
+                        const float height = size.width / slotAspect;
+                        source.top = (size.height - height) * 0.5f;
+                        source.bottom = source.top + height;
+                    }
+                    renderTarget_->DrawBitmap(thumbnail, box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &source);
                 } else {
                     DrawOverlayText(L"image", box.left, box.top, box.right - box.left, box.bottom - box.top, 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
                 }
@@ -5843,7 +5856,6 @@ private:
         filmstripClickedRevealTarget_.reset();
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear(); filmstripThumbnailFailures_.clear();
         filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0;
-        filmstripLayoutRebuildPending_ = false;
         StopFilmstripScrollAnimation();
         filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer();
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
@@ -6711,7 +6723,6 @@ private:
             filmstripThumbnailFailures_.clear();
             filmstripClickedRevealTarget_.reset();
             filmstripScroll_ = 0.0;
-            filmstripLayoutRebuildPending_ = false;
             StopFilmstripScrollAnimation();
         } else if (navigationBuilt_) {
             // A video sibling can build navigation while Image2D has no source. Rebuild after
@@ -8782,7 +8793,6 @@ private:
     std::atomic<uint64_t> filmstripScrollGeneration_{ 0 };
     std::atomic<uint64_t> filmstripScrollWakePendingGeneration_{ 0 };
     bool filmstripScrollAnimating_ = false;
-    bool filmstripLayoutRebuildPending_ = false;
 #ifdef _DEBUG
     UINT filmstripScrollTickCount_ = 0;
     double filmstripScrollTickTotalMs_ = 0.0;

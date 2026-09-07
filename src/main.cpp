@@ -35,6 +35,7 @@
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -67,6 +68,7 @@ constexpr UINT kVideoMediaEngineEventMessage = WM_APP + 9;
 constexpr UINT kVideoPlaybackWakeMessage = WM_APP + 10;
 constexpr UINT kAiAnalysisCompleteMessage = WM_APP + 11;
 constexpr UINT kFilmstripThumbnailCompleteMessage = WM_APP + 12;
+constexpr UINT kFilmstripScrollWakeMessage = WM_APP + 13;
 // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is available on Windows 10 version 1803 and later.
 constexpr DWORD kHighResolutionWaitableTimerFlag = 0x00000002;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
@@ -83,7 +85,6 @@ constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
 constexpr UINT_PTR kVideoControlsTimer = 15;
 constexpr UINT_PTR kVideoStepHoldTimer = 16;
 constexpr UINT_PTR kStillDissolveTimer = 17;
-constexpr UINT_PTR kFilmstripScrollTimer = 18;
 constexpr UINT kVideoStepHoldThresholdMs = 250;
 constexpr UINT kVideoStepHoldIntervalMs = 16;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
@@ -104,6 +105,10 @@ constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kStillDissolveDurationMs = 160;
 constexpr ULONGLONG kStillDissolvePreviewWaitMaxMs = 450;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
+constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
+constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
+constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
+constexpr double kFilmstripVelocityStopEpsilon = 20.0;
 constexpr std::array<DWORD, 6> kVideoPlaybackRatePercents{ 25, 50, 100, 125, 150, 200 };
 // Shared Settings grid geometry. Every page uses these values for section and control placement.
 constexpr float kSettingsContentLeftPaddingDips = 206.0f;
@@ -3197,8 +3202,8 @@ public:
             filmstripThumbnailGenerations_.assign(navigationFiles_.size(), ++filmstripThumbnailGenerationSeed_);
             filmstripThumbnails_.clear();
             filmstripThumbnailFailures_.clear();
-            filmstripScroll_ = filmstripScrollTarget_ = 0.0f;
-            KillTimer(window_, kFilmstripScrollTimer);
+            filmstripScroll_ = 0.0;
+            StopFilmstripScrollAnimation();
         }
         if ((changed || currentRenamed) && imageDecodePending_) {
             ++decodeRequestGeneration_;
@@ -3296,16 +3301,19 @@ public:
         }
         if (!filmstripItemOffsets_.empty()) filmstripItemOffsets_.back() = offset;
         if (clampScroll) {
-            filmstripScroll_ = std::clamp(filmstripScroll_, 0.0f, FilmstripMaximumScroll());
-            filmstripScrollTarget_ = std::clamp(filmstripScrollTarget_, 0.0f, FilmstripMaximumScroll());
+            filmstripScroll_ = std::clamp(filmstripScroll_, 0.0, static_cast<double>(FilmstripMaximumScroll()));
+            if ((filmstripScroll_ <= 0.0 && filmstripScrollVelocity_ < 0.0) ||
+                (filmstripScroll_ >= FilmstripMaximumScroll() && filmstripScrollVelocity_ > 0.0)) {
+                filmstripScrollVelocity_ = 0.0;
+            }
         }
         if (queueThumbnails) QueueFilmstripThumbnails();
     }
     std::pair<size_t, size_t> FilmstripVisibleRange() const {
         if (navigationFiles_.empty() || filmstripItemOffsets_.empty()) return { 0, 0 };
         const RECT bounds = GetFilmstripBounds();
-        const float visibleLeft = filmstripScroll_;
-        const float visibleRight = visibleLeft + static_cast<float>(bounds.right - bounds.left);
+        const double visibleLeft = filmstripScroll_;
+        const double visibleRight = visibleLeft + static_cast<double>(bounds.right - bounds.left);
         size_t first = 0;
         while (first < navigationFiles_.size() && filmstripItemOffsets_[first] + FilmstripThumbnailWidth(first) < visibleLeft) ++first;
         size_t last = first;
@@ -3481,18 +3489,17 @@ public:
         if (!FilmstripEligible() || filmstripItemOffsets_.size() < 2 || index >= navigationFiles_.size() ||
             index >= filmstripItemWidths_.size() || index + 1 >= filmstripItemOffsets_.size()) return;
         const RECT bounds = GetFilmstripBounds();
-        const float left = filmstripItemOffsets_[index];
-        const float right = left + FilmstripThumbnailWidth(index);
-        const float visibleRight = filmstripScroll_ + static_cast<float>(bounds.right - bounds.left);
+        const double left = filmstripItemOffsets_[index];
+        const double right = left + FilmstripThumbnailWidth(index);
+        const double visibleRight = filmstripScroll_ + static_cast<double>(bounds.right - bounds.left);
         if (left < filmstripScroll_) filmstripScroll_ = left;
-        else if (right > visibleRight) filmstripScroll_ = right - static_cast<float>(bounds.right - bounds.left);
-        filmstripScroll_ = std::clamp(filmstripScroll_, 0.0f, FilmstripMaximumScroll());
-        filmstripScrollTarget_ = filmstripScroll_;
-        KillTimer(window_, kFilmstripScrollTimer);
+        else if (right > visibleRight) filmstripScroll_ = right - static_cast<double>(bounds.right - bounds.left);
+        filmstripScroll_ = std::clamp(filmstripScroll_, 0.0, static_cast<double>(FilmstripMaximumScroll()));
+        StopFilmstripScrollAnimation();
     }
     RECT GetFilmstripThumbnailBounds(size_t index) const {
         const RECT strip = GetFilmstripBounds();
-        const int left = strip.left + static_cast<int>(std::lround(filmstripItemOffsets_[index] - filmstripScroll_));
+        const int left = strip.left + static_cast<int>(std::lround(static_cast<double>(filmstripItemOffsets_[index]) - filmstripScroll_));
         const int height = FilmstripThumbnailHeight();
         const int top = strip.top + (strip.bottom - strip.top - height) / 2;
         return { left, top, left + static_cast<int>(std::lround(FilmstripThumbnailWidth(index))), top + height };
@@ -3507,37 +3514,150 @@ public:
         }
         return -1;
     }
-    void ScrollFilmstrip(float delta) {
-        if (!FilmstripVisible()) return;
-        filmstripScrollTarget_ = std::clamp(filmstripScrollTarget_ + delta, 0.0f, FilmstripMaximumScroll());
-        if (std::abs(filmstripScrollTarget_ - filmstripScroll_) > 0.01f) {
-            filmstripScrollLastTick_ = GetTickCount64();
-            SetTimer(window_, kFilmstripScrollTimer, 16, nullptr);
+    double FilmstripScrollRefreshPeriodQpc() const {
+        LARGE_INTEGER frequency{};
+        if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return 0.0;
+        MONITORINFOEXW monitor{};
+        monitor.cbSize = sizeof(monitor);
+        DEVMODEW mode{};
+        mode.dmSize = sizeof(mode);
+        const HMONITOR handle = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
+        const DWORD refreshHz = GetMonitorInfoW(handle, &monitor) &&
+            EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode) &&
+            mode.dmDisplayFrequency >= 30 && mode.dmDisplayFrequency <= 360 ? mode.dmDisplayFrequency : 120;
+        return static_cast<double>(frequency.QuadPart) / static_cast<double>(refreshHz);
+    }
+    bool EnsureFilmstripScrollScheduler() {
+        if (filmstripScrollTimer_) return true;
+        filmstripScrollStopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        filmstripScrollTimer_ = CreateWaitableTimerExW(nullptr, nullptr, kHighResolutionWaitableTimerFlag, TIMER_ALL_ACCESS);
+        if (!filmstripScrollStopEvent_ || !filmstripScrollTimer_) {
+            if (filmstripScrollTimer_) CloseHandle(filmstripScrollTimer_);
+            if (filmstripScrollStopEvent_) CloseHandle(filmstripScrollStopEvent_);
+            filmstripScrollTimer_ = filmstripScrollStopEvent_ = nullptr;
+            return false;
         }
+        try {
+            filmstripScrollSchedulerThread_ = std::thread([this] {
+                HANDLE handles[] = { filmstripScrollStopEvent_, filmstripScrollTimer_ };
+                for (;;) {
+                    const DWORD wait = WaitForMultipleObjects(ARRAYSIZE(handles), handles, FALSE, INFINITE);
+                    if (wait != WAIT_OBJECT_0 + 1) return;
+                    const uint64_t generation = filmstripScrollGeneration_.load(std::memory_order_acquire);
+                    uint64_t none = 0;
+                    if (filmstripScrollWakePendingGeneration_.compare_exchange_strong(none, generation, std::memory_order_acq_rel))
+                        PostMessageW(window_, kFilmstripScrollWakeMessage, static_cast<WPARAM>(generation), 0);
+                }
+            });
+        } catch (const std::system_error&) {
+            CloseHandle(filmstripScrollTimer_);
+            CloseHandle(filmstripScrollStopEvent_);
+            filmstripScrollTimer_ = filmstripScrollStopEvent_ = nullptr;
+            return false;
+        }
+        return true;
+    }
+    bool ArmFilmstripScrollWake() {
+        if (!filmstripScrollTimer_ || !filmstripScrollAnimating_) return false;
+        LARGE_INTEGER frequency{};
+        if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return false;
+        const double periodQpc = FilmstripScrollRefreshPeriodQpc();
+        LARGE_INTEGER due{};
+        due.QuadPart = -std::max<LONGLONG>(1, static_cast<LONGLONG>(std::llround(periodQpc * 10000000.0 / static_cast<double>(frequency.QuadPart))));
+        return SetWaitableTimer(filmstripScrollTimer_, &due, 0, nullptr, nullptr, FALSE) != FALSE;
+    }
+    void StopFilmstripScrollAnimation() {
+        filmstripScrollVelocity_ = 0.0;
+        filmstripScrollAnimating_ = false;
+        ++filmstripScrollGeneration_;
+        filmstripScrollWakePendingGeneration_.store(0, std::memory_order_release);
+        if (filmstripScrollTimer_) CancelWaitableTimer(filmstripScrollTimer_);
+    }
+    void StopFilmstripScrollScheduler() {
+        StopFilmstripScrollAnimation();
+        if (filmstripScrollStopEvent_) SetEvent(filmstripScrollStopEvent_);
+        if (filmstripScrollSchedulerThread_.joinable()) filmstripScrollSchedulerThread_.join();
+        if (filmstripScrollTimer_) CloseHandle(filmstripScrollTimer_);
+        if (filmstripScrollStopEvent_) CloseHandle(filmstripScrollStopEvent_);
+        filmstripScrollTimer_ = filmstripScrollStopEvent_ = nullptr;
+    }
+    bool AdvanceFilmstripScroll(LONGLONG nowQpc) {
+        if (!filmstripScrollAnimating_ || filmstripScrollQpcFrequency_ <= 0) return false;
+        const double dt = std::clamp(static_cast<double>(nowQpc - filmstripScrollLastQpc_) / static_cast<double>(filmstripScrollQpcFrequency_), 0.0, 0.050);
+        filmstripScrollLastQpc_ = nowQpc;
+        if (dt <= 0.0) return std::abs(filmstripScrollVelocity_) > kFilmstripVelocityStopEpsilon;
+        filmstripScroll_ += filmstripScrollVelocity_ * dt;
+        const double maximum = FilmstripMaximumScroll();
+        bool hitBound = false;
+        if (filmstripScroll_ <= 0.0) {
+            filmstripScroll_ = 0.0;
+            if (filmstripScrollVelocity_ < 0.0) { filmstripScrollVelocity_ = 0.0; hitBound = true; }
+        } else if (filmstripScroll_ >= maximum) {
+            filmstripScroll_ = maximum;
+            if (filmstripScrollVelocity_ > 0.0) { filmstripScrollVelocity_ = 0.0; hitBound = true; }
+        }
+        if (!hitBound) filmstripScrollVelocity_ *= std::exp(-kFilmstripVelocityDampingPerSecond * dt);
+#ifdef _DEBUG
+        filmstripScrollTickCount_++;
+        filmstripScrollTickTotalMs_ += dt * 1000.0;
+        filmstripScrollTickMinimumMs_ = std::min(filmstripScrollTickMinimumMs_, dt * 1000.0);
+        filmstripScrollTickMaximumMs_ = std::max(filmstripScrollTickMaximumMs_, dt * 1000.0);
+        if (hitBound) OutputDebugStringW(L"Viewtrious filmstrip scroll: bound collision\n");
+#endif
+        if (std::abs(filmstripScrollVelocity_) <= kFilmstripVelocityStopEpsilon) {
+            filmstripScrollVelocity_ = 0.0;
+#ifdef _DEBUG
+            wchar_t message[256]{};
+            const double average = filmstripScrollTickCount_ ? filmstripScrollTickTotalMs_ / filmstripScrollTickCount_ : 0.0;
+            swprintf_s(message, L"Viewtrious filmstrip scroll: damping stop ticks=%u avg=%.2fms min=%.2fms max=%.2fms\n", filmstripScrollTickCount_, average, filmstripScrollTickMinimumMs_, filmstripScrollTickMaximumMs_);
+            OutputDebugStringW(message);
+#endif
+            return false;
+        }
+        return true;
+    }
+    void ScrollFilmstrip(int rawWheelDelta) {
+        if (!FilmstripVisible() || rawWheelDelta == 0) return;
+        LARGE_INTEGER now{}, frequency{};
+        if (!QueryPerformanceCounter(&now) || !QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return;
+        if (filmstripScrollAnimating_) AdvanceFilmstripScroll(now.QuadPart);
+        const double units = -static_cast<double>(rawWheelDelta) / static_cast<double>(WHEEL_DELTA);
+        const double scale = static_cast<double>(GetDpiForWindow(window_)) / 96.0;
+        const double before = filmstripScrollVelocity_;
+        filmstripScrollVelocity_ = std::clamp(filmstripScrollVelocity_ + units * kFilmstripWheelImpulseDipsPerSecond * scale,
+            -kFilmstripMaximumVelocityDipsPerSecond * scale, kFilmstripMaximumVelocityDipsPerSecond * scale);
+        if (!filmstripScrollAnimating_) {
+            filmstripScrollQpcFrequency_ = frequency.QuadPart;
+            filmstripScrollLastQpc_ = now.QuadPart;
+            ++filmstripScrollGeneration_;
+            filmstripScrollWakePendingGeneration_.store(0, std::memory_order_release);
+            filmstripScrollAnimating_ = true;
+#ifdef _DEBUG
+            filmstripScrollTickCount_ = 0;
+            filmstripScrollTickTotalMs_ = 0.0;
+            filmstripScrollTickMinimumMs_ = std::numeric_limits<double>::infinity();
+            filmstripScrollTickMaximumMs_ = 0.0;
+#endif
+        }
+#ifdef _DEBUG
+        wchar_t message[256]{};
+        swprintf_s(message, L"Viewtrious filmstrip scroll: raw=%d units=%.3f velocity=%.1f->%.1f\n", rawWheelDelta, units, before, filmstripScrollVelocity_);
+        OutputDebugStringW(message);
+#endif
+        if (!EnsureFilmstripScrollScheduler() || !ArmFilmstripScrollWake()) StopFilmstripScrollAnimation();
         QueueFilmstripThumbnails();
         StartFilmstripHold();
         InvalidateRect(window_, nullptr, FALSE);
     }
-    void UpdateFilmstripScroll() {
-        if (!FilmstripEligible()) {
-            KillTimer(window_, kFilmstripScrollTimer);
-            filmstripScrollTarget_ = filmstripScroll_;
-            return;
-        }
-        const ULONGLONG now = GetTickCount64();
-        const float elapsedMs = static_cast<float>(std::max<ULONGLONG>(1, now - filmstripScrollLastTick_));
-        filmstripScrollLastTick_ = now;
-        const float maximum = FilmstripMaximumScroll();
-        filmstripScrollTarget_ = std::clamp(filmstripScrollTarget_, 0.0f, maximum);
-        const float alpha = 1.0f - std::exp(-elapsedMs / 25.0f);
-        filmstripScroll_ = std::clamp(filmstripScroll_ + (filmstripScrollTarget_ - filmstripScroll_) * alpha, 0.0f, maximum);
-        if (std::abs(filmstripScrollTarget_ - filmstripScroll_) <= 0.1f) {
-            filmstripScroll_ = filmstripScrollTarget_;
-            KillTimer(window_, kFilmstripScrollTimer);
-        } else {
-            QueueFilmstripThumbnails();
-        }
+    void FilmstripScrollWakeMessage(uint64_t generation) {
+        uint64_t expected = generation;
+        filmstripScrollWakePendingGeneration_.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+        if (generation != filmstripScrollGeneration_.load(std::memory_order_acquire) || !filmstripScrollAnimating_ || !FilmstripEligible()) return;
+        LARGE_INTEGER now{};
+        if (!QueryPerformanceCounter(&now) || !AdvanceFilmstripScroll(now.QuadPart)) { StopFilmstripScrollAnimation(); return; }
+        QueueFilmstripThumbnails();
         InvalidateRect(window_, nullptr, FALSE);
+        if (!ArmFilmstripScrollWake()) StopFilmstripScrollAnimation();
     }
     RECT GetFilmstripRevealBounds() const {
         RECT client{};
@@ -3627,6 +3747,7 @@ public:
     }
     void SelectFilmstripItem(int index) {
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
+        StopFilmstripScrollAnimation();
         filmstripClickedRevealTarget_ = static_cast<size_t>(index);
         const std::wstring path = navigationFiles_[index].wstring();
         if (!PathsEqual(fs::path(path), fs::path(currentPath_))) {
@@ -4184,6 +4305,7 @@ public:
 
     void Shutdown() {
         shuttingDown_ = true;
+        StopFilmstripScrollScheduler();
         StopFilmstripThumbnailWorker();
         KillTimer(window_, kModelHomeAnimationTimer);
         KillTimer(window_, kTriangleCountTooltipTimer);
@@ -5691,8 +5813,8 @@ private:
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         filmstripClickedRevealTarget_.reset();
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear(); filmstripThumbnailFailures_.clear();
-        filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = filmstripScrollTarget_ = 0.0f;
-        KillTimer(window_, kFilmstripScrollTimer);
+        filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0;
+        StopFilmstripScrollAnimation();
         filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer();
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
         error_ = L"Drop an image here, or launch Viewtrious with an image path.";
@@ -6558,8 +6680,8 @@ private:
             filmstripThumbnailPending_.clear();
             filmstripThumbnailFailures_.clear();
             filmstripClickedRevealTarget_.reset();
-            filmstripScroll_ = filmstripScrollTarget_ = 0.0f;
-            KillTimer(window_, kFilmstripScrollTimer);
+            filmstripScroll_ = 0.0;
+            StopFilmstripScrollAnimation();
         } else if (navigationBuilt_) {
             // A video sibling can build navigation while Image2D has no source. Rebuild after
             // the image commit so stale compact placeholder widths cannot reach the first paint.
@@ -8619,9 +8741,22 @@ private:
     bool navigationBuildQueued_ = false;
     std::vector<float> filmstripItemWidths_;
     std::vector<float> filmstripItemOffsets_;
-    float filmstripScroll_ = 0.0f;
-    float filmstripScrollTarget_ = 0.0f;
-    ULONGLONG filmstripScrollLastTick_ = 0;
+    double filmstripScroll_ = 0.0;
+    double filmstripScrollVelocity_ = 0.0;
+    LONGLONG filmstripScrollLastQpc_ = 0;
+    LONGLONG filmstripScrollQpcFrequency_ = 0;
+    HANDLE filmstripScrollTimer_ = nullptr;
+    HANDLE filmstripScrollStopEvent_ = nullptr;
+    std::thread filmstripScrollSchedulerThread_;
+    std::atomic<uint64_t> filmstripScrollGeneration_{ 0 };
+    std::atomic<uint64_t> filmstripScrollWakePendingGeneration_{ 0 };
+    bool filmstripScrollAnimating_ = false;
+#ifdef _DEBUG
+    UINT filmstripScrollTickCount_ = 0;
+    double filmstripScrollTickTotalMs_ = 0.0;
+    double filmstripScrollTickMinimumMs_ = 0.0;
+    double filmstripScrollTickMaximumMs_ = 0.0;
+#endif
     float filmstripOpacity_ = 0.0f;
     float filmstripRevealStartOpacity_ = 0.0f;
     ULONGLONG filmstripVisibilityStart_ = 0;
@@ -8899,8 +9034,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->FilmstripContains(point)) {
-            const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
-            viewer->ScrollFilmstrip(-wheelUnits * MulDiv(60, GetDpiForWindow(window), 96));
+            viewer->ScrollFilmstrip(GET_WHEEL_DELTA_WPARAM(wParam));
             return 0;
         }
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen() || viewer->ModelViewBarMenuOpen()) return 0;
@@ -9253,7 +9387,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
         if (wParam == kStillDissolveTimer) { viewer->UpdateStillDissolve(); return 0; }
-        if (wParam == kFilmstripScrollTimer) { viewer->UpdateFilmstripScroll(); return 0; }
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }
         break;
     case WM_ACTIVATE:
@@ -9271,6 +9404,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_SETTINGCHANGE: ApplyTitleBarTheme(window); return 0;
     case kBuildNavigationMessage: viewer->BuildNavigation(); return 0;
     case kFilmstripThumbnailCompleteMessage: viewer->FilmstripThumbnailCompleteMessage(reinterpret_cast<FilmstripThumbnailResult*>(lParam)); return 0;
+    case kFilmstripScrollWakeMessage: viewer->FilmstripScrollWakeMessage(static_cast<uint64_t>(wParam)); return 0;
     case kDirectoryChangedMessage: viewer->QueueDirectoryRefreshFromWatcher(); return 0;
     case kFullDecodeCompleteMessage: viewer->FullDecodeCompleteMessage(reinterpret_cast<FullDecodeResult*>(lParam)); return 0;
     case kLanczosCompleteMessage: viewer->LanczosCompleteMessage(reinterpret_cast<LanczosResult*>(lParam)); return 0;

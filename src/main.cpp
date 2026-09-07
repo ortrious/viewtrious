@@ -388,14 +388,16 @@ protected:
     long SetActiveCommand(std::string) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
     long SetMotionFlag(bool motion) override { if (setMotion) setMotion(motion); return 0; }
 };
-constexpr ShortcutEntry kShortcutEntries[] = {
-    { L"Ctrl+O", L"Open file" }, { L"Left Arrow", L"Previous image" }, { L"Right Arrow", L"Next image" }, { L"Mouse Wheel", L"Zoom in/out" },
-    { L"+", L"Zoom in" }, { L"-", L"Zoom out" }, { L"0", L"Reset zoom and center" },
-    { L"Left mouse drag", L"Pan" }, { L"Right mouse click", L"Open right-click menu" }, { L"Double-click image", L"Toggle Fit / 100%" }, { L"F11", L"Toggle fullscreen" },
-    { L"Ctrl+C", L"copy media" }, { L"Ctrl+P", L"Print" }, { L"Delete", L"Move image to Recycle Bin" },
-    { L"Esc", L"Exit fullscreen, or close Viewtrious" },
-};
-constexpr size_t kShortcutEntryCount = sizeof(kShortcutEntries) / sizeof(kShortcutEntries[0]);
+constexpr std::array<ShortcutEntry, 12> kKeyboardShortcutEntries{{
+    { L"Ctrl + O", L"Open file" }, { L"Ctrl + C", L"Copy media" }, { L"Ctrl + P", L"Print" }, { L"Delete", L"Move media to Recycle Bin" },
+    { L"Esc", L"Exit fullscreen, or close Viewtrious" }, { L"Left Arrow", L"Previous media" }, { L"Right Arrow", L"Next media" }, { L"+", L"Zoom in" },
+    { L"-", L"Zoom out" }, { L"0", L"Reset zoom to center" }, { L"F11", L"Fullscreen" }, { L"Space", L"Play / pause video" },
+}};
+constexpr std::array<ShortcutEntry, 4> kMouseNavigationEntries{{
+    { L"Mouse Wheel (2D)", L"Zoom in / out" }, { L"Left Mouse Drag (2D)", L"Pan" },
+    { L"Right Mouse Click", L"Open right-click menu" }, { L"Double-click video", L"Toggle fullscreen" },
+}};
+constexpr size_t kShortcutEntryCount = kKeyboardShortcutEntries.size() + kMouseNavigationEntries.size();
 constexpr wchar_t kBugReportUrl[] = L"https://github.com/ortrious/Viewtrious/issues/new?template=bug_report.md";
 constexpr wchar_t kFeatureRequestUrl[] = L"https://github.com/ortrious/Viewtrious/issues/new?template=feature_request.md";
 
@@ -8279,9 +8281,10 @@ private:
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
         const int normalRow = MulDiv(25, dpi, 96);
-        const int compactRow = MulDiv(20, dpi, 96);
-        const int fixedHeight = MulDiv(86, dpi, 96);
-        return fixedHeight + static_cast<int>(kShortcutEntryCount) * normalRow <= availableHeight ? normalRow : compactRow;
+        const int compactRow = MulDiv(18, dpi, 96);
+        const int fixedHeight = MulDiv(114, dpi, 96);
+        return fixedHeight + static_cast<int>(kShortcutEntryCount) * normalRow <= availableHeight ? normalRow :
+            std::max(compactRow, (availableHeight - fixedHeight) / static_cast<int>(kShortcutEntryCount));
     }
 
     RECT GetOverlayBounds() const {
@@ -8297,7 +8300,7 @@ private:
             overlay_ == OverlayKind::Settings ? 760 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
             overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
-            ? panelPadding + titleHeight + titleGap + static_cast<int>(kShortcutEntryCount) * rowHeight + panelPadding
+            ? MulDiv(114, dpi, 96) + static_cast<int>(kShortcutEntryCount) * rowHeight
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
             overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
@@ -8614,15 +8617,23 @@ private:
         } else if (overlay_ == OverlayKind::KeyboardShortcuts) {
             DrawOverlayText(L"Keyboard Shortcuts", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            const float shortcutWidth = 154.0f * dpiScale;
+            const float shortcutWidth = 176.0f * dpiScale;
             float y = static_cast<float>(bounds.top) + panelPadding + 38.0f * dpiScale;
             const float shortcutRowHeight = static_cast<float>(GetShortcutRowHeight());
-            for (const ShortcutEntry& line : kShortcutEntries) {
-                DrawOverlayText(line.shortcut, left, y, shortcutWidth, 18.0f * dpiScale, shortcutRowHeight < 22.0f * dpiScale ? 11.0f : 12.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-                DrawOverlayText(line.description, left + shortcutWidth, y, contentWidth - shortcutWidth,
-                    18.0f * dpiScale, shortcutRowHeight < 22.0f * dpiScale ? 11.0f : 12.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-                y += shortcutRowHeight;
-            }
+            const auto drawRows = [&](const auto& entries) {
+                for (const ShortcutEntry& line : entries) {
+                    const float fontSize = shortcutRowHeight < 22.0f * dpiScale ? 10.5f : 12.5f;
+                    DrawOverlayText(line.shortcut, left, y, shortcutWidth, 18.0f * dpiScale, fontSize, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+                    DrawOverlayText(line.description, left + shortcutWidth, y, contentWidth - shortcutWidth,
+                        18.0f * dpiScale, fontSize, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                    y += shortcutRowHeight;
+                }
+            };
+            drawRows(kKeyboardShortcutEntries);
+            y += 10.0f * dpiScale;
+            DrawOverlayText(L"Mouse Navigation", left, y, contentWidth, 18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+            y += 22.0f * dpiScale;
+            drawRows(kMouseNavigationEntries);
         } else if (overlay_ == OverlayKind::Settings) {
             const float settingsLeft = static_cast<float>(SettingsContentLeft());
             const float settingsWidth = static_cast<float>(bounds.right) - settingsLeft - 18.0f * dpiScale;

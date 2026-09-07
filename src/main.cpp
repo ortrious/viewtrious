@@ -5103,14 +5103,33 @@ private:
         return clockwise ? clockwiseMap[orientation] : counterClockwiseMap[orientation];
     }
 
-    UINT ReadPhotoOrientation(IWICBitmapFrameDecode* frame) const {
+    UINT ReadPhotoOrientation(IWICBitmapFrameDecode* frame, const std::wstring* diagnosticPath = nullptr) const {
+#ifndef _DEBUG
+        (void)diagnosticPath;
+#endif
         ComPtr<IWICMetadataQueryReader> metadata;
         UINT orientation = 1;
-        if (SUCCEEDED(frame->GetMetadataQueryReader(&metadata))) {
+#ifdef _DEBUG
+        const auto trace = [&](const wchar_t* event, ULONGLONG started, HRESULT result) {
+            if (diagnosticPath) TraceFilmstripThumbnailStage(event, *diagnosticPath, started, result);
+        };
+        const ULONGLONG readerStarted = GetTickCount64();
+#endif
+        const HRESULT readerResult = frame->GetMetadataQueryReader(&metadata);
+#ifdef _DEBUG
+        trace(L"ORIENTATION_READER_END", readerStarted, readerResult);
+#endif
+        if (SUCCEEDED(readerResult)) {
             for (const wchar_t* query : { L"/app1/ifd/{ushort=274}", L"/ifd/{ushort=274}", L"/{ushort=274}" }) {
                 PROPVARIANT value{};
                 PropVariantInit(&value);
+#ifdef _DEBUG
+                const ULONGLONG queryStarted = GetTickCount64();
+#endif
                 const HRESULT result = metadata->GetMetadataByName(query, &value);
+#ifdef _DEBUG
+                trace(query, queryStarted, result);
+#endif
                 if (SUCCEEDED(result)) {
                     if (value.vt == VT_UI2) orientation = value.uiVal;
                     else if (value.vt == VT_UI4) orientation = value.ulVal;
@@ -6028,7 +6047,7 @@ private:
 #ifdef _DEBUG
             const ULONGLONG orientationStarted = GetTickCount64();
 #endif
-            const UINT orientation = ReadPhotoOrientation(frame.Get());
+            const UINT orientation = ReadPhotoOrientation(frame.Get(), &path);
 #ifdef _DEBUG
             TraceFilmstripThumbnailStage(L"ORIENTATION_END", path, orientationStarted, S_OK);
 #endif
@@ -6037,18 +6056,33 @@ private:
                 UINT sourceWidth = 0, sourceHeight = 0;
                 HRESULT attempt = source->GetSize(&sourceWidth, &sourceHeight);
                 ComPtr<IWICFormatConverter> converter;
+#ifdef _DEBUG
+                const ULONGLONG converterStarted = GetTickCount64();
+#endif
                 if (SUCCEEDED(attempt)) attempt = factory->CreateFormatConverter(&converter);
                 if (SUCCEEDED(attempt)) attempt = converter->Initialize(source, GUID_WICPixelFormat32bppPBGRA,
                     WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+#ifdef _DEBUG
+                TraceFilmstripThumbnailStage(L"CONVERTER_INIT_END", path, converterStarted, attempt);
+#endif
                 ComPtr<IWICBitmapSource> transformed = converter;
                 ComPtr<IWICBitmapFlipRotator> rotator;
                 if (SUCCEEDED(attempt) && orientation != 1) {
+#ifdef _DEBUG
+                    const ULONGLONG transformStarted = GetTickCount64();
+#endif
                     attempt = factory->CreateBitmapFlipRotator(&rotator);
                     if (SUCCEEDED(attempt)) attempt = rotator->Initialize(converter.Get(), TransformForOrientation(orientation));
+#ifdef _DEBUG
+                    TraceFilmstripThumbnailStage(L"TRANSFORM_END", path, transformStarted, attempt);
+#endif
                     if (SUCCEEDED(attempt)) transformed = rotator;
                     if (orientation >= 5 && orientation <= 8) std::swap(sourceWidth, sourceHeight);
                 }
                 if (FAILED(attempt) || !sourceWidth || !sourceHeight) return FAILED(attempt) ? attempt : E_FAIL;
+#ifdef _DEBUG
+                const ULONGLONG cropStarted = GetTickCount64();
+#endif
                 const float naturalAspect = static_cast<float>(sourceWidth) / static_cast<float>(sourceHeight);
                 const float croppedAspect = std::clamp(naturalAspect, 2.0f / 3.0f, 16.0f / 9.0f);
                 UINT cropWidth = sourceWidth, cropHeight = sourceHeight;
@@ -6056,17 +6090,38 @@ private:
                 else if (naturalAspect < croppedAspect) cropHeight = std::max(1u, static_cast<UINT>(std::lround(sourceWidth / croppedAspect)));
                 const WICRect crop{ static_cast<INT>((sourceWidth - cropWidth) / 2), static_cast<INT>((sourceHeight - cropHeight) / 2),
                     static_cast<INT>(cropWidth), static_cast<INT>(cropHeight) };
+#ifdef _DEBUG
+                TraceFilmstripThumbnailStage(L"CROP_CALCULATION_END", path, cropStarted, S_OK);
+#endif
                 ComPtr<IWICBitmapClipper> clipper;
+#ifdef _DEBUG
+                const ULONGLONG clipperStarted = GetTickCount64();
+#endif
                 if (SUCCEEDED(attempt)) attempt = factory->CreateBitmapClipper(&clipper);
                 if (SUCCEEDED(attempt)) attempt = clipper->Initialize(transformed.Get(), &crop);
+#ifdef _DEBUG
+                TraceFilmstripThumbnailStage(L"CLIPPER_INIT_END", path, clipperStarted, attempt);
+#endif
                 const UINT targetWidth = std::max(1u, static_cast<UINT>(std::lround(targetHeight * croppedAspect)));
                 ComPtr<IWICBitmapScaler> scaler;
+#ifdef _DEBUG
+                const ULONGLONG scalerStarted = GetTickCount64();
+#endif
                 if (SUCCEEDED(attempt)) attempt = factory->CreateBitmapScaler(&scaler);
                 if (SUCCEEDED(attempt)) attempt = scaler->Initialize(clipper.Get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant);
+#ifdef _DEBUG
+                TraceFilmstripThumbnailStage(L"SCALER_INIT_END", path, scalerStarted, attempt);
+#endif
                 ComPtr<IWICFormatConverter> finalConverter;
+#ifdef _DEBUG
+                const ULONGLONG finalConverterStarted = GetTickCount64();
+#endif
                 if (SUCCEEDED(attempt)) attempt = factory->CreateFormatConverter(&finalConverter);
                 if (SUCCEEDED(attempt)) attempt = finalConverter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA,
                     WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+#ifdef _DEBUG
+                TraceFilmstripThumbnailStage(L"FINAL_CONVERTER_INIT_END", path, finalConverterStarted, attempt);
+#endif
                 if (FAILED(attempt) || targetWidth > UINT_MAX / 4 || targetHeight > UINT_MAX / (targetWidth * 4)) return FAILED(attempt) ? attempt : E_OUTOFMEMORY;
                 const UINT stride = targetWidth * 4;
                 const size_t bytes = static_cast<size_t>(stride) * targetHeight;

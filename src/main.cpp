@@ -3329,7 +3329,7 @@ public:
         return { first, last };
     }
     void StartFilmstripThumbnailWorker() {
-        if (filmstripThumbnailWorker_.joinable()) return;
+        if (shuttingDown_ || filmstripThumbnailStopping_.load(std::memory_order_acquire) || filmstripThumbnailWorker_.joinable()) return;
         filmstripThumbnailStopping_.store(false, std::memory_order_release);
         filmstripThumbnailWorker_ = std::thread([this] {
             SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
@@ -3341,15 +3341,19 @@ public:
                     filmstripThumbnailWake_.wait(lock, [&] {
                         return filmstripThumbnailStopping_.load(std::memory_order_acquire) || !filmstripThumbnailQueue_.empty();
                     });
-                    if (filmstripThumbnailStopping_.load(std::memory_order_acquire) && filmstripThumbnailQueue_.empty()) break;
+                    if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) break;
                     request = std::move(filmstripThumbnailQueue_.front());
                     filmstripThumbnailQueue_.pop_front();
                 }
+                if (filmstripThumbnailStopping_.load(std::memory_order_acquire) ||
+                    request.readState->cancelled.load(std::memory_order_acquire)) continue;
                 auto* result = new FilmstripThumbnailResult{};
                 result->request = request;
-                if (!request.readState->cancelled.load(std::memory_order_acquire)) {
+                if (!filmstripThumbnailStopping_.load(std::memory_order_acquire) &&
+                    !request.readState->cancelled.load(std::memory_order_acquire)) {
                     request.readState->sourceReadActive.store(true, std::memory_order_release);
-                    if (!request.readState->cancelled.load(std::memory_order_acquire))
+                    if (!filmstripThumbnailStopping_.load(std::memory_order_acquire) &&
+                        !request.readState->cancelled.load(std::memory_order_acquire))
                         result->result = DecodeFilmstripThumbnailPixels(request.path, request.targetHeight, *result, result->aspect);
                     // DecodeFilmstripThumbnailPixels owns every source-backed WIC object locally.
                     // Its return therefore means the source file is fully released before this post.
@@ -3361,6 +3365,26 @@ public:
             if (SUCCEEDED(apartment)) CoUninitialize();
         });
     }
+    void StopFilmstripThumbnailWorker() {
+        filmstripThumbnailStopping_.store(true, std::memory_order_release);
+        for (FilmstripThumbnailRequest& request : filmstripThumbnailPending_)
+            request.readState->cancelled.store(true, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(filmstripThumbnailMutex_);
+            filmstripThumbnailQueue_.clear();
+        }
+        filmstripThumbnailWake_.notify_all();
+        if (filmstripThumbnailWorker_.joinable()) filmstripThumbnailWorker_.join();
+        filmstripThumbnailPending_.clear();
+        filmstripThumbnailBlockedPaths_.clear();
+        pendingFilmstripRotation_.reset();
+        ++filmstripThumbnailGenerationSeed_;
+        filmstripThumbnailGenerations_.clear();
+        filmstripThumbnails_.clear();
+        MSG message{};
+        while (PeekMessageW(&message, window_, kFilmstripThumbnailCompleteMessage, kFilmstripThumbnailCompleteMessage, PM_REMOVE))
+            delete reinterpret_cast<FilmstripThumbnailResult*>(message.lParam);
+    }
     void CancelQueuedFilmstripThumbnails() {
         for (FilmstripThumbnailRequest& request : filmstripThumbnailPending_) request.readState->cancelled.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(filmstripThumbnailMutex_);
@@ -3370,7 +3394,7 @@ public:
         }), filmstripThumbnailPending_.end());
     }
     void QueueFilmstripThumbnails() {
-        if (!FilmstripEligible() || navigationFiles_.empty() || filmstripThumbnailGenerations_.size() != navigationFiles_.size()) return;
+        if (shuttingDown_ || filmstripThumbnailStopping_.load(std::memory_order_acquire) || !FilmstripEligible() || navigationFiles_.empty() || filmstripThumbnailGenerations_.size() != navigationFiles_.size()) return;
         const auto [visibleFirst, visibleLast] = FilmstripVisibleRange();
         const size_t first = visibleFirst > 2 ? visibleFirst - 2 : 0;
         const size_t last = std::min(navigationFiles_.size(), visibleLast + 2);
@@ -4130,6 +4154,7 @@ public:
 
     void Shutdown() {
         shuttingDown_ = true;
+        StopFilmstripThumbnailWorker();
         KillTimer(window_, kModelHomeAnimationTimer);
         KillTimer(window_, kTriangleCountTooltipTimer);
         StopModelLoadingAnimation();
@@ -4158,16 +4183,6 @@ public:
         while (PeekMessageW(&aiMessage, window_, kAiAnalysisCompleteMessage, kAiAnalysisCompleteMessage, PM_REMOVE))
             delete reinterpret_cast<AiAnalysisResult*>(aiMessage.lParam);
         aiAddon_.Shutdown();
-        filmstripThumbnailStopping_.store(true, std::memory_order_release);
-        {
-            std::lock_guard<std::mutex> lock(filmstripThumbnailMutex_);
-            filmstripThumbnailQueue_.clear();
-        }
-        filmstripThumbnailWake_.notify_all();
-        if (filmstripThumbnailWorker_.joinable()) filmstripThumbnailWorker_.join();
-        MSG filmstripThumbnailMessage{};
-        while (PeekMessageW(&filmstripThumbnailMessage, window_, kFilmstripThumbnailCompleteMessage, kFilmstripThumbnailCompleteMessage, PM_REMOVE))
-            delete reinterpret_cast<FilmstripThumbnailResult*>(filmstripThumbnailMessage.lParam);
         decodeShuttingDown_ = true;
         KillTimer(window_, kNavigationDecodeDebounceTimer);
         ++decodeRequestGeneration_;

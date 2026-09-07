@@ -3200,6 +3200,15 @@ public:
             navigationFiles_ = std::move(scannedFiles);
             filmstripClickedRevealTarget_.reset();
             filmstripThumbnailGenerations_.assign(navigationFiles_.size(), ++filmstripThumbnailGenerationSeed_);
+            filmstripLayoutAspects_.resize(navigationFiles_.size());
+            filmstripKnownAspects_.resize(navigationFiles_.size());
+            filmstripAspectAuthoritative_.assign(navigationFiles_.size(), false);
+            filmstripAspectRelayoutPending_.assign(navigationFiles_.size(), false);
+            for (size_t index = 0; index < navigationFiles_.size(); ++index) {
+                const float aspect = IsVideoPath(navigationFiles_[index].wstring()) ? 16.0f / 9.0f : 1.0f;
+                filmstripLayoutAspects_[index] = aspect;
+                filmstripKnownAspects_[index] = aspect;
+            }
             filmstripThumbnails_.clear();
             filmstripThumbnailFailures_.clear();
             filmstripScroll_ = 0.0;
@@ -3252,10 +3261,7 @@ public:
         });
     }
     float FilmstripPlaceholderAspect(size_t index) const {
-        if (index < navigationFiles_.size() && index < filmstripThumbnailGenerations_.size()) {
-            const int thumbnail = FindFilmstripThumbnail(navigationFiles_[index].wstring(), filmstripThumbnailGenerations_[index]);
-            if (thumbnail >= 0) return filmstripThumbnails_[thumbnail].aspect;
-        }
+        if (index < filmstripLayoutAspects_.size()) return filmstripLayoutAspects_[index];
         return index < navigationFiles_.size() && IsVideoPath(navigationFiles_[index].wstring()) ? 16.0f / 9.0f : 1.0f;
     }
     RECT GetFilmstripBounds() const {
@@ -3310,10 +3316,112 @@ public:
         }
         if (queueThumbnails) QueueFilmstripThumbnails();
     }
+    struct FilmstripLayoutAnchor {
+        size_t index = 0;
+        float contentX = 0.0f;
+        double renderedX = 0.0;
+    };
+    float FilmstripContentWidth() const {
+        return filmstripItemOffsets_.empty() ? 0.0f : filmstripItemOffsets_.back() - FilmstripGap() + FilmstripPadding();
+    }
+    std::optional<FilmstripLayoutAnchor> CaptureFilmstripLayoutAnchor() const {
+        if (navigationFiles_.empty() || filmstripItemOffsets_.size() != navigationFiles_.size() + 1 ||
+            filmstripItemWidths_.size() != navigationFiles_.size()) return std::nullopt;
+        const RECT bounds = GetFilmstripBounds();
+        const double visibleLeft = filmstripScroll_;
+        const double visibleRight = visibleLeft + static_cast<double>(bounds.right - bounds.left);
+        const auto makeAnchor = [&](size_t index) {
+            return FilmstripLayoutAnchor{ index, filmstripItemOffsets_[index],
+                static_cast<double>(bounds.left) + filmstripItemOffsets_[index] - filmstripScroll_ };
+        };
+        for (size_t index = 0; index < navigationFiles_.size(); ++index) {
+            const double left = filmstripItemOffsets_[index];
+            const double right = left + FilmstripThumbnailWidth(index);
+            if (left >= visibleLeft && right <= visibleRight &&
+                (index >= filmstripAspectRelayoutPending_.size() || !filmstripAspectRelayoutPending_[index])) return makeAnchor(index);
+        }
+        for (size_t index = 0; index < navigationFiles_.size(); ++index) {
+            const double left = filmstripItemOffsets_[index];
+            const double right = left + FilmstripThumbnailWidth(index);
+            if (left >= visibleLeft && right <= visibleRight) return makeAnchor(index);
+        }
+        for (size_t index = 0; index < navigationFiles_.size(); ++index) {
+            const double left = filmstripItemOffsets_[index];
+            const double right = left + FilmstripThumbnailWidth(index);
+            if (right > visibleLeft && left < visibleRight) return makeAnchor(index);
+        }
+        return std::nullopt;
+    }
+#ifdef _DEBUG
+    void TraceFilmstripAspectRelayoutBegin(size_t pendingCount, const std::optional<FilmstripLayoutAnchor>& anchor,
+        double oldScroll, float oldContentWidth) const {
+        wchar_t message[768]{};
+        const std::wstring path = anchor && anchor->index < navigationFiles_.size() ? navigationFiles_[anchor->index].wstring() : L"";
+        swprintf_s(message, L"[Viewtrious] FILMSTRIP_ASPECT_RELAYOUT_BEGIN pending=%zu anchor=%zu path=%ls oldScroll=%.3f oldContentX=%.3f oldRenderedX=%.3f oldContentWidth=%.3f\n",
+            pendingCount, anchor ? anchor->index : static_cast<size_t>(-1), path.c_str(), oldScroll,
+            anchor ? anchor->contentX : 0.0f, anchor ? anchor->renderedX : 0.0, oldContentWidth);
+        OutputDebugStringW(message);
+    }
+    void TraceFilmstripAspectRelayoutEnd(const std::optional<FilmstripLayoutAnchor>& anchor, double scrollBeforeCompensation,
+        double compensation, double compensatedScroll, double clampedScroll, double renderedX, float contentWidth, bool boundPrevented) const {
+        wchar_t message[768]{};
+        const double renderedDelta = anchor ? renderedX - anchor->renderedX : 0.0;
+        const float contentX = anchor && anchor->index < filmstripItemOffsets_.size() ? filmstripItemOffsets_[anchor->index] : 0.0f;
+        swprintf_s(message, L"[Viewtrious] FILMSTRIP_ASPECT_RELAYOUT_END newScrollBefore=%.3f newContentX=%.3f compensation=%.3f compensatedScroll=%.3f clampedScroll=%.3f newRenderedX=%.3f renderedDelta=%.3f newContentWidth=%.3f boundPrevented=%d\n",
+            scrollBeforeCompensation, contentX, compensation, compensatedScroll, clampedScroll, renderedX, renderedDelta, contentWidth,
+            boundPrevented ? 1 : 0);
+        OutputDebugStringW(message);
+    }
+#endif
+    void ApplyFilmstripAspectRelayout(bool queueThumbnails = true) {
+        const size_t pendingCount = static_cast<size_t>(std::count(filmstripAspectRelayoutPending_.begin(), filmstripAspectRelayoutPending_.end(), true));
+        if (!pendingCount) return;
+        const std::optional<FilmstripLayoutAnchor> anchor = CaptureFilmstripLayoutAnchor();
+        const RECT oldBounds = GetFilmstripBounds();
+        const double oldScroll = filmstripScroll_;
+        const float oldContentWidth = FilmstripContentWidth();
+#ifdef _DEBUG
+        TraceFilmstripAspectRelayoutBegin(pendingCount, anchor, oldScroll, oldContentWidth);
+#endif
+        for (size_t index = 0; index < filmstripLayoutAspects_.size() && index < filmstripKnownAspects_.size(); ++index) {
+            if (index < filmstripAspectRelayoutPending_.size() && filmstripAspectRelayoutPending_[index])
+                filmstripLayoutAspects_[index] = filmstripKnownAspects_[index];
+        }
+        std::fill(filmstripAspectRelayoutPending_.begin(), filmstripAspectRelayoutPending_.end(), false);
+        filmstripLayoutRebuildPending_ = false;
+        RebuildFilmstripLayout(false, queueThumbnails);
+        const double scrollBeforeCompensation = filmstripScroll_;
+        double compensatedScroll = filmstripScroll_;
+        if (anchor && anchor->index < filmstripItemOffsets_.size()) {
+            const RECT newBounds = GetFilmstripBounds();
+            compensatedScroll = oldScroll + (static_cast<double>(newBounds.left) - oldBounds.left) +
+                (static_cast<double>(filmstripItemOffsets_[anchor->index]) - anchor->contentX);
+        }
+        const double clampedScroll = std::clamp(compensatedScroll, 0.0, static_cast<double>(FilmstripMaximumScroll()));
+        const bool boundPrevented = std::abs(clampedScroll - compensatedScroll) > 0.01;
+        filmstripScroll_ = clampedScroll;
+        if ((filmstripScroll_ <= 0.0 && filmstripScrollVelocity_ < 0.0) ||
+            (filmstripScroll_ >= FilmstripMaximumScroll() && filmstripScrollVelocity_ > 0.0)) filmstripScrollVelocity_ = 0.0;
+#ifdef _DEBUG
+        const double renderedX = anchor && anchor->index < filmstripItemOffsets_.size()
+            ? static_cast<double>(GetFilmstripBounds().left) + filmstripItemOffsets_[anchor->index] - filmstripScroll_ : 0.0;
+        TraceFilmstripAspectRelayoutEnd(anchor, scrollBeforeCompensation, compensatedScroll - scrollBeforeCompensation,
+            compensatedScroll, clampedScroll, renderedX, FilmstripContentWidth(), boundPrevented);
+        if (filmstripPostStopPosition_ && !filmstripScrollAnimating_) filmstripPostStopPosition_ = filmstripScroll_;
+#endif
+    }
+    bool UpdateFilmstripKnownAspect(size_t index, float aspect) {
+        if (index >= filmstripKnownAspects_.size() || index >= filmstripAspectAuthoritative_.size() ||
+            index >= filmstripAspectRelayoutPending_.size() || !std::isfinite(aspect) || aspect <= 0.0f) return false;
+        const bool changed = std::abs(filmstripKnownAspects_[index] - aspect) > 0.0001f;
+        filmstripKnownAspects_[index] = aspect;
+        filmstripAspectAuthoritative_[index] = true;
+        if (changed) filmstripAspectRelayoutPending_[index] = true;
+        return changed;
+    }
     void ApplyDeferredFilmstripLayout() {
         if (!filmstripLayoutRebuildPending_) return;
-        filmstripLayoutRebuildPending_ = false;
-        RebuildFilmstripLayout();
+        ApplyFilmstripAspectRelayout();
     }
     std::pair<size_t, size_t> FilmstripVisibleRange() const {
         if (navigationFiles_.empty() || filmstripItemOffsets_.empty()) return { 0, 0 };
@@ -3343,13 +3451,14 @@ public:
             static_cast<unsigned long long>(GetTickCount64() - started), static_cast<unsigned int>(result), path.c_str());
         OutputDebugStringW(message);
     }
-    void TraceFilmstripThumbnailPublication(size_t index, const FilmstripThumbnailEntry& entry, bool layoutDeferred) const {
+    void TraceFilmstripThumbnailPublication(size_t index, const FilmstripThumbnailEntry& entry, bool layoutChanged, bool layoutDeferred) const {
         const float slotWidth = index < filmstripItemWidths_.size() ? filmstripItemWidths_[index] : 0.0f;
         const float contentWidth = filmstripItemOffsets_.empty() ? 0.0f : filmstripItemOffsets_.back() - FilmstripGap() + FilmstripPadding();
         wchar_t message[512]{};
+        const wchar_t* layout = layoutDeferred ? L"deferred" : layoutChanged ? L"rebuild" : L"unchanged";
         swprintf_s(message, L"[Viewtrious] THUMB_RAM_PUBLISHED_UI index=%zu slotWidth=%.2f bitmap=%ux%u aspect=%.3f contentWidth=%.2f scroll=%.3f layout=%ls path=%ls\n",
             index, slotWidth, entry.width, entry.height, entry.aspect, contentWidth, filmstripScroll_,
-            layoutDeferred ? L"deferred" : L"rebuild", entry.path.c_str());
+            layout, entry.path.c_str());
         OutputDebugStringW(message);
     }
 #endif
@@ -3480,12 +3589,13 @@ public:
             entry.stride = result->stride;
             entry.pixels = std::move(result->pixels);
             filmstripThumbnails_.push_back(std::move(entry));
-            const bool layoutDeferred = filmstripScrollAnimating_;
+            const bool aspectChanged = UpdateFilmstripKnownAspect(index, result->aspect);
+            const bool layoutDeferred = aspectChanged && filmstripScrollAnimating_;
 #ifdef _DEBUG
-            TraceFilmstripThumbnailPublication(index, filmstripThumbnails_.back(), layoutDeferred);
+            TraceFilmstripThumbnailPublication(index, filmstripThumbnails_.back(), aspectChanged, layoutDeferred);
 #endif
             if (layoutDeferred) filmstripLayoutRebuildPending_ = true;
-            else RebuildFilmstripLayout();
+            else if (aspectChanged) ApplyFilmstripAspectRelayout();
             InvalidateRect(window_, nullptr, FALSE);
         } else {
             if (current) filmstripThumbnailFailures_.push_back(result->request);
@@ -3687,7 +3797,10 @@ public:
             now.QuadPart, rawWheelDelta, units, filmstripScroll_, before, filmstripScrollVelocity_, filmstripScrollVelocity_ - before);
         OutputDebugStringW(message);
 #endif
-        if (!EnsureFilmstripScrollScheduler() || !ArmFilmstripScrollWake()) StopFilmstripScrollAnimation();
+        if (!EnsureFilmstripScrollScheduler() || !ArmFilmstripScrollWake()) {
+            StopFilmstripScrollAnimation();
+            ApplyDeferredFilmstripLayout();
+        }
         QueueFilmstripThumbnails();
         StartFilmstripHold();
         InvalidateRect(window_, nullptr, FALSE);
@@ -3710,7 +3823,10 @@ public:
         }
         QueueFilmstripThumbnails();
         InvalidateRect(window_, nullptr, FALSE);
-        if (!ArmFilmstripScrollWake()) StopFilmstripScrollAnimation();
+        if (!ArmFilmstripScrollWake()) {
+            StopFilmstripScrollAnimation();
+            ApplyDeferredFilmstripLayout();
+        }
     }
     RECT GetFilmstripRevealBounds() const {
         RECT client{};
@@ -5894,6 +6010,7 @@ private:
         filmstripClickedRevealTarget_.reset();
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear(); filmstripThumbnailFailures_.clear();
         filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0;
+        filmstripLayoutAspects_.clear(); filmstripKnownAspects_.clear(); filmstripAspectAuthoritative_.clear(); filmstripAspectRelayoutPending_.clear();
         filmstripLayoutRebuildPending_ = false;
         StopFilmstripScrollAnimation();
         filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer();
@@ -6305,7 +6422,7 @@ private:
         entry.aspect = static_cast<float>(entry.width) / static_cast<float>(entry.height);
         entry.bitmap.Reset();
         // This is a local cache/layout update. It must not create thumbnail worker demand.
-        RebuildFilmstripLayout(true, false);
+        if (UpdateFilmstripKnownAspect(index, entry.aspect)) ApplyFilmstripAspectRelayout(false);
 #ifdef _DEBUG
         TraceFilmstripThumbnailStage(L"THUMB_RAM_LIVE_ROTATE_END", entry.path, started, S_OK);
 #endif
@@ -6756,6 +6873,10 @@ private:
             navigationBuildQueued_ = false;
             filmstripItemWidths_.clear();
             filmstripItemOffsets_.clear();
+            filmstripLayoutAspects_.clear();
+            filmstripKnownAspects_.clear();
+            filmstripAspectAuthoritative_.clear();
+            filmstripAspectRelayoutPending_.clear();
             filmstripThumbnailGenerations_.clear();
             filmstripThumbnails_.clear();
             filmstripThumbnailPending_.clear();
@@ -8834,6 +8955,10 @@ private:
     std::atomic<uint64_t> filmstripScrollWakePendingGeneration_{ 0 };
     bool filmstripScrollAnimating_ = false;
     bool filmstripLayoutRebuildPending_ = false;
+    std::vector<float> filmstripLayoutAspects_;
+    std::vector<float> filmstripKnownAspects_;
+    std::vector<bool> filmstripAspectAuthoritative_;
+    std::vector<bool> filmstripAspectRelayoutPending_;
 #ifdef _DEBUG
     UINT filmstripScrollTickCount_ = 0;
     double filmstripScrollTickTotalMs_ = 0.0;

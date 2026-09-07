@@ -3286,7 +3286,7 @@ public:
         const auto found = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&current](const fs::path& path) { return PathsEqual(path, current); });
         return found == navigationFiles_.end() ? 0 : static_cast<size_t>(std::distance(navigationFiles_.begin(), found));
     }
-    void RebuildFilmstripLayout(bool clampScroll = true) {
+    void RebuildFilmstripLayout(bool clampScroll = true, bool queueThumbnails = true) {
         const size_t count = navigationFiles_.size();
         filmstripItemWidths_.resize(count);
         filmstripItemOffsets_.resize(count + 1);
@@ -3301,7 +3301,7 @@ public:
         }
         if (!filmstripItemOffsets_.empty()) filmstripItemOffsets_.back() = offset;
         if (clampScroll) filmstripScroll_ = std::clamp(filmstripScroll_, 0.0f, FilmstripMaximumScroll());
-        QueueFilmstripThumbnails();
+        if (queueThumbnails) QueueFilmstripThumbnails();
     }
     std::pair<size_t, size_t> FilmstripVisibleRange() const {
         if (navigationFiles_.empty() || filmstripItemOffsets_.empty()) return { 0, 0 };
@@ -5643,6 +5643,7 @@ private:
         const HRESULT reload = ReloadCurrentImage();
         if (IsJpegPath(currentPath_) || IsPngPath(currentPath_)) LogRotationStage(L"reload: DecodeImage", reload, FAILED(reload) ? GetLastError() : ERROR_SUCCESS);
         if (FAILED(reload) && (IsJpegPath(currentPath_) || IsPngPath(currentPath_))) ShowRotationFailure(L"reload: DecodeImage", reload, GetLastError());
+        if (SUCCEEDED(reload)) RotateResidentFilmstripThumbnail(clockwise);
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -6049,6 +6050,44 @@ private:
         pixels.stride = destinationStride;
         pixels.pixels = std::move(transformed);
         return true;
+    }
+
+    void RotateResidentFilmstripThumbnail(bool clockwise) {
+        if (filmstripThumbnailGenerations_.size() != navigationFiles_.size()) return;
+        const fs::path current(currentPath_);
+        const auto item = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&current](const fs::path& path) {
+            return PathsEqual(path, current);
+        });
+        if (item == navigationFiles_.end()) return;
+        const size_t index = static_cast<size_t>(std::distance(navigationFiles_.begin(), item));
+#ifdef _DEBUG
+        const ULONGLONG started = GetTickCount64();
+#endif
+        const int thumbnail = FindFilmstripThumbnail(currentPath_, filmstripThumbnailGenerations_[index]);
+        if (thumbnail < 0) {
+#ifdef _DEBUG
+            TraceFilmstripThumbnailStage(L"THUMB_RAM_LIVE_ROTATE_SKIPPED_NOT_RESIDENT", currentPath_, started, S_FALSE);
+#endif
+            return;
+        }
+        FilmstripThumbnailEntry& entry = filmstripThumbnails_[thumbnail];
+#ifdef _DEBUG
+        TraceFilmstripThumbnailStage(L"THUMB_RAM_LIVE_ROTATE_BEGIN", entry.path, started, S_OK);
+#endif
+        if (!ApplyFilmstripThumbnailOrientation(entry, clockwise ? 6u : 8u)) {
+#ifdef _DEBUG
+            TraceFilmstripThumbnailStage(L"THUMB_RAM_LIVE_ROTATE_END", entry.path, started, E_FAIL);
+#endif
+            return;
+        }
+        entry.aspect = static_cast<float>(entry.width) / static_cast<float>(entry.height);
+        entry.bitmap.Reset();
+        // This is a local cache/layout update. It must not create thumbnail worker demand.
+        RebuildFilmstripLayout(true, false);
+#ifdef _DEBUG
+        TraceFilmstripThumbnailStage(L"THUMB_RAM_LIVE_ROTATE_END", entry.path, started, S_OK);
+#endif
+        InvalidateRect(window_, nullptr, FALSE);
     }
 
     HRESULT DecodeFilmstripThumbnailPixels(const std::wstring& path, UINT targetHeight, PixelBuffer& decoded, float& aspect) const {

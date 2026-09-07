@@ -3192,6 +3192,7 @@ public:
             ++navigationFolderGeneration_;
             filmstripThumbnailFolderGeneration_.store(navigationFolderGeneration_, std::memory_order_release);
             navigationFiles_ = std::move(scannedFiles);
+            filmstripAutoRevealTarget_.reset();
             filmstripThumbnailGenerations_.assign(navigationFiles_.size(), ++filmstripThumbnailGenerationSeed_);
             filmstripThumbnails_.clear();
             filmstripScroll_ = 0.0f;
@@ -3205,6 +3206,7 @@ public:
         RebuildFilmstripLayout();
         if (filmstripInitialPresentationPending_) {
             filmstripInitialPresentationPending_ = false;
+            RequestFilmstripAutoReveal(CurrentNavigationIndex());
             RevealFilmstripForNavigation();
         } else if (changed) {
             StartFilmstripHold(1000);
@@ -3444,12 +3446,15 @@ public:
         }
         return entry.bitmap.Get();
     }
-    void EnsureCurrentFilmstripVisible() {
-        if (!FilmstripEligible()) return;
+    void RequestFilmstripAutoReveal(size_t index) {
+        if (index < navigationFiles_.size()) filmstripAutoRevealTarget_ = index;
+    }
+    void EnsureFilmstripItemVisible(size_t index) {
+        if (!FilmstripEligible() || filmstripItemOffsets_.size() < 2 || index >= navigationFiles_.size() ||
+            index >= filmstripItemWidths_.size() || index + 1 >= filmstripItemOffsets_.size()) return;
         const RECT bounds = GetFilmstripBounds();
-        const size_t current = CurrentNavigationIndex();
-        const float left = filmstripItemOffsets_[current];
-        const float right = left + FilmstripThumbnailWidth(current);
+        const float left = filmstripItemOffsets_[index];
+        const float right = left + FilmstripThumbnailWidth(index);
         const float visibleRight = filmstripScroll_ + static_cast<float>(bounds.right - bounds.left);
         if (left < filmstripScroll_) filmstripScroll_ = left;
         else if (right > visibleRight) filmstripScroll_ = right - static_cast<float>(bounds.right - bounds.left);
@@ -3557,11 +3562,22 @@ public:
         if (std::abs(opacity - filmstripOpacity_) > 0.001f) { filmstripOpacity_ = opacity; InvalidateRect(window_, nullptr, FALSE); }
         if (opacity <= 0.001f) { filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); }
     }
-    void RevealFilmstripForNavigation() { EnsureCurrentFilmstripVisible(); StartFilmstripHold(1000); }
+    void RevealFilmstripForNavigation() {
+        if (filmstripAutoRevealTarget_) {
+            const size_t target = *filmstripAutoRevealTarget_;
+            filmstripAutoRevealTarget_.reset();
+            EnsureFilmstripItemVisible(target);
+        }
+        StartFilmstripHold(1000);
+    }
     void SelectFilmstripItem(int index) {
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
+        RequestFilmstripAutoReveal(static_cast<size_t>(index));
         const std::wstring path = navigationFiles_[index].wstring();
-        if (!PathsEqual(fs::path(path), fs::path(currentPath_))) LoadContent(path, false);
+        if (!PathsEqual(fs::path(path), fs::path(currentPath_))) {
+            if (FAILED(LoadContent(path, false))) filmstripAutoRevealTarget_.reset();
+        }
+        else RevealFilmstripForNavigation();
     }
     void SetFilmstripHover(POINT point) {
         const int index = FilmstripItemAt(point);
@@ -3633,7 +3649,11 @@ public:
         ClearStillDissolve();
         const std::optional<std::wstring> path = NavigationTargetPath(direction);
         if (!path) return;
-        LoadContent(*path, false);
+        const auto target = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&](const fs::path& candidate) {
+            return PathsEqual(candidate, fs::path(*path));
+        });
+        if (target != navigationFiles_.end()) RequestFilmstripAutoReveal(static_cast<size_t>(std::distance(navigationFiles_.begin(), target)));
+        if (FAILED(LoadContent(*path, false))) filmstripAutoRevealTarget_.reset();
         if (immediatePaint) UpdateWindow(window_);
     }
 
@@ -5595,6 +5615,7 @@ private:
         currentPath_.clear(); displayedPath_.clear(); currentFileIdentity_ = {}; resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
         CancelQueuedFilmstripThumbnails();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
+        filmstripAutoRevealTarget_.reset();
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear();
         filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0f;
         filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer();
@@ -5619,13 +5640,18 @@ private:
         navigationBuilt_ = true;
         for (size_t offset = 0; offset < navigationFiles_.size(); ++offset) {
             const size_t candidate = (index + offset) % navigationFiles_.size();
-            if (IsGifPath(navigationFiles_[candidate].wstring()) && SUCCEEDED(LoadAnimatedGif(navigationFiles_[candidate].wstring(), false))) {
-                InvalidateRect(window_, nullptr, FALSE);
-                return;
+            if (IsGifPath(navigationFiles_[candidate].wstring())) {
+                RequestFilmstripAutoReveal(candidate);
+                if (SUCCEEDED(LoadAnimatedGif(navigationFiles_[candidate].wstring(), false))) {
+                    InvalidateRect(window_, nullptr, FALSE);
+                    return;
+                }
+                filmstripAutoRevealTarget_.reset();
             }
             ComPtr<IWICBitmapSource> source;
             UINT width = 0, height = 0;
             if (SUCCEEDED(DecodeImage(navigationFiles_[candidate].wstring(), source, width, height))) {
+                RequestFilmstripAutoReveal(candidate);
                 CommitImage(navigationFiles_[candidate].wstring(), source, width, height, false);
                 InvalidateRect(window_, nullptr, FALSE);
                 return;
@@ -6315,6 +6341,7 @@ private:
             filmstripThumbnailGenerations_.clear();
             filmstripThumbnails_.clear();
             filmstripThumbnailPending_.clear();
+            filmstripAutoRevealTarget_.reset();
             filmstripScroll_ = 0.0f;
             filmstripInitialPresentationPending_ = true;
         } else if (navigationBuilt_) {
@@ -8384,6 +8411,7 @@ private:
     FilmstripVisibilityState filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
     int filmstripHoveredIndex_ = -1;
     bool filmstripInitialPresentationPending_ = false;
+    std::optional<size_t> filmstripAutoRevealTarget_;
     bool filmstripPanelHovered_ = false;
     bool filmstripRevealHovered_ = false;
     bool filmstripHintHovered_ = false;

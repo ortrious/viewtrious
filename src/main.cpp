@@ -19,7 +19,7 @@
 #include "lanczos_resampler.h"
 #include "d3d11_model_viewport.h"
 #include "video_player.h"
-#include "video_thumbnail_reader.h"
+#include "shell_thumbnail_reader.h"
 #include "stl_loader.h"
 #include "three_mf_loader.h"
 #include "model_importer.h"
@@ -3513,8 +3513,8 @@ public:
                 auto* result = new FilmstripThumbnailResult{};
                 result->request = request;
                 if (IsVideoPath(request.path)) {
-                    VideoThumbnailPixels decoded;
-                    result->result = DecodeVideoThumbnailPixels(request.path, request.targetHeight, decoded, result->aspect);
+                    ShellThumbnailPixels decoded;
+                    result->result = DecodeShellVideoThumbnailPixels(request.path, 256, decoded, result->aspect);
                     result->width = decoded.width;
                     result->height = decoded.height;
                     result->stride = decoded.stride;
@@ -3794,6 +3794,12 @@ public:
             const bool aspectChanged = UpdateFilmstripKnownAspect(index, result->aspect);
             const bool layoutDeferred = aspectChanged && filmstripScrollAnimating_;
 #ifdef _DEBUG
+            if (IsVideoPath(result->request.path)) {
+                wchar_t message[768]{};
+                swprintf_s(message, L"[Viewtrious] VIDEO_SHELL_THUMB_PUBLISHED index=%zu size=%ux%u aspect=%.3f path=%ls\n",
+                    index, result->width, result->height, result->aspect, result->request.path.c_str());
+                OutputDebugStringW(message);
+            }
             TraceFilmstripThumbnailPublication(index, filmstripThumbnails_.back(), aspectChanged, layoutDeferred);
 #endif
             if (layoutDeferred) filmstripLayoutRebuildPending_ = true;
@@ -4325,14 +4331,12 @@ public:
                 renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), hover.Get(), scale);
             }
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), placeholder.Get());
-            if (!IsVideoPath(navigationFiles_[index].wstring())) {
-                if (ID2D1Bitmap* thumbnail = FilmstripThumbnailBitmap(index)) {
-                    renderTarget_->DrawBitmap(thumbnail, box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                } else {
-                    DrawOverlayText(L"image", box.left, box.top, box.right - box.left, box.bottom - box.top, 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
-                }
-            } else {
+            if (ID2D1Bitmap* thumbnail = FilmstripThumbnailBitmap(index)) {
+                renderTarget_->DrawBitmap(thumbnail, box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            } else if (IsVideoPath(navigationFiles_[index].wstring())) {
                 DrawOverlayText(L"video", box.left, box.top, box.right - box.left, box.bottom - box.top, 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
+            } else {
+                DrawOverlayText(L"image", box.left, box.top, box.right - box.left, box.bottom - box.top, 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
             }
             if (index == current) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), selectedOutline.Get(), 2.0f * scale);
         }

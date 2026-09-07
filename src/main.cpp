@@ -3216,6 +3216,7 @@ public:
             filmstripThumbnails_.clear();
             filmstripThumbnailFailures_.clear();
             filmstripScroll_ = 0.0;
+            filmstripDemandFirst_ = filmstripDemandLast_ = filmstripDemandCurrent_ = std::numeric_limits<size_t>::max();
             filmstripLayoutRebuildPending_ = false;
             StopFilmstripScrollAnimation();
         }
@@ -3555,6 +3556,18 @@ public:
         }
         PruneFilmstripThumbnails(first, last, current);
     }
+    void UpdateFilmstripThumbnailDemand(bool force = false) {
+        if (!FilmstripEligible()) return;
+        const auto [visibleFirst, visibleLast] = FilmstripVisibleRange();
+        const size_t first = visibleFirst > 2 ? visibleFirst - 2 : 0;
+        const size_t last = std::min(navigationFiles_.size(), visibleLast + 2);
+        const size_t current = CurrentNavigationIndex();
+        if (!force && filmstripDemandFirst_ == first && filmstripDemandLast_ == last && filmstripDemandCurrent_ == current) return;
+        filmstripDemandFirst_ = first;
+        filmstripDemandLast_ = last;
+        filmstripDemandCurrent_ = current;
+        QueueFilmstripThumbnails();
+    }
     void PruneFilmstripThumbnails(size_t first, size_t last, size_t current) {
         constexpr size_t budget = 16u * 1024u * 1024u;
         const auto useful = [&](const FilmstripThumbnailEntry& entry) {
@@ -3884,6 +3897,7 @@ public:
             if (height != filmstripHeightDips_) {
                 filmstripHeightDips_ = height;
                 ApplyFilmstripAspectRelayout(false, true);
+                UpdateFilmstripThumbnailDemand(true);
                 InvalidateRect(window_, nullptr, FALSE);
             }
             return true;
@@ -3899,6 +3913,7 @@ public:
         }
         if (!filmstripDragging_) return true;
         filmstripScroll_ = std::clamp(filmstripDragStartScroll_ - static_cast<double>(dx), 0.0, static_cast<double>(FilmstripMaximumScroll()));
+        UpdateFilmstripThumbnailDemand();
         InvalidateRect(window_, nullptr, FALSE);
         return true;
     }
@@ -3914,7 +3929,7 @@ public:
             BeginFilmstripFadeSequence();
             return true;
         }
-        if (dragging) { BeginFilmstripFadeSequence(); return true; }
+        if (dragging) { UpdateFilmstripThumbnailDemand(true); BeginFilmstripFadeSequence(); return true; }
         if (click >= 0 && FilmstripContains(point)) SelectFilmstripItem(click);
         return true;
     }
@@ -6088,6 +6103,7 @@ private:
         filmstripClickedRevealTarget_.reset();
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear(); filmstripThumbnailFailures_.clear();
         filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0;
+        filmstripDemandFirst_ = filmstripDemandLast_ = filmstripDemandCurrent_ = std::numeric_limits<size_t>::max();
         filmstripLayoutAspects_.clear(); filmstripKnownAspects_.clear(); filmstripAspectAuthoritative_.clear(); filmstripAspectRelayoutPending_.clear();
         filmstripLayoutRebuildPending_ = false;
         StopFilmstripScrollAnimation();
@@ -9104,6 +9120,9 @@ private:
     bool filmstripResizing_ = false;
     int filmstripResizeStartY_ = 0;
     int filmstripResizeStartHeightDips_ = 0;
+    size_t filmstripDemandFirst_ = std::numeric_limits<size_t>::max();
+    size_t filmstripDemandLast_ = std::numeric_limits<size_t>::max();
+    size_t filmstripDemandCurrent_ = std::numeric_limits<size_t>::max();
     bool spaceMouseEnabled_ = true;
     bool spaceMouseRuntimeAvailable_ = false;
     bool spaceMouseMotionActive_ = false;

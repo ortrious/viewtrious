@@ -289,6 +289,8 @@ struct FilmstripThumbnailResult : PixelBuffer {
 struct FilmstripThumbnailEntry : PixelBuffer {
     std::wstring path;
     uint64_t itemGeneration = 0;
+    // This is an uncropped, Viewtrious-owned RAM master. The visible filmstrip crop is derived
+    // only when drawing, so a 90-degree rotation never needs to reopen the source file.
     float aspect = 1.0f;
     ComPtr<ID2D1Bitmap> bitmap;
 };
@@ -3448,12 +3450,12 @@ public:
         filmstripThumbnailPending_.erase(std::remove_if(filmstripThumbnailPending_.begin(), filmstripThumbnailPending_.end(), [&](const FilmstripThumbnailRequest& request) {
             return request.itemGeneration == result->request.itemGeneration && PathsEqual(fs::path(request.path), fs::path(result->request.path));
         }), filmstripThumbnailPending_.end());
-        const bool discardStaleRotationResult = ContinuePendingFilmstripRotation(*result);
+        const bool suppressRotationTriggeredRequeue = ContinuePendingFilmstripRotation(*result);
         const auto item = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&](const fs::path& path) {
             return PathsEqual(path, fs::path(result->request.path));
         });
         const size_t index = item == navigationFiles_.end() ? navigationFiles_.size() : static_cast<size_t>(std::distance(navigationFiles_.begin(), item));
-        const bool current = !discardStaleRotationResult && SUCCEEDED(result->result) && result->pixels && result->width && result->height &&
+        const bool current = !suppressRotationTriggeredRequeue && SUCCEEDED(result->result) && result->pixels && result->width && result->height &&
             result->request.folderGeneration == navigationFolderGeneration_ && index < filmstripThumbnailGenerations_.size() &&
             filmstripThumbnailGenerations_[index] == result->request.itemGeneration && !FilmstripThumbnailDecodeBlocked(result->request.path);
         if (current) {
@@ -3471,7 +3473,7 @@ public:
             filmstripThumbnails_.push_back(std::move(entry));
             RebuildFilmstripLayout();
             InvalidateRect(window_, nullptr, FALSE);
-        } else QueueFilmstripThumbnails();
+        } else if (!suppressRotationTriggeredRequeue) QueueFilmstripThumbnails();
         delete result;
     }
     ID2D1Bitmap* FilmstripThumbnailBitmap(size_t index) {
@@ -3655,7 +3657,21 @@ public:
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), placeholder.Get());
             if (!IsVideoPath(navigationFiles_[index].wstring())) {
                 if (ID2D1Bitmap* thumbnail = FilmstripThumbnailBitmap(index)) {
-                    renderTarget_->DrawBitmap(thumbnail, box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                    const int thumbnailIndex = FindFilmstripThumbnail(navigationFiles_[index].wstring(), filmstripThumbnailGenerations_[index]);
+                    const FilmstripThumbnailEntry& entry = filmstripThumbnails_[thumbnailIndex];
+                    const float sourceAspect = static_cast<float>(entry.width) / static_cast<float>(entry.height);
+                    const float destinationAspect = (box.right - box.left) / (box.bottom - box.top);
+                    D2D1_RECT_F source = D2D1::RectF(0.0f, 0.0f, static_cast<float>(entry.width), static_cast<float>(entry.height));
+                    if (sourceAspect > destinationAspect) {
+                        const float width = static_cast<float>(entry.height) * destinationAspect;
+                        source.left = (static_cast<float>(entry.width) - width) * 0.5f;
+                        source.right = source.left + width;
+                    } else if (sourceAspect < destinationAspect) {
+                        const float height = static_cast<float>(entry.width) / destinationAspect;
+                        source.top = (static_cast<float>(entry.height) - height) * 0.5f;
+                        source.bottom = source.top + height;
+                    }
+                    renderTarget_->DrawBitmap(thumbnail, &box, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &source);
                 } else {
                     DrawOverlayText(L"image", box.left, box.top, box.right - box.left, box.bottom - box.top, 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
                 }
@@ -5258,7 +5274,7 @@ private:
     void CompleteShellRotationRefresh() {
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationPending_ = false;
-        EndFilmstripThumbnailRotation(shellRotationPath_, true);
+        EndFilmstripThumbnailRotation(shellRotationPath_, true, shellRotationClockwise_);
         BeginHeifRotationCooldown();
         if (!PathsEqual(fs::path(shellRotationPath_), fs::path(currentPath_))) return;
         currentFileIdentity_ = ReadFileIdentity(fs::path(currentPath_));
@@ -5299,6 +5315,7 @@ private:
 
     HRESULT RotateHeifWithShell(bool clockwise) {
         if (IsHeifRotationGateActive()) return HRESULT_FROM_WIN32(ERROR_BUSY);
+        shellRotationClockwise_ = clockwise;
         shellRotationPending_ = true;
         RefreshHeifShellRotationCapability();
         const bool available = clockwise ? heifShellRotateRightAvailable_ : heifShellRotateLeftAvailable_;
@@ -5642,7 +5659,32 @@ private:
         pendingFilmstripRotation_ = PendingFilmstripRotation{ path, currentFileIdentity_, navigationFolderGeneration_, itemGeneration, clockwise };
         return true;
     }
-    void EndFilmstripThumbnailRotation(const std::wstring& path, bool changed) {
+    bool RotateFilmstripThumbnailInMemory(const std::wstring& path, uint64_t oldGeneration, uint64_t newGeneration, bool clockwise) {
+        const int thumbnail = FindFilmstripThumbnail(path, oldGeneration);
+        if (thumbnail < 0) return false;
+        FilmstripThumbnailEntry& entry = filmstripThumbnails_[thumbnail];
+        if (!entry.pixels || entry.width == 0 || entry.height == 0 || entry.stride < entry.width * 4) return false;
+        const UINT rotatedWidth = entry.height;
+        const UINT rotatedHeight = entry.width;
+        if (rotatedWidth > UINT_MAX / 4 || rotatedHeight > UINT_MAX / (rotatedWidth * 4)) return false;
+        const UINT rotatedStride = rotatedWidth * 4;
+        auto rotated = std::make_shared<std::vector<BYTE>>(static_cast<size_t>(rotatedStride) * rotatedHeight);
+        for (UINT y = 0; y < entry.height; ++y) for (UINT x = 0; x < entry.width; ++x) {
+            const UINT destinationX = clockwise ? entry.height - 1 - y : y;
+            const UINT destinationY = clockwise ? x : entry.width - 1 - x;
+            std::memcpy(rotated->data() + static_cast<size_t>(destinationY) * rotatedStride + destinationX * 4,
+                entry.pixels->data() + static_cast<size_t>(y) * entry.stride + x * 4, 4);
+        }
+        entry.width = rotatedWidth;
+        entry.height = rotatedHeight;
+        entry.stride = rotatedStride;
+        entry.aspect = static_cast<float>(rotatedWidth) / static_cast<float>(rotatedHeight);
+        entry.itemGeneration = newGeneration;
+        entry.pixels = std::move(rotated);
+        entry.bitmap.Reset();
+        return true;
+    }
+    void EndFilmstripThumbnailRotation(const std::wstring& path, bool changed, bool clockwise = false) {
         filmstripThumbnailBlockedPaths_.erase(std::remove_if(filmstripThumbnailBlockedPaths_.begin(), filmstripThumbnailBlockedPaths_.end(), [&](const std::wstring& blocked) {
             return PathsEqual(fs::path(blocked), fs::path(path));
         }), filmstripThumbnailBlockedPaths_.end());
@@ -5652,12 +5694,22 @@ private:
         });
         if (item != navigationFiles_.end()) {
             const size_t index = static_cast<size_t>(std::distance(navigationFiles_.begin(), item));
-            if (index < filmstripThumbnailGenerations_.size()) ++filmstripThumbnailGenerations_[index];
+            if (index < filmstripThumbnailGenerations_.size()) {
+                const uint64_t oldGeneration = filmstripThumbnailGenerations_[index];
+                const uint64_t newGeneration = oldGeneration + 1;
+                filmstripThumbnailGenerations_[index] = newGeneration;
+                if (RotateFilmstripThumbnailInMemory(path, oldGeneration, newGeneration, clockwise)) {
+                    RebuildFilmstripLayout(false);
+                    InvalidateRect(window_, nullptr, FALSE);
+                    return;
+                }
+            }
         }
         filmstripThumbnails_.erase(std::remove_if(filmstripThumbnails_.begin(), filmstripThumbnails_.end(), [&](const FilmstripThumbnailEntry& entry) {
             return PathsEqual(fs::path(entry.path), fs::path(path));
         }), filmstripThumbnails_.end());
-        QueueFilmstripThumbnails();
+        // A rotation cache miss stays a placeholder; do not reopen the rotated source merely
+        // because this rotation completed. A later ordinary cache miss may populate it.
     }
     bool ContinuePendingFilmstripRotation(const FilmstripThumbnailResult& result) {
         if (!pendingFilmstripRotation_ || !PathsEqual(fs::path(pendingFilmstripRotation_->path), fs::path(result.request.path))) return false;
@@ -5676,8 +5728,8 @@ private:
             return true;
         }
         const bool changed = ExecuteRotationBackend(pending.clockwise);
-        if (!IsHeifPath(pending.path) || !changed) EndFilmstripThumbnailRotation(pending.path, changed);
-        return false;
+        if (!IsHeifPath(pending.path) || !changed) EndFilmstripThumbnailRotation(pending.path, changed, pending.clockwise);
+        return changed;
     }
     void RotateImage(bool clockwise) {
         if (currentPath_.empty()) return;
@@ -5686,7 +5738,7 @@ private:
         const std::wstring path = currentPath_;
         if (BeginFilmstripThumbnailRotation(path, clockwise)) return;
         const bool changed = ExecuteRotationBackend(clockwise);
-        if (!IsHeifPath(path) || !changed) EndFilmstripThumbnailRotation(path, changed);
+        if (!IsHeifPath(path) || !changed) EndFilmstripThumbnailRotation(path, changed, clockwise);
     }
 
     void ClearDeletedImage() {
@@ -6082,34 +6134,33 @@ private:
             }
             if (FAILED(hr) || !sourceWidth || !sourceHeight) return FAILED(hr) ? hr : E_FAIL;
             const float naturalAspect = static_cast<float>(sourceWidth) / static_cast<float>(sourceHeight);
-            const float croppedAspect = std::clamp(naturalAspect, 2.0f / 3.0f, 16.0f / 9.0f);
-            UINT cropWidth = sourceWidth, cropHeight = sourceHeight;
-            if (naturalAspect > croppedAspect) cropWidth = std::max(1u, static_cast<UINT>(std::lround(sourceHeight * croppedAspect)));
-            else if (naturalAspect < croppedAspect) cropHeight = std::max(1u, static_cast<UINT>(std::lround(sourceWidth / croppedAspect)));
-            const WICRect crop{ static_cast<INT>((sourceWidth - cropWidth) / 2), static_cast<INT>((sourceHeight - cropHeight) / 2),
-                static_cast<INT>(cropWidth), static_cast<INT>(cropHeight) };
-            ComPtr<IWICBitmapClipper> clipper;
-            if (SUCCEEDED(hr)) hr = factory->CreateBitmapClipper(&clipper);
-            if (SUCCEEDED(hr)) hr = clipper->Initialize(transformed.Get(), &crop);
-            const UINT targetWidth = std::max(1u, static_cast<UINT>(std::lround(targetHeight * croppedAspect)));
+            // Keep the full reduced image as the RAM master. The width cap preserves the
+            // previous thumbnail-memory envelope even for unusually wide source images.
+            const UINT maximumWidth = std::max(1u, static_cast<UINT>(std::lround(targetHeight * 16.0f / 9.0f)));
+            UINT targetWidth = std::max(1u, static_cast<UINT>(std::lround(targetHeight * naturalAspect)));
+            UINT masterHeight = targetHeight;
+            if (targetWidth > maximumWidth) {
+                targetWidth = maximumWidth;
+                masterHeight = std::max(1u, static_cast<UINT>(std::lround(targetWidth / naturalAspect)));
+            }
             ComPtr<IWICBitmapScaler> scaler;
             if (SUCCEEDED(hr)) hr = factory->CreateBitmapScaler(&scaler);
-            if (SUCCEEDED(hr)) hr = scaler->Initialize(clipper.Get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant);
+            if (SUCCEEDED(hr)) hr = scaler->Initialize(transformed.Get(), targetWidth, masterHeight, WICBitmapInterpolationModeFant);
             ComPtr<IWICFormatConverter> finalConverter;
             if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&finalConverter);
             if (SUCCEEDED(hr)) hr = finalConverter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA,
                 WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-            if (FAILED(hr) || targetWidth > UINT_MAX / 4 || targetHeight > UINT_MAX / (targetWidth * 4)) return FAILED(hr) ? hr : E_OUTOFMEMORY;
+            if (FAILED(hr) || targetWidth > UINT_MAX / 4 || masterHeight > UINT_MAX / (targetWidth * 4)) return FAILED(hr) ? hr : E_OUTOFMEMORY;
             const UINT stride = targetWidth * 4;
-            const size_t bytes = static_cast<size_t>(stride) * targetHeight;
+            const size_t bytes = static_cast<size_t>(stride) * masterHeight;
             auto pixels = std::make_shared<std::vector<BYTE>>(bytes);
             hr = finalConverter->CopyPixels(nullptr, stride, static_cast<UINT>(bytes), pixels->data());
             if (SUCCEEDED(hr)) {
                 decoded.width = targetWidth;
-                decoded.height = targetHeight;
+                decoded.height = masterHeight;
                 decoded.stride = stride;
                 decoded.pixels = std::move(pixels);
-                aspect = static_cast<float>(targetWidth) / static_cast<float>(targetHeight);
+                aspect = static_cast<float>(targetWidth) / static_cast<float>(masterHeight);
             }
         }
         return hr;
@@ -8614,6 +8665,7 @@ private:
     bool heifShellRotateLeftAvailable_ = false;
     bool heifShellRotateRightAvailable_ = false;
     bool shellRotationPending_ = false;
+    bool shellRotationClockwise_ = false;
     ULONGLONG heifRotationCooldownUntil_ = 0;
     bool heifRotationMenuLocked_ = false;
     std::wstring shellRotationPath_;

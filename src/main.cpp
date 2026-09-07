@@ -110,6 +110,8 @@ constexpr ULONGLONG kStillDissolvePreviewWaitMaxMs = 450;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
 constexpr UINT_PTR kFilmstripHoverPreviewDwellTimer = 19;
+constexpr UINT_PTR kFilmstripVideoHoverFadeTimer = 20;
+constexpr ULONGLONG kFilmstripVideoHoverFadeDurationMs = 175;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
 constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
@@ -3226,7 +3228,7 @@ public:
             CancelQueuedFilmstripHoverPreviews();
             ++filmstripHoverPreviewGeneration_;
             videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
-            filmstripVideoHoverPreview_.reset();
+            CancelFilmstripVideoHoverFade();
             filmstripHoveredIndex_ = filmstripPreviewIndex_ = -1;
             filmstripPreviewGeometryValid_ = false;
             ++navigationFolderGeneration_;
@@ -3590,6 +3592,10 @@ public:
                     LARGE_INTEGER qpcFrequency{};
                     LARGE_INTEGER qpcStart{};
                     QueryPerformanceFrequency(&qpcFrequency);
+                    UINT decodedFrames = 0;
+                    UINT publishedFrames = 0;
+                    UINT droppedFrames = 0;
+                    LONGLONG lastSourceTimestamp = 0;
                     const auto waitForSourceTime = [&](LONGLONG sourceTime) {
                         for (;;) {
                             if (filmstripHoverPreviewStopping_.load(std::memory_order_acquire) ||
@@ -3613,23 +3619,38 @@ public:
                         video->width = frame.width; video->height = frame.height; video->stride = frame.stride; video->pixels = std::move(frame.pixels);
                         if (!PostMessageW(window_, kFilmstripHoverPreviewCompleteMessage, 0, reinterpret_cast<LPARAM>(video))) { delete video; return false; }
                         result = nullptr;
+                        ++publishedFrames;
+#ifdef _DEBUG
+                        if (publishedFrames <= 3 || publishedFrames % 24 == 0) {
+                            LARGE_INTEGER now{}; QueryPerformanceCounter(&now);
+                            const double sourceMs = static_cast<double>(frame.timestamp - timelineStart) / 10000.0;
+                            const double wallMs = static_cast<double>(now.QuadPart - qpcStart.QuadPart) * 1000.0 / qpcFrequency.QuadPart;
+                            wchar_t trace[256]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_FRAME_TIMING frame=%u source=%.1fms wall=%.1fms action=publish\\n", publishedFrames, sourceMs, wallMs); OutputDebugStringW(trace);
+                        }
+#endif
                         return true;
                     };
                     for (; SUCCEEDED(opened) && !filmstripHoverPreviewStopping_.load(std::memory_order_acquire);) {
                         VideoHoverPreviewFrame frame;
                         const HRESULT next = stream.ReadNext(frame);
                         if (next != S_OK) break;
+                        ++decodedFrames;
+                        lastSourceTimestamp = frame.timestamp;
                         if (!timelineStarted) {
                             timelineStarted = true;
                             timelineStart = frame.timestamp;
                             nextPresentationTime = timelineStart + kVideoHoverPresentationInterval;
                             QueryPerformanceCounter(&qpcStart);
+#ifdef _DEBUG
+                            wchar_t trace[512]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_CLOCK_START timestamp=%lld qpc=%lld path=%ls\\n", timelineStart, qpcStart.QuadPart, request.path.c_str()); OutputDebugStringW(trace);
+#endif
                             if (!publish(std::move(frame), 0)) break;
                             continue;
                         }
                         const LONGLONG sourceTime = std::max<LONGLONG>(0, frame.timestamp - timelineStart);
                         if (stream.DurationSeconds() > 4.0 && sourceTime >= 3 * kVideoHoverHnsPerSecond) break;
                         if (frame.timestamp < nextPresentationTime) {
+                            if (pendingFrame.pixels) ++droppedFrames;
                             pendingFrame = std::move(frame); // Keep only the newest source frame before the 24 fps presentation deadline.
                             continue;
                         }
@@ -3648,6 +3669,13 @@ public:
                         videoHoverPreviewGeneration_.load(std::memory_order_acquire) == request.hoverGeneration)
                         publish(std::move(pendingFrame), nextPresentationTime - timelineStart);
                     stream.Close();
+#ifdef _DEBUG
+                    LARGE_INTEGER qpcEnd{}; QueryPerformanceCounter(&qpcEnd);
+                    const double sourceElapsedMs = timelineStarted ? static_cast<double>(lastSourceTimestamp - timelineStart) / 10000.0 : 0.0;
+                    const double wallElapsedMs = timelineStarted && qpcFrequency.QuadPart > 0 ? static_cast<double>(qpcEnd.QuadPart - qpcStart.QuadPart) * 1000.0 / qpcFrequency.QuadPart : 0.0;
+                    wchar_t summary[320]{}; swprintf_s(summary, L"[Viewtrious] VIDEO_HOVER_SPEED_SUMMARY decoded=%u published=%u dropped=%u source=%.1fms wall=%.1fms\\n", decodedFrames, publishedFrames, droppedFrames, sourceElapsedMs, wallElapsedMs); OutputDebugStringW(summary);
+                    OutputDebugStringW(L"[Viewtrious] VIDEO_HOVER_STREAM_RELEASED_BEFORE_FADE\\n");
+#endif
                     auto* finished = new FilmstripHoverPreviewResult{};
                     finished->request = request; finished->result = S_OK; finished->videoFinished = true;
                     if (!PostMessageW(window_, kFilmstripHoverPreviewCompleteMessage, 0, reinterpret_cast<LPARAM>(finished))) delete finished;
@@ -3687,7 +3715,7 @@ public:
         filmstripHoverPreviewWake_.notify_all();
         if (filmstripHoverPreviewWorker_.joinable()) filmstripHoverPreviewWorker_.join();
         filmstripHoverPreviews_.clear();
-        filmstripVideoHoverPreview_.reset();
+        CancelFilmstripVideoHoverFade();
         MSG message{};
         while (PeekMessageW(&message, window_, kFilmstripHoverPreviewCompleteMessage, kFilmstripHoverPreviewCompleteMessage, PM_REMOVE))
             delete reinterpret_cast<FilmstripHoverPreviewResult*>(message.lParam);
@@ -3763,6 +3791,53 @@ public:
         }
         return entry.bitmap.Get();
     }
+    void CancelFilmstripVideoHoverFade(bool discardFrame = true) {
+        KillTimer(window_, kFilmstripVideoHoverFadeTimer);
+        filmstripVideoHoverFadeActive_ = false;
+        if (discardFrame) filmstripVideoHoverPreview_.reset();
+    }
+    float FilmstripVideoHoverFadeProgress() const {
+        if (!filmstripVideoHoverFadeActive_ || filmstripVideoHoverFadeQpcFrequency_ <= 0) return 0.0f;
+        LARGE_INTEGER now{}; QueryPerformanceCounter(&now);
+        const double elapsedMs = static_cast<double>(now.QuadPart - filmstripVideoHoverFadeStartQpc_) * 1000.0 / filmstripVideoHoverFadeQpcFrequency_;
+        return static_cast<float>(std::clamp(elapsedMs / static_cast<double>(kFilmstripVideoHoverFadeDurationMs), 0.0, 1.0));
+    }
+    void StartFilmstripVideoHoverFade(size_t index) {
+        if (!filmstripVideoHoverPreview_ || !FilmstripHoverPreviewEligible(static_cast<int>(index)) || !FilmstripThumbnailBitmap(index)) {
+            CancelFilmstripVideoHoverFade();
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
+        LARGE_INTEGER frequency{}, now{};
+        if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&now) || frequency.QuadPart <= 0) {
+            CancelFilmstripVideoHoverFade();
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
+        filmstripVideoHoverFadeQpcFrequency_ = frequency.QuadPart;
+        filmstripVideoHoverFadeStartQpc_ = now.QuadPart;
+        filmstripVideoHoverFadeActive_ = true;
+        SetTimer(window_, kFilmstripVideoHoverFadeTimer, 16, nullptr);
+#ifdef _DEBUG
+        OutputDebugStringW(L"[Viewtrious] VIDEO_HOVER_FADE_BEGIN duration=175ms source-released=1\n");
+#endif
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void UpdateFilmstripVideoHoverFade() {
+        if (!filmstripVideoHoverFadeActive_) { KillTimer(window_, kFilmstripVideoHoverFadeTimer); return; }
+        if (!FilmstripVisible() || !FilmstripHoverPreviewEligible(filmstripPreviewIndex_) || filmstripDragging_ || filmstripScrollAnimating_) {
+            CancelFilmstripVideoHoverFade();
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
+        if (FilmstripVideoHoverFadeProgress() >= 1.0f) {
+            CancelFilmstripVideoHoverFade();
+#ifdef _DEBUG
+            OutputDebugStringW(L"[Viewtrious] VIDEO_HOVER_FADE_COMPLETE static-thumbnail-only=1\n");
+#endif
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void HandleFilmstripHoverPreviewResult(FilmstripHoverPreviewResult* result) {
         if (!result) return;
         const auto item = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&](const fs::path& path) {
@@ -3774,7 +3849,7 @@ public:
         const bool active = currentItem && result->request.hoverGeneration == filmstripHoverPreviewGeneration_ && FilmstripHoverPreviewEligible(filmstripPreviewIndex_) && filmstripPreviewIndex_ == static_cast<int>(index) &&
             !filmstripDragging_ && !filmstripScrollAnimating_;
         if (currentItem && result->videoFinished) {
-            if (active) { filmstripVideoHoverPreview_.reset(); InvalidateRect(window_, nullptr, FALSE); }
+            if (active) StartFilmstripVideoHoverFade(index);
             delete result; return;
         }
         if (result->videoFrame) {
@@ -4242,7 +4317,7 @@ public:
         else if (wasHeld) BeginFilmstripFadeSequence();
     }
     void UpdateFilmstripVisibility() {
-        if (!FilmstripEligible()) { filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); return; }
+        if (!FilmstripEligible()) { CancelFilmstripVideoHoverFade(); filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); return; }
         if (alwaysShowFilmstrip_) { filmstripOpacity_ = 1.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Holding; StopFilmstripVisibilityTimer(); return; }
         const bool held = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
         const ULONGLONG elapsed = GetTickCount64() - filmstripVisibilityStart_;
@@ -4295,7 +4370,7 @@ public:
 #endif
         ++filmstripHoverPreviewGeneration_;
         videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
-        filmstripVideoHoverPreview_.reset();
+        CancelFilmstripVideoHoverFade();
         KillTimer(window_, kFilmstripHoverPreviewTimer);
         KillTimer(window_, kFilmstripHoverPreviewDwellTimer);
         CancelQueuedFilmstripHoverPreviews();
@@ -4323,7 +4398,7 @@ public:
         if (FilmstripHoverPreviewEligible(filmstripHoveredIndex_) && (filmstripPreviewIndex_ < 0 || FilmstripHoverPreviewEligible(filmstripPreviewIndex_))) return;
         ++filmstripHoverPreviewGeneration_;
         videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
-        filmstripVideoHoverPreview_.reset();
+        CancelFilmstripVideoHoverFade();
         KillTimer(window_, kFilmstripHoverPreviewTimer);
         KillTimer(window_, kFilmstripHoverPreviewDwellTimer);
         CancelQueuedFilmstripHoverPreviews();
@@ -4465,8 +4540,8 @@ public:
             OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_PREVIEW_PAINT_ENTER clip=popped\n");
 #endif
             const size_t previewIndex = static_cast<size_t>(filmstripPreviewIndex_);
-            ID2D1Bitmap* previewBitmap = FilmstripVideoHoverPreviewBitmap(previewIndex);
-            if (!previewBitmap) previewBitmap = FilmstripHoverPreviewBitmap(previewIndex);
+            ID2D1Bitmap* videoPreviewBitmap = FilmstripVideoHoverPreviewBitmap(previewIndex);
+            ID2D1Bitmap* previewBitmap = videoPreviewBitmap ? videoPreviewBitmap : FilmstripHoverPreviewBitmap(previewIndex);
 #ifdef _DEBUG
             const bool highQuality = previewBitmap != nullptr;
 #endif
@@ -4480,7 +4555,14 @@ public:
                 swprintf_s(message, L"[Viewtrious] FILMSTRIP_HOVER_PREVIEW_DRAW bitmap=%.0fx%.0f rect=%.1f,%.1f,%.1f,%.1f\n", size.width, size.height, preview.left, preview.top, preview.right, preview.bottom);
                 OutputDebugStringW(message);
 #endif
-                renderTarget_->DrawBitmap(previewBitmap, preview, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                if (filmstripVideoHoverFadeActive_ && videoPreviewBitmap) {
+                    const float fadeProgress = FilmstripVideoHoverFadeProgress();
+                    if (ID2D1Bitmap* staticThumbnail = FilmstripThumbnailBitmap(previewIndex))
+                        renderTarget_->DrawBitmap(staticThumbnail, preview, fadeProgress, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                    renderTarget_->DrawBitmap(videoPreviewBitmap, preview, 1.0f - fadeProgress, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                } else {
+                    renderTarget_->DrawBitmap(previewBitmap, preview, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                }
 #ifdef _DEBUG
                 if (highQuality) OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HD_PREVIEW_DRAW\n");
 #endif
@@ -6492,6 +6574,8 @@ private:
         CancelQueuedFilmstripHoverPreviews();
         filmstripHoverPreviews_.clear();
         ++filmstripHoverPreviewGeneration_;
+        videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
+        CancelFilmstripVideoHoverFade();
         filmstripHoveredIndex_ = filmstripPreviewIndex_ = -1;
         filmstripPreviewGeometryValid_ = false;
         filmstripItemWidths_.clear(); filmstripItemOffsets_.clear(); filmstripScroll_ = 0.0;
@@ -9538,6 +9622,9 @@ private:
     std::vector<FilmstripHoverPreviewEntry> filmstripHoverPreviews_;
     std::optional<FilmstripHoverPreviewEntry> filmstripVideoHoverPreview_;
     LONGLONG filmstripVideoHoverTimestamp_ = 0;
+    bool filmstripVideoHoverFadeActive_ = false;
+    LONGLONG filmstripVideoHoverFadeStartQpc_ = 0;
+    LONGLONG filmstripVideoHoverFadeQpcFrequency_ = 0;
     std::mutex filmstripHoverPreviewMutex_;
     std::condition_variable filmstripHoverPreviewWake_;
     std::deque<FilmstripHoverPreviewRequest> filmstripHoverPreviewQueue_;
@@ -10187,6 +10274,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }
         if (wParam == kFilmstripHoverPreviewDwellTimer) { viewer->BeginFilmstripHoverPreviewDecode(); return 0; }
         if (wParam == kFilmstripHoverPreviewTimer) { viewer->ShowFilmstripHoverPreview(); return 0; }
+        if (wParam == kFilmstripVideoHoverFadeTimer) { viewer->UpdateFilmstripVideoHoverFade(); return 0; }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wParam) != WA_INACTIVE) {

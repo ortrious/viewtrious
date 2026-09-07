@@ -1007,6 +1007,7 @@ public:
             bitmap_.Reset();
             imageWidth_ = imageHeight_ = 0;
             currentPath_ = path;
+            SuppressFilmstripHoverPreviewForCurrentMedia();
             displayedPath_.clear();
             resolutionText_.clear();
             fileSizeText_ = FormatFileSize(path);
@@ -3639,7 +3640,7 @@ public:
     }
     void BeginFilmstripHoverPreviewDecode() {
         KillTimer(window_, kFilmstripHoverPreviewDwellTimer);
-        if (filmstripHoveredIndex_ >= 0 && !filmstripDragging_ && !filmstripScrollAnimating_) {
+        if (FilmstripHoverPreviewEligible(filmstripHoveredIndex_) && !filmstripDragging_ && !filmstripScrollAnimating_) {
 #ifdef _DEBUG
             OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HD_PREVIEW_DWELL_READY\n");
 #endif
@@ -3680,7 +3681,7 @@ public:
             entry.pixels = std::move(result->pixels);
             filmstripHoverPreviews_.push_back(std::move(entry));
             PruneFilmstripHoverPreviews();
-            const bool active = result->request.hoverGeneration == filmstripHoverPreviewGeneration_ && filmstripPreviewIndex_ == static_cast<int>(index) &&
+            const bool active = result->request.hoverGeneration == filmstripHoverPreviewGeneration_ && FilmstripHoverPreviewEligible(filmstripPreviewIndex_) && filmstripPreviewIndex_ == static_cast<int>(index) &&
                 !filmstripDragging_ && !filmstripScrollAnimating_;
 #ifdef _DEBUG
             OutputDebugStringW(active ? L"[Viewtrious] FILMSTRIP_HD_PREVIEW_PUBLISHED\n" : L"[Viewtrious] FILMSTRIP_HD_PREVIEW_JOB_STALE\n");
@@ -4169,16 +4170,30 @@ public:
         filmstripHoveredIndex_ = index;
         filmstripPreviewIndex_ = -1;
         filmstripPreviewGeometryValid_ = false;
-        if (index >= 0 && !filmstripDragging_ && !filmstripScrollAnimating_) {
-            SetTimer(window_, kFilmstripHoverPreviewDwellTimer, 75, nullptr);
-            const UINT_PTR timer = SetTimer(window_, kFilmstripHoverPreviewTimer, 175, nullptr);
+        if (FilmstripHoverPreviewEligible(index) && !filmstripDragging_ && !filmstripScrollAnimating_) {
+            SetTimer(window_, kFilmstripHoverPreviewDwellTimer, 100, nullptr);
+            const UINT_PTR timer = SetTimer(window_, kFilmstripHoverPreviewTimer, 250, nullptr);
 #ifdef _DEBUG
             wchar_t timerMessage[256]{};
-            swprintf_s(timerMessage, L"[Viewtrious] FILMSTRIP_HOVER_SETTIMER hwnd=%p requested=%zu returned=%zu delay=175 error=%lu\n",
+            swprintf_s(timerMessage, L"[Viewtrious] FILMSTRIP_HOVER_SETTIMER hwnd=%p requested=%zu returned=%zu delay=250 error=%lu\n",
                 window_, static_cast<size_t>(kFilmstripHoverPreviewTimer), static_cast<size_t>(timer), timer ? ERROR_SUCCESS : GetLastError());
             OutputDebugStringW(timerMessage);
 #endif
         }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool FilmstripHoverPreviewEligible(int index) const {
+        return index >= 0 && index < static_cast<int>(navigationFiles_.size()) && !currentPath_.empty() &&
+            !PathsEqual(navigationFiles_[static_cast<size_t>(index)], fs::path(currentPath_));
+    }
+    void SuppressFilmstripHoverPreviewForCurrentMedia() {
+        if (FilmstripHoverPreviewEligible(filmstripHoveredIndex_) && (filmstripPreviewIndex_ < 0 || FilmstripHoverPreviewEligible(filmstripPreviewIndex_))) return;
+        ++filmstripHoverPreviewGeneration_;
+        KillTimer(window_, kFilmstripHoverPreviewTimer);
+        KillTimer(window_, kFilmstripHoverPreviewDwellTimer);
+        CancelQueuedFilmstripHoverPreviews();
+        filmstripPreviewIndex_ = -1;
+        filmstripPreviewGeometryValid_ = false;
         InvalidateRect(window_, nullptr, FALSE);
     }
     float FilmstripHoverPreviewAspect(size_t index) const {
@@ -4210,7 +4225,7 @@ public:
             filmstripHoveredIndex_, filmstripDragging_ ? 1 : 0, filmstripScrollAnimating_ ? 1 : 0);
         OutputDebugStringW(message);
 #endif
-        if (filmstripHoveredIndex_ >= 0 && !filmstripDragging_ && !filmstripScrollAnimating_) {
+        if (FilmstripHoverPreviewEligible(filmstripHoveredIndex_) && !filmstripDragging_ && !filmstripScrollAnimating_) {
             filmstripPreviewIndex_ = filmstripHoveredIndex_;
             SetFilmstripHoverPreviewGeometry(static_cast<size_t>(filmstripPreviewIndex_));
 #ifdef _DEBUG
@@ -4312,7 +4327,7 @@ public:
             if (index == current) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), selectedOutline.Get(), 2.0f * scale);
         }
         renderTarget_->PopAxisAlignedClip();
-        if (filmstripPreviewIndex_ >= 0 && filmstripPreviewIndex_ < static_cast<int>(navigationFiles_.size()) && !filmstripDragging_ && !filmstripScrollAnimating_) {
+        if (FilmstripHoverPreviewEligible(filmstripPreviewIndex_) && !filmstripDragging_ && !filmstripScrollAnimating_) {
 #ifdef _DEBUG
             OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_PREVIEW_PAINT_ENTER clip=popped\n");
 #endif
@@ -5087,7 +5102,7 @@ private:
     void BeginModelLoad(const std::wstring& path) {
         DeactivateVideo(); DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         ++decodeRequestGeneration_; ++modelLoadGeneration_; const uint64_t generation = modelLoadGeneration_;
-        currentPath_ = path; displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
+        currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
         navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; modelLoadingStartedAtMs_ = GetTickCount64(); contentKind_ = ContentKind::Model3D;
         ClearModelFaceSelection(); modelClickCandidate_ = false;
@@ -5128,7 +5143,7 @@ private:
         ++decodeRequestGeneration_; ++modelLoadGeneration_; pendingFullDecode_.reset(); imageDecodePending_ = false;
         source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         videoFitToWindow_ = true; videoZoom_ = 1.0f; videoPan_ = D2D1::Point2F();
-        currentPath_ = path; displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
+        currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         fileSizeText_ = FormatFileSize(path); resolutionText_.clear(); error_.clear();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false; contentKind_ = ContentKind::Video2D;
@@ -6598,6 +6613,7 @@ private:
         gifPreviousDisposal_ = gifPreviousLeft_ = gifPreviousTop_ = gifPreviousWidth_ = gifPreviousHeight_ = 0;
         gifPlaying_ = true; gifPaused_ = !gifVisible_;
         currentPath_ = path;
+        SuppressFilmstripHoverPreviewForCurrentMedia();
         hr = PresentGifFrame(true, resetNavigation);
         if (FAILED(hr)) { StopGifPlayback(); return hr; }
         return S_OK;
@@ -7156,6 +7172,7 @@ private:
             return;
         }
         currentPath_ = path;
+        SuppressFilmstripHoverPreviewForCurrentMedia();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         filenameText_ = fs::path(path).filename().wstring();
         fileSizeText_ = FormatFileSize(path);
@@ -7256,6 +7273,7 @@ private:
         imageWidth_ = width;
         imageHeight_ = height;
         currentPath_ = path;
+        SuppressFilmstripHoverPreviewForCurrentMedia();
         displayedPath_ = path;
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         resolutionText_ = std::to_wstring(width) + L"\u00D7" + std::to_wstring(height);

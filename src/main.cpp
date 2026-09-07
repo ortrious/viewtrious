@@ -309,7 +309,9 @@ struct FilmstripHoverPreviewResult : PixelBuffer {
     FilmstripHoverPreviewRequest request;
     float aspect = 1.0f;
     HRESULT result = E_FAIL;
+    bool videoFrame = false;
     bool videoFinished = false;
+    LONGLONG videoTimestamp = 0;
 };
 struct FilmstripHoverPreviewEntry : PixelBuffer {
     std::wstring path;
@@ -3223,6 +3225,8 @@ public:
             CancelQueuedFilmstripThumbnails();
             CancelQueuedFilmstripHoverPreviews();
             ++filmstripHoverPreviewGeneration_;
+            videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
+            filmstripVideoHoverPreview_.reset();
             filmstripHoveredIndex_ = filmstripPreviewIndex_ = -1;
             filmstripPreviewGeometryValid_ = false;
             ++navigationFolderGeneration_;
@@ -3587,7 +3591,7 @@ public:
                         const HRESULT next = stream.ReadNext(frame);
                         if (next != S_OK || (stream.DurationSeconds() > 4.0 && GetTickCount64() - started >= 3000)) break;
                         auto* video = first ? result : new FilmstripHoverPreviewResult{};
-                        video->request = request; video->result = S_OK; video->aspect = static_cast<float>(frame.width) / std::max(1u, frame.height);
+                        video->request = request; video->result = S_OK; video->videoFrame = true; video->videoTimestamp = frame.timestamp; video->aspect = static_cast<float>(frame.width) / std::max(1u, frame.height);
                         video->width = frame.width; video->height = frame.height; video->stride = frame.stride; video->pixels = std::move(frame.pixels);
                         if (!PostMessageW(window_, kFilmstripHoverPreviewCompleteMessage, 0, reinterpret_cast<LPARAM>(video))) { delete video; break; }
                         result = nullptr;
@@ -3634,6 +3638,7 @@ public:
         filmstripHoverPreviewWake_.notify_all();
         if (filmstripHoverPreviewWorker_.joinable()) filmstripHoverPreviewWorker_.join();
         filmstripHoverPreviews_.clear();
+        filmstripVideoHoverPreview_.reset();
         MSG message{};
         while (PeekMessageW(&message, window_, kFilmstripHoverPreviewCompleteMessage, kFilmstripHoverPreviewCompleteMessage, PM_REMOVE))
             delete reinterpret_cast<FilmstripHoverPreviewResult*>(message.lParam);
@@ -3658,7 +3663,7 @@ public:
             index >= filmstripThumbnailGenerations_.size()) return;
         const std::wstring path = navigationFiles_[index].wstring();
         const uint64_t itemGeneration = filmstripThumbnailGenerations_[index];
-        if (FindFilmstripHoverPreview(path, itemGeneration) >= 0) {
+        if (!IsVideoPath(path) && FindFilmstripHoverPreview(path, itemGeneration) >= 0) {
 #ifdef _DEBUG
             OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HD_PREVIEW_CACHE_HIT\n");
 #endif
@@ -3695,6 +3700,20 @@ public:
         }
         return entry.bitmap.Get();
     }
+    ID2D1Bitmap* FilmstripVideoHoverPreviewBitmap(size_t index) {
+        if (!renderTarget_ || !filmstripVideoHoverPreview_ || index >= navigationFiles_.size() || index >= filmstripThumbnailGenerations_.size()) return nullptr;
+        FilmstripHoverPreviewEntry& entry = *filmstripVideoHoverPreview_;
+        if (entry.itemGeneration != filmstripThumbnailGenerations_[index] || !PathsEqual(fs::path(entry.path), navigationFiles_[index])) return nullptr;
+        if (!entry.bitmap && entry.pixels) {
+            const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), RenderTargetDpi(), RenderTargetDpi());
+            if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(entry.width, entry.height), entry.pixels->data(), entry.stride, properties, &entry.bitmap))) return nullptr;
+#ifdef _DEBUG
+            wchar_t trace[192]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_D2D_BITMAP_REPLACED timestamp=%lld alpha=%u\\n", filmstripVideoHoverTimestamp_, (*entry.pixels)[3]); OutputDebugStringW(trace);
+#endif
+        }
+        return entry.bitmap.Get();
+    }
     void HandleFilmstripHoverPreviewResult(FilmstripHoverPreviewResult* result) {
         if (!result) return;
         const auto item = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&](const fs::path& path) {
@@ -3703,11 +3722,27 @@ public:
         const size_t index = item == navigationFiles_.end() ? navigationFiles_.size() : static_cast<size_t>(std::distance(navigationFiles_.begin(), item));
         const bool currentItem = result->request.folderGeneration == navigationFolderGeneration_ && index < filmstripThumbnailGenerations_.size() &&
             filmstripThumbnailGenerations_[index] == result->request.itemGeneration;
+        const bool active = currentItem && result->request.hoverGeneration == filmstripHoverPreviewGeneration_ && FilmstripHoverPreviewEligible(filmstripPreviewIndex_) && filmstripPreviewIndex_ == static_cast<int>(index) &&
+            !filmstripDragging_ && !filmstripScrollAnimating_;
         if (currentItem && result->videoFinished) {
-            filmstripHoverPreviews_.erase(std::remove_if(filmstripHoverPreviews_.begin(), filmstripHoverPreviews_.end(), [&](const FilmstripHoverPreviewEntry& entry) {
-                return entry.itemGeneration == result->request.itemGeneration && PathsEqual(fs::path(entry.path), fs::path(result->request.path));
-            }), filmstripHoverPreviews_.end());
-            if (result->request.hoverGeneration == filmstripHoverPreviewGeneration_) InvalidateRect(window_, nullptr, FALSE);
+            if (active) { filmstripVideoHoverPreview_.reset(); InvalidateRect(window_, nullptr, FALSE); }
+            delete result; return;
+        }
+        if (result->videoFrame) {
+            if (active && SUCCEEDED(result->result) && result->pixels && result->width && result->height) {
+                FilmstripHoverPreviewEntry entry{};
+                entry.path = result->request.path; entry.itemGeneration = result->request.itemGeneration; entry.aspect = result->aspect;
+                entry.width = result->width; entry.height = result->height; entry.stride = result->stride; entry.pixels = std::move(result->pixels);
+                filmstripVideoHoverTimestamp_ = result->videoTimestamp;
+                filmstripVideoHoverPreview_ = std::move(entry);
+#ifdef _DEBUG
+                wchar_t trace[192]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_UI_FRAME_ACCEPTED timestamp=%lld alpha=%u\\n", filmstripVideoHoverTimestamp_, (*filmstripVideoHoverPreview_->pixels)[3]); OutputDebugStringW(trace);
+#endif
+                InvalidateRect(window_, nullptr, FALSE);
+#ifdef _DEBUG
+                OutputDebugStringW(L"[Viewtrious] VIDEO_HOVER_REPAINT_REQUESTED\\n");
+#endif
+            }
             delete result; return;
         }
         if (currentItem && SUCCEEDED(result->result) && result->pixels && result->width && result->height) {
@@ -3723,8 +3758,6 @@ public:
             entry.pixels = std::move(result->pixels);
             filmstripHoverPreviews_.push_back(std::move(entry));
             PruneFilmstripHoverPreviews();
-            const bool active = result->request.hoverGeneration == filmstripHoverPreviewGeneration_ && FilmstripHoverPreviewEligible(filmstripPreviewIndex_) && filmstripPreviewIndex_ == static_cast<int>(index) &&
-                !filmstripDragging_ && !filmstripScrollAnimating_;
 #ifdef _DEBUG
             OutputDebugStringW(active ? L"[Viewtrious] FILMSTRIP_HD_PREVIEW_PUBLISHED\n" : L"[Viewtrious] FILMSTRIP_HD_PREVIEW_JOB_STALE\n");
             if (active) OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HD_PREVIEW_SWAP\n");
@@ -4213,6 +4246,7 @@ public:
 #endif
         ++filmstripHoverPreviewGeneration_;
         videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
+        filmstripVideoHoverPreview_.reset();
         KillTimer(window_, kFilmstripHoverPreviewTimer);
         KillTimer(window_, kFilmstripHoverPreviewDwellTimer);
         CancelQueuedFilmstripHoverPreviews();
@@ -4240,6 +4274,7 @@ public:
         if (FilmstripHoverPreviewEligible(filmstripHoveredIndex_) && (filmstripPreviewIndex_ < 0 || FilmstripHoverPreviewEligible(filmstripPreviewIndex_))) return;
         ++filmstripHoverPreviewGeneration_;
         videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
+        filmstripVideoHoverPreview_.reset();
         KillTimer(window_, kFilmstripHoverPreviewTimer);
         KillTimer(window_, kFilmstripHoverPreviewDwellTimer);
         CancelQueuedFilmstripHoverPreviews();
@@ -4381,7 +4416,8 @@ public:
             OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_PREVIEW_PAINT_ENTER clip=popped\n");
 #endif
             const size_t previewIndex = static_cast<size_t>(filmstripPreviewIndex_);
-            ID2D1Bitmap* previewBitmap = FilmstripHoverPreviewBitmap(previewIndex);
+            ID2D1Bitmap* previewBitmap = FilmstripVideoHoverPreviewBitmap(previewIndex);
+            if (!previewBitmap) previewBitmap = FilmstripHoverPreviewBitmap(previewIndex);
 #ifdef _DEBUG
             const bool highQuality = previewBitmap != nullptr;
 #endif
@@ -9282,6 +9318,7 @@ private:
         checkerboardDpi_ = 0;
         for (FilmstripThumbnailEntry& entry : filmstripThumbnails_) entry.bitmap.Reset();
         for (FilmstripHoverPreviewEntry& entry : filmstripHoverPreviews_) entry.bitmap.Reset();
+        if (filmstripVideoHoverPreview_) filmstripVideoHoverPreview_->bitmap.Reset();
         modelViewport_.Destroy();
         renderTarget_.Reset();
         graphicsHost_.Destroy();
@@ -9450,6 +9487,8 @@ private:
     D2D1_RECT_F filmstripPreviewGeometry_{};
     bool filmstripPreviewGeometryValid_ = false;
     std::vector<FilmstripHoverPreviewEntry> filmstripHoverPreviews_;
+    std::optional<FilmstripHoverPreviewEntry> filmstripVideoHoverPreview_;
+    LONGLONG filmstripVideoHoverTimestamp_ = 0;
     std::mutex filmstripHoverPreviewMutex_;
     std::condition_variable filmstripHoverPreviewWake_;
     std::deque<FilmstripHoverPreviewRequest> filmstripHoverPreviewQueue_;

@@ -5,6 +5,7 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <cstring>
 using Microsoft::WRL::ComPtr;
@@ -25,5 +26,15 @@ HRESULT VideoHoverFrameStream::ReadNext(VideoHoverPreviewFrame& f) {
     f = {}; if (!impl_ || generation_->load(std::memory_order_acquire) != requestGeneration_) { Close(); return HRESULT_FROM_WIN32(ERROR_CANCELLED); }
     DWORD stream=0, flags=0; ComPtr<IMFSample> sample; HRESULT hr=impl_->reader->ReadSample(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),0,&stream,&flags,&f.timestamp,&sample); if (FAILED(hr) || (flags & static_cast<DWORD>(MF_SOURCE_READERF_ENDOFSTREAM)) || !sample) { Close(); return FAILED(hr)?hr:S_FALSE; }
     UINT w=0,h=0; if (FAILED(MFGetAttributeSize(impl_->type.Get(),MF_MT_FRAME_SIZE,&w,&h)) || !w || !h) return E_FAIL; float scale=std::min(1.f,static_cast<float>(impl_->max)/std::max(w,h)); f.width=std::max(1u,static_cast<UINT>(std::lround(w*scale))); f.height=std::max(1u,static_cast<UINT>(std::lround(h*scale))); f.stride=f.width*4;
-    ComPtr<IMFMediaBuffer>b; hr=sample->ConvertToContiguousBuffer(&b); BYTE* src=nullptr; DWORD mx=0, len=0; if(SUCCEEDED(hr))hr=b->Lock(&src,&mx,&len); if(FAILED(hr)||len<w*h*4){if(b)b->Unlock();return FAILED(hr)?hr:E_FAIL;} auto raw=std::make_shared<std::vector<BYTE>>(w*h*4); std::memcpy(raw->data(),src,raw->size()); b->Unlock(); ComPtr<IWICImagingFactory> wf; ComPtr<IWICBitmap> wb; ComPtr<IWICBitmapScaler> sc; hr=CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&wf)); if(SUCCEEDED(hr))hr=wf->CreateBitmapFromMemory(w,h,GUID_WICPixelFormat32bppPBGRA,w*4,static_cast<UINT>(raw->size()),raw->data(),&wb); if(SUCCEEDED(hr))hr=wf->CreateBitmapScaler(&sc); if(SUCCEEDED(hr))hr=sc->Initialize(wb.Get(),f.width,f.height,WICBitmapInterpolationModeFant); f.pixels=std::make_shared<std::vector<BYTE>>(static_cast<size_t>(f.stride)*f.height); if(SUCCEEDED(hr))hr=sc->CopyPixels(nullptr,f.stride,static_cast<UINT>(f.pixels->size()),f.pixels->data()); if(FAILED(hr))f={}; return hr;
+    ComPtr<IMFMediaBuffer>b; hr=sample->ConvertToContiguousBuffer(&b); BYTE* src=nullptr; DWORD mx=0, len=0; if(SUCCEEDED(hr))hr=b->Lock(&src,&mx,&len);
+    // MFVideoFormat_RGB32 is BGRX in memory: its fourth byte is padding, not alpha.
+    UINT32 sourceStrideValue = w * 4; impl_->type->GetUINT32(MF_MT_DEFAULT_STRIDE, &sourceStrideValue); const INT32 sourceStride = static_cast<INT32>(sourceStrideValue); const size_t sourcePitch = sourceStride < 0 ? static_cast<size_t>(-static_cast<int64_t>(sourceStride)) : static_cast<size_t>(sourceStride);
+    if(FAILED(hr) || sourcePitch < static_cast<size_t>(w) * 4 || len < sourcePitch * h){if(b)b->Unlock();return FAILED(hr)?hr:E_FAIL;}
+    auto raw=std::make_shared<std::vector<BYTE>>(static_cast<size_t>(w)*h*4); const BYTE* row = src; if (sourceStride < 0) row += sourcePitch * (h - 1);
+    for (UINT y = 0; y < h; ++y) { BYTE* destination = raw->data() + static_cast<size_t>(y) * w * 4; std::memcpy(destination, row, static_cast<size_t>(w) * 4); for (UINT x = 0; x < w; ++x) destination[x * 4 + 3] = 255; row += sourceStride; }
+    b->Unlock();
+#ifdef _DEBUG
+    wchar_t trace[192]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_MF_DECODE timestamp=%lld format=BGRX-to-PBGRA stride=%d alpha=%u\\n", f.timestamp, sourceStride, (*raw)[3]); OutputDebugStringW(trace);
+#endif
+    ComPtr<IWICImagingFactory> wf; ComPtr<IWICBitmap> wb; ComPtr<IWICBitmapScaler> sc; hr=CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&wf)); if(SUCCEEDED(hr))hr=wf->CreateBitmapFromMemory(w,h,GUID_WICPixelFormat32bppPBGRA,w*4,static_cast<UINT>(raw->size()),raw->data(),&wb); if(SUCCEEDED(hr))hr=wf->CreateBitmapScaler(&sc); if(SUCCEEDED(hr))hr=sc->Initialize(wb.Get(),f.width,f.height,WICBitmapInterpolationModeFant); f.pixels=std::make_shared<std::vector<BYTE>>(static_cast<size_t>(f.stride)*f.height); if(SUCCEEDED(hr))hr=sc->CopyPixels(nullptr,f.stride,static_cast<UINT>(f.pixels->size()),f.pixels->data()); if(SUCCEEDED(hr))for(size_t pixel=3;pixel<f.pixels->size();pixel+=4)(*f.pixels)[pixel]=255; if(FAILED(hr))f={}; return hr;
 }

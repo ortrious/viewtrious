@@ -9,7 +9,7 @@ struct VideoHoverPreviewRequest { std::wstring path; uint64_t generation = 0; UI
 struct VideoHoverPreviewFrame { std::shared_ptr<std::vector<BYTE>> pixels; UINT width = 0, height = 0, stride = 0; LONGLONG timestamp = 0; };
 class VideoHoverFrameStream {
 public:
-    VideoHoverFrameStream() = default; ~VideoHoverFrameStream();
+    VideoHoverFrameStream(); ~VideoHoverFrameStream();
     HRESULT Open(const VideoHoverPreviewRequest& request, const std::atomic<uint64_t>* currentGeneration);
     HRESULT ReadNext(VideoHoverPreviewFrame& frame);
     void Close();

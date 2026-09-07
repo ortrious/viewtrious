@@ -9,6 +9,7 @@
 #include <cstring>
 using Microsoft::WRL::ComPtr;
 struct VideoHoverFrameStream::Impl { ComPtr<IMFSourceReader> reader; ComPtr<IMFMediaType> type; bool mf = false; UINT max = 768; };
+VideoHoverFrameStream::VideoHoverFrameStream() = default;
 VideoHoverFrameStream::~VideoHoverFrameStream() { Close(); }
 void VideoHoverFrameStream::Close() { if (!impl_) return; impl_->reader.Reset(); impl_->type.Reset(); if (impl_->mf) MFShutdown(); impl_.reset(); generation_ = nullptr; }
 HRESULT VideoHoverFrameStream::Open(const VideoHoverPreviewRequest& r, const std::atomic<uint64_t>* g) {

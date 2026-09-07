@@ -4222,6 +4222,7 @@ public:
         if (FilmstripHoverPreviewEligible(index) && !filmstripDragging_ && !filmstripScrollAnimating_) {
             SetTimer(window_, kFilmstripHoverPreviewDwellTimer, 100, nullptr);
             const UINT_PTR timer = SetTimer(window_, kFilmstripHoverPreviewTimer, 250, nullptr);
+            (void)timer;
 #ifdef _DEBUG
             wchar_t timerMessage[256]{};
             swprintf_s(timerMessage, L"[Viewtrious] FILMSTRIP_HOVER_SETTIMER hwnd=%p requested=%zu returned=%zu delay=250 error=%lu\n",

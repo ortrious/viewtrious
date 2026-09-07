@@ -105,7 +105,7 @@ constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kStillDissolveDurationMs = 160;
 constexpr ULONGLONG kStillDissolvePreviewWaitMaxMs = 450;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
-constexpr UINT_PTR kFilmstripHoverPreviewTimer = 17;
+constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
 constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
@@ -3984,9 +3984,12 @@ public:
         filmstripHoveredIndex_ = index;
         filmstripPreviewIndex_ = -1;
         if (index >= 0 && !filmstripDragging_ && !filmstripScrollAnimating_) {
-            SetTimer(window_, kFilmstripHoverPreviewTimer, 175, nullptr);
+            const UINT_PTR timer = SetTimer(window_, kFilmstripHoverPreviewTimer, 175, nullptr);
 #ifdef _DEBUG
-            OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_TIMER_ARM id=17 delay=175\n");
+            wchar_t timerMessage[256]{};
+            swprintf_s(timerMessage, L"[Viewtrious] FILMSTRIP_HOVER_SETTIMER hwnd=%p requested=%zu returned=%zu delay=175 error=%lu\n",
+                window_, static_cast<size_t>(kFilmstripHoverPreviewTimer), static_cast<size_t>(timer), timer ? ERROR_SUCCESS : GetLastError());
+            OutputDebugStringW(timerMessage);
 #endif
         }
         else KillTimer(window_, kFilmstripHoverPreviewTimer);
@@ -9699,6 +9702,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_TIMER:
+#ifdef _DEBUG
+        { wchar_t timerMessage[128]{}; swprintf_s(timerMessage, L"[Viewtrious] VIEWTRIOUS_WM_TIMER_RECEIVED id=%zu hwnd=%p\n", static_cast<size_t>(wParam), window); OutputDebugStringW(timerMessage); }
+#endif
         if (wParam == kGifPlaybackTimer) { viewer->GifPlaybackTimerMessage(); return 0; }
         if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; }
         if (wParam == kCanvasNavigationFadeTimer) { viewer->UpdateCanvasNavigationFade(); return 0; }

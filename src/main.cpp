@@ -6020,9 +6020,41 @@ private:
         return hr;
     }
 
+    bool ApplyFilmstripThumbnailOrientation(PixelBuffer& pixels, UINT orientation) const {
+        if (orientation < 1 || orientation > 8) orientation = 1;
+        if (orientation == 1) return true;
+        if (!pixels.pixels || !pixels.width || !pixels.height || pixels.stride < pixels.width * 4) return false;
+        const bool swapsAxes = orientation >= 5 && orientation <= 8;
+        const UINT destinationWidth = swapsAxes ? pixels.height : pixels.width;
+        const UINT destinationHeight = swapsAxes ? pixels.width : pixels.height;
+        if (destinationWidth > UINT_MAX / 4 || destinationHeight > UINT_MAX / (destinationWidth * 4)) return false;
+        const UINT destinationStride = destinationWidth * 4;
+        auto transformed = std::make_shared<std::vector<BYTE>>(static_cast<size_t>(destinationStride) * destinationHeight);
+        for (UINT y = 0; y < destinationHeight; ++y) for (UINT x = 0; x < destinationWidth; ++x) {
+            UINT sourceX = x, sourceY = y;
+            switch (orientation) {
+            case 2: sourceX = pixels.width - 1 - x; break;
+            case 3: sourceX = pixels.width - 1 - x; sourceY = pixels.height - 1 - y; break;
+            case 4: sourceY = pixels.height - 1 - y; break;
+            case 5: sourceX = y; sourceY = x; break;
+            case 6: sourceX = y; sourceY = pixels.height - 1 - x; break;
+            case 7: sourceX = pixels.width - 1 - y; sourceY = pixels.height - 1 - x; break;
+            case 8: sourceX = pixels.width - 1 - y; sourceY = x; break;
+            }
+            std::memcpy(transformed->data() + static_cast<size_t>(y) * destinationStride + x * 4,
+                pixels.pixels->data() + static_cast<size_t>(sourceY) * pixels.stride + sourceX * 4, 4);
+        }
+        pixels.width = destinationWidth;
+        pixels.height = destinationHeight;
+        pixels.stride = destinationStride;
+        pixels.pixels = std::move(transformed);
+        return true;
+    }
+
     HRESULT DecodeFilmstripThumbnailPixels(const std::wstring& path, UINT targetHeight, PixelBuffer& decoded, float& aspect) const {
         if (targetHeight == 0) return E_INVALIDARG;
         HRESULT hr = E_FAIL;
+        UINT orientation = 1;
 #ifdef _DEBUG
         const ULONGLONG decodeStarted = GetTickCount64();
         const ULONGLONG decoderStarted = GetTickCount64();
@@ -6047,7 +6079,7 @@ private:
 #ifdef _DEBUG
             const ULONGLONG orientationStarted = GetTickCount64();
 #endif
-            const UINT orientation = ReadPhotoOrientation(frame.Get(), &path);
+            orientation = ReadPhotoOrientation(frame.Get(), &path);
 #ifdef _DEBUG
             TraceFilmstripThumbnailStage(L"ORIENTATION_END", path, orientationStarted, S_OK);
 #endif
@@ -6065,29 +6097,23 @@ private:
 #ifdef _DEBUG
                 TraceFilmstripThumbnailStage(L"CONVERTER_INIT_END", path, converterStarted, attempt);
 #endif
+                // Do not place the EXIF transform in this source-backed WIC chain: metadata-rotated
+                // JPEGs can defer an expensive transform until CopyPixels. Apply it after release instead.
                 ComPtr<IWICBitmapSource> transformed = converter;
-                ComPtr<IWICBitmapFlipRotator> rotator;
-                if (SUCCEEDED(attempt) && orientation != 1) {
-#ifdef _DEBUG
-                    const ULONGLONG transformStarted = GetTickCount64();
-#endif
-                    attempt = factory->CreateBitmapFlipRotator(&rotator);
-                    if (SUCCEEDED(attempt)) attempt = rotator->Initialize(converter.Get(), TransformForOrientation(orientation));
-#ifdef _DEBUG
-                    TraceFilmstripThumbnailStage(L"TRANSFORM_END", path, transformStarted, attempt);
-#endif
-                    if (SUCCEEDED(attempt)) transformed = rotator;
-                    if (orientation >= 5 && orientation <= 8) std::swap(sourceWidth, sourceHeight);
-                }
                 if (FAILED(attempt) || !sourceWidth || !sourceHeight) return FAILED(attempt) ? attempt : E_FAIL;
 #ifdef _DEBUG
                 const ULONGLONG cropStarted = GetTickCount64();
 #endif
-                const float naturalAspect = static_cast<float>(sourceWidth) / static_cast<float>(sourceHeight);
+                const bool swapsAxes = orientation >= 5 && orientation <= 8;
+                const UINT orientedWidth = swapsAxes ? sourceHeight : sourceWidth;
+                const UINT orientedHeight = swapsAxes ? sourceWidth : sourceHeight;
+                const float naturalAspect = static_cast<float>(orientedWidth) / static_cast<float>(orientedHeight);
                 const float croppedAspect = std::clamp(naturalAspect, 2.0f / 3.0f, 16.0f / 9.0f);
-                UINT cropWidth = sourceWidth, cropHeight = sourceHeight;
-                if (naturalAspect > croppedAspect) cropWidth = std::max(1u, static_cast<UINT>(std::lround(sourceHeight * croppedAspect)));
-                else if (naturalAspect < croppedAspect) cropHeight = std::max(1u, static_cast<UINT>(std::lround(sourceWidth / croppedAspect)));
+                UINT orientedCropWidth = orientedWidth, orientedCropHeight = orientedHeight;
+                if (naturalAspect > croppedAspect) orientedCropWidth = std::max(1u, static_cast<UINT>(std::lround(orientedHeight * croppedAspect)));
+                else if (naturalAspect < croppedAspect) orientedCropHeight = std::max(1u, static_cast<UINT>(std::lround(orientedWidth / croppedAspect)));
+                const UINT cropWidth = swapsAxes ? orientedCropHeight : orientedCropWidth;
+                const UINT cropHeight = swapsAxes ? orientedCropWidth : orientedCropHeight;
                 const WICRect crop{ static_cast<INT>((sourceWidth - cropWidth) / 2), static_cast<INT>((sourceHeight - cropHeight) / 2),
                     static_cast<INT>(cropWidth), static_cast<INT>(cropHeight) };
 #ifdef _DEBUG
@@ -6102,13 +6128,15 @@ private:
 #ifdef _DEBUG
                 TraceFilmstripThumbnailStage(L"CLIPPER_INIT_END", path, clipperStarted, attempt);
 #endif
-                const UINT targetWidth = std::max(1u, static_cast<UINT>(std::lround(targetHeight * croppedAspect)));
+                const UINT orientedTargetWidth = std::max(1u, static_cast<UINT>(std::lround(targetHeight * croppedAspect)));
+                const UINT sourceTargetWidth = swapsAxes ? targetHeight : orientedTargetWidth;
+                const UINT sourceTargetHeight = swapsAxes ? orientedTargetWidth : targetHeight;
                 ComPtr<IWICBitmapScaler> scaler;
 #ifdef _DEBUG
                 const ULONGLONG scalerStarted = GetTickCount64();
 #endif
                 if (SUCCEEDED(attempt)) attempt = factory->CreateBitmapScaler(&scaler);
-                if (SUCCEEDED(attempt)) attempt = scaler->Initialize(clipper.Get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant);
+                if (SUCCEEDED(attempt)) attempt = scaler->Initialize(clipper.Get(), sourceTargetWidth, sourceTargetHeight, WICBitmapInterpolationModeFant);
 #ifdef _DEBUG
                 TraceFilmstripThumbnailStage(L"SCALER_INIT_END", path, scalerStarted, attempt);
 #endif
@@ -6122,9 +6150,9 @@ private:
 #ifdef _DEBUG
                 TraceFilmstripThumbnailStage(L"FINAL_CONVERTER_INIT_END", path, finalConverterStarted, attempt);
 #endif
-                if (FAILED(attempt) || targetWidth > UINT_MAX / 4 || targetHeight > UINT_MAX / (targetWidth * 4)) return FAILED(attempt) ? attempt : E_OUTOFMEMORY;
-                const UINT stride = targetWidth * 4;
-                const size_t bytes = static_cast<size_t>(stride) * targetHeight;
+                if (FAILED(attempt) || sourceTargetWidth > UINT_MAX / 4 || sourceTargetHeight > UINT_MAX / (sourceTargetWidth * 4)) return FAILED(attempt) ? attempt : E_OUTOFMEMORY;
+                const UINT stride = sourceTargetWidth * 4;
+                const size_t bytes = static_cast<size_t>(stride) * sourceTargetHeight;
                 auto pixels = std::make_shared<std::vector<BYTE>>(bytes);
 #ifdef _DEBUG
                 const ULONGLONG copyStarted = GetTickCount64();
@@ -6134,11 +6162,10 @@ private:
                 TraceFilmstripThumbnailStage(L"COPYPIXELS_END", path, copyStarted, attempt);
 #endif
                 if (SUCCEEDED(attempt)) {
-                    decoded.width = targetWidth;
-                    decoded.height = targetHeight;
+                    decoded.width = sourceTargetWidth;
+                    decoded.height = sourceTargetHeight;
                     decoded.stride = stride;
                     decoded.pixels = std::move(pixels);
-                    aspect = static_cast<float>(targetWidth) / static_cast<float>(targetHeight);
                 }
                 return attempt;
             };
@@ -6153,6 +6180,17 @@ private:
 #ifdef _DEBUG
         TraceFilmstripThumbnailStage(L"SOURCE_RELEASED", path, decodeStarted, hr);
 #endif
+        if (SUCCEEDED(hr)) {
+#ifdef _DEBUG
+            const ULONGLONG ramOrientationStarted = GetTickCount64();
+            TraceFilmstripThumbnailStage(L"RAM_ORIENTATION_BEGIN", path, ramOrientationStarted, S_OK);
+#endif
+            if (!ApplyFilmstripThumbnailOrientation(decoded, orientation)) return E_FAIL;
+#ifdef _DEBUG
+            TraceFilmstripThumbnailStage(L"RAM_ORIENTATION_END", path, ramOrientationStarted, S_OK);
+#endif
+            aspect = static_cast<float>(decoded.width) / static_cast<float>(decoded.height);
+        }
         return hr;
     }
 

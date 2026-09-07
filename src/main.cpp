@@ -19,6 +19,7 @@
 #include "lanczos_resampler.h"
 #include "d3d11_model_viewport.h"
 #include "video_player.h"
+#include "video_thumbnail_reader.h"
 #include "stl_loader.h"
 #include "three_mf_loader.h"
 #include "model_importer.h"
@@ -3511,9 +3512,18 @@ public:
                 TraceFilmstripThumbnailJob(L"THUMB_JOB_DEQUEUED", request);
                 auto* result = new FilmstripThumbnailResult{};
                 result->request = request;
-                result->result = DecodeFilmstripThumbnailPixels(request.path, request.targetHeight, *result, result->aspect);
-                // DecodeFilmstripThumbnailPixels releases its complete WIC source chain before
-                // returning, so only copied RAM pixels can cross onto the UI thread.
+                if (IsVideoPath(request.path)) {
+                    VideoThumbnailPixels decoded;
+                    result->result = DecodeVideoThumbnailPixels(request.path, request.targetHeight, decoded, result->aspect);
+                    result->width = decoded.width;
+                    result->height = decoded.height;
+                    result->stride = decoded.stride;
+                    result->pixels = std::move(decoded.pixels);
+                } else {
+                    result->result = DecodeFilmstripThumbnailPixels(request.path, request.targetHeight, *result, result->aspect);
+                }
+                // Both decode paths release all source objects before returning, so only copied
+                // Viewtrious-owned RAM pixels can cross onto the UI thread.
                 TraceFilmstripThumbnailJob(SUCCEEDED(result->result) ? L"THUMB_JOB_SUCCESS" : L"THUMB_JOB_FAILED", request, result->result);
                 if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) delete result;
                 else if (PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result)))
@@ -3707,7 +3717,7 @@ public:
         for (size_t index : requested) {
             const std::wstring path = navigationFiles_[index].wstring();
             const uint64_t itemGeneration = filmstripThumbnailGenerations_[index];
-            if (IsVideoPath(path) || FindFilmstripThumbnail(path, itemGeneration) >= 0 ||
+            if (FindFilmstripThumbnail(path, itemGeneration) >= 0 ||
                 FilmstripThumbnailPending(path, itemGeneration) || FilmstripThumbnailFailed(path, itemGeneration)) continue;
             FilmstripThumbnailRequest request{};
             request.path = path;

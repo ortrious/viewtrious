@@ -3975,16 +3975,36 @@ public:
     void SetFilmstripHover(POINT point) {
         const int index = FilmstripItemAt(point);
         if (filmstripHoveredIndex_ == index) return;
+#ifdef _DEBUG
+        wchar_t message[512]{};
+        swprintf_s(message, L"[Viewtrious] FILMSTRIP_HOVER_CANDIDATE_%ls point=%ld,%ld index=%d dragging=%d wheel=%d visible=%d\n",
+            index >= 0 ? L"SET" : L"CLEAR", point.x, point.y, index, filmstripDragging_ ? 1 : 0, filmstripScrollAnimating_ ? 1 : 0, FilmstripVisible() ? 1 : 0);
+        OutputDebugStringW(message);
+#endif
         filmstripHoveredIndex_ = index;
         filmstripPreviewIndex_ = -1;
-        if (index >= 0 && !filmstripDragging_ && !filmstripScrollAnimating_) SetTimer(window_, kFilmstripHoverPreviewTimer, 175, nullptr);
+        if (index >= 0 && !filmstripDragging_ && !filmstripScrollAnimating_) {
+            SetTimer(window_, kFilmstripHoverPreviewTimer, 175, nullptr);
+#ifdef _DEBUG
+            OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_TIMER_ARM id=17 delay=175\n");
+#endif
+        }
         else KillTimer(window_, kFilmstripHoverPreviewTimer);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ShowFilmstripHoverPreview() {
         KillTimer(window_, kFilmstripHoverPreviewTimer);
+#ifdef _DEBUG
+        wchar_t message[512]{};
+        swprintf_s(message, L"[Viewtrious] FILMSTRIP_HOVER_TIMER_FIRE candidate=%d dragging=%d wheel=%d\n",
+            filmstripHoveredIndex_, filmstripDragging_ ? 1 : 0, filmstripScrollAnimating_ ? 1 : 0);
+        OutputDebugStringW(message);
+#endif
         if (filmstripHoveredIndex_ >= 0 && !filmstripDragging_ && !filmstripScrollAnimating_) {
             filmstripPreviewIndex_ = filmstripHoveredIndex_;
+#ifdef _DEBUG
+            OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_PREVIEW_ACTIVATE invalidate=1\n");
+#endif
             InvalidateRect(window_, nullptr, FALSE);
         }
     }
@@ -4070,6 +4090,9 @@ public:
         }
         renderTarget_->PopAxisAlignedClip();
         if (filmstripPreviewIndex_ >= 0 && filmstripPreviewIndex_ < static_cast<int>(navigationFiles_.size()) && !filmstripDragging_ && !filmstripScrollAnimating_) {
+#ifdef _DEBUG
+            OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_PREVIEW_PAINT_ENTER clip=popped\n");
+#endif
             if (ID2D1Bitmap* thumbnail = FilmstripThumbnailBitmap(static_cast<size_t>(filmstripPreviewIndex_))) {
                 const D2D1_SIZE_F size = thumbnail->GetSize();
                 const float height = std::min(320.0f * scale, std::max(1.0f, static_cast<float>(strip.top) - 24.0f * scale));
@@ -4077,7 +4100,16 @@ public:
                 const RECT hovered = GetFilmstripThumbnailBounds(static_cast<size_t>(filmstripPreviewIndex_));
                 const float left = std::clamp((hovered.left + hovered.right - width) * 0.5f, 8.0f * scale, std::max(8.0f * scale, static_cast<float>(strip.right) - width));
                 const D2D1_RECT_F preview = D2D1::RectF(left, strip.top - 8.0f * scale - height, left + width, strip.top - 8.0f * scale);
+#ifdef _DEBUG
+                wchar_t message[512]{};
+                swprintf_s(message, L"[Viewtrious] FILMSTRIP_HOVER_PREVIEW_DRAW bitmap=%.0fx%.0f rect=%.1f,%.1f,%.1f,%.1f\n", size.width, size.height, preview.left, preview.top, preview.right, preview.bottom);
+                OutputDebugStringW(message);
+#endif
                 renderTarget_->DrawBitmap(thumbnail, preview, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            } else {
+#ifdef _DEBUG
+                OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_CACHE_LOOKUP resident=0\n");
+#endif
             }
         }
     }

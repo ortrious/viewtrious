@@ -4767,7 +4767,7 @@ public:
     void ZoomToActualPixels(POINT cursor) { SetScaleAt(cursor, 96.0f / RenderTargetDpi()); }
 
     void ToggleFitActualPixels(POINT cursor) {
-        if (fitToWindow_) ZoomToActualPixels(cursor);
+        if (fitToWindow_ || PhysicalPixelScale() < 1.0f - 0.0001f) ZoomToActualPixels(cursor);
         else FitToWindow();
     }
 

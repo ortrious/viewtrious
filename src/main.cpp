@@ -121,12 +121,17 @@ constexpr UINT_PTR kFilmstripVideoHoverFadeTimer = 20;
 constexpr UINT_PTR kImageAdjustmentPersistenceTimer = 21;
 constexpr UINT_PTR kFilmstripHoverPreviewFadeTimer = 22;
 constexpr ULONGLONG kFilmstripVideoHoverFadeDurationMs = 175;
-constexpr UINT kFilmstripHoverPreviewFadeDurationMs = 140;
+constexpr ULONGLONG kFilmstripHoverPreviewFadeDurationMs = kStillDissolveDurationMs;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
 constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
 constexpr double kFilmstripVelocityStopEpsilon = 20.0;
 constexpr std::array<DWORD, 6> kVideoPlaybackRatePercents{ 25, 50, 100, 125, 150, 200 };
+
+float SmoothTransitionProgress(float progress) {
+    progress = std::clamp(progress, 0.0f, 1.0f);
+    return progress * progress * (3.0f - 2.0f * progress);
+}
 // Shared Settings grid geometry. Every page uses these values for section and control placement.
 constexpr float kSettingsContentLeftPaddingDips = 206.0f;
 constexpr float kSettingsContentRightPaddingDips = 18.0f;
@@ -3174,6 +3179,7 @@ public:
         helpScroll_ = std::min(helpScroll_, HelpMaximumScroll());
         ClampPan();
         ClampVideoPan();
+        filmstripPreviewGeometryValid_ = false;
         RebuildFilmstripLayout();
         if (lanczosSelected_ && source_) {
             InvalidateLanczosVariant(true);
@@ -3955,6 +3961,7 @@ public:
                 filmstripVideoHoverTimestamp_ = result->videoTimestamp;
                 filmstripVideoHoverPreview_ = std::move(entry);
                 filmstripVideoHoverLoading_ = false;
+                SetFilmstripHoverPreviewGeometry(index);
 #ifdef _DEBUG
                 wchar_t trace[192]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_UI_FRAME_ACCEPTED timestamp=%lld alpha=%u\\n", filmstripVideoHoverTimestamp_, (*filmstripVideoHoverPreview_->pixels)[3]); OutputDebugStringW(trace);
 #endif
@@ -3978,6 +3985,7 @@ public:
             entry.pixels = std::move(result->pixels);
             filmstripHoverPreviews_.push_back(std::move(entry));
             PruneFilmstripHoverPreviews();
+            if (active) SetFilmstripHoverPreviewGeometry(index);
 #ifdef _DEBUG
             OutputDebugStringW(active ? L"[Viewtrious] FILMSTRIP_HD_PREVIEW_PUBLISHED\n" : L"[Viewtrious] FILMSTRIP_HD_PREVIEW_JOB_STALE\n");
             if (active) OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HD_PREVIEW_SWAP\n");
@@ -4525,6 +4533,9 @@ public:
     }
     float FilmstripHoverPreviewAspect(size_t index) const {
         if (index >= navigationFiles_.size() || index >= filmstripThumbnailGenerations_.size()) return 1.0f;
+        if (filmstripVideoHoverPreview_ && filmstripVideoHoverPreview_->itemGeneration == filmstripThumbnailGenerations_[index] &&
+            PathsEqual(fs::path(filmstripVideoHoverPreview_->path), navigationFiles_[index]) && filmstripVideoHoverPreview_->aspect > 0.0f)
+            return filmstripVideoHoverPreview_->aspect;
         const int cached = FindFilmstripHoverPreview(navigationFiles_[index].wstring(), filmstripThumbnailGenerations_[index]);
         if (cached >= 0 && filmstripHoverPreviews_[cached].aspect > 0.0f) return filmstripHoverPreviews_[cached].aspect;
         if (index < filmstripKnownAspects_.size() && filmstripKnownAspects_[index] > 0.0f) return filmstripKnownAspects_[index];
@@ -4533,15 +4544,20 @@ public:
     void SetFilmstripHoverPreviewGeometry(size_t index) {
         const RECT strip = GetFilmstripBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const float inset = static_cast<float>(FilmstripPadding());
         const float aspect = std::max(0.01f, FilmstripHoverPreviewAspect(index));
-        float height = std::min(320.0f * scale, std::max(1.0f, static_cast<float>(strip.top) - 24.0f * scale));
+        float height = std::min(320.0f * scale, std::max(1.0f, static_cast<float>(strip.top) - 24.0f * scale - inset));
         float width = height * aspect;
-        const float maximumWidth = std::max(1.0f, static_cast<float>(strip.right - strip.left) - 16.0f * scale);
+        const float sideClearance = std::max(8.0f * scale, 24.0f * scale);
+        const float maximumWidth = std::max(1.0f, static_cast<float>(strip.right - strip.left) - sideClearance * 2.0f - inset * 2.0f);
         if (width > maximumWidth) { width = maximumWidth; height = width / aspect; }
         const RECT hovered = GetFilmstripThumbnailBounds(index);
-        const float left = std::clamp((hovered.left + hovered.right - width) * 0.5f, 8.0f * scale,
-            std::max(8.0f * scale, static_cast<float>(strip.right) - 8.0f * scale - width));
-        filmstripPreviewGeometry_ = D2D1::RectF(left, strip.top - 8.0f * scale - height, left + width, strip.top - 8.0f * scale);
+        const float shellWidth = width + inset * 2.0f;
+        const float shellLeft = std::clamp((hovered.left + hovered.right - shellWidth) * 0.5f,
+            static_cast<float>(strip.left) + sideClearance, std::max(static_cast<float>(strip.left) + sideClearance,
+                static_cast<float>(strip.right) - sideClearance - shellWidth));
+        const float bottom = static_cast<float>(strip.top) - inset;
+        filmstripPreviewGeometry_ = D2D1::RectF(shellLeft + inset, bottom - height, shellLeft + inset + width, bottom);
         filmstripPreviewGeometryValid_ = true;
     }
     void ShowFilmstripHoverPreview() {
@@ -4580,7 +4596,8 @@ public:
     void UpdateFilmstripHoverPreviewFade() {
         if (!filmstripHoverPreviewFadeActive_) { KillTimer(window_, kFilmstripHoverPreviewFadeTimer); return; }
         const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - filmstripHoverPreviewFadeStartedAtMs_) / kFilmstripHoverPreviewFadeDurationMs);
-        filmstripHoverPreviewOpacity_ = filmstripHoverPreviewFadeOut_ ? filmstripHoverPreviewFadeStartOpacity_ * (1.0f - progress) : progress;
+        const float eased = SmoothTransitionProgress(progress);
+        filmstripHoverPreviewOpacity_ = filmstripHoverPreviewFadeOut_ ? filmstripHoverPreviewFadeStartOpacity_ * (1.0f - eased) : eased;
         if (progress >= 1.0f) {
             filmstripHoverPreviewFadeActive_ = false;
             KillTimer(window_, kFilmstripHoverPreviewFadeTimer);
@@ -4599,6 +4616,82 @@ public:
         const float width = (bounds.bottom - bounds.top) * aspect;
         const float left = (bounds.left + bounds.right - width) * 0.5f;
         return D2D1::RectF(left, bounds.top, left + width, bounds.bottom);
+    }
+    bool DrawFilmstripHoverPreviewShell(const D2D1_RECT_F& panel, ID2D1Brush* panelBorder, ID2D1Brush* shellSurface,
+        ID2D1Brush* shellBorder, float scale) {
+        if (!d2dFactory_ || !filmstripPreviewGeometryValid_) return false;
+        const float inset = static_cast<float>(FilmstripPadding());
+        const float shellLeft = filmstripPreviewGeometry_.left - inset;
+        const float shellRight = filmstripPreviewGeometry_.right + inset;
+        const float shellTop = filmstripPreviewGeometry_.top - inset;
+        const float panelRadius = 12.0f * scale;
+        const float shellRadius = std::min({ panelRadius, (shellRight - shellLeft) * 0.5f,
+            (static_cast<float>(GetFilmstripBounds().top) - shellTop) * 0.5f });
+        const float joinRadius = std::min(panelRadius, (shellRight - shellLeft) * 0.5f);
+        const float curve = 0.55228475f;
+        const float panelTop = panel.top;
+        const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
+        const auto bezier = [](D2D1GeometrySink* sink, D2D1_POINT_2F control1, D2D1_POINT_2F control2, D2D1_POINT_2F end) {
+            sink->AddBezier(D2D1::BezierSegment(control1, control2, end));
+        };
+        const auto addShellOutline = [&](ID2D1GeometrySink* sink, D2D1_FIGURE_END figureEnd) {
+            sink->BeginFigure(point(shellLeft - joinRadius, panelTop), D2D1_FIGURE_BEGIN_HOLLOW);
+            bezier(sink, point(shellLeft - joinRadius + curve * joinRadius, panelTop),
+                point(shellLeft, panelTop - joinRadius + curve * joinRadius), point(shellLeft, panelTop - joinRadius));
+            sink->AddLine(point(shellLeft, shellTop + shellRadius));
+            bezier(sink, point(shellLeft, shellTop + shellRadius - curve * shellRadius),
+                point(shellLeft + shellRadius - curve * shellRadius, shellTop), point(shellLeft + shellRadius, shellTop));
+            sink->AddLine(point(shellRight - shellRadius, shellTop));
+            bezier(sink, point(shellRight - shellRadius + curve * shellRadius, shellTop),
+                point(shellRight, shellTop + shellRadius - curve * shellRadius), point(shellRight, shellTop + shellRadius));
+            sink->AddLine(point(shellRight, panelTop - joinRadius));
+            bezier(sink, point(shellRight, panelTop - joinRadius + curve * joinRadius),
+                point(shellRight + joinRadius - curve * joinRadius, panelTop), point(shellRight + joinRadius, panelTop));
+            sink->EndFigure(figureEnd);
+        };
+
+        ComPtr<ID2D1PathGeometry> shellFill, shellOutline, panelOutline;
+        ComPtr<ID2D1GeometrySink> sink;
+        if (FAILED(d2dFactory_->CreatePathGeometry(&shellFill)) || FAILED(shellFill->Open(&sink))) return false;
+        sink->BeginFigure(point(shellLeft - joinRadius, panelTop), D2D1_FIGURE_BEGIN_FILLED);
+        bezier(sink, point(shellLeft - joinRadius + curve * joinRadius, panelTop),
+            point(shellLeft, panelTop - joinRadius + curve * joinRadius), point(shellLeft, panelTop - joinRadius));
+        sink->AddLine(point(shellLeft, shellTop + shellRadius));
+        bezier(sink, point(shellLeft, shellTop + shellRadius - curve * shellRadius),
+            point(shellLeft + shellRadius - curve * shellRadius, shellTop), point(shellLeft + shellRadius, shellTop));
+        sink->AddLine(point(shellRight - shellRadius, shellTop));
+        bezier(sink, point(shellRight - shellRadius + curve * shellRadius, shellTop),
+            point(shellRight, shellTop + shellRadius - curve * shellRadius), point(shellRight, shellTop + shellRadius));
+        sink->AddLine(point(shellRight, panelTop - joinRadius));
+        bezier(sink, point(shellRight, panelTop - joinRadius + curve * joinRadius),
+            point(shellRight + joinRadius - curve * joinRadius, panelTop), point(shellRight + joinRadius, panelTop));
+        sink->AddLine(point(shellLeft - joinRadius, panelTop));
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        if (FAILED(sink->Close()) || FAILED(d2dFactory_->CreatePathGeometry(&shellOutline)) || FAILED(shellOutline->Open(&sink))) return false;
+        addShellOutline(sink.Get(), D2D1_FIGURE_END_OPEN);
+        if (FAILED(sink->Close()) || FAILED(d2dFactory_->CreatePathGeometry(&panelOutline)) || FAILED(panelOutline->Open(&sink))) return false;
+        sink->BeginFigure(point(panel.left + panelRadius, panel.top), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine(point(shellLeft - joinRadius, panel.top));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->BeginFigure(point(shellRight + joinRadius, panel.top), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine(point(panel.right - panelRadius, panel.top));
+        bezier(sink, point(panel.right - panelRadius + curve * panelRadius, panel.top),
+            point(panel.right, panel.top + panelRadius - curve * panelRadius), point(panel.right, panel.top + panelRadius));
+        sink->AddLine(point(panel.right, panel.bottom - panelRadius));
+        bezier(sink, point(panel.right, panel.bottom - panelRadius + curve * panelRadius),
+            point(panel.right - panelRadius + curve * panelRadius, panel.bottom), point(panel.right - panelRadius, panel.bottom));
+        sink->AddLine(point(panel.left + panelRadius, panel.bottom));
+        bezier(sink, point(panel.left + panelRadius - curve * panelRadius, panel.bottom),
+            point(panel.left, panel.bottom - panelRadius + curve * panelRadius), point(panel.left, panel.bottom - panelRadius));
+        sink->AddLine(point(panel.left, panel.top + panelRadius));
+        bezier(sink, point(panel.left, panel.top + panelRadius - curve * panelRadius),
+            point(panel.left + panelRadius - curve * panelRadius, panel.top), point(panel.left + panelRadius, panel.top));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        if (FAILED(sink->Close())) return false;
+        renderTarget_->FillGeometry(shellFill.Get(), shellSurface);
+        renderTarget_->DrawGeometry(panelOutline.Get(), panelBorder, scale);
+        renderTarget_->DrawGeometry(shellOutline.Get(), shellBorder, scale);
+        return true;
     }
 #ifdef _DEBUG
     void TraceFilmstripPostStopPaint(const RECT& strip, size_t first, size_t last) {
@@ -4640,9 +4733,14 @@ public:
         const RECT strip = GetFilmstripBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float opacity = filmstripOpacity_;
-        ComPtr<ID2D1SolidColorBrush> surface, border, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, placeholderText;
+        const bool drawPreviewShell = FilmstripHoverPreviewEligible(filmstripPreviewIndex_) && !filmstripDragging_ && !filmstripScrollAnimating_ &&
+            filmstripHoverPreviewOpacity_ > 0.001f;
+        if (drawPreviewShell && !filmstripPreviewGeometryValid_) SetFilmstripHoverPreviewGeometry(static_cast<size_t>(filmstripPreviewIndex_));
+        ComPtr<ID2D1SolidColorBrush> surface, border, previewSurface, previewBorder, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, placeholderText;
         if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(15.f / 255, 17.f / 255, 21.f / 255, 0.78f * opacity), &surface)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(91.f / 255, 102.f / 255, 120.f / 255, 0.70f * opacity), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(15.f / 255, 17.f / 255, 21.f / 255, 0.78f * opacity * filmstripHoverPreviewOpacity_), &previewSurface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(91.f / 255, 102.f / 255, 120.f / 255, 0.70f * opacity * filmstripHoverPreviewOpacity_), &previewBorder)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 90.f / 255, 160.f / 255, 0.22f * opacity), &selectedBacking)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255, 0.25f * opacity), &selectedGlow)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 150.f / 255, 255.f / 255, opacity), &selectedOutline)) ||
@@ -4651,7 +4749,8 @@ public:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.42f * opacity), &placeholderText))) return;
         const D2D1_RECT_F panel = D2D1::RectF(static_cast<float>(strip.left), static_cast<float>(strip.top), static_cast<float>(strip.right), static_cast<float>(strip.bottom));
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), surface.Get());
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), border.Get(), scale);
+        if (!drawPreviewShell || !DrawFilmstripHoverPreviewShell(panel, border.Get(), previewSurface.Get(), previewBorder.Get(), scale))
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), border.Get(), scale);
         renderTarget_->PushAxisAlignedClip(panel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         const size_t current = CurrentNavigationIndex();
         const auto [first, last] = FilmstripVisibleRange();
@@ -8054,7 +8153,7 @@ private:
         const D2D1_RECT_F oldDestination = D2D1::RectF(oldTopLeft.x, oldTopLeft.y, oldTopLeft.x + dissolveOldWidth_ * oldScale, oldTopLeft.y + dissolveOldHeight_ * oldScale);
         const D2D1_RECT_F newDestination = D2D1::RectF(newTopLeft.x, newTopLeft.y, newTopLeft.x + imageWidth_ * newScale, newTopLeft.y + imageHeight_ * newScale);
         const float progress = StillDissolveProgress();
-        const float eased = progress * progress * (3.0f - 2.0f * progress);
+        const float eased = SmoothTransitionProgress(progress);
 
         renderTarget_->PushAxisAlignedClip(canvas, D2D1_ANTIALIAS_MODE_ALIASED);
         ID2D1Bitmap* displayed = bitmap_.Get();

@@ -97,7 +97,6 @@ constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
 constexpr int kTopBarLogoResourceId = 102;
-constexpr int kAboutLogoResourceId = 103;
 constexpr int kFilmstripVideoIconGroupResourceId = 104;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
@@ -8643,7 +8642,7 @@ private:
         aboutLogo_.Reset();
         aboutLogoWidth_ = 0;
         aboutLogoHeight_ = 0;
-        if (!CreateBitmapFromResource(kAboutLogoResourceId, RT_RCDATA, width, height, aboutLogo_)) return false;
+        if (!CreateBitmapFromResource(kTopBarLogoResourceId, RT_RCDATA, width, height, aboutLogo_)) return false;
         aboutLogoWidth_ = width;
         aboutLogoHeight_ = height;
         return true;
@@ -9217,9 +9216,7 @@ private:
             drawAction(true, L"suggest a feature", L"have an idea for Viewtrious?");
             DrawOverlayText(L"opens GitHub in your web browser.", left, static_cast<float>(bounds.bottom) - panelPadding - 20.0f * dpiScale, contentWidth, 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         } else {
-            const float aboutContentWidth = std::max(1.0f, std::min(520.0f * dpiScale,
-                static_cast<float>(bounds.right - bounds.left) - 80.0f * dpiScale));
-            const UINT logoWidth = static_cast<UINT>(std::round(aboutContentWidth));
+            const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(std::min(216.0f * dpiScale, contentWidth))));
             const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoWidth) * 577.0f / 2375.0f)));
             const float aboutTextGap = 16.0f * dpiScale;
             const float aboutLineHeight = 20.0f * dpiScale;

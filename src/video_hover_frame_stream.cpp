@@ -1,5 +1,6 @@
 #include "video_hover_frame_stream.h"
 #include <mfapi.h>
+#include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <wincodec.h>

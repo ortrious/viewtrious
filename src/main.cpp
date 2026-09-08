@@ -4654,16 +4654,16 @@ public:
         ComPtr<ID2D1GeometrySink> sink;
         if (FAILED(d2dFactory_->CreatePathGeometry(&shellFill)) || FAILED(shellFill->Open(&sink))) return false;
         sink->BeginFigure(point(shellLeft - joinRadius, panelTop), D2D1_FIGURE_BEGIN_FILLED);
-        bezier(sink, point(shellLeft - joinRadius + curve * joinRadius, panelTop),
+        bezier(sink.Get(), point(shellLeft - joinRadius + curve * joinRadius, panelTop),
             point(shellLeft, panelTop - joinRadius + curve * joinRadius), point(shellLeft, panelTop - joinRadius));
         sink->AddLine(point(shellLeft, shellTop + shellRadius));
-        bezier(sink, point(shellLeft, shellTop + shellRadius - curve * shellRadius),
+        bezier(sink.Get(), point(shellLeft, shellTop + shellRadius - curve * shellRadius),
             point(shellLeft + shellRadius - curve * shellRadius, shellTop), point(shellLeft + shellRadius, shellTop));
         sink->AddLine(point(shellRight - shellRadius, shellTop));
-        bezier(sink, point(shellRight - shellRadius + curve * shellRadius, shellTop),
+        bezier(sink.Get(), point(shellRight - shellRadius + curve * shellRadius, shellTop),
             point(shellRight, shellTop + shellRadius - curve * shellRadius), point(shellRight, shellTop + shellRadius));
         sink->AddLine(point(shellRight, panelTop - joinRadius));
-        bezier(sink, point(shellRight, panelTop - joinRadius + curve * joinRadius),
+        bezier(sink.Get(), point(shellRight, panelTop - joinRadius + curve * joinRadius),
             point(shellRight + joinRadius - curve * joinRadius, panelTop), point(shellRight + joinRadius, panelTop));
         sink->AddLine(point(shellLeft - joinRadius, panelTop));
         sink->EndFigure(D2D1_FIGURE_END_CLOSED);
@@ -4675,16 +4675,16 @@ public:
         sink->EndFigure(D2D1_FIGURE_END_OPEN);
         sink->BeginFigure(point(shellRight + joinRadius, panel.top), D2D1_FIGURE_BEGIN_HOLLOW);
         sink->AddLine(point(panel.right - panelRadius, panel.top));
-        bezier(sink, point(panel.right - panelRadius + curve * panelRadius, panel.top),
+        bezier(sink.Get(), point(panel.right - panelRadius + curve * panelRadius, panel.top),
             point(panel.right, panel.top + panelRadius - curve * panelRadius), point(panel.right, panel.top + panelRadius));
         sink->AddLine(point(panel.right, panel.bottom - panelRadius));
-        bezier(sink, point(panel.right, panel.bottom - panelRadius + curve * panelRadius),
+        bezier(sink.Get(), point(panel.right, panel.bottom - panelRadius + curve * panelRadius),
             point(panel.right - panelRadius + curve * panelRadius, panel.bottom), point(panel.right - panelRadius, panel.bottom));
         sink->AddLine(point(panel.left + panelRadius, panel.bottom));
-        bezier(sink, point(panel.left + panelRadius - curve * panelRadius, panel.bottom),
+        bezier(sink.Get(), point(panel.left + panelRadius - curve * panelRadius, panel.bottom),
             point(panel.left, panel.bottom - panelRadius + curve * panelRadius), point(panel.left, panel.bottom - panelRadius));
         sink->AddLine(point(panel.left, panel.top + panelRadius));
-        bezier(sink, point(panel.left, panel.top + panelRadius - curve * panelRadius),
+        bezier(sink.Get(), point(panel.left, panel.top + panelRadius - curve * panelRadius),
             point(panel.left + panelRadius - curve * panelRadius, panel.top), point(panel.left + panelRadius, panel.top));
         sink->EndFigure(D2D1_FIGURE_END_OPEN);
         if (FAILED(sink->Close())) return false;

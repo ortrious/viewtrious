@@ -6256,7 +6256,6 @@ private:
     void UpdateShellRotation() {
         if (!shellRotationPending_) { KillTimer(window_, kShellRotationCheckTimer); return; }
         WIN32_FILE_ATTRIBUTE_DATA state{};
-        ++shellRotationProbeCount_;
         const bool changed = ReadShellRotationFileState(shellRotationPath_, state) && (!shellRotationInitialStateValid_ ||
             CompareFileTime(&state.ftLastWriteTime, &shellRotationInitialState_.ftLastWriteTime) != 0 ||
             state.nFileSizeHigh != shellRotationInitialState_.nFileSizeHigh || state.nFileSizeLow != shellRotationInitialState_.nFileSizeLow);
@@ -9845,7 +9844,6 @@ private:
     WIN32_FILE_ATTRIBUTE_DATA shellRotationLastState_{};
     bool shellRotationLastStateValid_ = false;
     UINT shellRotationStableChecks_ = 0;
-    UINT shellRotationProbeCount_ = 0;
     ULONGLONG shellRotationStarted_ = 0;
     bool shellRotationClockwise_ = false;
     bool openWithSubmenuOpen_ = false;

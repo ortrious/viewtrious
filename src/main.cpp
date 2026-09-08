@@ -108,7 +108,7 @@ constexpr ULONGLONG kModelLoadingOverlayDelayMs = 150;
 constexpr UINT kTriangleCountTooltipDelayMs = 450;
 constexpr ULONGLONG kVideoControlsIdleDelayMs = 1500;
 constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
-constexpr ULONGLONG kStillDissolveDurationMs = 160;
+constexpr ULONGLONG kStillDissolveDurationMs = 320;
 constexpr ULONGLONG kStillDissolvePreviewWaitMaxMs = 450;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
@@ -256,8 +256,16 @@ struct PixelBuffer {
     UINT width = 0;
     UINT height = 0;
     UINT stride = 0;
+    bool hasTransparency = false;
     std::shared_ptr<std::vector<BYTE>> pixels;
 };
+
+bool PixelsHaveTransparency(const std::vector<BYTE>& pixels) {
+    for (size_t offset = 3; offset < pixels.size(); offset += 4) {
+        if (pixels[offset] != 255) return true;
+    }
+    return false;
+}
 struct DecodeRequest {
     std::wstring path;
     uint64_t requestGeneration = 0;
@@ -6885,6 +6893,7 @@ private:
             source_ = bitmap; bitmap_.Reset(); imageWidth_ = gifCanvasWidth_; imageHeight_ = gifCanvasHeight_; imageAdjustmentSourceDirty_ = true; imageAdjustedBitmap_.Reset();
         }
         displayedPixels_ = gifCanvas_;
+        imageHasTransparency_ = PixelsHaveTransparency(*gifCanvas_);
         InvalidateRect(window_, nullptr, FALSE);
         if (initial) ActivateGifPlayback();
         return S_OK;
@@ -7008,8 +7017,34 @@ private:
         const size_t bytes = static_cast<size_t>(stride) * height;
         auto pixels = std::make_shared<std::vector<BYTE>>(bytes);
         hr = transformed->CopyPixels(nullptr, stride, static_cast<UINT>(bytes), pixels->data());
-        if (SUCCEEDED(hr)) { decoded.width = width; decoded.height = height; decoded.stride = stride; decoded.pixels = std::move(pixels); }
+        if (SUCCEEDED(hr)) {
+            decoded.width = width;
+            decoded.height = height;
+            decoded.stride = stride;
+            decoded.hasTransparency = PixelsHaveTransparency(*pixels);
+            decoded.pixels = std::move(pixels);
+        }
         return hr;
+    }
+
+    bool SourceHasTransparency(const ComPtr<IWICBitmapSource>& source, UINT width, UINT height) const {
+        if (!source || width == 0 || height == 0 || width > UINT_MAX / 4) return false;
+        ComPtr<IWICBitmap> bitmap;
+        if (FAILED(source.As(&bitmap))) return false;
+        ComPtr<IWICBitmapLock> lock;
+        if (FAILED(bitmap->Lock(nullptr, WICBitmapLockRead, &lock))) return false;
+        UINT stride = 0;
+        UINT bufferSize = 0;
+        BYTE* pixels = nullptr;
+        if (FAILED(lock->GetStride(&stride)) || FAILED(lock->GetDataPointer(&bufferSize, &pixels)) ||
+            !pixels || stride < width * 4 || bufferSize < static_cast<size_t>(stride) * height) return false;
+        for (UINT y = 0; y < height; ++y) {
+            const BYTE* row = pixels + static_cast<size_t>(y) * stride;
+            for (UINT x = 0; x < width; ++x) {
+                if (row[x * 4 + 3] != 255) return true;
+            }
+        }
+        return false;
     }
 
     bool ApplyFilmstripThumbnailOrientation(PixelBuffer& pixels, UINT orientation) const {
@@ -7544,7 +7579,7 @@ private:
                 const HRESULT hr = wicFactory_->CreateBitmapFromMemory(result->width, result->height, GUID_WICPixelFormat32bppPBGRA,
                     result->stride, static_cast<UINT>(result->pixels->size()), result->pixels->data(), &bitmap);
                 if (SUCCEEDED(hr)) {
-                    CommitImage(result->request.path, bitmap, result->width, result->height, false);
+                    CommitImage(result->request.path, bitmap, result->width, result->height, false, result->hasTransparency);
                     displayedPixels_ = result->pixels;
                 } else error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
             } else {
@@ -7561,12 +7596,13 @@ private:
     }
 
     void CommitImage(const std::wstring& path, const ComPtr<IWICBitmapSource>& source, UINT width, UINT height,
-        bool resetNavigation) {
+        bool resetNavigation, std::optional<bool> knownTransparency = std::nullopt) {
         FlushImageAdjustmentPersistence();
         if (!committingGifFrame_) StopGifPlayback();
         InvalidateLanczosVariant(false);
         displayedPixels_.reset();
         source_ = source;
+        imageHasTransparency_ = knownTransparency.value_or(SourceHasTransparency(source, width, height));
         bitmap_.Reset();
         imageAdjustmentSourceDirty_ = true;
         imageAdjustedBitmap_.Reset();
@@ -7842,7 +7878,7 @@ private:
         const D2D1_RECT_F destination = D2D1::RectF(topLeft.x, topLeft.y,
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
         renderTarget_->PushAxisAlignedClip(canvas, D2D1_ANTIALIAS_MODE_ALIASED);
-        DrawCheckerboard(destination);
+        if (imageHasTransparency_) DrawCheckerboard(destination);
         if (imageAdjustments_.IsNeutral() && !gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
             renderTarget_->DrawBitmap(lanczosBitmap_.Get(), lanczosDestination_, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         else {
@@ -7869,15 +7905,14 @@ private:
         const float eased = progress * progress * (3.0f - 2.0f * progress);
 
         renderTarget_->PushAxisAlignedClip(canvas, D2D1_ANTIALIAS_MODE_ALIASED);
-        DrawCheckerboard(newDestination);
         ID2D1Bitmap* displayed = bitmap_.Get();
         D2D1_RECT_F adjustedDestination = newDestination;
         if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) {
             displayed = imageAdjustedBitmap_.Get();
             if (imageAdjustmentUsesLanczos_) adjustedDestination = lanczosDestination_;
         }
-        if (displayed) renderTarget_->DrawBitmap(displayed, adjustedDestination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         renderTarget_->DrawBitmap(dissolveOldBitmap_.Get(), oldDestination, 1.0f - eased, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        if (displayed) renderTarget_->DrawBitmap(displayed, adjustedDestination, eased, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         renderTarget_->PopAxisAlignedClip();
     }
 
@@ -9574,6 +9609,7 @@ private:
     std::vector<BYTE> imageAdjustmentPixels_;
     UINT imageAdjustmentSourceWidth_ = 0;
     UINT imageAdjustmentSourceHeight_ = 0;
+    bool imageHasTransparency_ = false;
     bool imageAdjustmentSourceDirty_ = true;
     bool imageAdjustmentUsesLanczos_ = false;
     bool imageAdjustmentProcessorReady_ = false;

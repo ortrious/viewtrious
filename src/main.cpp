@@ -98,7 +98,7 @@ constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
 constexpr int kTopBarLogoResourceId = 102;
 constexpr int kAboutLogoResourceId = 103;
-constexpr int kFilmstripVideoIconResourceId = 106;
+constexpr int kFilmstripVideoIconGroupResourceId = 104;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
 constexpr int kContextMenuPaddingDip = 8;
@@ -8608,8 +8608,8 @@ private:
         renderTarget_->DrawLine(D2D1::Point2F(centerX, centerY + halfHeight), D2D1::Point2F(centerX + halfWidth, centerY - halfHeight), brush, 1.5f * dpiScale);
     }
 
-    bool CreateBitmapFromResource(int resourceId, UINT targetWidth, UINT targetHeight, ComPtr<ID2D1Bitmap>& target) {
-        const HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
+    bool CreateBitmapFromResource(int resourceId, LPCWSTR resourceType, UINT targetWidth, UINT targetHeight, ComPtr<ID2D1Bitmap>& target) {
+        const HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(resourceId), resourceType);
         if (!resource) return false;
         const DWORD size = SizeofResource(nullptr, resource);
         const HGLOBAL loadedResource = LoadResource(nullptr, resource);
@@ -8643,7 +8643,7 @@ private:
         aboutLogo_.Reset();
         aboutLogoWidth_ = 0;
         aboutLogoHeight_ = 0;
-        if (!CreateBitmapFromResource(kAboutLogoResourceId, width, height, aboutLogo_)) return false;
+        if (!CreateBitmapFromResource(kAboutLogoResourceId, RT_RCDATA, width, height, aboutLogo_)) return false;
         aboutLogoWidth_ = width;
         aboutLogoHeight_ = height;
         return true;
@@ -8654,7 +8654,7 @@ private:
         topBarLogo_.Reset();
         topBarLogoWidth_ = 0;
         topBarLogoHeight_ = 0;
-        if (!CreateBitmapFromResource(kTopBarLogoResourceId, width, height, topBarLogo_)) return false;
+        if (!CreateBitmapFromResource(kTopBarLogoResourceId, RT_RCDATA, width, height, topBarLogo_)) return false;
         topBarLogoWidth_ = width;
         topBarLogoHeight_ = height;
         return true;
@@ -8664,7 +8664,26 @@ private:
         if (filmstripVideoIcon_ && filmstripVideoIconSize_ == size) return true;
         filmstripVideoIcon_.Reset();
         filmstripVideoIconSize_ = 0;
-        if (!CreateBitmapFromResource(kFilmstripVideoIconResourceId, size, size, filmstripVideoIcon_)) return false;
+        const HRSRC groupResource = FindResourceW(nullptr, MAKEINTRESOURCEW(kFilmstripVideoIconGroupResourceId), RT_GROUP_ICON);
+        if (!groupResource) return false;
+        const DWORD groupSize = SizeofResource(nullptr, groupResource);
+        const HGLOBAL loadedGroup = LoadResource(nullptr, groupResource);
+        const BYTE* group = static_cast<const BYTE*>(loadedGroup ? LockResource(loadedGroup) : nullptr);
+        if (!group || groupSize < 6) return false;
+        const UINT count = static_cast<UINT>(group[4]) | static_cast<UINT>(group[5]) << 8;
+        if (count == 0 || groupSize < 6 + count * 14) return false;
+        UINT frameResourceId = 0;
+        UINT bestDistance = UINT_MAX;
+        for (UINT index = 0; index < count; ++index) {
+            const BYTE* entry = group + 6 + index * 14;
+            const UINT frameSize = entry[0] ? entry[0] : 256;
+            const UINT distance = frameSize > size ? frameSize - size : size - frameSize;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                frameResourceId = static_cast<UINT>(entry[12]) | static_cast<UINT>(entry[13]) << 8;
+            }
+        }
+        if (!frameResourceId || !CreateBitmapFromResource(static_cast<int>(frameResourceId), RT_ICON, size, size, filmstripVideoIcon_)) return false;
         filmstripVideoIconSize_ = size;
         return true;
     }

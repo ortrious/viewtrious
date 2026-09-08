@@ -4017,7 +4017,7 @@ public:
             StartFilmstripThumbnailWorker();
             filmstripThumbnailWake_.notify_one();
         }
-        PruneFilmstripThumbnails(first, last, current);
+        PruneFilmstripThumbnails();
     }
     void UpdateFilmstripThumbnailDemand(bool force = false) {
         if (!FilmstripEligible()) return;
@@ -4031,19 +4031,8 @@ public:
         filmstripDemandCurrent_ = current;
         QueueFilmstripThumbnails();
     }
-    void PruneFilmstripThumbnails(size_t first, size_t last, size_t current) {
-        constexpr size_t budget = 16u * 1024u * 1024u;
-        const auto useful = [&](const FilmstripThumbnailEntry& entry) {
-            for (size_t index = first; index < last; ++index) {
-                if (index < navigationFiles_.size() && index < filmstripThumbnailGenerations_.size() &&
-                    entry.itemGeneration == filmstripThumbnailGenerations_[index] && PathsEqual(fs::path(entry.path), navigationFiles_[index])) return true;
-            }
-            return current < navigationFiles_.size() && current < filmstripThumbnailGenerations_.size() &&
-                entry.itemGeneration == filmstripThumbnailGenerations_[current] && PathsEqual(fs::path(entry.path), navigationFiles_[current]);
-        };
-        filmstripThumbnails_.erase(std::remove_if(filmstripThumbnails_.begin(), filmstripThumbnails_.end(), [&](const FilmstripThumbnailEntry& entry) {
-            return !useful(entry);
-        }), filmstripThumbnails_.end());
+    void PruneFilmstripThumbnails() {
+        constexpr size_t budget = 64u * 1024u * 1024u;
         const auto bytes = [&] {
             size_t total = 0;
             for (const FilmstripThumbnailEntry& entry : filmstripThumbnails_) if (entry.pixels) total += entry.pixels->size();

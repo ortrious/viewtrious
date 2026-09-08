@@ -5687,6 +5687,42 @@ private:
         return success;
     }
 
+    bool RegisterStlThumbnailProvider(const std::wstring& executable, bool& changed) {
+        constexpr wchar_t kThumbnailHandlerClsid[] = L"{E357FCCD-A995-4576-B01F-234630154E96}";
+        constexpr wchar_t kProviderClsid[] = L"{D812B4F2-B141-4A0D-9A4F-574DDB2975B2}";
+        constexpr wchar_t kObsoleteProviderClsid[] = L"{6D3CF8C3-96CD-4E2E-B553-4AB90F097D1A}";
+        const fs::path providerPath = fs::path(executable).parent_path() / L"ViewtriousStlThumbnail.dll";
+        const DWORD attributes = GetFileAttributesW(providerPath.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY)) return true;
+
+        const std::wstring extensionPath = std::wstring(L"Software\\Classes\\.stl\\shellex\\") + kThumbnailHandlerClsid;
+        std::wstring existingProvider;
+        if (ReadRegistryStringIfPresent(HKEY_CURRENT_USER, extensionPath.c_str(), L"", existingProvider) &&
+            existingProvider != kProviderClsid && existingProvider != kObsoleteProviderClsid) return true;
+
+        const std::wstring providerClassPath = std::wstring(L"Software\\Classes\\CLSID\\") + kProviderClsid;
+        const std::wstring serverPath = providerClassPath + L"\\InprocServer32";
+        const std::wstring providerDll = providerPath.wstring();
+        std::wstring existingDll;
+        std::wstring existingThreadingModel;
+        const bool updateHandler = existingProvider != kProviderClsid;
+        const bool updateDll = !ReadRegistryStringIfPresent(HKEY_CURRENT_USER, serverPath.c_str(), L"", existingDll) || existingDll != providerDll;
+        const bool updateThreadingModel = !ReadRegistryStringIfPresent(HKEY_CURRENT_USER, serverPath.c_str(), L"ThreadingModel", existingThreadingModel) || existingThreadingModel != L"Both";
+        if (!updateHandler && !updateDll && !updateThreadingModel) return true;
+
+        bool success = true;
+        if (existingProvider == kObsoleteProviderClsid)
+            success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, (std::wstring(L"Software\\Classes\\CLSID\\") + kObsoleteProviderClsid).c_str());
+        if (updateHandler) success &= WriteRegistryString(HKEY_CURRENT_USER, extensionPath.c_str(), L"", kProviderClsid);
+        if (updateDll) success &= WriteRegistryString(HKEY_CURRENT_USER, serverPath.c_str(), L"", providerDll);
+        if (updateThreadingModel) success &= WriteRegistryString(HKEY_CURRENT_USER, serverPath.c_str(), L"ThreadingModel", L"Both");
+        if (updateHandler) success &= VerifyRegistryString(HKEY_CURRENT_USER, extensionPath.c_str(), L"", kProviderClsid);
+        if (updateDll) success &= VerifyRegistryString(HKEY_CURRENT_USER, serverPath.c_str(), L"", providerDll);
+        if (updateThreadingModel) success &= VerifyRegistryString(HKEY_CURRENT_USER, serverPath.c_str(), L"ThreadingModel", L"Both");
+        changed |= success;
+        return success;
+    }
+
     bool RegisterDefaultAppCapabilities() {
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) {
@@ -5747,6 +5783,8 @@ private:
         success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
         success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"Viewtrious image viewer");
         success &= VerifyRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
+        bool thumbnailProviderChanged = false;
+        success &= RegisterStlThumbnailProvider(executable, thumbnailProviderChanged);
         bool autoProgIdChanged = false;
         success &= Reconcile3DAutoProgId(L".stl", executable, autoProgIdChanged);
         success &= Reconcile3DAutoProgId(L".3mf", executable, autoProgIdChanged);

@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <bcrypt.h>
+#include <shlobj_core.h>
 
 #include <algorithm>
 #include <condition_variable>
@@ -66,6 +67,48 @@ std::wstring ModuleDirectory() {
         if (length < buffer.size()) return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path().wstring();
         buffer.resize(buffer.size() * 2);
     }
+}
+
+bool ResolveDatabasePath(std::filesystem::path& databasePath) {
+    PWSTR localAppData = nullptr;
+    const HRESULT result = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData);
+    if (FAILED(result)) {
+        if (localAppData) CoTaskMemFree(localAppData);
+        Trace(L"[Viewtrious] SQLITE_PERSISTENCE_UNAVAILABLE LocalAppData path");
+        return false;
+    }
+    if (!localAppData) {
+        Trace(L"[Viewtrious] SQLITE_PERSISTENCE_UNAVAILABLE LocalAppData path");
+        return false;
+    }
+    const std::filesystem::path directory = std::filesystem::path(localAppData) / L"Viewtrious";
+    CoTaskMemFree(localAppData);
+
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+        Trace(L"[Viewtrious] SQLITE_PERSISTENCE_UNAVAILABLE LocalAppData directory");
+        return false;
+    }
+
+    databasePath = directory / L"Viewtrious.db";
+    const bool destinationExists = std::filesystem::exists(databasePath, error);
+    if (error) {
+        Trace(L"[Viewtrious] SQLITE_PERSISTENCE_UNAVAILABLE LocalAppData database");
+        return false;
+    }
+    if (destinationExists) return true;
+
+    const std::wstring moduleDirectory = ModuleDirectory();
+    if (moduleDirectory.empty()) return true;
+    const std::filesystem::path legacyPath = std::filesystem::path(moduleDirectory) / L"Viewtrious.db";
+    const bool legacyExists = std::filesystem::exists(legacyPath, error);
+    if (error || !legacyExists) return true;
+
+    std::filesystem::copy_file(legacyPath, databasePath, std::filesystem::copy_options::none, error);
+    if (error) Trace(L"[Viewtrious] SQLITE_LEGACY_MIGRATION_FAILED");
+    else Trace(L"[Viewtrious] SQLITE_LEGACY_MIGRATION_COMPLETE");
+    return true;
 }
 
 std::wstring NormalizedPath(const std::wstring& path) {
@@ -165,8 +208,8 @@ struct ImageAdjustmentPersistence::Impl {
     }
 
     bool OpenDatabase() {
-        const std::filesystem::path directory(ModuleDirectory());
-        if (directory.empty()) { Trace(L"[Viewtrious] WINSQLITE_RUNTIME_UNAVAILABLE module path"); return false; }
+        std::filesystem::path databasePath;
+        if (!ResolveDatabasePath(databasePath)) return false;
         module = LoadLibraryExW(L"winsqlite3.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!module) { Trace(L"[Viewtrious] WINSQLITE_RUNTIME_UNAVAILABLE system runtime"); return false; }
         if (!ResolveProc(openV2, "sqlite3_open_v2") || !ResolveProc(close, "sqlite3_close") || !ResolveProc(exec, "sqlite3_exec") || !ResolveProc(free, "sqlite3_free") ||
@@ -176,7 +219,7 @@ struct ImageAdjustmentPersistence::Impl {
             !ResolveProc(columnBlob, "sqlite3_column_blob") || !ResolveProc(columnBytes, "sqlite3_column_bytes") || !ResolveProc(busyTimeout, "sqlite3_busy_timeout")) {
             Trace(L"[Viewtrious] WINSQLITE_RUNTIME_UNAVAILABLE missing export"); CloseDatabase(); return false;
         }
-        const std::string path = Utf8((directory / L"Viewtrious.db").wstring());
+        const std::string path = Utf8(databasePath.wstring());
         const int openResult = openV2(path.c_str(), &database, kSqliteOpenReadWrite | kSqliteOpenCreate | kSqliteOpenFullMutex, nullptr);
         if (openResult != kSqliteOk || !database) {
             TraceSqliteError(L"open", openResult); CloseDatabase(); return false;

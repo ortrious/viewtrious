@@ -98,6 +98,7 @@ constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
 constexpr int kTopBarLogoResourceId = 102;
 constexpr int kAboutLogoResourceId = 103;
+constexpr int kFilmstripVideoIconResourceId = 106;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
 constexpr int kContextMenuPaddingDip = 8;
@@ -3162,6 +3163,7 @@ public:
             renderTarget_ = graphicsHost_.D2DContext();
             bitmap_.Reset(); lanczosBitmap_.Reset(); imageAdjustedBitmap_.Reset(); aboutLogo_.Reset(); aboutLogoWidth_ = 0; aboutLogoHeight_ = 0;
             topBarLogo_.Reset(); topBarLogoWidth_ = 0; topBarLogoHeight_ = 0; checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
+            filmstripVideoIcon_.Reset(); filmstripVideoIconSize_ = 0;
             if (VideoActive()) videoPlayer_.HandleRenderTargetResize();
         }
         if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < MinimumScale()) CenterAtMinimumScale();
@@ -4641,7 +4643,7 @@ public:
         const RECT strip = GetFilmstripBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float opacity = filmstripOpacity_;
-        ComPtr<ID2D1SolidColorBrush> surface, border, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, placeholderText, videoIconBacking, videoIcon;
+        ComPtr<ID2D1SolidColorBrush> surface, border, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, placeholderText;
         if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(15.f / 255, 17.f / 255, 21.f / 255, 0.78f * opacity), &surface)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(91.f / 255, 102.f / 255, 120.f / 255, 0.70f * opacity), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 90.f / 255, 160.f / 255, 0.22f * opacity), &selectedBacking)) ||
@@ -4649,9 +4651,7 @@ public:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 150.f / 255, 255.f / 255, opacity), &selectedOutline)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.16f * opacity), &hover)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(24.f / 255, 26.f / 255, 30.f / 255, opacity), &placeholder)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.42f * opacity), &placeholderText)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.48f * opacity), &videoIconBacking)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.88f * opacity), &videoIcon))) return;
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.42f * opacity), &placeholderText))) return;
         const D2D1_RECT_F panel = D2D1::RectF(static_cast<float>(strip.left), static_cast<float>(strip.top), static_cast<float>(strip.right), static_cast<float>(strip.bottom));
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), border.Get(), scale);
@@ -4683,8 +4683,10 @@ public:
                 const float diameter = std::min(20.0f * scale, std::max(12.0f * scale, (box.bottom - box.top) * 0.32f));
                 const float left = box.right - diameter - 5.0f * scale;
                 const float top = box.bottom - diameter - 5.0f * scale;
-                renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(left + diameter * 0.5f, top + diameter * 0.5f), diameter * 0.5f, diameter * 0.5f), videoIconBacking.Get());
-                DrawOverlayText(L"\u25B6", left + diameter * 0.08f, top, diameter, diameter, diameter * 0.58f / scale, DWRITE_FONT_WEIGHT_SEMI_BOLD, videoIcon.Get(), true, false, true);
+                const UINT iconSize = static_cast<UINT>(std::max(1.0f, std::round(diameter)));
+                if (EnsureFilmstripVideoIcon(iconSize))
+                    renderTarget_->DrawBitmap(filmstripVideoIcon_.Get(), D2D1::RectF(left, top, left + diameter, top + diameter), opacity,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
             }
             if (index == current) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), selectedOutline.Get(), 2.0f * scale);
         }
@@ -8658,6 +8660,15 @@ private:
         return true;
     }
 
+    bool EnsureFilmstripVideoIcon(UINT size) {
+        if (filmstripVideoIcon_ && filmstripVideoIconSize_ == size) return true;
+        filmstripVideoIcon_.Reset();
+        filmstripVideoIconSize_ = 0;
+        if (!CreateBitmapFromResource(kFilmstripVideoIconResourceId, size, size, filmstripVideoIcon_)) return false;
+        filmstripVideoIconSize_ = size;
+        return true;
+    }
+
     RECT GetEmptyOpenFileButtonBounds() const {
         RECT client{};
         GetClientRect(window_, &client);
@@ -9725,6 +9736,8 @@ private:
         topBarLogo_.Reset();
         topBarLogoWidth_ = 0;
         topBarLogoHeight_ = 0;
+        filmstripVideoIcon_.Reset();
+        filmstripVideoIconSize_ = 0;
         checkerboardBrush_.Reset();
         checkerboardBitmap_.Reset();
         checkerboardDpi_ = 0;
@@ -9772,6 +9785,8 @@ private:
     ComPtr<ID2D1Bitmap> topBarLogo_;
     UINT topBarLogoWidth_ = 0;
     UINT topBarLogoHeight_ = 0;
+    ComPtr<ID2D1Bitmap> filmstripVideoIcon_;
+    UINT filmstripVideoIconSize_ = 0;
     ComPtr<ID2D1Bitmap> checkerboardBitmap_;
     ComPtr<ID2D1BitmapBrush> checkerboardBrush_;
     UINT checkerboardDpi_ = 0;

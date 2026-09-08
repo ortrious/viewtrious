@@ -4196,6 +4196,13 @@ public:
         if (filmstripScrollStopEvent_) CloseHandle(filmstripScrollStopEvent_);
         filmstripScrollTimer_ = filmstripScrollStopEvent_ = nullptr;
     }
+    void ResumeFilmstripHoverAtCursor() {
+        POINT point{};
+        if (!GetCursorPos(&point)) return;
+        ScreenToClient(window_, &point);
+        filmstripHoveredIndex_ = -1;
+        SetFilmstripHover(point);
+    }
     bool AdvanceFilmstripScroll(LONGLONG nowQpc) {
         if (!filmstripScrollAnimating_ || filmstripScrollQpcFrequency_ <= 0) return false;
         const double dt = std::clamp(static_cast<double>(nowQpc - filmstripScrollLastQpc_) / static_cast<double>(filmstripScrollQpcFrequency_), 0.0, 0.050);
@@ -4289,6 +4296,7 @@ public:
         if (!EnsureFilmstripScrollScheduler() || !ArmFilmstripScrollWake()) {
             StopFilmstripScrollAnimation();
             ApplyDeferredFilmstripLayout();
+            ResumeFilmstripHoverAtCursor();
         }
         QueueFilmstripThumbnails();
         StartFilmstripHold();
@@ -4307,6 +4315,7 @@ public:
         if (!QueryPerformanceCounter(&now) || !AdvanceFilmstripScroll(now.QuadPart)) {
             StopFilmstripScrollAnimation();
             ApplyDeferredFilmstripLayout();
+            ResumeFilmstripHoverAtCursor();
             InvalidateRect(window_, nullptr, FALSE);
             return;
         }
@@ -4315,6 +4324,7 @@ public:
         if (!ArmFilmstripScrollWake()) {
             StopFilmstripScrollAnimation();
             ApplyDeferredFilmstripLayout();
+            ResumeFilmstripHoverAtCursor();
         }
     }
     RECT GetFilmstripRevealBounds() const {
@@ -4359,7 +4369,13 @@ public:
         const int click = filmstripDragItem_;
         filmstripDragCandidate_ = filmstripDragging_ = false;
         filmstripDragItem_ = -1;
-        if (dragging) { UpdateFilmstripThumbnailDemand(true); BeginFilmstripFadeSequence(); return true; }
+        if (dragging) {
+            UpdateFilmstripThumbnailDemand(true);
+            SetFilmstripPointerState(point);
+            filmstripHoveredIndex_ = -1;
+            SetFilmstripHover(point);
+            return true;
+        }
         if (click >= 0 && FilmstripContains(point)) SelectFilmstripItem(click);
         return true;
     }
@@ -4713,8 +4729,8 @@ public:
                     renderTarget_->DrawBitmap(previewBitmap, preview, previewOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
                 }
                 if (filmstripVideoHoverLoading_ && !filmstripVideoHoverFadeActive_)
-                    DrawOverlayText(L"video loading...", preview.left, preview.bottom - 26.0f * scale, preview.right - preview.left, 22.0f * scale,
-                        11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
+                    DrawOverlayText(L"video loading...", preview.left, preview.top, preview.right - preview.left, preview.bottom - preview.top,
+                        22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
 #ifdef _DEBUG
                 if (highQuality) OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HD_PREVIEW_DRAW\n");
 #endif

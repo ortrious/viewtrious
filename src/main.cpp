@@ -3246,6 +3246,7 @@ public:
         const bool changed = scannedFiles.size() != navigationFiles_.size() || !std::equal(scannedFiles.begin(), scannedFiles.end(), navigationFiles_.begin(),
             [](const fs::path& left, const fs::path& right) { return PathsEqual(left, right); });
         if (changed) {
+            const std::vector<fs::path> previousNavigationFiles = navigationFiles_;
             CancelQueuedFilmstripThumbnails();
             CancelQueuedFilmstripHoverPreviews();
             ++filmstripHoverPreviewGeneration_;
@@ -3258,15 +3259,7 @@ public:
             navigationFiles_ = std::move(scannedFiles);
             filmstripClickedRevealTarget_.reset();
             filmstripThumbnailGenerations_.assign(navigationFiles_.size(), ++filmstripThumbnailGenerationSeed_);
-            filmstripLayoutAspects_.resize(navigationFiles_.size());
-            filmstripKnownAspects_.resize(navigationFiles_.size());
-            filmstripAspectAuthoritative_.assign(navigationFiles_.size(), false);
-            filmstripAspectRelayoutPending_.assign(navigationFiles_.size(), false);
-            for (size_t index = 0; index < navigationFiles_.size(); ++index) {
-                const float aspect = IsVideoPath(navigationFiles_[index].wstring()) ? 16.0f / 9.0f : 1.0f;
-                filmstripLayoutAspects_[index] = aspect;
-                filmstripKnownAspects_[index] = aspect;
-            }
+            RemapFilmstripAspectMetadata(previousNavigationFiles);
             filmstripThumbnails_.clear();
             filmstripThumbnailFailures_.clear();
             filmstripHoverPreviews_.clear();
@@ -3844,6 +3837,38 @@ public:
         OutputDebugStringW(L"[Viewtrious] VIDEO_HOVER_FADE_BEGIN duration=175ms source-released=1\n");
 #endif
         InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void RemapFilmstripAspectMetadata(const std::vector<fs::path>& previousNavigationFiles) {
+        std::vector<float> previousLayoutAspects = std::move(filmstripLayoutAspects_);
+        std::vector<float> previousKnownAspects = std::move(filmstripKnownAspects_);
+        std::vector<bool> previousAuthoritative = std::move(filmstripAspectAuthoritative_);
+        std::vector<bool> previousRelayoutPending = std::move(filmstripAspectRelayoutPending_);
+        filmstripLayoutAspects_.resize(navigationFiles_.size());
+        filmstripKnownAspects_.resize(navigationFiles_.size());
+        filmstripAspectAuthoritative_.assign(navigationFiles_.size(), false);
+        filmstripAspectRelayoutPending_.assign(navigationFiles_.size(), false);
+        for (size_t index = 0; index < navigationFiles_.size(); ++index) {
+            const auto previous = std::find_if(previousNavigationFiles.begin(), previousNavigationFiles.end(), [&](const fs::path& path) {
+                return PathsEqual(path, navigationFiles_[index]);
+            });
+            const size_t previousIndex = previous == previousNavigationFiles.end() ? previousNavigationFiles.size() :
+                static_cast<size_t>(std::distance(previousNavigationFiles.begin(), previous));
+            const bool reusable = previousIndex < previousLayoutAspects.size() && previousIndex < previousKnownAspects.size() &&
+                previousIndex < previousAuthoritative.size() && previousIndex < previousRelayoutPending.size();
+            const float placeholder = IsVideoPath(navigationFiles_[index].wstring()) ? 16.0f / 9.0f : 1.0f;
+            if (!reusable) {
+                filmstripLayoutAspects_[index] = placeholder;
+                filmstripKnownAspects_[index] = placeholder;
+                continue;
+            }
+            const float known = previousKnownAspects[previousIndex];
+            const bool authoritative = previousAuthoritative[previousIndex] && std::isfinite(known) && known > 0.0f;
+            filmstripLayoutAspects_[index] = authoritative ? known : previousLayoutAspects[previousIndex];
+            filmstripKnownAspects_[index] = authoritative ? known : previousKnownAspects[previousIndex];
+            filmstripAspectAuthoritative_[index] = authoritative;
+            filmstripAspectRelayoutPending_[index] = !authoritative && previousRelayoutPending[previousIndex];
+        }
     }
     void UpdateFilmstripVideoHoverFade() {
         if (!filmstripVideoHoverFadeActive_) { KillTimer(window_, kFilmstripVideoHoverFadeTimer); return; }
@@ -6649,12 +6674,14 @@ private:
             [&deleted](const fs::path& path) { return PathsEqual(path, deleted); });
         if (current == filesBeforeDelete.end()) { ClearDeletedImage(); return; }
         const size_t index = static_cast<size_t>(std::distance(filesBeforeDelete.begin(), current));
+        const std::vector<fs::path> previousNavigationFiles = filesBeforeDelete;
         filesBeforeDelete.erase(current);
         CancelQueuedFilmstripThumbnails();
         navigationFiles_ = std::move(filesBeforeDelete);
         ++navigationFolderGeneration_;
         filmstripThumbnailFolderGeneration_.store(navigationFolderGeneration_, std::memory_order_release);
         filmstripThumbnailGenerations_.assign(navigationFiles_.size(), ++filmstripThumbnailGenerationSeed_);
+        RemapFilmstripAspectMetadata(previousNavigationFiles);
         filmstripThumbnails_.clear();
         filmstripThumbnailFailures_.clear();
         navigationBuilt_ = true;

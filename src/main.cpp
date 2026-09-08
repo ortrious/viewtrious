@@ -25,6 +25,7 @@
 #include "three_mf_loader.h"
 #include "model_importer.h"
 #include "ai_addon_loader.h"
+#include "adjustment_persistence.h"
 
 #include <algorithm>
 #include <atomic>
@@ -45,6 +46,7 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 #pragma comment(lib, "d2d1.lib")
@@ -69,6 +71,7 @@ constexpr UINT kModelLoadCompleteMessage = WM_APP + 8;
 constexpr UINT kVideoMediaEngineEventMessage = WM_APP + 9;
 constexpr UINT kVideoPlaybackWakeMessage = WM_APP + 10;
 constexpr UINT kAiAnalysisCompleteMessage = WM_APP + 11;
+constexpr UINT kImageAdjustmentPersistenceCompleteMessage = WM_APP + 15;
 constexpr UINT kFilmstripThumbnailCompleteMessage = WM_APP + 12;
 constexpr UINT kFilmstripScrollWakeMessage = WM_APP + 13;
 constexpr UINT kFilmstripHoverPreviewCompleteMessage = WM_APP + 14;
@@ -111,6 +114,7 @@ constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
 constexpr UINT_PTR kFilmstripHoverPreviewDwellTimer = 19;
 constexpr UINT_PTR kFilmstripVideoHoverFadeTimer = 20;
+constexpr UINT_PTR kImageAdjustmentPersistenceTimer = 21;
 constexpr ULONGLONG kFilmstripVideoHoverFadeDurationMs = 175;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
@@ -981,6 +985,7 @@ public:
     }
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
+        if (!currentPath_.empty() && !PathsEqual(fs::path(path), fs::path(currentPath_))) FlushImageAdjustmentPersistence();
         ++aiRequestGeneration_;
         ClearStillDissolve();
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
@@ -1054,6 +1059,10 @@ public:
 
     void SetWindow(HWND window) {
         window_ = window;
+        adjustmentPersistence_.Start([this](ImageAdjustmentPersistenceResult&& result) {
+            auto* message = new ImageAdjustmentPersistenceResult(std::move(result));
+            if (!PostMessageW(window_, kImageAdjustmentPersistenceCompleteMessage, 0, reinterpret_cast<LPARAM>(message))) delete message;
+        });
         EnsureRenderTarget();
         InitializeSpaceMouse();
         ActivateGifPlayback();
@@ -1470,7 +1479,16 @@ public:
         imageAdjustedBitmap_.Reset();
         InvalidateRect(window_, nullptr, FALSE);
     }
-    void ResetImageAdjustments() { imageAdjustments_ = {}; ApplyImageAdjustments(); }
+    void QueueImageAdjustmentPersistence() {
+        ++imageAdjustmentEditGeneration_;
+        if (imageAdjustmentHashResolved_) SetTimer(window_, kImageAdjustmentPersistenceTimer, 300, nullptr);
+        else pendingImageAdjustmentSaves_[imageAdjustmentMediaGeneration_] = imageAdjustments_;
+    }
+    void FlushImageAdjustmentPersistence() {
+        KillTimer(window_, kImageAdjustmentPersistenceTimer);
+        if (imageAdjustmentHashResolved_) adjustmentPersistence_.Save(imageAdjustmentHash_, imageAdjustments_);
+    }
+    void ResetImageAdjustments() { imageAdjustments_ = {}; ApplyImageAdjustments(); QueueImageAdjustmentPersistence(); }
     bool ImageAdjustmentsPanelOpen() const { return imageAdjustmentsPanelOpen_; }
     bool ImageAdjustmentsPanelContains(POINT point) const {
         if (!imageAdjustmentsPanelOpen_) return false;
@@ -1490,6 +1508,7 @@ public:
         else if (index == 4) imageAdjustments_.highlights = value;
         else imageAdjustments_.saturation = value;
         ApplyImageAdjustments();
+        QueueImageAdjustmentPersistence();
     }
     bool BuildAiImage(AiImageBuffer& image) {
         std::vector<BYTE> sourcePixels;
@@ -1537,7 +1556,7 @@ public:
         if (!result->succeeded || result->generation != aiRequestGeneration_ || result->contentKind != contentKind_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_)) || result->adjustments.confidence < .15f) return;
         MediaAdjustments adjusted{ std::clamp(result->adjustments.brightness, -.35f, .45f), std::clamp(result->adjustments.contrast, -.35f, .30f), std::clamp(result->adjustments.shadows, -.20f, .65f), std::clamp(result->adjustments.highlights, -.50f, .25f) };
         if (VideoActive()) { videoAdjustments_ = adjusted; ApplyVideoAdjustments(); }
-        else { imageAdjustments_.exposure = 0.0f; imageAdjustments_.brightness = adjusted.brightness; imageAdjustments_.contrast = adjusted.contrast; imageAdjustments_.shadows = adjusted.shadows; imageAdjustments_.highlights = adjusted.highlights; imageAdjustments_.saturation = 0.0f; ApplyImageAdjustments(); }
+        else { imageAdjustments_.exposure = 0.0f; imageAdjustments_.brightness = adjusted.brightness; imageAdjustments_.contrast = adjusted.contrast; imageAdjustments_.shadows = adjusted.shadows; imageAdjustments_.highlights = adjusted.highlights; imageAdjustments_.saturation = 0.0f; ApplyImageAdjustments(); QueueImageAdjustmentPersistence(); }
     }
     bool BeginImageAdjustmentsInteraction(POINT point) {
         if (!source_) return false;
@@ -1565,6 +1584,7 @@ public:
         if (imageAdjustmentsDragging_ < 0) return false;
         UpdateImageAdjustmentSlider(imageAdjustmentsDragging_, point);
         imageAdjustmentsDragging_ = -1;
+        FlushImageAdjustmentPersistence();
         return true;
     }
     bool VideoControlsInteractive() const { return VideoActive() && videoControlsOpacity_ > 0.05f; }
@@ -5063,6 +5083,11 @@ public:
 
     void Shutdown() {
         shuttingDown_ = true;
+        FlushImageAdjustmentPersistence();
+        adjustmentPersistence_.Shutdown();
+        MSG adjustmentMessage{};
+        while (PeekMessageW(&adjustmentMessage, window_, kImageAdjustmentPersistenceCompleteMessage, kImageAdjustmentPersistenceCompleteMessage, PM_REMOVE))
+            delete reinterpret_cast<ImageAdjustmentPersistenceResult*>(adjustmentMessage.lParam);
         StopFilmstripScrollScheduler();
         StopFilmstripHoverPreviewWorker();
         StopFilmstripThumbnailWorker();
@@ -5119,6 +5144,34 @@ public:
     void DecodeWorkerFinishedMessage(DecodeWorkerFinished* finished) { HandleDecodeWorkerFinished(finished); }
     void FilmstripThumbnailCompleteMessage(FilmstripThumbnailResult* result) { HandleFilmstripThumbnailResult(result); }
     void FilmstripHoverPreviewCompleteMessage(FilmstripHoverPreviewResult* result) { HandleFilmstripHoverPreviewResult(result); }
+    void ImageAdjustmentPersistenceCompleteMessage(ImageAdjustmentPersistenceResult* result) {
+        std::unique_ptr<ImageAdjustmentPersistenceResult> owned(result);
+        if (!result || shuttingDown_ || !result->hashResolved) return;
+        if (result->mediaGeneration != imageAdjustmentMediaGeneration_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_))) {
+            const auto pending = pendingImageAdjustmentSaves_.find(result->mediaGeneration);
+            if (pending != pendingImageAdjustmentSaves_.end()) {
+                adjustmentPersistence_.Save(result->hash, pending->second);
+                pendingImageAdjustmentSaves_.erase(pending);
+            }
+            OutputDebugStringW(L"[Viewtrious] ADJUST_DB_LOAD_STALE_GENERATION\n");
+            return;
+        }
+        imageAdjustmentHash_ = result->hash;
+        imageAdjustmentHashResolved_ = true;
+        if (result->editGeneration != imageAdjustmentEditGeneration_) {
+            pendingImageAdjustmentSaves_.erase(result->mediaGeneration);
+            FlushImageAdjustmentPersistence();
+            return;
+        }
+        if (result->hasAdjustments) {
+            imageAdjustments_ = result->adjustments;
+            ApplyImageAdjustments();
+            OutputDebugStringW(L"[Viewtrious] ADJUST_DB_LOAD_HIT\n");
+        } else {
+            OutputDebugStringW(L"[Viewtrious] ADJUST_DB_LOAD_NEUTRAL\n");
+        }
+    }
+    void ImageAdjustmentPersistenceTimer() { FlushImageAdjustmentPersistence(); }
     void DrainQueuedFullDecodeResults() {
         MSG message{};
         bool drained = false;
@@ -7483,6 +7536,7 @@ private:
 
     void CommitImage(const std::wstring& path, const ComPtr<IWICBitmapSource>& source, UINT width, UINT height,
         bool resetNavigation) {
+        FlushImageAdjustmentPersistence();
         if (!committingGifFrame_) StopGifPlayback();
         InvalidateLanczosVariant(false);
         displayedPixels_.reset();
@@ -7490,6 +7544,9 @@ private:
         bitmap_.Reset();
         imageAdjustmentSourceDirty_ = true;
         imageAdjustedBitmap_.Reset();
+        imageAdjustments_ = {};
+        imageAdjustmentHashResolved_ = false;
+        ++imageAdjustmentMediaGeneration_;
         imageWidth_ = width;
         imageHeight_ = height;
         currentPath_ = path;
@@ -7532,6 +7589,7 @@ private:
             RevealClickedFilmstripItem();
         }
         BeginStillDissolveIfReady(path);
+        adjustmentPersistence_.Resolve(path, imageAdjustmentMediaGeneration_, imageAdjustmentEditGeneration_);
     }
 
     void EnsureRenderTarget() {
@@ -9557,6 +9615,12 @@ private:
     bool videoPausedSeekRefreshPending_ = false;
     MediaAdjustments videoAdjustments_;
     ImageAdjustments imageAdjustments_;
+    ImageAdjustmentPersistence adjustmentPersistence_;
+    std::array<unsigned char, 32> imageAdjustmentHash_{};
+    uint64_t imageAdjustmentMediaGeneration_ = 0;
+    uint64_t imageAdjustmentEditGeneration_ = 0;
+    bool imageAdjustmentHashResolved_ = false;
+    std::unordered_map<uint64_t, ImageAdjustments> pendingImageAdjustmentSaves_;
     AiAddonLoader aiAddon_;
     std::thread aiAnalysisThread_;
     std::atomic<uint64_t> aiRequestGeneration_{ 0 };
@@ -10273,6 +10337,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kCanvasNavigationFadeTimer) { viewer->UpdateCanvasNavigationFade(); return 0; }
         if (wParam == kDirectoryChangeDebounceTimer) { KillTimer(window, kDirectoryChangeDebounceTimer); viewer->RefreshNavigationFromFileSystem(); return 0; }
         if (wParam == kNavigationDecodeDebounceTimer) { viewer->NavigationDecodeTimer(); return 0; }
+        if (wParam == kImageAdjustmentPersistenceTimer) { KillTimer(window, kImageAdjustmentPersistenceTimer); viewer->ImageAdjustmentPersistenceTimer(); return 0; }
         if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
         if (wParam == kHeifRotationMenuRefreshTimer) { viewer->HeifRotationMenuRefreshTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
@@ -10312,6 +10377,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kVideoMediaEngineEventMessage: viewer->VideoMediaEngineEvent(static_cast<DWORD>(wParam)); return 0;
     case kVideoPlaybackWakeMessage: viewer->VideoPlaybackWakeMessage(static_cast<uint64_t>(wParam)); return 0;
     case kAiAnalysisCompleteMessage: viewer->AiAnalysisCompleteMessage(reinterpret_cast<AiAnalysisResult*>(lParam)); return 0;
+    case kImageAdjustmentPersistenceCompleteMessage: viewer->ImageAdjustmentPersistenceCompleteMessage(reinterpret_cast<ImageAdjustmentPersistenceResult*>(lParam)); return 0;
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE && viewer->VideoPlaybackSpeedPanelOpen()) { viewer->SetVideoPlaybackSpeedPanelOpen(false); return 0; }
         if (wParam == VK_ESCAPE && viewer->VideoAdjustmentsPanelOpen()) { viewer->SetVideoAdjustmentsPanelOpen(false); return 0; }

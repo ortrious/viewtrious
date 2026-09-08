@@ -166,16 +166,15 @@ struct ImageAdjustmentPersistence::Impl {
 
     bool OpenDatabase() {
         const std::filesystem::path directory(ModuleDirectory());
-        const std::filesystem::path runtime = directory / L"sqlite3.dll";
-        if (directory.empty()) { Trace(L"[Viewtrious] SQLITE_RUNTIME_UNAVAILABLE module path"); return false; }
-        module = LoadLibraryExW(runtime.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        if (!module) { Trace(L"[Viewtrious] SQLITE_RUNTIME_UNAVAILABLE sqlite3.dll"); return false; }
+        if (directory.empty()) { Trace(L"[Viewtrious] WINSQLITE_RUNTIME_UNAVAILABLE module path"); return false; }
+        module = LoadLibraryExW(L"winsqlite3.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!module) { Trace(L"[Viewtrious] WINSQLITE_RUNTIME_UNAVAILABLE system runtime"); return false; }
         if (!ResolveProc(openV2, "sqlite3_open_v2") || !ResolveProc(close, "sqlite3_close") || !ResolveProc(exec, "sqlite3_exec") || !ResolveProc(free, "sqlite3_free") ||
             !ResolveProc(prepareV2, "sqlite3_prepare_v2") || !ResolveProc(finalize, "sqlite3_finalize") || !ResolveProc(step, "sqlite3_step") ||
             !ResolveProc(bindText, "sqlite3_bind_text") || !ResolveProc(bindBlob, "sqlite3_bind_blob") || !ResolveProc(bindInt64, "sqlite3_bind_int64") || !ResolveProc(bindDouble, "sqlite3_bind_double") ||
             !ResolveProc(columnInt, "sqlite3_column_int") || !ResolveProc(columnInt64, "sqlite3_column_int64") || !ResolveProc(columnDouble, "sqlite3_column_double") ||
             !ResolveProc(columnBlob, "sqlite3_column_blob") || !ResolveProc(columnBytes, "sqlite3_column_bytes") || !ResolveProc(busyTimeout, "sqlite3_busy_timeout")) {
-            Trace(L"[Viewtrious] SQLITE_RUNTIME_UNAVAILABLE missing export"); CloseDatabase(); return false;
+            Trace(L"[Viewtrious] WINSQLITE_RUNTIME_UNAVAILABLE missing export"); CloseDatabase(); return false;
         }
         const std::string path = Utf8((directory / L"Viewtrious.db").wstring());
         const int openResult = openV2(path.c_str(), &database, kSqliteOpenReadWrite | kSqliteOpenCreate | kSqliteOpenFullMutex, nullptr);
@@ -190,7 +189,7 @@ struct ImageAdjustmentPersistence::Impl {
         if (version > 1) { Trace(L"[Viewtrious] SQLITE_ERROR newer schema"); CloseDatabase(); return false; }
         if (!Execute("PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS file_hash_cache (path TEXT PRIMARY KEY, file_size INTEGER NOT NULL, file_mtime INTEGER NOT NULL, sha256 BLOB NOT NULL); CREATE TABLE IF NOT EXISTS image_adjustments (sha256 BLOB PRIMARY KEY, adjustment_version INTEGER NOT NULL, exposure REAL NOT NULL, brightness REAL NOT NULL, contrast REAL NOT NULL, shadows REAL NOT NULL, highlights REAL NOT NULL, saturation REAL NOT NULL, updated_utc INTEGER NOT NULL);")) { CloseDatabase(); return false; }
         if (version == 0 && !Execute("PRAGMA user_version=1;")) { CloseDatabase(); return false; }
-        Trace(L"[Viewtrious] SQLITE_RUNTIME_LOADED"); Trace(L"[Viewtrious] SQLITE_DB_OPEN"); Trace(L"[Viewtrious] SQLITE_SCHEMA_READY");
+        Trace(L"[Viewtrious] WINSQLITE_RUNTIME_LOADED"); Trace(L"[Viewtrious] SQLITE_DB_OPEN"); Trace(L"[Viewtrious] SQLITE_SCHEMA_READY");
         return true;
     }
 

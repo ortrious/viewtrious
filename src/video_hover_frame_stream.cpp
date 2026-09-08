@@ -44,6 +44,12 @@ HRESULT VideoHoverFrameStream::ReadNext(VideoHoverPreviewFrame& f) {
         sample.Reset(); flags = 0;
         hr=impl_->reader->ReadSample(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),0,&stream,&flags,&f.timestamp,&sample);
         if (FAILED(hr) || (flags & static_cast<DWORD>(MF_SOURCE_READERF_ENDOFSTREAM))) { Close(); return FAILED(hr)?hr:S_FALSE; }
+        if (flags & static_cast<DWORD>(MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED)) {
+            ComPtr<IMFMediaType> currentType;
+            hr = impl_->reader->GetCurrentMediaType(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), &currentType);
+            if (FAILED(hr) || !currentType) return FAILED(hr) ? hr : MF_E_INVALIDMEDIATYPE;
+            impl_->type = currentType;
+        }
         if (!sample) continue; // A seek may surface a stream tick without a media sample.
         if (f.timestamp >= requestedStartTimestamp_) break;
         ++impl_->skippedBeforeStart;
@@ -51,14 +57,21 @@ HRESULT VideoHoverFrameStream::ReadNext(VideoHoverPreviewFrame& f) {
         if (impl_->skippedBeforeStart == 1 || impl_->skippedBeforeStart % 30 == 0) { wchar_t trace[224]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_SEEK_DISCARD timestamp=%lld target=%lld count=%u\\n", f.timestamp, requestedStartTimestamp_, impl_->skippedBeforeStart); OutputDebugStringW(trace); }
 #endif
     }
-    UINT w=0,h=0; if (FAILED(MFGetAttributeSize(impl_->type.Get(),MF_MT_FRAME_SIZE,&w,&h)) || !w || !h) return E_FAIL; float scale=std::min(1.f,static_cast<float>(impl_->max)/std::max(w,h)); f.width=std::max(1u,static_cast<UINT>(std::lround(w*scale))); f.height=std::max(1u,static_cast<UINT>(std::lround(h*scale))); f.stride=f.width*4;
-    ComPtr<IMFMediaBuffer>b; hr=sample->ConvertToContiguousBuffer(&b); BYTE* src=nullptr; DWORD mx=0, len=0; if(SUCCEEDED(hr))hr=b->Lock(&src,&mx,&len);
+    GUID subtype{};
+    UINT w=0,h=0;
+    if (!impl_->type || FAILED(impl_->type->GetGUID(MF_MT_SUBTYPE, &subtype)) || subtype != MFVideoFormat_RGB32 ||
+        FAILED(MFGetAttributeSize(impl_->type.Get(),MF_MT_FRAME_SIZE,&w,&h)) || !w || !h) return MF_E_INVALIDMEDIATYPE;
+    float scale=std::min(1.f,static_cast<float>(impl_->max)/std::max(w,h)); f.width=std::max(1u,static_cast<UINT>(std::lround(w*scale))); f.height=std::max(1u,static_cast<UINT>(std::lround(h*scale))); f.stride=f.width*4;
+    ComPtr<IMFMediaBuffer>b; hr=sample->ConvertToContiguousBuffer(&b); BYTE* src=nullptr; DWORD mx=0, len=0; if(SUCCEEDED(hr))hr=b->GetCurrentLength(&len);
+    ComPtr<IMF2DBuffer> twoDimensional; const bool hasTwoDimensionalLayout = SUCCEEDED(hr) && SUCCEEDED(b.As(&twoDimensional)); LONG sourcePitch2D = 0;
+    if (SUCCEEDED(hr)) hr = hasTwoDimensionalLayout ? twoDimensional->Lock2D(&src, &sourcePitch2D) : b->Lock(&src,&mx,&len);
     // MFVideoFormat_RGB32 is BGRX in memory: its fourth byte is padding, not alpha.
-    UINT32 sourceStrideValue = w * 4; impl_->type->GetUINT32(MF_MT_DEFAULT_STRIDE, &sourceStrideValue); const INT32 sourceStride = static_cast<INT32>(sourceStrideValue); const size_t sourcePitch = sourceStride < 0 ? static_cast<size_t>(-static_cast<int64_t>(sourceStride)) : static_cast<size_t>(sourceStride);
-    if(FAILED(hr) || sourcePitch < static_cast<size_t>(w) * 4 || len < sourcePitch * h){if(b)b->Unlock();return FAILED(hr)?hr:E_FAIL;}
-    auto raw=std::make_shared<std::vector<BYTE>>(static_cast<size_t>(w)*h*4); const BYTE* row = src; if (sourceStride < 0) row += sourcePitch * (h - 1);
+    UINT32 sourceStrideValue = w * 4; impl_->type->GetUINT32(MF_MT_DEFAULT_STRIDE, &sourceStrideValue); const INT32 sourceStride = hasTwoDimensionalLayout ? sourcePitch2D : static_cast<INT32>(sourceStrideValue); const size_t sourcePitch = sourceStride < 0 ? static_cast<size_t>(-static_cast<int64_t>(sourceStride)) : static_cast<size_t>(sourceStride);
+    const bool validLayout = SUCCEEDED(hr) && src && sourcePitch >= static_cast<size_t>(w) * 4 && h <= len / sourcePitch;
+    if(!validLayout){if(SUCCEEDED(hr)){if(hasTwoDimensionalLayout)twoDimensional->Unlock2D();else b->Unlock();}return FAILED(hr)?hr:E_FAIL;}
+    auto raw=std::make_shared<std::vector<BYTE>>(static_cast<size_t>(w)*h*4); const BYTE* row = src; if (!hasTwoDimensionalLayout && sourceStride < 0) row += sourcePitch * (h - 1);
     for (UINT y = 0; y < h; ++y) { BYTE* destination = raw->data() + static_cast<size_t>(y) * w * 4; std::memcpy(destination, row, static_cast<size_t>(w) * 4); for (UINT x = 0; x < w; ++x) destination[x * 4 + 3] = 255; row += sourceStride; }
-    b->Unlock();
+    if (hasTwoDimensionalLayout) twoDimensional->Unlock2D(); else b->Unlock();
 #ifdef _DEBUG
     wchar_t trace[192]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_MF_DECODE timestamp=%lld format=BGRX-to-PBGRA stride=%d alpha=%u\\n", f.timestamp, sourceStride, (*raw)[3]); OutputDebugStringW(trace);
 #endif

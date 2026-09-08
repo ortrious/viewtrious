@@ -4631,7 +4631,7 @@ public:
         const float curve = 0.55228475f;
         const float panelTop = panel.top;
         const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
-        const auto bezier = [](D2D1GeometrySink* sink, D2D1_POINT_2F control1, D2D1_POINT_2F control2, D2D1_POINT_2F end) {
+        const auto bezier = [](ID2D1GeometrySink* sink, D2D1_POINT_2F control1, D2D1_POINT_2F control2, D2D1_POINT_2F end) {
             sink->AddBezier(D2D1::BezierSegment(control1, control2, end));
         };
         const auto addShellOutline = [&](ID2D1GeometrySink* sink, D2D1_FIGURE_END figureEnd) {

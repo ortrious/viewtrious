@@ -75,6 +75,10 @@ constexpr UINT kImageAdjustmentPersistenceCompleteMessage = WM_APP + 15;
 constexpr UINT kFilmstripThumbnailCompleteMessage = WM_APP + 12;
 constexpr UINT kFilmstripScrollWakeMessage = WM_APP + 13;
 constexpr UINT kFilmstripHoverPreviewCompleteMessage = WM_APP + 14;
+// A small pool prevents one expensive WIC decode (for example HEIC or DNG) from
+// holding up every later visible filmstrip thumbnail, without creating an
+// unbounded background decode workload.
+constexpr size_t kFilmstripThumbnailWorkerCount = 2;
 // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is available on Windows 10 version 1803 and later.
 constexpr DWORD kHighResolutionWaitableTimerFlag = 0x00000002;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
@@ -3551,47 +3555,49 @@ public:
     }
 #endif
     void StartFilmstripThumbnailWorker() {
-        if (shuttingDown_ || filmstripThumbnailStopping_.load(std::memory_order_acquire) || filmstripThumbnailWorker_.joinable()) return;
+        if (shuttingDown_ || filmstripThumbnailStopping_.load(std::memory_order_acquire) || filmstripThumbnailWorkers_.front().joinable()) return;
         filmstripThumbnailStopping_.store(false, std::memory_order_release);
-        filmstripThumbnailWorker_ = std::thread([this] {
-            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-            const HRESULT apartment = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            for (;;) {
-                FilmstripThumbnailRequest request;
-                {
-                    std::unique_lock<std::mutex> lock(filmstripThumbnailMutex_);
-                    filmstripThumbnailWake_.wait(lock, [&] {
-                        return filmstripThumbnailStopping_.load(std::memory_order_acquire) || !filmstripThumbnailQueue_.empty();
-                    });
-                    if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) break;
-                    request = std::move(filmstripThumbnailQueue_.front());
-                    filmstripThumbnailQueue_.pop_front();
+        for (std::thread& worker : filmstripThumbnailWorkers_) {
+            worker = std::thread([this] {
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                const HRESULT apartment = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+                for (;;) {
+                    FilmstripThumbnailRequest request;
+                    {
+                        std::unique_lock<std::mutex> lock(filmstripThumbnailMutex_);
+                        filmstripThumbnailWake_.wait(lock, [&] {
+                            return filmstripThumbnailStopping_.load(std::memory_order_acquire) || !filmstripThumbnailQueue_.empty();
+                        });
+                        if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) break;
+                        request = std::move(filmstripThumbnailQueue_.front());
+                        filmstripThumbnailQueue_.pop_front();
+                    }
+                    if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) continue;
+                    if (request.folderGeneration != filmstripThumbnailFolderGeneration_.load(std::memory_order_acquire)) continue;
+                    TraceFilmstripThumbnailJob(L"THUMB_JOB_DEQUEUED", request);
+                    auto* result = new FilmstripThumbnailResult{};
+                    result->request = request;
+                    if (IsVideoPath(request.path)) {
+                        ShellThumbnailPixels decoded;
+                        result->result = DecodeShellVideoThumbnailPixels(request.path, 256, decoded, result->aspect);
+                        result->width = decoded.width;
+                        result->height = decoded.height;
+                        result->stride = decoded.stride;
+                        result->pixels = std::move(decoded.pixels);
+                    } else {
+                        result->result = DecodeFilmstripThumbnailPixels(request.path, request.targetHeight, *result, result->aspect);
+                    }
+                    // Both decode paths release all source objects before returning, so only copied
+                    // Viewtrious-owned RAM pixels can cross onto the UI thread.
+                    TraceFilmstripThumbnailJob(SUCCEEDED(result->result) ? L"THUMB_JOB_SUCCESS" : L"THUMB_JOB_FAILED", request, result->result);
+                    if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) delete result;
+                    else if (PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result)))
+                        TraceFilmstripThumbnailJob(L"THUMB_RAM_PUBLISHED", request, result->result);
+                    else delete result;
                 }
-                if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) continue;
-                if (request.folderGeneration != filmstripThumbnailFolderGeneration_.load(std::memory_order_acquire)) continue;
-                TraceFilmstripThumbnailJob(L"THUMB_JOB_DEQUEUED", request);
-                auto* result = new FilmstripThumbnailResult{};
-                result->request = request;
-                if (IsVideoPath(request.path)) {
-                    ShellThumbnailPixels decoded;
-                    result->result = DecodeShellVideoThumbnailPixels(request.path, 256, decoded, result->aspect);
-                    result->width = decoded.width;
-                    result->height = decoded.height;
-                    result->stride = decoded.stride;
-                    result->pixels = std::move(decoded.pixels);
-                } else {
-                    result->result = DecodeFilmstripThumbnailPixels(request.path, request.targetHeight, *result, result->aspect);
-                }
-                // Both decode paths release all source objects before returning, so only copied
-                // Viewtrious-owned RAM pixels can cross onto the UI thread.
-                TraceFilmstripThumbnailJob(SUCCEEDED(result->result) ? L"THUMB_JOB_SUCCESS" : L"THUMB_JOB_FAILED", request, result->result);
-                if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) delete result;
-                else if (PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result)))
-                    TraceFilmstripThumbnailJob(L"THUMB_RAM_PUBLISHED", request, result->result);
-                else delete result;
-            }
-            if (SUCCEEDED(apartment)) CoUninitialize();
-        });
+                if (SUCCEEDED(apartment)) CoUninitialize();
+            });
+        }
     }
     void CancelQueuedFilmstripThumbnails() {
         std::lock_guard<std::mutex> lock(filmstripThumbnailMutex_);
@@ -3602,7 +3608,8 @@ public:
         filmstripThumbnailStopping_.store(true, std::memory_order_release);
         CancelQueuedFilmstripThumbnails();
         filmstripThumbnailWake_.notify_all();
-        if (filmstripThumbnailWorker_.joinable()) filmstripThumbnailWorker_.join();
+        for (std::thread& worker : filmstripThumbnailWorkers_)
+            if (worker.joinable()) worker.join();
         filmstripThumbnailPending_.clear();
         filmstripThumbnailGenerations_.clear();
         filmstripThumbnails_.clear();
@@ -9967,7 +9974,7 @@ private:
     std::mutex filmstripThumbnailMutex_;
     std::condition_variable filmstripThumbnailWake_;
     std::deque<FilmstripThumbnailRequest> filmstripThumbnailQueue_;
-    std::thread filmstripThumbnailWorker_;
+    std::array<std::thread, kFilmstripThumbnailWorkerCount> filmstripThumbnailWorkers_;
     std::atomic<bool> filmstripThumbnailStopping_{ false };
     std::atomic<uint64_t> filmstripThumbnailFolderGeneration_{ 0 };
     std::atomic<uint64_t> decodeRequestGeneration_{ 0 };

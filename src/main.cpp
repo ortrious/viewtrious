@@ -8350,9 +8350,6 @@ private:
         GetClientRect(window_, &client);
         if (!HasOverlay()) return {};
         const UINT dpi = GetDpiForWindow(window_);
-        const int panelPadding = MulDiv(24, dpi, 96);
-        const int titleHeight = MulDiv(24, dpi, 96);
-        const int titleGap = MulDiv(14, dpi, 96);
         const int rowHeight = GetShortcutRowHeight();
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
             overlay_ == OverlayKind::Settings ? 760 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :

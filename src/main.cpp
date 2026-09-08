@@ -4065,6 +4065,7 @@ public:
             entry.stride = result->stride;
             entry.pixels = std::move(result->pixels);
             filmstripThumbnails_.push_back(std::move(entry));
+            PruneFilmstripThumbnails();
             const bool aspectChanged = UpdateFilmstripKnownAspect(index, result->aspect);
             const bool layoutDeferred = aspectChanged && filmstripScrollAnimating_;
 #ifdef _DEBUG
@@ -4074,7 +4075,8 @@ public:
                     index, result->width, result->height, result->aspect, result->request.path.c_str());
                 OutputDebugStringW(message);
             }
-            TraceFilmstripThumbnailPublication(index, filmstripThumbnails_.back(), aspectChanged, layoutDeferred);
+            const int thumbnail = FindFilmstripThumbnail(result->request.path, result->request.itemGeneration);
+            if (thumbnail >= 0) TraceFilmstripThumbnailPublication(index, filmstripThumbnails_[thumbnail], aspectChanged, layoutDeferred);
 #endif
             if (layoutDeferred) filmstripLayoutRebuildPending_ = true;
             else if (aspectChanged) ApplyFilmstripAspectRelayout();

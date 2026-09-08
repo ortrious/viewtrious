@@ -978,10 +978,6 @@ public:
         ReadSetting(L"ImageScaling", imageScaling);
         imageScaling_ = imageScaling == static_cast<DWORD>(ImageScaling::Performance) ? ImageScaling::Performance : ImageScaling::Quality;
         lanczosSelected_ = imageScaling_ == ImageScaling::Quality;
-        DWORD playbackRate = 100;
-        ReadSetting(L"VideoPlaybackRate", playbackRate);
-        videoPreferredPlaybackRatePercent_ = IsVideoPlaybackRatePercent(playbackRate) ? playbackRate : 100;
-        videoEffectivePlaybackRate_ = PlaybackRateFromPercent(videoPreferredPlaybackRatePercent_);
         DWORD onboardingVersion = 0;
         onboardingRequired_ = !ReadSetting(L"OnboardingVersion", onboardingVersion) || onboardingVersion < 1;
         DWORD tourPending = 0;
@@ -1407,7 +1403,6 @@ public:
         if (!IsVideoPlaybackRatePercent(percent)) return;
         const double requested = PlaybackRateFromPercent(percent);
         videoPreferredPlaybackRatePercent_ = percent;
-        WriteSetting(L"VideoPlaybackRate", percent);
         if (!VideoActive() || videoPlayer_.SetPreferredPlaybackRate(requested)) {
             videoEffectivePlaybackRate_ = VideoActive() ? videoPlayer_.EffectivePlaybackRate() : requested;
             if (VideoActive() && videoPlayer_.Playing()) ScheduleVideoPlaybackTimer(true);
@@ -5444,6 +5439,8 @@ private:
     }
     void BeginVideoLoad(const std::wstring& path) {
         DeactivateModel(); DeactivateVideo(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
+        videoPreferredPlaybackRatePercent_ = 100;
+        videoEffectivePlaybackRate_ = 1.0;
         ++decodeRequestGeneration_; ++modelLoadGeneration_; pendingFullDecode_.reset(); imageDecodePending_ = false;
         source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         videoFitToWindow_ = true; videoZoom_ = 1.0f; videoPan_ = D2D1::Point2F();

@@ -7869,16 +7869,15 @@ private:
         const float eased = progress * progress * (3.0f - 2.0f * progress);
 
         renderTarget_->PushAxisAlignedClip(canvas, D2D1_ANTIALIAS_MODE_ALIASED);
-        DrawCheckerboard(oldDestination);
         DrawCheckerboard(newDestination);
-        renderTarget_->DrawBitmap(dissolveOldBitmap_.Get(), oldDestination, 1.0f - eased, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         ID2D1Bitmap* displayed = bitmap_.Get();
         D2D1_RECT_F adjustedDestination = newDestination;
         if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) {
             displayed = imageAdjustedBitmap_.Get();
             if (imageAdjustmentUsesLanczos_) adjustedDestination = lanczosDestination_;
         }
-        if (displayed) renderTarget_->DrawBitmap(displayed, adjustedDestination, eased, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        if (displayed) renderTarget_->DrawBitmap(displayed, adjustedDestination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        renderTarget_->DrawBitmap(dissolveOldBitmap_.Get(), oldDestination, 1.0f - eased, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         renderTarget_->PopAxisAlignedClip();
     }
 

@@ -1517,30 +1517,52 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool VideoAdjustmentsPanelOpen() const { return videoAdjustmentsPanelOpen_; }
+    void SetAdjustmentPanelOpen(bool& panelOpen, bool& fadeActive, float& opacity,
+            float& fadeStartOpacity, ULONGLONG& fadeStartedAt, bool open) {
+        if (open == panelOpen && !fadeActive) return;
+        panelOpen = open;
+        fadeStartOpacity = opacity;
+        fadeStartedAt = GetTickCount64();
+        fadeActive = open ? opacity < 0.999f : opacity > 0.001f;
+        if (fadeActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+        else {
+            opacity = open ? 1.0f : 0.0f;
+            if (!imageAdjustmentsPanelFadeActive_ && !videoAdjustmentsPanelFadeActive_)
+                KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        }
+    }
+    bool UpdateAdjustmentPanelFade(bool panelOpen, bool& fadeActive, float& opacity,
+            float fadeStartOpacity, ULONGLONG fadeStartedAt) {
+        if (!fadeActive) return false;
+        const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - fadeStartedAt) /
+            static_cast<float>(kVideoAdjustmentsFadeDurationMs));
+        const float eased = SmoothTransitionProgress(progress);
+        opacity = panelOpen
+            ? fadeStartOpacity + (1.0f - fadeStartOpacity) * eased
+            : fadeStartOpacity * (1.0f - eased);
+        if (progress >= 1.0f) {
+            fadeActive = false;
+            opacity = panelOpen ? 1.0f : 0.0f;
+        }
+        return fadeActive;
+    }
     void SetVideoAdjustmentsPanelOpen(bool open) {
-        if (open == videoAdjustmentsPanelOpen_ && !(open && videoAdjustmentsPanelFadeOut_)) return;
-        videoAdjustmentsPanelOpen_ = open;
         if (open) videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
         if (!open) videoControlsPointerOver_ = false;
-        videoAdjustmentsPanelFadeOut_ = !open;
-        videoAdjustmentsPanelFadeActive_ = open || videoAdjustmentsPanelOpacity_ > 0.001f;
-        videoAdjustmentsPanelFadeStartOpacity_ = videoAdjustmentsPanelOpacity_;
-        videoAdjustmentsPanelFadeStartedAt_ = GetTickCount64();
-        if (videoAdjustmentsPanelFadeActive_) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
-        else KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        SetAdjustmentPanelOpen(videoAdjustmentsPanelOpen_, videoAdjustmentsPanelFadeActive_,
+            videoAdjustmentsPanelOpacity_, videoAdjustmentsPanelFadeStartOpacity_,
+            videoAdjustmentsPanelFadeStartedAt_, open);
         ShowVideoControls();
     }
-    void UpdateVideoAdjustmentsPanelFade() {
-        if (!videoAdjustmentsPanelFadeActive_) { KillTimer(window_, kVideoAdjustmentsFadeTimer); return; }
-        const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - videoAdjustmentsPanelFadeStartedAt_) / static_cast<float>(kVideoAdjustmentsFadeDurationMs));
-        const float eased = SmoothTransitionProgress(progress);
-        videoAdjustmentsPanelOpacity_ = videoAdjustmentsPanelFadeOut_
-            ? videoAdjustmentsPanelFadeStartOpacity_ * (1.0f - eased)
-            : videoAdjustmentsPanelFadeStartOpacity_ + (1.0f - videoAdjustmentsPanelFadeStartOpacity_) * eased;
+    void UpdateAdjustmentPanelsFade() {
+        const bool imageActive = UpdateAdjustmentPanelFade(imageAdjustmentsPanelOpen_, imageAdjustmentsPanelFadeActive_,
+            imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_, imageAdjustmentsPanelFadeStartedAt_);
+        const bool videoActive = UpdateAdjustmentPanelFade(videoAdjustmentsPanelOpen_, videoAdjustmentsPanelFadeActive_,
+            videoAdjustmentsPanelOpacity_, videoAdjustmentsPanelFadeStartOpacity_, videoAdjustmentsPanelFadeStartedAt_);
         InvalidateRect(window_, nullptr, FALSE);
-        if (progress < 1.0f) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
-        else { videoAdjustmentsPanelFadeActive_ = false; if (videoAdjustmentsPanelFadeOut_) videoAdjustmentsPanelOpacity_ = 0.0f; KillTimer(window_, kVideoAdjustmentsFadeTimer); }
+        if (imageActive || videoActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+        else KillTimer(window_, kVideoAdjustmentsFadeTimer);
     }
     void ResetVideoAdjustments() { videoAdjustments_ = {}; ApplyVideoAdjustments(); }
     void UpdateVideoAdjustmentSlider(int index, POINT point) {
@@ -1645,7 +1667,16 @@ public:
         const RECT panel = GetImageAdjustmentsPanelLayout().panel;
         return PtInRect(&panel, point) != FALSE;
     }
-    void SetImageAdjustmentsPanelOpen(bool open) { imageAdjustmentsPanelOpen_ = open; imageAdjustmentsDragging_ = -1; InvalidateRect(window_, nullptr, FALSE); }
+    bool ImageAdjustmentsPanelVisible() const {
+        return imageAdjustmentsPanelOpen_ || imageAdjustmentsPanelFadeActive_ || imageAdjustmentsPanelOpacity_ > 0.001f;
+    }
+    void SetImageAdjustmentsPanelOpen(bool open) {
+        imageAdjustmentsDragging_ = -1;
+        SetAdjustmentPanelOpen(imageAdjustmentsPanelOpen_, imageAdjustmentsPanelFadeActive_,
+            imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_,
+            imageAdjustmentsPanelFadeStartedAt_, open);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void ToggleAdjustments() {
         if (VideoActive()) { videoPlaybackSpeedPanelOpen_ = false; SetVideoAdjustmentsPanelOpen(!videoAdjustmentsPanelOpen_); }
         else SetImageAdjustmentsPanelOpen(!imageAdjustmentsPanelOpen_);
@@ -1814,7 +1845,7 @@ public:
     }
     void ResetVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
-        KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoStepHold();
         videoControlsOpacity_ = 1.0f;
         videoControlsFadeActive_ = false;
@@ -1832,7 +1863,7 @@ public:
     }
     void StopVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
-        KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoStepHold();
         videoScrubbing_ = false;
         videoWasPlayingBeforeScrub_ = false;
@@ -8535,10 +8566,10 @@ private:
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, topEdge, left + width, topEdge + height), 5.0f * scale, 5.0f * scale), backing.Get());
             DrawOverlayText(L"adjustments", left, topEdge, width, height, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
-        if (imageAdjustmentsPanelOpen_) DrawImageAdjustmentsPanel();
+        if (ImageAdjustmentsPanelVisible()) DrawImageAdjustmentsPanel(imageAdjustmentsPanelOpacity_);
     }
 
-    void DrawImageAdjustmentsPanel() {
+    void DrawImageAdjustmentsPanel(float opacity) {
         const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
@@ -8550,6 +8581,12 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 1.0f), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
+        surface->SetOpacity(opacity);
+        border->SetOpacity(opacity);
+        text->SetOpacity(opacity);
+        accent->SetOpacity(opacity);
+        track->SetOpacity(opacity);
+        hover->SetOpacity(opacity);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), scale);
         const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
@@ -10429,12 +10466,15 @@ private:
     std::atomic<uint64_t> aiRequestGeneration_{ 0 };
     std::atomic<bool> aiAnalysisRunning_{ false };
     bool imageAdjustmentsPanelOpen_ = false;
+    bool imageAdjustmentsPanelFadeActive_ = false;
+    float imageAdjustmentsPanelOpacity_ = 0.0f;
+    float imageAdjustmentsPanelFadeStartOpacity_ = 0.0f;
+    ULONGLONG imageAdjustmentsPanelFadeStartedAt_ = 0;
     int imageAdjustmentsDragging_ = -1;
     int imageAdjustmentDetentIndex_ = -1;
     int imageAdjustmentDetentValue_ = 0;
     bool videoAdjustmentsPanelOpen_ = false;
     bool videoAdjustmentsPanelFadeActive_ = false;
-    bool videoAdjustmentsPanelFadeOut_ = false;
     float videoAdjustmentsPanelOpacity_ = 0.0f;
     float videoAdjustmentsPanelFadeStartOpacity_ = 0.0f;
     ULONGLONG videoAdjustmentsPanelFadeStartedAt_ = 0;
@@ -11189,7 +11229,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kTriangleCountTooltipTimer) { viewer->TriangleCountTooltipTimerMessage(); return 0; }
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
-        if (wParam == kVideoAdjustmentsFadeTimer) { viewer->UpdateVideoAdjustmentsPanelFade(); return 0; }
+        if (wParam == kVideoAdjustmentsFadeTimer) { viewer->UpdateAdjustmentPanelsFade(); return 0; }
         if (wParam == kStillDissolveTimer) { viewer->UpdateStillDissolve(); return 0; }
         if (wParam == kStartupVideoSizingFallbackTimer) { viewer->RevealInitialWindowAfterVideoSizing(); return 0; }
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }

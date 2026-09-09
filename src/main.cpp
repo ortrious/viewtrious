@@ -1384,8 +1384,8 @@ public:
         const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int margin = MulDiv(16, dpi, 96);
-        const int controlsWidth = std::min(MulDiv(420, dpi, 96), std::max(1L, canvas.right - canvas.left - margin * 2));
-        const int controlsLeft = canvas.left + (canvas.right - canvas.left - controlsWidth) / 2;
+        const LONG controlsWidth = std::min<LONG>(MulDiv(420, dpi, 96), std::max(1L, canvas.right - canvas.left - margin * 2));
+        const LONG controlsLeft = canvas.left + (canvas.right - canvas.left - controlsWidth) / 2;
         return controlsLeft + controlsWidth + MulDiv(370, dpi, 96) > canvas.right - margin;
     }
     VideoControlsLayout GetVideoControlsLayout() const {

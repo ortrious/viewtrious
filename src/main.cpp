@@ -169,7 +169,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoZoomActual, VideoAdjustments, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAdjustments, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
@@ -824,7 +824,6 @@ struct VideoControlsLayout {
     RECT stepBackward;
     RECT stepForward;
     RECT mute;
-    RECT zoomActual;
     RECT playbackSpeed;
     RECT adjustments;
     RECT fullscreen;
@@ -836,7 +835,7 @@ struct VideoAdjustmentsPanelLayout {
     RECT resetButton;
 };
 
-struct ImageZoomHudLayout {
+struct ZoomHudLayout {
     RECT combined;
     RECT zoom;
     RECT adjustments;
@@ -1383,15 +1382,17 @@ public:
         const int margin = MulDiv(16, dpi, 96);
         const int bottomGap = MulDiv(24, dpi, 96);
         const int height = MulDiv(84, dpi, 96);
-        const int preferredWidth = MulDiv(500, dpi, 96);
+        const int preferredWidth = MulDiv(420, dpi, 96);
         const LONG availableWidth = std::max(1L, canvas.right - canvas.left - margin * 2);
-        const int width = std::min(preferredWidth, static_cast<int>(availableWidth));
-        const int left = static_cast<int>(canvas.left + (canvas.right - canvas.left - width) / 2);
+        const int panelWidth = std::min(MulDiv(300, dpi, 96), std::max(MulDiv(220, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
+        const int width = std::min(preferredWidth, std::max(1, static_cast<int>(availableWidth) - (videoAdjustmentsPanelOpen_ ? panelWidth + MulDiv(8, dpi, 96) : 0)));
+        const int centeredLeft = static_cast<int>(canvas.left + (canvas.right - canvas.left - width) / 2);
+        const int left = videoAdjustmentsPanelOpen_ ? std::max(static_cast<int>(canvas.left + margin), std::min(centeredLeft, static_cast<int>(canvas.right - margin - panelWidth - MulDiv(8, dpi, 96) - width))) : centeredLeft;
         const int top = static_cast<int>(std::max(canvas.top, canvas.bottom - bottomGap - height));
         const int padding = std::min(MulDiv(10, dpi, 96), std::max(2, width / 24));
         const int timelineHeight = MulDiv(28, dpi, 96);
         const int rowGap = std::min(MulDiv(5, dpi, 96), std::max(2, height / 16));
-        const int buttonWidth = std::min(MulDiv(32, dpi, 96), std::max(MulDiv(24, dpi, 96), height - padding * 2 - timelineHeight - rowGap));
+        const int buttonWidth = std::min({ MulDiv(32, dpi, 96), std::max(MulDiv(24, dpi, 96), height - padding * 2 - timelineHeight - rowGap), std::max(MulDiv(24, dpi, 96), width / 10) });
         const int gap = std::min(MulDiv(8, dpi, 96), std::max(3, width / 80));
         const int minimumTrackWidth = MulDiv(40, dpi, 96);
         const int maximumTimeWidth = std::max(MulDiv(16, dpi, 96), (width - padding * 2 - gap * 2 - minimumTrackWidth) / 2);
@@ -1406,11 +1407,9 @@ public:
         const int stepForwardLeft = stepBackwardLeft + buttonWidth + gap;
         const int muteLeft = stepForwardLeft + buttonWidth + gap;
         const int speedWidth = std::min(MulDiv(46, dpi, 96), std::max(MulDiv(34, dpi, 96), buttonWidth + gap));
-        const int zoomActualWidth = std::min(MulDiv(42, dpi, 96), std::max(MulDiv(32, dpi, 96), buttonWidth + gap));
         const int fullscreenLeft = left + width - padding - buttonWidth;
         const int adjustmentsLeft = fullscreenLeft - gap - buttonWidth;
         const int speedLeft = adjustmentsLeft - gap - speedWidth;
-        const int zoomActualLeft = speedLeft - gap - zoomActualWidth;
         return { { left, top, left + width, top + height },
             { currentLeft, top + padding, currentLeft + timeWidth, top + padding + timelineHeight },
             { scrubberLeft, top + padding, scrubberRight, top + padding + timelineHeight },
@@ -1419,7 +1418,6 @@ public:
             { stepBackwardLeft, controlTop, stepBackwardLeft + buttonWidth, controlTop + buttonWidth },
             { stepForwardLeft, controlTop, stepForwardLeft + buttonWidth, controlTop + buttonWidth },
             { muteLeft, controlTop, muteLeft + buttonWidth, controlTop + buttonWidth },
-            { zoomActualLeft, controlTop, zoomActualLeft + zoomActualWidth, controlTop + buttonWidth },
             { speedLeft, controlTop, speedLeft + speedWidth, controlTop + buttonWidth },
             { adjustmentsLeft, controlTop, adjustmentsLeft + buttonWidth, controlTop + buttonWidth },
             { fullscreenLeft, controlTop, fullscreenLeft + buttonWidth, controlTop + buttonWidth } };
@@ -1449,10 +1447,10 @@ public:
         const int gap = MulDiv(8, dpi, 96);
         const LONG width = std::min<LONG>(MulDiv(300, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)));
         const LONG height = MulDiv(308, dpi, 96);
-        const LONG right = std::min<LONG>(controls.adjustments.right, canvas.right - MulDiv(8, dpi, 96));
-        const LONG left = std::max<LONG>(canvas.left + MulDiv(8, dpi, 96), right - width);
-        const LONG bottom = std::max<LONG>(canvas.top + height, controls.island.top - gap);
-        const LONG top = bottom - height;
+        const LONG left = std::min<LONG>(canvas.right - MulDiv(8, dpi, 96) - width, controls.island.right + gap);
+        const LONG right = left + width;
+        const LONG top = std::clamp<LONG>(controls.island.top, canvas.top + MulDiv(8, dpi, 96), std::max<LONG>(canvas.top + MulDiv(8, dpi, 96), canvas.bottom - MulDiv(8, dpi, 96) - height));
+        const LONG bottom = top + height;
         const int labelWidth = MulDiv(72, dpi, 96);
         const int valueWidth = MulDiv(38, dpi, 96);
         const int rowHeight = MulDiv(30, dpi, 96);
@@ -1521,27 +1519,68 @@ public:
         else videoAdjustments_.sharpness = position;
         ApplyVideoAdjustments();
     }
-    ImageZoomHudLayout GetImageZoomHudLayout() const {
+    ZoomHudLayout GetZoomHudLayout(const RECT& canvas) const {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const int zoomWidth = showZoomPercentage_ ? static_cast<int>(std::lround(72.0f * scale)) : 0;
         const int height = static_cast<int>(std::lround(30.0f * scale));
         const int buttonWidth = height;
         const int gap = static_cast<int>(std::lround(2.0f * scale));
         const int margin = static_cast<int>(std::lround(14.0f * scale));
-        const D2D1_SIZE_F target = renderTarget_->GetSize();
         const bool left = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::TopLeft;
         const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
         const int totalWidth = buttonWidth + (zoomWidth ? gap + zoomWidth : 0);
-        const int x = left ? margin : static_cast<int>(target.width) - margin - totalWidth;
-        const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
-        const int y = top ? canvasTop + margin : static_cast<int>(target.height) - margin - height;
+        const LONG defaultX = left ? canvas.left + margin : canvas.right - margin - totalWidth;
+        const LONG defaultY = top ? canvas.top + margin : canvas.bottom - margin - height;
+        const LONG x = zoomHudManualPosition_.x == LONG_MIN ? defaultX : std::clamp(zoomHudManualPosition_.x, canvas.left + margin, std::max(canvas.left + margin, canvas.right - margin - totalWidth));
+        const LONG y = zoomHudManualPosition_.y == LONG_MIN ? defaultY : std::clamp(zoomHudManualPosition_.y, canvas.top + margin, std::max(canvas.top + margin, canvas.bottom - margin - height));
         const RECT combined{ x, y, x + totalWidth, y + height };
         const RECT zoom = left ? RECT{ x, y, x + zoomWidth, y + height } : RECT{ combined.right - zoomWidth, y, combined.right, y + height };
         const RECT adjustments = left ? RECT{ zoom.right + (zoomWidth ? gap : 0), y, combined.right, y + height } : RECT{ x, y, x + buttonWidth, y + height };
         return { combined, zoom, adjustments, zoomWidth != 0 };
     }
+    ZoomHudLayout GetImageZoomHudLayout() const {
+        const D2D1_RECT_F bounds = ImageCanvasBounds();
+        return GetZoomHudLayout({ static_cast<LONG>(bounds.left), static_cast<LONG>(bounds.top), static_cast<LONG>(bounds.right), static_cast<LONG>(bounds.bottom) });
+    }
+    ZoomHudLayout GetVideoZoomHudLayout() const { return GetZoomHudLayout(ModelCanvasBounds()); }
+    bool ZoomHudContains(POINT point) const {
+        if (VideoActive() && videoControlsOpacity_ <= 0.05f) return false;
+        if (!VideoActive() && !source_) return false;
+        const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
+        return PtInRect(&hud.combined, point) != FALSE;
+    }
+    bool BeginZoomHudDrag(POINT point) {
+        if (!ZoomHudContains(point)) return false;
+        const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
+        if (!hud.hasZoom || !PtInRect(&hud.zoom, point)) return false;
+        zoomHudDragging_ = true;
+        zoomHudDragOffset_ = { point.x - hud.combined.left, point.y - hud.combined.top };
+        if (VideoActive()) ShowVideoControls();
+        return true;
+    }
+    void ContinueZoomHudDrag(POINT point) {
+        if (!zoomHudDragging_) return;
+        RECT canvas{};
+        if (VideoActive()) canvas = ModelCanvasBounds();
+        else {
+            const D2D1_RECT_F bounds = ImageCanvasBounds();
+            canvas = { static_cast<LONG>(bounds.left), static_cast<LONG>(bounds.top), static_cast<LONG>(bounds.right), static_cast<LONG>(bounds.bottom) };
+        }
+        const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
+        const LONG margin = MulDiv(14, GetDpiForWindow(window_), 96);
+        zoomHudManualPosition_.x = std::clamp(point.x - zoomHudDragOffset_.x, canvas.left + margin, std::max(canvas.left + margin, canvas.right - margin - (hud.combined.right - hud.combined.left)));
+        zoomHudManualPosition_.y = std::clamp(point.y - zoomHudDragOffset_.y, canvas.top + margin, std::max(canvas.top + margin, canvas.bottom - margin - (hud.combined.bottom - hud.combined.top)));
+        if (VideoActive()) ShowVideoControls(); else InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool EndZoomHudDrag() {
+        if (!zoomHudDragging_) return false;
+        zoomHudDragging_ = false;
+        if (VideoActive()) ShowVideoControls();
+        return true;
+    }
+    bool ZoomHudDragging() const { return zoomHudDragging_; }
     ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelLayout() const {
-        const ImageZoomHudLayout hud = GetImageZoomHudLayout();
+        const ZoomHudLayout hud = GetImageZoomHudLayout();
         const D2D1_RECT_F canvas = ImageCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int gap = MulDiv(8, dpi, 96);
@@ -1685,7 +1724,6 @@ public:
         if (PtInRect(&layout.stepBackward, point)) return ButtonKind::VideoStepBackward;
         if (PtInRect(&layout.stepForward, point)) return ButtonKind::VideoStepForward;
         if (PtInRect(&layout.mute, point)) return ButtonKind::VideoMute;
-        if (PtInRect(&layout.zoomActual, point)) return ButtonKind::VideoZoomActual;
         if (PtInRect(&layout.playbackSpeed, point)) return ButtonKind::VideoPlaybackSpeed;
         if (PtInRect(&layout.adjustments, point)) return ButtonKind::VideoAdjustments;
         if (PtInRect(&layout.fullscreen, point)) return ButtonKind::VideoFullscreen;
@@ -1714,7 +1752,7 @@ public:
     bool VideoControlsContains(POINT point) const {
         if (!VideoControlsInteractive()) return false;
         const RECT island = GetVideoControlsLayout().island;
-        return VideoAdjustmentsPanelContains(point) || VideoPlaybackSpeedPanelContains(point) || PtInRect(&island, point);
+        return VideoAdjustmentsPanelContains(point) || VideoPlaybackSpeedPanelContains(point) || ZoomHudContains(point) || PtInRect(&island, point);
     }
     bool VideoCursorMayHide() const { return !HasOverlay() && !TutorialActive() && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_; }
     void RestoreVideoCursor() {
@@ -1738,7 +1776,7 @@ public:
         videoControlsFadeActive_ = false;
         videoControlsLastActivity_ = GetTickCount64();
         KillTimer(window_, kVideoControlsTimer);
-        if (videoPlayer_.Playing() && !videoControlsPointerOver_ && !videoScrubbing_ && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_)
+        if (videoPlayer_.Playing() && !videoControlsPointerOver_ && !videoScrubbing_ && !zoomHudDragging_ && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_)
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -1753,6 +1791,7 @@ public:
         videoAdjustmentsPanelOpen_ = false;
         videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
+        zoomHudDragging_ = false;
         videoControlsHovered_ = ButtonKind::None;
         videoControlsLastActivity_ = GetTickCount64();
         RestoreVideoCursor();
@@ -1765,6 +1804,7 @@ public:
         videoAdjustmentsPanelOpen_ = false;
         videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
+        zoomHudDragging_ = false;
         videoControlsFadeActive_ = false;
         videoControlsOpacity_ = 0.0f;
         videoControlsHovered_ = ButtonKind::None;
@@ -1786,6 +1826,12 @@ public:
         if (!VideoControlsContains(point) && !VideoControlsRevealZoneContains(point) &&
             !VideoAdjustmentsPanelContains(point) && !VideoPlaybackSpeedPanelContains(point)) return false;
         ShowVideoControls();
+        const ZoomHudLayout zoomHud = GetVideoZoomHudLayout();
+        if (PtInRect(&zoomHud.adjustments, point)) {
+            if (videoAdjustmentsPanelOpen_) SetVideoAdjustmentsPanelOpen(false);
+            else SetVideoAdjustmentsPanelOpen(true);
+            return true;
+        }
         if (videoPlaybackSpeedPanelOpen_) {
             const VideoPlaybackSpeedPanelLayout panel = GetVideoPlaybackSpeedPanelLayout();
             if (PtInRect(&panel.panel, point)) {
@@ -1831,7 +1877,6 @@ public:
         else if (control == ButtonKind::VideoStepBackward) BeginVideoStepHold(-1);
         else if (control == ButtonKind::VideoStepForward) BeginVideoStepHold(1);
         else if (control == ButtonKind::VideoMute) { videoPlayer_.ToggleMute(); ShowVideoControls(); }
-        else if (control == ButtonKind::VideoZoomActual) ZoomVideoToActualPixels();
         else if (control == ButtonKind::VideoPlaybackSpeed) SetVideoPlaybackSpeedPanelOpen(!videoPlaybackSpeedPanelOpen_);
         else if (control == ButtonKind::VideoAdjustments) { if (videoAdjustmentsPanelOpen_) SetVideoAdjustmentsPanelOpen(false); else { videoPlaybackSpeedPanelOpen_ = false; SetVideoAdjustmentsPanelOpen(true); } }
         else if (control == ButtonKind::VideoFullscreen) { videoFullscreenToggleTick_ = GetTickCount64(); ToggleVideoFullscreen(); }
@@ -1867,7 +1912,7 @@ public:
         lastMousePoint_ = point;
         const bool wasPointerOver = videoControlsPointerOver_;
         const bool revealZone = VideoControlsRevealZoneContains(point);
-        const bool activeInteraction = videoScrubbing_ || videoAdjustmentsDragging_ >= 0 || videoAdjustmentsPanelOpen_ || videoPlaybackSpeedPanelOpen_;
+        const bool activeInteraction = videoScrubbing_ || zoomHudDragging_ || videoAdjustmentsDragging_ >= 0 || videoAdjustmentsPanelOpen_ || videoPlaybackSpeedPanelOpen_;
         if (!videoPlayer_.Playing() || revealZone || activeInteraction) ShowVideoControls();
         videoControlsPointerOver_ = VideoControlsContains(point) || revealZone || activeInteraction;
         videoControlsHovered_ = VideoControlAt(point);
@@ -1884,7 +1929,7 @@ public:
         if (!VideoActive()) return;
         videoControlsPointerOver_ = false;
         videoControlsHovered_ = ButtonKind::None;
-        if (videoPlayer_.Playing() && !videoScrubbing_ && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_) {
+        if (videoPlayer_.Playing() && !videoScrubbing_ && !zoomHudDragging_ && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_) {
             videoControlsFadeActive_ = false;
             videoControlsLastActivity_ = GetTickCount64();
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
@@ -1902,7 +1947,7 @@ public:
     }
     void UpdateVideoControlsFade() {
         if (!VideoActive()) { StopVideoControls(); return; }
-        if (!videoPlayer_.Playing() || videoControlsPointerOver_ || videoScrubbing_ || videoAdjustmentsPanelOpen_ || videoPlaybackSpeedPanelOpen_) { KillTimer(window_, kVideoControlsTimer); return; }
+        if (!videoPlayer_.Playing() || videoControlsPointerOver_ || videoScrubbing_ || zoomHudDragging_ || videoAdjustmentsPanelOpen_ || videoPlaybackSpeedPanelOpen_) { KillTimer(window_, kVideoControlsTimer); return; }
         const ULONGLONG elapsed = GetTickCount64() - videoControlsLastActivity_;
         if (!videoControlsFadeActive_) {
             if (elapsed < kVideoControlsIdleDelayMs) {
@@ -2933,7 +2978,7 @@ public:
             if (viewBarVisualStyleMenuOpen_) { const RECT menu = GetModelViewBarStyleMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top+row ? ButtonKind::ViewBarVisualStyleShaded : point.y < menu.top+row*2 ? ButtonKind::ViewBarVisualStyleVisibleEdges : ButtonKind::ViewBarVisualStyleWireframe; }
             const RECT projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();if(PtInRect(&projection,point))return ButtonKind::ViewBarProjectionToggle;if(PtInRect(&style,point))return ButtonKind::ViewBarVisualStyleToggle;
         }
-        if (source_ && renderTarget_) { const ImageZoomHudLayout hud = GetImageZoomHudLayout(); if (PtInRect(&hud.adjustments, point)) return ButtonKind::ImageAdjustments; }
+        if (source_ && renderTarget_) { const ZoomHudLayout hud = GetImageZoomHudLayout(); if (PtInRect(&hud.adjustments, point)) return ButtonKind::ImageAdjustments; }
         if (settingsPage_ == SettingsPage::General && SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
         if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
         if (ResetConfirmationButtonContains(point, true)) return ButtonKind::ResetConfirm;
@@ -5056,16 +5101,20 @@ public:
         SetVideoScaleAt({ canvas.left + (canvas.right - canvas.left) / 2, canvas.top + (canvas.bottom - canvas.top) / 2 }, VideoCurrentScale() * factor);
         ShowVideoControls();
     }
-    void ZoomVideoToActualPixels() {
-        const RECT canvas = ModelCanvasBounds();
+    void ZoomVideoToActualPixels(POINT cursor) {
         const float actualScale = VideoActualPixelScale();
         if (std::abs(actualScale - VideoFitScale()) <= 0.0001f) {
             videoFitToWindow_ = false;
             videoZoom_ = actualScale;
             videoPan_ = D2D1::Point2F();
             InvalidateRect(window_, nullptr, FALSE);
-        } else SetVideoScaleAt({ canvas.left + (canvas.right - canvas.left) / 2, canvas.top + (canvas.bottom - canvas.top) / 2 }, actualScale);
+        } else SetVideoScaleAt(cursor, actualScale);
         ShowVideoControls();
+    }
+    void ToggleVideoFitActualPixels(POINT cursor) {
+        const float physicalScale = VideoCurrentScale() * RenderTargetDpi() / 96.0f;
+        if (videoFitToWindow_ || physicalScale < 1.0f - 0.0001f) ZoomVideoToActualPixels(cursor);
+        else FitToWindow();
     }
     bool VideoContains(POINT point) const {
         DWORD nativeWidth = 0, nativeHeight = 0;
@@ -8387,17 +8436,15 @@ private:
         return true;
     }
 
-    void DrawZoomHud() {
-        if (!source_) return;
-        const ImageZoomHudLayout hud = GetImageZoomHudLayout();
+    void DrawZoomHud(const ZoomHudLayout& hud, float physicalScale, float opacity, bool adjustmentsHighlighted) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         ComPtr<ID2D1SolidColorBrush> backing, text, hover;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f), &backing)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.62f), &text)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f), &hover))) return;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f * opacity), &backing)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.62f * opacity), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f * opacity), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(hud.combined), 6.0f * scale, 6.0f * scale), backing.Get());
-        if (hoveredButton_ == ButtonKind::ImageAdjustments || imageAdjustmentsPanelOpen_)
+        if (adjustmentsHighlighted)
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(hud.adjustments), 5.0f * scale, 5.0f * scale), hover.Get());
         const float centerX = (hud.adjustments.left + hud.adjustments.right) * 0.5f;
         const float centerY = (hud.adjustments.top + hud.adjustments.bottom) * 0.5f;
@@ -8408,15 +8455,25 @@ private:
         }
         if (hud.hasZoom && EnsureZoomHudFormat()) {
             wchar_t label[16]{};
-            const float percent = PhysicalPixelScale() * 100.0f;
+            const float percent = physicalScale * 100.0f;
             if (percent < 10.0f) swprintf_s(label, L"%.1f%%", percent); else swprintf_s(label, L"%.0f%%", percent);
             ComPtr<IDWriteTextLayout> layout;
             const float width = static_cast<float>(hud.zoom.right - hud.zoom.left), height = static_cast<float>(hud.zoom.bottom - hud.zoom.top);
             if (SUCCEEDED(dwriteFactory_->CreateTextLayout(label, static_cast<UINT32>(wcslen(label)), zoomHudFormat_.Get(), width, height, &layout)))
                 renderTarget_->DrawTextLayout(D2D1::Point2F(static_cast<float>(hud.zoom.left), static_cast<float>(hud.zoom.top)), layout.Get(), text.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
+    }
+
+    void DrawZoomHud() {
+        if (!source_) return;
+        const ZoomHudLayout hud = GetImageZoomHudLayout();
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        DrawZoomHud(hud, PhysicalPixelScale(), 1.0f, hoveredButton_ == ButtonKind::ImageAdjustments || imageAdjustmentsPanelOpen_);
         if (hoveredButton_ == ButtonKind::ImageAdjustments && !imageAdjustmentsPanelOpen_) {
+            ComPtr<ID2D1SolidColorBrush> backing;
+            if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f), &backing))) return;
             const float width = 78.0f * scale, height = 24.0f * scale;
+            const float centerX = (hud.adjustments.left + hud.adjustments.right) * 0.5f;
             const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
             const float left = centerX - width * 0.5f;
             const float topEdge = top ? static_cast<float>(hud.combined.bottom) + 6.0f * scale : static_cast<float>(hud.combined.top) - height - 6.0f * scale;
@@ -8563,7 +8620,6 @@ private:
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoMute) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), hover.Get());
-        if (videoControlsHovered_ == ButtonKind::VideoZoomActual || (!videoFitToWindow_ && std::abs(VideoCurrentScale() - VideoActualPixelScale()) < 0.0001f)) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.zoomActual), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoPlaybackSpeed || videoPlaybackSpeedPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playbackSpeed), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoAdjustments || videoAdjustmentsPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.adjustments), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoFullscreen) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.fullscreen), 5.0f * scale, 5.0f * scale), hover.Get());
@@ -8590,7 +8646,6 @@ private:
 
         DrawOverlayText(L"-1", static_cast<float>(layout.stepBackward.left), static_cast<float>(layout.stepBackward.top), static_cast<float>(layout.stepBackward.right - layout.stepBackward.left), static_cast<float>(layout.stepBackward.bottom - layout.stepBackward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
-        DrawOverlayText(L"100%", static_cast<float>(layout.zoomActual.left), static_cast<float>(layout.zoomActual.top), static_cast<float>(layout.zoomActual.right - layout.zoomActual.left), static_cast<float>(layout.zoomActual.bottom - layout.zoomActual.top), 10.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         const std::wstring playbackRateLabel = FormatPlaybackRate(videoEffectivePlaybackRate_);
         DrawOverlayText(playbackRateLabel.c_str(), static_cast<float>(layout.playbackSpeed.left), static_cast<float>(layout.playbackSpeed.top), static_cast<float>(layout.playbackSpeed.right - layout.playbackSpeed.left), static_cast<float>(layout.playbackSpeed.bottom - layout.playbackSpeed.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         if (videoControlsHovered_ == ButtonKind::VideoPlaybackSpeed && !videoPlaybackSpeedPanelOpen_) {
@@ -8674,6 +8729,7 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker * 1.55f, muteCenterY - speaker * 0.35f), D2D1::Point2F(muteCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), text.Get(), 1.4f * scale);
             renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), D2D1::Point2F(muteCenterX + speaker, muteCenterY + speaker * 0.75f), text.Get(), 1.4f * scale);
         }
+        DrawZoomHud(GetVideoZoomHudLayout(), VideoCurrentScale() * RenderTargetDpi() / 96.0f, opacity, videoAdjustmentsPanelOpen_);
     }
 
     bool EnsureTitleTextFormat() {
@@ -10165,11 +10221,14 @@ private:
     std::vector<fs::path> navigationFiles_;
     D2D1_POINT_2F pan_ = D2D1::Point2F();
     D2D1_POINT_2F videoPan_ = D2D1::Point2F();
+    POINT zoomHudManualPosition_{ LONG_MIN, LONG_MIN };
+    POINT zoomHudDragOffset_{};
     POINT lastDragPoint_{};
     POINT swipeNavigationStart_{};
     float zoom_ = 1.0f;
     float videoZoom_ = 1.0f;
     bool fitToWindow_ = true;
+    bool zoomHudDragging_ = false;
     bool videoFitToWindow_ = true;
     VideoWindowSizing videoWindowSizing_ = VideoWindowSizing::FitToWindow;
     bool videoSizingAppliedForCurrentVideo_ = false;
@@ -10703,6 +10762,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetCapture(window);
             return 0;
         }
+        if (viewer->BeginZoomHudDrag(point)) {
+            SetCapture(window);
+            return 0;
+        }
         if (viewer->BeginVideoControlsInteraction(point)) {
             SetCapture(window);
             return 0;
@@ -10745,7 +10808,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (!viewer->TutorialActive() && !viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen()) {
             const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             if (viewer->VideoActive()) {
-                if (!viewer->VideoControlsContains(point) && viewer->VideoCanvasContains(point)) { viewer->ToggleVideoFullscreen(); return 0; }
+                if (!viewer->VideoControlsContains(point) && viewer->VideoCanvasContains(point)) { viewer->ToggleVideoFitActualPixels(point); return 0; }
             }
             if (viewer->HasImage() && viewer->ImageContains(point)) {
                 viewer->ToggleFitActualPixels(point);
@@ -10801,6 +10864,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 viewer->ContinueCanvasNavigationClick(point);
                 return 0;
             }
+            if (viewer->ZoomHudDragging()) { viewer->ContinueZoomHudDrag(point); return 0; }
             if (viewer->SwipeNavigationPending()) return 0;
             if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) viewer->PanTo(point);
             return 0;
@@ -10820,6 +10884,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->ContinueCanvasNavigationClick(point);
             return 0;
         }
+        if (viewer->ZoomHudDragging()) { viewer->ContinueZoomHudDrag(point); return 0; }
         if (viewer->SwipeNavigationPending()) return 0;
         if (viewer->ContinueImageAdjustmentsInteraction(point)) return 0;
         if (!viewer->HamburgerPressed() && viewer->PressedButton() == ButtonKind::None) {
@@ -10843,6 +10908,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->EndVideoControlsInteraction({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
+            if (GetCapture() == window) ReleaseCapture();
+            return 0;
+        }
+        if (viewer->EndZoomHudDrag()) {
             if (GetCapture() == window) ReleaseCapture();
             return 0;
         }

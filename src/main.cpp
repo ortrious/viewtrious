@@ -8470,8 +8470,9 @@ private:
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         DrawZoomHud(hud, PhysicalPixelScale(), 1.0f, hoveredButton_ == ButtonKind::ImageAdjustments || imageAdjustmentsPanelOpen_);
         if (hoveredButton_ == ButtonKind::ImageAdjustments && !imageAdjustmentsPanelOpen_) {
-            ComPtr<ID2D1SolidColorBrush> backing;
-            if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f), &backing))) return;
+            ComPtr<ID2D1SolidColorBrush> backing, text;
+            if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f), &backing)) ||
+                FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.62f), &text))) return;
             const float width = 78.0f * scale, height = 24.0f * scale;
             const float centerX = (hud.adjustments.left + hud.adjustments.right) * 0.5f;
             const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;

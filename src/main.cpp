@@ -291,7 +291,57 @@ struct FullDecodeResult : PixelBuffer {
     std::thread::id workerId{};
     bool deliveredSynchronously = false;
 };
-struct AiAnalysisResult { uint64_t generation = 0; std::wstring path; ContentKind contentKind = ContentKind::None; std::thread::id workerId{}; ViewtriousAiAdjustmentResultV1 adjustments{}; bool succeeded = false; };
+struct AiAnalysisResult { uint64_t generation = 0; std::wstring path; ContentKind contentKind = ContentKind::None; std::thread::id workerId{}; ImageAdjustments adjustments{}; bool succeeded = false; };
+
+bool ComputeAutoImageAdjustments(const AiImageBuffer& image, ImageAdjustments& adjustments) {
+    if (!image.Valid()) return false;
+    std::array<uint32_t, 256> histogram{};
+    double luminanceTotal = 0.0, chromaTotal = 0.0;
+    uint32_t count = 0, darkCount = 0, brightCount = 0, nearWhiteCount = 0;
+    for (uint32_t y = 0; y < image.height; ++y) for (uint32_t x = 0; x < image.width; ++x) {
+        const unsigned char* pixel = image.pixels.data() + static_cast<size_t>(y) * image.stride + x * 4;
+        const float alpha = pixel[3] / 255.0f;
+        if (alpha <= 0.001f) continue;
+        const float blue = std::clamp(pixel[0] / (255.0f * alpha), 0.0f, 1.0f);
+        const float green = std::clamp(pixel[1] / (255.0f * alpha), 0.0f, 1.0f);
+        const float red = std::clamp(pixel[2] / (255.0f * alpha), 0.0f, 1.0f);
+        const float luminance = std::clamp(0.2126f * red + 0.7152f * green + 0.0722f * blue, 0.0f, 1.0f);
+        ++histogram[std::min(255u, static_cast<uint32_t>(std::lround(luminance * 255.0f)))];
+        luminanceTotal += luminance;
+        chromaTotal += (std::max(red, std::max(green, blue)) - std::min(red, std::min(green, blue))) / std::max(0.08f, std::max(red, std::max(green, blue)));
+        ++count;
+        if (luminance < 0.12f) ++darkCount;
+        if (luminance > 0.85f) ++brightCount;
+        if (luminance > 0.97f) ++nearWhiteCount;
+    }
+    if (!count) return false;
+    const auto percentile = [&](float fraction) {
+        const uint32_t target = static_cast<uint32_t>(std::lround(std::clamp(fraction, 0.0f, 1.0f) * static_cast<float>(count - 1)));
+        uint32_t accumulated = 0;
+        for (uint32_t index = 0; index < histogram.size(); ++index) { accumulated += histogram[index]; if (accumulated > target) return index / 255.0f; }
+        return 1.0f;
+    };
+    const float p02 = percentile(.02f), p10 = percentile(.10f), p50 = percentile(.50f), p90 = percentile(.90f), p99 = percentile(.99f);
+    const float mean = static_cast<float>(luminanceTotal / count), chroma = static_cast<float>(chromaTotal / count);
+    const float darkFraction = static_cast<float>(darkCount) / count, brightFraction = static_cast<float>(brightCount) / count, whiteFraction = static_cast<float>(nearWhiteCount) / count;
+    const float lowKeyNeed = std::clamp((0.42f - p50) / 0.34f, 0.0f, 1.0f);
+    const float highKeyNeed = std::clamp((p50 - 0.62f) / 0.26f, 0.0f, 1.0f);
+    const float highlightRisk = std::clamp((p99 - 0.84f) / 0.16f + brightFraction * 1.2f + whiteFraction * 2.0f, 0.0f, 1.0f);
+    const float tonalSpread = p90 - p10;
+    const bool intentionalLowKey = lowKeyNeed > 0.45f && darkFraction > 0.28f && p90 < 0.92f;
+    const bool crushedShadows = p02 < 0.025f && p10 < 0.09f && !intentionalLowKey && p50 > 0.30f;
+
+    adjustments = {};
+    adjustments.exposure = std::clamp(lowKeyNeed * (0.20f + 0.16f * (1.0f - highlightRisk)) - highKeyNeed * 0.20f, -0.30f, 0.36f);
+    adjustments.brightness = std::clamp(lowKeyNeed * (0.14f + 0.24f * (1.0f - 0.35f * highlightRisk)) - highKeyNeed * 0.18f, -0.28f, 0.38f);
+    adjustments.highlights = -std::clamp(lowKeyNeed * (0.18f + 0.48f * highlightRisk) + highKeyNeed * (0.18f + 0.30f * highlightRisk), 0.0f, 0.65f);
+    adjustments.shadows = intentionalLowKey ? -std::clamp(0.03f + darkFraction * 0.08f, 0.0f, 0.12f)
+        : crushedShadows ? std::clamp((0.12f - p10) * 1.25f, 0.0f, 0.25f) : 0.0f;
+    adjustments.contrast = std::clamp((0.60f - tonalSpread) * 0.70f + lowKeyNeed * 0.15f + highKeyNeed * 0.10f, -0.12f, 0.42f);
+    adjustments.saturation = chroma < 0.30f ? std::clamp((0.34f - chroma) * 1.05f + lowKeyNeed * 0.12f, 0.0f, 0.40f) : 0.0f;
+    if (std::abs(mean - 0.50f) < 0.08f && tonalSpread > 0.52f && chroma >= 0.25f) adjustments = {};
+    return true;
+}
 struct DecodeWorkerFinished { std::thread::id workerId{}; };
 struct ModelLoadResult { std::wstring path; uint64_t generation = 0; std::shared_ptr<ModelDocument> document; std::wstring error; bool IsSuccess() const { return document != nullptr; } };
 struct ModelLoadWorker { uint64_t generation = 0; std::thread thread; };
@@ -1567,26 +1617,18 @@ public:
         QueueImageAdjustmentPersistence();
     }
     bool BuildAiImage(AiImageBuffer& image) {
-        std::vector<BYTE> sourcePixels;
+        if (!source_ || !wicFactory_) return false;
         UINT sourceWidth = 0, sourceHeight = 0;
-        if (VideoActive()) {
-            if (!videoPlayer_.CopyCurrentFrameBgra(sourcePixels, sourceWidth, sourceHeight)) return false;
-        } else {
-            if (!source_ || FAILED(source_->GetSize(&sourceWidth, &sourceHeight)) || !sourceWidth || !sourceHeight) return false;
-            sourcePixels.resize(static_cast<size_t>(sourceWidth) * sourceHeight * 4);
-            if (FAILED(source_->CopyPixels(nullptr, sourceWidth * 4, static_cast<UINT>(sourcePixels.size()), sourcePixels.data()))) return false;
-        }
+        if (FAILED(source_->GetSize(&sourceWidth, &sourceHeight)) || !sourceWidth || !sourceHeight) return false;
         constexpr UINT maxEdge = 640;
         const float scale = std::min(1.0f, static_cast<float>(maxEdge) / std::max(sourceWidth, sourceHeight));
         image.width = std::max(1u, static_cast<UINT>(std::lround(sourceWidth * scale)));
         image.height = std::max(1u, static_cast<UINT>(std::lround(sourceHeight * scale)));
         image.stride = image.width * 4; image.pixels.resize(static_cast<size_t>(image.stride) * image.height);
-        for (UINT y = 0; y < image.height; ++y) for (UINT x = 0; x < image.width; ++x) {
-            const UINT sx = std::min(sourceWidth - 1, static_cast<UINT>(x / scale));
-            const UINT sy = std::min(sourceHeight - 1, static_cast<UINT>(y / scale));
-            std::memcpy(image.pixels.data() + static_cast<size_t>(y) * image.stride + x * 4, sourcePixels.data() + (static_cast<size_t>(sy) * sourceWidth + sx) * 4, 4);
-        }
-        return true;
+        ComPtr<IWICBitmapScaler> scaler;
+        return SUCCEEDED(wicFactory_->CreateBitmapScaler(&scaler)) &&
+            SUCCEEDED(scaler->Initialize(source_.Get(), image.width, image.height, WICBitmapInterpolationModeFant)) &&
+            SUCCEEDED(scaler->CopyPixels(nullptr, image.stride, static_cast<UINT>(image.pixels.size()), image.pixels.data()));
     }
 
     void StartAiAnalysis() {
@@ -1599,7 +1641,7 @@ public:
         const std::wstring path = currentPath_; const ContentKind kind = contentKind_;
         aiAnalysisThread_ = std::thread([this, generation, path, kind, image = std::move(image)]() mutable {
             auto* result = new AiAnalysisResult{}; result->generation = generation; result->path = path; result->contentKind = kind; result->workerId = std::this_thread::get_id();
-            result->succeeded = aiAddon_.Analyze(image, result->adjustments);
+            result->succeeded = ComputeAutoImageAdjustments(image, result->adjustments);
             if (!PostMessageW(window_, kAiAnalysisCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) { delete result; aiAnalysisRunning_ = false; }
         });
     }
@@ -1609,10 +1651,15 @@ public:
         if (!result) return;
         if (aiAnalysisThread_.joinable() && aiAnalysisThread_.get_id() == result->workerId) aiAnalysisThread_.join();
         aiAnalysisRunning_ = false;
-        if (!result->succeeded || result->generation != aiRequestGeneration_ || result->contentKind != contentKind_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_)) || result->adjustments.confidence < .15f) return;
-        MediaAdjustments adjusted{ std::clamp(result->adjustments.brightness, -.35f, .45f), std::clamp(result->adjustments.contrast, -.35f, .30f), std::clamp(result->adjustments.shadows, -.20f, .65f), std::clamp(result->adjustments.highlights, -.50f, .25f) };
-        if (VideoActive()) { videoAdjustments_ = adjusted; ApplyVideoAdjustments(); }
-        else { imageAdjustments_.exposure = 0.0f; imageAdjustments_.brightness = adjusted.brightness; imageAdjustments_.contrast = adjusted.contrast; imageAdjustments_.shadows = adjusted.shadows; imageAdjustments_.highlights = adjusted.highlights; imageAdjustments_.saturation = 0.0f; imageAdjustments_.sharpness = 0.0f; ApplyImageAdjustments(); QueueImageAdjustmentPersistence(); }
+        if (!result->succeeded || result->generation != aiRequestGeneration_ || result->contentKind != ContentKind::Image2D || contentKind_ != ContentKind::Image2D || !PathsEqual(fs::path(result->path), fs::path(currentPath_))) return;
+        imageAdjustments_.exposure = result->adjustments.exposure;
+        imageAdjustments_.brightness = result->adjustments.brightness;
+        imageAdjustments_.contrast = result->adjustments.contrast;
+        imageAdjustments_.shadows = result->adjustments.shadows;
+        imageAdjustments_.highlights = result->adjustments.highlights;
+        imageAdjustments_.saturation = result->adjustments.saturation;
+        ApplyImageAdjustments();
+        QueueImageAdjustmentPersistence();
     }
     bool BeginImageAdjustmentsInteraction(POINT point) {
         if (!source_) return false;

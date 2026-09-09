@@ -1786,6 +1786,7 @@ public:
     }
     void UpdateVideoControlsMouse(POINT point) {
         if (!VideoActive()) return;
+        RestoreVideoCursor();
         lastMousePoint_ = point;
         const bool wasPointerOver = videoControlsPointerOver_;
         const bool revealZone = VideoControlsRevealZoneContains(point);

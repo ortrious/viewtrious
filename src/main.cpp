@@ -5131,6 +5131,14 @@ public:
     float VideoActualPixelScale() const { return 96.0f / RenderTargetDpi(); }
     float VideoMinimumScale() const { return std::min(VideoFitScale(), VideoActualPixelScale()); }
     float VideoCurrentScale() const { return videoFitToWindow_ ? VideoFitScale() : videoZoom_; }
+    void CenterAtVideoMinimumScale() {
+        const float fitScale = VideoFitScale();
+        const float minimumScale = VideoMinimumScale();
+        videoFitToWindow_ = std::abs(minimumScale - fitScale) <= 0.0001f;
+        videoZoom_ = minimumScale;
+        videoPan_ = D2D1::Point2F();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void ClampVideoPan() {
         DWORD nativeWidth = 0, nativeHeight = 0;
         if (!VideoActive() || !videoPlayer_.GetNativeVideoSize(nativeWidth, nativeHeight)) return;
@@ -5158,6 +5166,10 @@ public:
             videoZoom_ = fitScale;
             videoPan_ = D2D1::Point2F();
             InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
+        if (newScale <= minimumScale + 0.0001f) {
+            CenterAtVideoMinimumScale();
             return;
         }
         if (std::abs(newScale - oldScale) < 0.0001f) return;

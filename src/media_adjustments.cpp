@@ -125,7 +125,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
         blurred += 0.25 * west.rgb * west.a; weight += 0.25 * west.a;
         blurred += 0.25 * east.rgb * east.a; weight += 0.25 * east.a;
         blurred /= max(weight, 0.0001);
-        adjusted += color.z * 1.50 * (adjusted - blurred);
+        adjusted += color.z * 3.00 * (adjusted - blurred);
         const float peak = max(adjusted.r, max(adjusted.g, adjusted.b));
         adjusted = max(adjusted, 0.0) / max(1.0, peak);
     }

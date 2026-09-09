@@ -8145,7 +8145,7 @@ private:
         if (imageAdjustments_.IsNeutral()) return false;
         const bool useLanczos = !gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent();
         const float sharpnessTexelRadius = imageAdjustments_.sharpness > 0.0f
-            ? std::clamp(1.0f / std::max(CurrentScale(), 0.125f), 1.0f, 8.0f) : 1.0f;
+            ? std::clamp(1.0f / std::max(MinimumScale(), 0.125f), 1.0f, 8.0f) : 1.0f;
         if (imageAdjustedBitmap_ && imageAdjustmentUsesLanczos_ == useLanczos && imageAdjustmentSharpnessTexelRadius_ == sharpnessTexelRadius) return true;
         imageAdjustedBitmap_.Reset();
         if (!EnsureImageAdjustmentSource(useLanczos) || !imageAdjustmentProcessor_.ProcessImage(imageAdjustmentSourceTexture_.Get(), imageAdjustmentSourceWidth_, imageAdjustmentSourceHeight_, imageAdjustments_, sharpnessTexelRadius)) return false;

@@ -229,9 +229,10 @@ struct ImageAdjustmentPersistence::Impl {
         int version = 0;
         if (!Prepare("PRAGMA user_version;", &statement) || step(statement) != kSqliteRow) { if (statement) finalize(statement); CloseDatabase(); return false; }
         version = columnInt(statement, 0); finalize(statement);
-        if (version > 1) { Trace(L"[Viewtrious] SQLITE_ERROR newer schema"); CloseDatabase(); return false; }
-        if (!Execute("PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS file_hash_cache (path TEXT PRIMARY KEY, file_size INTEGER NOT NULL, file_mtime INTEGER NOT NULL, sha256 BLOB NOT NULL); CREATE TABLE IF NOT EXISTS image_adjustments (sha256 BLOB PRIMARY KEY, adjustment_version INTEGER NOT NULL, exposure REAL NOT NULL, brightness REAL NOT NULL, contrast REAL NOT NULL, shadows REAL NOT NULL, highlights REAL NOT NULL, saturation REAL NOT NULL, updated_utc INTEGER NOT NULL);")) { CloseDatabase(); return false; }
-        if (version == 0 && !Execute("PRAGMA user_version=1;")) { CloseDatabase(); return false; }
+        if (version > 2) { Trace(L"[Viewtrious] SQLITE_ERROR newer schema"); CloseDatabase(); return false; }
+        if (!Execute("PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS file_hash_cache (path TEXT PRIMARY KEY, file_size INTEGER NOT NULL, file_mtime INTEGER NOT NULL, sha256 BLOB NOT NULL); CREATE TABLE IF NOT EXISTS image_adjustments (sha256 BLOB PRIMARY KEY, adjustment_version INTEGER NOT NULL, exposure REAL NOT NULL, brightness REAL NOT NULL, contrast REAL NOT NULL, shadows REAL NOT NULL, highlights REAL NOT NULL, saturation REAL NOT NULL, sharpness REAL NOT NULL DEFAULT 0, updated_utc INTEGER NOT NULL);")) { CloseDatabase(); return false; }
+        if (version == 1 && !Execute("BEGIN IMMEDIATE; ALTER TABLE image_adjustments ADD COLUMN sharpness REAL NOT NULL DEFAULT 0; PRAGMA user_version=2; COMMIT;")) { CloseDatabase(); return false; }
+        if (version == 0 && !Execute("PRAGMA user_version=2;")) { CloseDatabase(); return false; }
         Trace(L"[Viewtrious] WINSQLITE_RUNTIME_LOADED"); Trace(L"[Viewtrious] SQLITE_DB_OPEN"); Trace(L"[Viewtrious] SQLITE_SCHEMA_READY");
         return true;
     }
@@ -280,10 +281,10 @@ struct ImageAdjustmentPersistence::Impl {
 
     bool ReadAdjustments(const std::array<unsigned char, 32>& hash, ImageAdjustments& adjustments) {
         sqlite3_stmt* statement = nullptr;
-        if (!Prepare("SELECT adjustment_version,exposure,brightness,contrast,shadows,highlights,saturation FROM image_adjustments WHERE sha256=?1;", &statement)) return false;
+        if (!Prepare("SELECT adjustment_version,exposure,brightness,contrast,shadows,highlights,saturation,sharpness FROM image_adjustments WHERE sha256=?1;", &statement)) return false;
         bindBlob(statement, 1, hash.data(), static_cast<int>(hash.size()), kSqliteTransient);
         const bool hit = step(statement) == kSqliteRow && columnInt(statement, 0) == kAdjustmentVersion;
-        if (hit) adjustments = { static_cast<float>(columnDouble(statement, 1)), static_cast<float>(columnDouble(statement, 2)), static_cast<float>(columnDouble(statement, 3)), static_cast<float>(columnDouble(statement, 4)), static_cast<float>(columnDouble(statement, 5)), static_cast<float>(columnDouble(statement, 6)) };
+        if (hit) adjustments = { static_cast<float>(columnDouble(statement, 1)), static_cast<float>(columnDouble(statement, 2)), static_cast<float>(columnDouble(statement, 3)), static_cast<float>(columnDouble(statement, 4)), static_cast<float>(columnDouble(statement, 5)), static_cast<float>(columnDouble(statement, 6)), static_cast<float>(columnDouble(statement, 7)) };
         finalize(statement);
         return hit;
     }
@@ -297,9 +298,9 @@ struct ImageAdjustmentPersistence::Impl {
             if (result != kSqliteDone) TraceSqliteError(L"adjustment delete", result); else Trace(L"[Viewtrious] ADJUST_DB_DELETE_NEUTRAL");
             finalize(statement); return;
         }
-        if (!Prepare("INSERT INTO image_adjustments(sha256,adjustment_version,exposure,brightness,contrast,shadows,highlights,saturation,updated_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(sha256) DO UPDATE SET adjustment_version=excluded.adjustment_version,exposure=excluded.exposure,brightness=excluded.brightness,contrast=excluded.contrast,shadows=excluded.shadows,highlights=excluded.highlights,saturation=excluded.saturation,updated_utc=excluded.updated_utc;", &statement)) return;
+        if (!Prepare("INSERT INTO image_adjustments(sha256,adjustment_version,exposure,brightness,contrast,shadows,highlights,saturation,sharpness,updated_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(sha256) DO UPDATE SET adjustment_version=excluded.adjustment_version,exposure=excluded.exposure,brightness=excluded.brightness,contrast=excluded.contrast,shadows=excluded.shadows,highlights=excluded.highlights,saturation=excluded.saturation,sharpness=excluded.sharpness,updated_utc=excluded.updated_utc;", &statement)) return;
         bindBlob(statement, 1, hash.data(), static_cast<int>(hash.size()), kSqliteTransient);
-        bindInt64(statement, 2, kAdjustmentVersion); bindDouble(statement, 3, adjustments.exposure); bindDouble(statement, 4, adjustments.brightness); bindDouble(statement, 5, adjustments.contrast); bindDouble(statement, 6, adjustments.shadows); bindDouble(statement, 7, adjustments.highlights); bindDouble(statement, 8, adjustments.saturation); bindInt64(statement, 9, static_cast<int64_t>(std::time(nullptr)));
+        bindInt64(statement, 2, kAdjustmentVersion); bindDouble(statement, 3, adjustments.exposure); bindDouble(statement, 4, adjustments.brightness); bindDouble(statement, 5, adjustments.contrast); bindDouble(statement, 6, adjustments.shadows); bindDouble(statement, 7, adjustments.highlights); bindDouble(statement, 8, adjustments.saturation); bindDouble(statement, 9, adjustments.sharpness); bindInt64(statement, 10, static_cast<int64_t>(std::time(nullptr)));
         const int result = step(statement);
         if (result != kSqliteDone) TraceSqliteError(L"adjustment save", result); else Trace(L"[Viewtrious] ADJUST_DB_SAVE");
         finalize(statement);

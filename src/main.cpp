@@ -800,7 +800,7 @@ struct ImageZoomHudLayout {
 
 struct ImageAdjustmentsPanelLayout {
     RECT panel;
-    std::array<RECT, 6> sliders;
+    std::array<RECT, 7> sliders;
     RECT autoButton;
     RECT resetButton;
 };
@@ -1508,7 +1508,7 @@ public:
         const UINT dpi = GetDpiForWindow(window_);
         const int gap = MulDiv(8, dpi, 96);
         const int width = std::min(MulDiv(300, dpi, 96), std::max(MulDiv(220, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
-        const int height = MulDiv(278, dpi, 96);
+        const int height = MulDiv(308, dpi, 96);
         const bool left = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::TopLeft;
         const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
         const int panelLeft = left ? std::max(static_cast<int>(canvas.left) + gap, static_cast<int>(hud.combined.left)) : std::min(static_cast<int>(canvas.right) - gap - width, static_cast<int>(hud.combined.right) - width);
@@ -1518,12 +1518,12 @@ public:
         const int labelWidth = MulDiv(72, dpi, 96);
         const int valueWidth = MulDiv(38, dpi, 96);
         const int rowHeight = MulDiv(30, dpi, 96);
-        std::array<RECT, 6> sliders{};
-        for (int index = 0; index < 6; ++index) {
+        std::array<RECT, 7> sliders{};
+        for (int index = 0; index < 7; ++index) {
             const int y = panel.top + MulDiv(18, dpi, 96) + index * rowHeight;
             sliders[index] = { panel.left + labelWidth, y, panel.right - valueWidth - MulDiv(12, dpi, 96), y + MulDiv(20, dpi, 96) };
         }
-        const int buttonTop = panel.top + MulDiv(210, dpi, 96);
+        const int buttonTop = panel.top + MulDiv(240, dpi, 96);
         const int buttonWidth = MulDiv(74, dpi, 96);
         const RECT reset{ panel.right - buttonWidth, buttonTop, panel.right, buttonTop + MulDiv(30, dpi, 96) };
         const RECT ai = aiAddon_.Available() ? RECT{ panel.right - buttonWidth * 2 - gap, buttonTop, panel.right - buttonWidth - gap, buttonTop + MulDiv(30, dpi, 96) } : RECT{};
@@ -1551,7 +1551,7 @@ public:
     }
     void SetImageAdjustmentsPanelOpen(bool open) { imageAdjustmentsPanelOpen_ = open; imageAdjustmentsDragging_ = -1; InvalidateRect(window_, nullptr, FALSE); }
     void UpdateImageAdjustmentSlider(int index, POINT point) {
-        if (index < 0 || index >= 6) return;
+        if (index < 0 || index >= 7) return;
         const RECT slider = GetImageAdjustmentsPanelLayout().sliders[index];
         const float position = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f);
         const float value = position * 2.0f - 1.0f;
@@ -1560,7 +1560,8 @@ public:
         else if (index == 2) imageAdjustments_.contrast = value;
         else if (index == 3) imageAdjustments_.shadows = value;
         else if (index == 4) imageAdjustments_.highlights = value;
-        else imageAdjustments_.saturation = value;
+        else if (index == 5) imageAdjustments_.saturation = value;
+        else imageAdjustments_.sharpness = position;
         ApplyImageAdjustments();
         QueueImageAdjustmentPersistence();
     }
@@ -1610,7 +1611,7 @@ public:
         if (!result->succeeded || result->generation != aiRequestGeneration_ || result->contentKind != contentKind_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_)) || result->adjustments.confidence < .15f) return;
         MediaAdjustments adjusted{ std::clamp(result->adjustments.brightness, -.35f, .45f), std::clamp(result->adjustments.contrast, -.35f, .30f), std::clamp(result->adjustments.shadows, -.20f, .65f), std::clamp(result->adjustments.highlights, -.50f, .25f) };
         if (VideoActive()) { videoAdjustments_ = adjusted; ApplyVideoAdjustments(); }
-        else { imageAdjustments_.exposure = 0.0f; imageAdjustments_.brightness = adjusted.brightness; imageAdjustments_.contrast = adjusted.contrast; imageAdjustments_.shadows = adjusted.shadows; imageAdjustments_.highlights = adjusted.highlights; imageAdjustments_.saturation = 0.0f; ApplyImageAdjustments(); QueueImageAdjustmentPersistence(); }
+        else { imageAdjustments_.exposure = 0.0f; imageAdjustments_.brightness = adjusted.brightness; imageAdjustments_.contrast = adjusted.contrast; imageAdjustments_.shadows = adjusted.shadows; imageAdjustments_.highlights = adjusted.highlights; imageAdjustments_.saturation = 0.0f; imageAdjustments_.sharpness = 0.0f; ApplyImageAdjustments(); QueueImageAdjustmentPersistence(); }
     }
     bool BeginImageAdjustmentsInteraction(POINT point) {
         if (!source_) return false;
@@ -8413,14 +8414,14 @@ private:
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), scale);
-        const std::array<const wchar_t*, 6> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation" };
-        const std::array<float, 6> values{ imageAdjustments_.exposure, imageAdjustments_.brightness, imageAdjustments_.contrast, imageAdjustments_.shadows, imageAdjustments_.highlights, imageAdjustments_.saturation };
+        const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
+        const std::array<float, 7> values{ imageAdjustments_.exposure, imageAdjustments_.brightness, imageAdjustments_.contrast, imageAdjustments_.shadows, imageAdjustments_.highlights, imageAdjustments_.saturation, imageAdjustments_.sharpness };
         for (size_t index = 0; index < panel.sliders.size(); ++index) {
             const RECT slider = panel.sliders[index];
             DrawOverlayText(labels[index], static_cast<float>(panel.panel.left + MulDiv(12, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(slider.left - panel.panel.left - MulDiv(18, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), false, false, true);
             const float centerY = (slider.top + slider.bottom) * 0.5f;
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
-            const float normalizedValue = index == 0 ? (values[index] + 2.0f) * 0.25f : (values[index] + 1.0f) * 0.5f;
+            const float normalizedValue = index == 0 ? (values[index] + 2.0f) * 0.25f : index == 6 ? values[index] : (values[index] + 1.0f) * 0.5f;
             const float thumbX = slider.left + (slider.right - slider.left) * normalizedValue;
             renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, centerY), 5.0f * scale, 5.0f * scale), accent.Get());
             const std::wstring value = std::to_wstring(static_cast<int>(std::lround(values[index] * 100.0f)));

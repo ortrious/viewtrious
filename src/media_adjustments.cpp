@@ -12,7 +12,7 @@ namespace {
 
 
 struct ShaderParameters { float brightness, contrast, shadows, highlights; };
-struct ImageShaderParameters { float exposure, brightness, shadows, highlights, contrast, saturation, padding0, padding1; };
+struct ImageShaderParameters { float exposure, brightness, shadows, highlights, contrast, saturation, sharpness, padding0, texelWidth, texelHeight, padding1, padding2; };
 
 constexpr char kAdjustmentShader[] = R"(
 Texture2D inputTexture : register(t0);
@@ -44,7 +44,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 
 constexpr char kImageAdjustmentShader[] = R"(
 Texture2D inputTexture : register(t0); SamplerState inputSampler : register(s0);
-cbuffer Parameters : register(b0) { float4 light; float4 color; };
+cbuffer Parameters : register(b0) { float4 light; float4 color; float4 source; };
 struct VertexOutput { float4 position : SV_POSITION; float2 uv : TEXCOORD0; };
 VertexOutput VSMain(uint index : SV_VertexID) { float2 positions[3] = { float2(-1,-1), float2(-1,3), float2(3,-1) }; float2 uvs[3] = { float2(0,1), float2(0,-1), float2(2,1) }; VertexOutput output; output.position=float4(positions[index],0,1); output.uv=uvs[index]; return output; }
 
@@ -66,13 +66,9 @@ float3 LinearToSrgb(float3 value) {
 float ShadowMask(float tone) { return 1.0 - smoothstep(0.06, 0.60, tone); }
 float HighlightMask(float tone) { return smoothstep(0.40, 0.96, tone); }
 
-float4 PSMain(VertexOutput input) : SV_TARGET {
-    const float4 sample = inputTexture.Sample(inputSampler, input.uv);
-    if (sample.a <= 0.0001) return float4(0.0, 0.0, 0.0, 0.0);
-
+float3 AdjustLinearRgb(float3 linearRgb) {
     // WIC supplies premultiplied sRGB. Work on straight, linear RGB so tone
     // operations act on light rather than independently on encoded channels.
-    float3 linearRgb = SrgbToLinear(saturate(sample.rgb / sample.a));
     linearRgb *= exp2(light.x * 2.0);
 
     const float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
@@ -99,6 +95,40 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
     // keeps bright saturated colors from abruptly shifting hue.
     const float peak = max(adjusted.r, max(adjusted.g, adjusted.b));
     adjusted /= max(1.0, peak);
+    return adjusted;
+}
+
+float4 SampleAdjusted(float2 uv) {
+    const float4 sample = inputTexture.Sample(inputSampler, uv);
+    if (sample.a <= 0.0001) return float4(0.0, 0.0, 0.0, 0.0);
+    const float3 linearRgb = SrgbToLinear(saturate(sample.rgb / sample.a));
+    return float4(AdjustLinearRgb(linearRgb), sample.a);
+}
+
+float4 PSMain(VertexOutput input) : SV_TARGET {
+    const float4 sample = SampleAdjusted(input.uv);
+    if (sample.a <= 0.0001) return float4(0.0, 0.0, 0.0, 0.0);
+    float3 adjusted = sample.rgb;
+
+    // Use an alpha-weighted four-neighbor unsharp mask. Transparent neighbors
+    // contribute no color, preserving straight alpha without edge fringes.
+    if (color.z > 0.0) {
+        const float2 texel = source.xy;
+        const float4 north = SampleAdjusted(input.uv + float2(0.0, -texel.y));
+        const float4 south = SampleAdjusted(input.uv + float2(0.0, texel.y));
+        const float4 west = SampleAdjusted(input.uv + float2(-texel.x, 0.0));
+        const float4 east = SampleAdjusted(input.uv + float2(texel.x, 0.0));
+        float3 blurred = adjusted * sample.a;
+        float weight = sample.a;
+        blurred += 0.25 * north.rgb * north.a; weight += 0.25 * north.a;
+        blurred += 0.25 * south.rgb * south.a; weight += 0.25 * south.a;
+        blurred += 0.25 * west.rgb * west.a; weight += 0.25 * west.a;
+        blurred += 0.25 * east.rgb * east.a; weight += 0.25 * east.a;
+        blurred /= max(weight, 0.0001);
+        adjusted += color.z * 0.85 * (adjusted - blurred);
+        const float peak = max(adjusted.r, max(adjusted.g, adjusted.b));
+        adjusted = max(adjusted, 0.0) / max(1.0, peak);
+    }
     return float4(LinearToSrgb(adjusted) * sample.a, sample.a);
 }
 )";
@@ -212,7 +242,7 @@ bool MediaAdjustmentProcessor::RenderImage(ID3D11Texture2D* source, ID3D11Render
     if (FAILED(device_->CreateShaderResourceView(source, nullptr, &sourceView))) return false;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(imageParameterBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return false;
-    *static_cast<ImageShaderParameters*>(mapped.pData) = { adjustments.exposure, adjustments.brightness, adjustments.shadows, adjustments.highlights, adjustments.contrast, adjustments.saturation, 0.0f, 0.0f };
+    *static_cast<ImageShaderParameters*>(mapped.pData) = { adjustments.exposure, adjustments.brightness, adjustments.shadows, adjustments.highlights, adjustments.contrast, adjustments.saturation, adjustments.sharpness, 0.0f, 1.0f / static_cast<float>(width), 1.0f / static_cast<float>(height), 0.0f, 0.0f };
     context_->Unmap(imageParameterBuffer_.Get(), 0);
     const D3D11_VIEWPORT viewport{ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f };
     ID3D11RenderTargetView* targets[] = { target }; ID3D11ShaderResourceView* views[] = { sourceView.Get() }; ID3D11SamplerState* samplers[] = { sampler_.Get() }; ID3D11Buffer* buffers[] = { imageParameterBuffer_.Get() };
@@ -227,5 +257,5 @@ bool MediaAdjustmentProcessor::ProcessImage(ID3D11Texture2D* source, UINT width,
 }
 
 bool ImageAdjustments::IsNeutral() const {
-    return exposure == 0.0f && brightness == 0.0f && contrast == 0.0f && shadows == 0.0f && highlights == 0.0f && saturation == 0.0f;
+    return exposure == 0.0f && brightness == 0.0f && contrast == 0.0f && shadows == 0.0f && highlights == 0.0f && saturation == 0.0f && sharpness == 0.0f;
 }

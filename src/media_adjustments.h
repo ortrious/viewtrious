@@ -20,6 +20,7 @@ struct ImageAdjustments {
     float shadows = 0.0f;
     float highlights = 0.0f;
     float saturation = 0.0f;
+    float sharpness = 0.0f;
 
     bool IsNeutral() const;
 };

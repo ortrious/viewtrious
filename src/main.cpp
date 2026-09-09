@@ -122,8 +122,10 @@ constexpr UINT_PTR kFilmstripHoverPreviewDwellTimer = 19;
 constexpr UINT_PTR kFilmstripVideoHoverFadeTimer = 20;
 constexpr UINT_PTR kImageAdjustmentPersistenceTimer = 21;
 constexpr UINT_PTR kFilmstripHoverPreviewFadeTimer = 22;
+constexpr UINT_PTR kVideoAdjustmentsFadeTimer = 24;
 constexpr ULONGLONG kFilmstripVideoHoverFadeDurationMs = 175;
 constexpr ULONGLONG kFilmstripHoverPreviewFadeDurationMs = kStillDissolveDurationMs;
+constexpr ULONGLONG kVideoAdjustmentsFadeDurationMs = kStillDissolveDurationMs;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
 constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
@@ -1384,10 +1386,10 @@ public:
         const int height = MulDiv(84, dpi, 96);
         const int preferredWidth = MulDiv(420, dpi, 96);
         const LONG availableWidth = std::max(1L, canvas.right - canvas.left - margin * 2);
-        const int panelWidth = std::min(MulDiv(300, dpi, 96), std::max(MulDiv(220, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
-        const int width = std::min(preferredWidth, std::max(1, static_cast<int>(availableWidth) - (videoAdjustmentsPanelOpen_ ? panelWidth + MulDiv(8, dpi, 96) : 0)));
+        const int panelWidth = std::min(MulDiv(520, dpi, 96), std::max(MulDiv(420, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
+        const int width = std::min(preferredWidth, std::max(1, static_cast<int>(availableWidth) - (VideoAdjustmentsPanelVisible() ? panelWidth : 0)));
         const int centeredLeft = static_cast<int>(canvas.left + (canvas.right - canvas.left - width) / 2);
-        const int left = videoAdjustmentsPanelOpen_ ? std::max(static_cast<int>(canvas.left + margin), std::min(centeredLeft, static_cast<int>(canvas.right - margin - panelWidth - MulDiv(8, dpi, 96) - width))) : centeredLeft;
+        const int left = VideoAdjustmentsPanelVisible() ? std::max(static_cast<int>(canvas.left + margin), std::min(centeredLeft, static_cast<int>(canvas.right - margin - panelWidth - width))) : centeredLeft;
         const int top = static_cast<int>(std::max(canvas.top, canvas.bottom - bottomGap - height));
         const int padding = std::min(MulDiv(10, dpi, 96), std::max(2, width / 24));
         const int timelineHeight = MulDiv(28, dpi, 96);
@@ -1444,32 +1446,36 @@ public:
         const VideoControlsLayout controls = GetVideoControlsLayout();
         const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int gap = MulDiv(8, dpi, 96);
-        const LONG width = std::min<LONG>(MulDiv(300, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)));
-        const LONG height = MulDiv(308, dpi, 96);
-        const LONG left = std::min<LONG>(canvas.right - MulDiv(8, dpi, 96) - width, controls.island.right + gap);
+        const LONG width = std::min<LONG>(MulDiv(520, dpi, 96), std::max<LONG>(MulDiv(420, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)));
+        const LONG height = std::min<LONG>(MulDiv(308, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), controls.island.bottom - (canvas.top + MulDiv(8, dpi, 96))));
+        const LONG left = controls.island.right;
         const LONG right = left + width;
-        const LONG top = std::clamp<LONG>(controls.island.top, canvas.top + MulDiv(8, dpi, 96), std::max<LONG>(canvas.top + MulDiv(8, dpi, 96), canvas.bottom - MulDiv(8, dpi, 96) - height));
-        const LONG bottom = top + height;
-        const int labelWidth = MulDiv(72, dpi, 96);
+        const LONG bottom = controls.island.bottom;
+        const LONG top = bottom - height;
+        const int labelWidth = MulDiv(70, dpi, 96);
         const int valueWidth = MulDiv(38, dpi, 96);
         const int rowHeight = MulDiv(30, dpi, 96);
         const int sliderLeft = left + labelWidth;
-        const int sliderRight = right - valueWidth - MulDiv(12, dpi, 96);
+        const int panelPadding = MulDiv(12, dpi, 96);
+        const int sliderRight = right - valueWidth - panelPadding;
         std::array<RECT, 7> sliders{};
         for (int index = 0; index < 7; ++index) {
             const int y = top + MulDiv(18, dpi, 96) + index * rowHeight;
             sliders[index] = { sliderLeft, y, sliderRight, y + MulDiv(20, dpi, 96) };
         }
-        const int buttonTop = top + MulDiv(240, dpi, 96);
         const int buttonWidth = MulDiv(74, dpi, 96);
-        const RECT reset{ right - buttonWidth, buttonTop, right, buttonTop + MulDiv(30, dpi, 96) };
+        const int buttonHeight = MulDiv(30, dpi, 96);
+        const int buttonBottom = bottom - panelPadding;
+        const RECT reset{ right - panelPadding - buttonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
         return { { left, top, right, bottom }, sliders, reset };
     }
     bool VideoAdjustmentsPanelContains(POINT point) const {
-        if (!videoAdjustmentsPanelOpen_) return false;
+        if (!videoAdjustmentsPanelOpen_ || !VideoControlsInteractive()) return false;
         const RECT panel = GetVideoAdjustmentsPanelLayout().panel;
         return PtInRect(&panel, point) != FALSE;
+    }
+    bool VideoAdjustmentsPanelVisible() const {
+        return videoAdjustmentsPanelOpen_ || videoAdjustmentsPanelFadeActive_ || videoAdjustmentsPanelOpacity_ > 0.001f;
     }
     bool VideoPlaybackSpeedPanelContains(POINT point) const {
         if (!videoPlaybackSpeedPanelOpen_) return false;
@@ -1479,7 +1485,7 @@ public:
     bool VideoPlaybackSpeedPanelOpen() const { return videoPlaybackSpeedPanelOpen_; }
     void SetVideoPlaybackSpeedPanelOpen(bool open) {
         videoPlaybackSpeedPanelOpen_ = open;
-        if (open) videoAdjustmentsPanelOpen_ = false;
+        if (open) SetVideoAdjustmentsPanelOpen(false);
         if (!open) videoControlsPointerOver_ = false;
         ShowVideoControls();
     }
@@ -1499,24 +1505,46 @@ public:
     }
     bool VideoAdjustmentsPanelOpen() const { return videoAdjustmentsPanelOpen_; }
     void SetVideoAdjustmentsPanelOpen(bool open) {
+        if (open == videoAdjustmentsPanelOpen_ && !(open && videoAdjustmentsPanelFadeOut_)) return;
         videoAdjustmentsPanelOpen_ = open;
         if (open) videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
         if (!open) videoControlsPointerOver_ = false;
+        videoAdjustmentsPanelFadeOut_ = !open;
+        videoAdjustmentsPanelFadeActive_ = open || videoAdjustmentsPanelOpacity_ > 0.001f;
+        videoAdjustmentsPanelFadeStartOpacity_ = videoAdjustmentsPanelOpacity_;
+        videoAdjustmentsPanelFadeStartedAt_ = GetTickCount64();
+        if (videoAdjustmentsPanelFadeActive_) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+        else KillTimer(window_, kVideoAdjustmentsFadeTimer);
         ShowVideoControls();
+    }
+    void UpdateVideoAdjustmentsPanelFade() {
+        if (!videoAdjustmentsPanelFadeActive_) { KillTimer(window_, kVideoAdjustmentsFadeTimer); return; }
+        const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - videoAdjustmentsPanelFadeStartedAt_) / static_cast<float>(kVideoAdjustmentsFadeDurationMs));
+        const float eased = SmoothTransitionProgress(progress);
+        videoAdjustmentsPanelOpacity_ = videoAdjustmentsPanelFadeOut_
+            ? videoAdjustmentsPanelFadeStartOpacity_ * (1.0f - eased)
+            : videoAdjustmentsPanelFadeStartOpacity_ + (1.0f - videoAdjustmentsPanelFadeStartOpacity_) * eased;
+        InvalidateRect(window_, nullptr, FALSE);
+        if (progress < 1.0f) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+        else { videoAdjustmentsPanelFadeActive_ = false; if (videoAdjustmentsPanelFadeOut_) videoAdjustmentsPanelOpacity_ = 0.0f; KillTimer(window_, kVideoAdjustmentsFadeTimer); }
     }
     void ResetVideoAdjustments() { videoAdjustments_ = {}; ApplyVideoAdjustments(); }
     void UpdateVideoAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 7) return;
         const RECT slider = GetVideoAdjustmentsPanelLayout().sliders[index];
-        const float position = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f);
-        if (index == 0) videoAdjustments_.exposure = position * 4.0f - 2.0f;
-        else if (index == 1) videoAdjustments_.brightness = position * 2.0f - 1.0f;
-        else if (index == 2) videoAdjustments_.contrast = position * 2.0f - 1.0f;
-        else if (index == 3) videoAdjustments_.shadows = position * 2.0f - 1.0f;
-        else if (index == 4) videoAdjustments_.highlights = position * 2.0f - 1.0f;
-        else if (index == 5) videoAdjustments_.saturation = position * 2.0f - 1.0f;
-        else videoAdjustments_.sharpness = position;
+        const float normalized = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f);
+        const int minimum = index == 0 ? -200 : index == 6 ? 0 : -100;
+        const int maximum = index == 0 ? 200 : 100;
+        const int value = std::clamp(static_cast<int>(std::lround(minimum + normalized * static_cast<float>(maximum - minimum))), minimum, maximum);
+        const float normalizedValue = static_cast<float>(value) / 100.0f;
+        if (index == 0) videoAdjustments_.exposure = normalizedValue;
+        else if (index == 1) videoAdjustments_.brightness = normalizedValue;
+        else if (index == 2) videoAdjustments_.contrast = normalizedValue;
+        else if (index == 3) videoAdjustments_.shadows = normalizedValue;
+        else if (index == 4) videoAdjustments_.highlights = normalizedValue;
+        else if (index == 5) videoAdjustments_.saturation = normalizedValue;
+        else videoAdjustments_.sharpness = normalizedValue;
         ApplyVideoAdjustments();
     }
     ZoomHudLayout GetZoomHudLayout(const RECT& canvas, bool includeAdjustmentButton) const {
@@ -1740,12 +1768,13 @@ public:
         videoControlsFadeActive_ = false;
         videoControlsLastActivity_ = GetTickCount64();
         KillTimer(window_, kVideoControlsTimer);
-        if (videoPlayer_.Playing() && !videoControlsPointerOver_ && !videoScrubbing_ && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_)
+        if (videoPlayer_.Playing() && !videoControlsPointerOver_ && !videoScrubbing_ && !videoPlaybackSpeedPanelOpen_)
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ResetVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
+        KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoStepHold();
         videoControlsOpacity_ = 1.0f;
         videoControlsFadeActive_ = false;
@@ -1753,6 +1782,8 @@ public:
         videoScrubbing_ = false;
         videoWasPlayingBeforeScrub_ = false;
         videoAdjustmentsPanelOpen_ = false;
+        videoAdjustmentsPanelFadeActive_ = false;
+        videoAdjustmentsPanelOpacity_ = 0.0f;
         videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
         videoControlsHovered_ = ButtonKind::None;
@@ -1761,10 +1792,13 @@ public:
     }
     void StopVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
+        KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoStepHold();
         videoScrubbing_ = false;
         videoWasPlayingBeforeScrub_ = false;
         videoAdjustmentsPanelOpen_ = false;
+        videoAdjustmentsPanelFadeActive_ = false;
+        videoAdjustmentsPanelOpacity_ = 0.0f;
         videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
         videoControlsFadeActive_ = false;
@@ -1868,7 +1902,7 @@ public:
         lastMousePoint_ = point;
         const bool wasPointerOver = videoControlsPointerOver_;
         const bool revealZone = VideoControlsRevealZoneContains(point);
-        const bool activeInteraction = videoScrubbing_ || videoAdjustmentsDragging_ >= 0 || videoAdjustmentsPanelOpen_ || videoPlaybackSpeedPanelOpen_;
+        const bool activeInteraction = videoScrubbing_ || videoAdjustmentsDragging_ >= 0 || videoPlaybackSpeedPanelOpen_;
         if (!videoPlayer_.Playing() || revealZone || activeInteraction) ShowVideoControls();
         videoControlsPointerOver_ = VideoControlsContains(point) || revealZone || activeInteraction;
         videoControlsHovered_ = VideoControlAt(point);
@@ -1885,7 +1919,7 @@ public:
         if (!VideoActive()) return;
         videoControlsPointerOver_ = false;
         videoControlsHovered_ = ButtonKind::None;
-        if (videoPlayer_.Playing() && !videoScrubbing_ && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_) {
+        if (videoPlayer_.Playing() && !videoScrubbing_ && !videoPlaybackSpeedPanelOpen_) {
             videoControlsFadeActive_ = false;
             videoControlsLastActivity_ = GetTickCount64();
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
@@ -1903,7 +1937,7 @@ public:
     }
     void UpdateVideoControlsFade() {
         if (!VideoActive()) { StopVideoControls(); return; }
-        if (!videoPlayer_.Playing() || videoControlsPointerOver_ || videoScrubbing_ || videoAdjustmentsPanelOpen_ || videoPlaybackSpeedPanelOpen_) { KillTimer(window_, kVideoControlsTimer); return; }
+        if (!videoPlayer_.Playing() || videoControlsPointerOver_ || videoScrubbing_ || videoPlaybackSpeedPanelOpen_) { KillTimer(window_, kVideoControlsTimer); return; }
         const ULONGLONG elapsed = GetTickCount64() - videoControlsLastActivity_;
         if (!videoControlsFadeActive_) {
             if (elapsed < kVideoControlsIdleDelayMs) {
@@ -8509,7 +8543,7 @@ private:
 
     void DrawVideoControlsRevealAffordance() {
         if (!VideoActive() || !videoPlayer_.Playing() || videoControlsOpacity_ > 0.001f || videoScrubbing_ ||
-            videoAdjustmentsPanelOpen_ || videoPlaybackSpeedPanelOpen_) return;
+            videoPlaybackSpeedPanelOpen_) return;
         const RECT canvas = ModelCanvasBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float width = 30.0f * scale;
@@ -8549,9 +8583,17 @@ private:
                 DrawOverlayText(label.c_str(), static_cast<float>(panel.rates[index].left), static_cast<float>(panel.rates[index].top), static_cast<float>(panel.rates[index].right - panel.rates[index].left), static_cast<float>(panel.rates[index].bottom - panel.rates[index].top), 12.0f, selected ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL, supported ? text.Get() : border.Get(), true, false, true);
             }
         }
-        if (videoAdjustmentsPanelOpen_) {
+        if (VideoAdjustmentsPanelVisible()) {
             const VideoAdjustmentsPanelLayout panel = GetVideoAdjustmentsPanelLayout();
+            const float panelOpacity = videoAdjustmentsPanelOpacity_;
+            surface->SetOpacity(panelOpacity);
+            border->SetOpacity(panelOpacity);
+            text->SetOpacity(panelOpacity);
+            accent->SetOpacity(panelOpacity);
+            track->SetOpacity(panelOpacity);
+            hover->SetOpacity(panelOpacity);
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
+            renderTarget_->FillRectangle(D2D1::RectF(static_cast<float>(panel.panel.left), static_cast<float>(layout.island.top), static_cast<float>(panel.panel.left + MulDiv(10, GetDpiForWindow(window_), 96)), static_cast<float>(panel.panel.bottom)), surface.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), scale);
             const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
             const std::array<float, 7> values{ videoAdjustments_.exposure, videoAdjustments_.brightness, videoAdjustments_.contrast, videoAdjustments_.shadows, videoAdjustments_.highlights, videoAdjustments_.saturation, videoAdjustments_.sharpness };
@@ -8571,10 +8613,22 @@ private:
                 DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
             };
             drawPanelButton(panel.resetButton, L"reset");
+            surface->SetOpacity(1.0f);
+            border->SetOpacity(1.0f);
+            text->SetOpacity(1.0f);
+            accent->SetOpacity(1.0f);
+            track->SetOpacity(1.0f);
+            hover->SetOpacity(1.0f);
         }
         const D2D1_RECT_F island = rect(layout.island);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), 1.0f * scale);
+        if (VideoAdjustmentsPanelVisible()) {
+            const float joinInset = 10.0f * scale;
+            surface->SetOpacity(videoAdjustmentsPanelOpacity_);
+            renderTarget_->FillRectangle(D2D1::RectF(island.right - scale, island.top + joinInset, island.right + scale, island.bottom - joinInset), surface.Get());
+            surface->SetOpacity(1.0f);
+        }
         if (videoControlsHovered_ == ButtonKind::VideoPlayPause) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playPause), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
@@ -10217,6 +10271,11 @@ private:
     bool imageAdjustmentsPanelOpen_ = false;
     int imageAdjustmentsDragging_ = -1;
     bool videoAdjustmentsPanelOpen_ = false;
+    bool videoAdjustmentsPanelFadeActive_ = false;
+    bool videoAdjustmentsPanelFadeOut_ = false;
+    float videoAdjustmentsPanelOpacity_ = 0.0f;
+    float videoAdjustmentsPanelFadeStartOpacity_ = 0.0f;
+    ULONGLONG videoAdjustmentsPanelFadeStartedAt_ = 0;
     int videoAdjustmentsDragging_ = -1;
     DWORD videoPreferredPlaybackRatePercent_ = 100;
     double videoEffectivePlaybackRate_ = 1.0;
@@ -10960,6 +11019,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kTriangleCountTooltipTimer) { viewer->TriangleCountTooltipTimerMessage(); return 0; }
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
+        if (wParam == kVideoAdjustmentsFadeTimer) { viewer->UpdateVideoAdjustmentsPanelFade(); return 0; }
         if (wParam == kStillDissolveTimer) { viewer->UpdateStillDissolve(); return 0; }
         if (wParam == kStartupVideoSizingFallbackTimer) { viewer->RevealInitialWindowAfterVideoSizing(); return 0; }
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }

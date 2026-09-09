@@ -8144,15 +8144,19 @@ private:
     bool EnsureImageAdjustedBitmap() {
         if (imageAdjustments_.IsNeutral()) return false;
         const bool useLanczos = !gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent();
-        if (imageAdjustedBitmap_ && imageAdjustmentUsesLanczos_ == useLanczos) return true;
+        const float sharpnessTexelRadius = imageAdjustments_.sharpness > 0.0f
+            ? std::clamp(1.0f / std::max(CurrentScale(), 0.125f), 1.0f, 8.0f) : 1.0f;
+        if (imageAdjustedBitmap_ && imageAdjustmentUsesLanczos_ == useLanczos && imageAdjustmentSharpnessTexelRadius_ == sharpnessTexelRadius) return true;
         imageAdjustedBitmap_.Reset();
-        if (!EnsureImageAdjustmentSource(useLanczos) || !imageAdjustmentProcessor_.ProcessImage(imageAdjustmentSourceTexture_.Get(), imageAdjustmentSourceWidth_, imageAdjustmentSourceHeight_, imageAdjustments_)) return false;
+        if (!EnsureImageAdjustmentSource(useLanczos) || !imageAdjustmentProcessor_.ProcessImage(imageAdjustmentSourceTexture_.Get(), imageAdjustmentSourceWidth_, imageAdjustmentSourceHeight_, imageAdjustments_, sharpnessTexelRadius)) return false;
         ComPtr<IDXGISurface> surface;
         if (FAILED(imageAdjustmentProcessor_.OutputTexture()->QueryInterface(IID_PPV_ARGS(&surface)))) return false;
         const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE,
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), RenderTargetDpi(), RenderTargetDpi());
         imageAdjustedBitmap_.Reset();
-        return SUCCEEDED(renderTarget_->CreateBitmapFromDxgiSurface(surface.Get(), &properties, &imageAdjustedBitmap_));
+        if (FAILED(renderTarget_->CreateBitmapFromDxgiSurface(surface.Get(), &properties, &imageAdjustedBitmap_))) return false;
+        imageAdjustmentSharpnessTexelRadius_ = sharpnessTexelRadius;
+        return true;
     }
 
     D2D1_SIZE_F ClientSize() const {
@@ -10102,6 +10106,7 @@ private:
     std::vector<BYTE> imageAdjustmentPixels_;
     UINT imageAdjustmentSourceWidth_ = 0;
     UINT imageAdjustmentSourceHeight_ = 0;
+    float imageAdjustmentSharpnessTexelRadius_ = 1.0f;
     bool imageHasTransparency_ = false;
     bool imageAdjustmentSourceDirty_ = true;
     bool imageAdjustmentUsesLanczos_ = false;

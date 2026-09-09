@@ -113,7 +113,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
     // Use an alpha-weighted four-neighbor unsharp mask. Transparent neighbors
     // contribute no color, preserving straight alpha without edge fringes.
     if (color.z > 0.0) {
-        const float2 texel = source.xy;
+        const float2 texel = source.xy * source.z;
         const float4 north = SampleAdjusted(input.uv + float2(0.0, -texel.y));
         const float4 south = SampleAdjusted(input.uv + float2(0.0, texel.y));
         const float4 west = SampleAdjusted(input.uv + float2(-texel.x, 0.0));
@@ -125,7 +125,7 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
         blurred += 0.25 * west.rgb * west.a; weight += 0.25 * west.a;
         blurred += 0.25 * east.rgb * east.a; weight += 0.25 * east.a;
         blurred /= max(weight, 0.0001);
-        adjusted += color.z * 0.85 * (adjusted - blurred);
+        adjusted += color.z * 1.50 * (adjusted - blurred);
         const float peak = max(adjusted.r, max(adjusted.g, adjusted.b));
         adjusted = max(adjusted, 0.0) / max(1.0, peak);
     }
@@ -236,13 +236,13 @@ bool MediaAdjustmentProcessor::Process(ID3D11Texture2D* source, UINT width, UINT
     return device_ && EnsureOutput(width, height) && Render(source, outputTarget_.Get(), width, height, adjustments);
 }
 
-bool MediaAdjustmentProcessor::RenderImage(ID3D11Texture2D* source, ID3D11RenderTargetView* target, UINT width, UINT height, const ImageAdjustments& adjustments) {
+bool MediaAdjustmentProcessor::RenderImage(ID3D11Texture2D* source, ID3D11RenderTargetView* target, UINT width, UINT height, const ImageAdjustments& adjustments, float sharpnessTexelRadius) {
     if (!source || !target || !context_ || !EnsureImageShaders()) return false;
     ComPtr<ID3D11ShaderResourceView> sourceView;
     if (FAILED(device_->CreateShaderResourceView(source, nullptr, &sourceView))) return false;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(imageParameterBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return false;
-    *static_cast<ImageShaderParameters*>(mapped.pData) = { adjustments.exposure, adjustments.brightness, adjustments.shadows, adjustments.highlights, adjustments.contrast, adjustments.saturation, adjustments.sharpness, 0.0f, 1.0f / static_cast<float>(width), 1.0f / static_cast<float>(height), 0.0f, 0.0f };
+    *static_cast<ImageShaderParameters*>(mapped.pData) = { adjustments.exposure, adjustments.brightness, adjustments.shadows, adjustments.highlights, adjustments.contrast, adjustments.saturation, adjustments.sharpness, 0.0f, 1.0f / static_cast<float>(width), 1.0f / static_cast<float>(height), sharpnessTexelRadius, 0.0f };
     context_->Unmap(imageParameterBuffer_.Get(), 0);
     const D3D11_VIEWPORT viewport{ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f };
     ID3D11RenderTargetView* targets[] = { target }; ID3D11ShaderResourceView* views[] = { sourceView.Get() }; ID3D11SamplerState* samplers[] = { sampler_.Get() }; ID3D11Buffer* buffers[] = { imageParameterBuffer_.Get() };
@@ -251,9 +251,9 @@ bool MediaAdjustmentProcessor::RenderImage(ID3D11Texture2D* source, ID3D11Render
     ID3D11ShaderResourceView* nullViews[] = { nullptr }; context_->PSSetShaderResources(0, 1, nullViews); context_->ClearState(); return true;
 }
 
-bool MediaAdjustmentProcessor::ProcessImage(ID3D11Texture2D* source, UINT width, UINT height, const ImageAdjustments& adjustments) {
+bool MediaAdjustmentProcessor::ProcessImage(ID3D11Texture2D* source, UINT width, UINT height, const ImageAdjustments& adjustments, float sharpnessTexelRadius) {
     if (adjustments.IsNeutral()) return true;
-    return device_ && EnsureOutput(width, height) && RenderImage(source, outputTarget_.Get(), width, height, adjustments);
+    return device_ && EnsureOutput(width, height) && RenderImage(source, outputTarget_.Get(), width, height, adjustments, sharpnessTexelRadius);
 }
 
 bool ImageAdjustments::IsNeutral() const {

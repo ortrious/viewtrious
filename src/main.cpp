@@ -8609,11 +8609,13 @@ private:
             const float centerY = (slider.top + slider.bottom) * 0.5f;
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
             const int minimum = index == 6 ? 0 : -100;
-            for (int tick = minimum + 20; tick < 100; tick += 20) {
+            text->SetOpacity(opacity * 0.75f);
+            for (int tick = minimum + 25; tick < 100; tick += 25) {
                 const float tickX = slider.left + (slider.right - slider.left) * (static_cast<float>(tick - minimum) / static_cast<float>(100 - minimum));
                 const float tickHalfHeight = tick == 0 ? 4.0f * scale : 3.0f * scale;
                 renderTarget_->DrawLine(D2D1::Point2F(tickX, centerY - tickHalfHeight), D2D1::Point2F(tickX, centerY + tickHalfHeight), text.Get(), tick == 0 ? 2.25f * scale : 1.75f * scale);
             }
+            text->SetOpacity(opacity);
             const float normalizedValue = index == 6 ? values[index] : (values[index] + 1.0f) * 0.5f;
             const float thumbX = slider.left + (slider.right - slider.left) * normalizedValue;
             renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, centerY), 5.0f * scale, 5.0f * scale), accent.Get());
@@ -8799,11 +8801,13 @@ private:
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
                 const int minimum = index == 6 ? 0 : -100;
                 const int maximum = 100;
-                for (int tick = minimum + 20; tick < maximum; tick += 20) {
+                text->SetOpacity(panelOpacity * 0.75f);
+                for (int tick = minimum + 25; tick < maximum; tick += 25) {
                     const float tickX = slider.left + (slider.right - slider.left) * (static_cast<float>(tick - minimum) / static_cast<float>(maximum - minimum));
                     const float tickHalfHeight = tick == 0 ? 4.0f * scale : 3.0f * scale;
                     renderTarget_->DrawLine(D2D1::Point2F(tickX, centerY - tickHalfHeight), D2D1::Point2F(tickX, centerY + tickHalfHeight), text.Get(), tick == 0 ? 2.25f * scale : 1.75f * scale);
                 }
+                text->SetOpacity(panelOpacity);
                 const float normalized = index == 6 ? values[index] : (values[index] + 1.0f) * 0.5f;
                 const float thumbX = slider.left + (slider.right - slider.left) * normalized;
                 renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, centerY), 5.0f * scale, 5.0f * scale), accent.Get());

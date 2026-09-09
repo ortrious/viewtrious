@@ -165,12 +165,13 @@ enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsScrollUp, SettingsScrollDown,
+    SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAdjustments, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
+enum class VideoWindowSizing : DWORD { FitToWindow = 0, ResizeWindowToVideo = 1 };
 enum class ModelRenderingApi : DWORD { Direct3D11 = 0 };
 enum class AxisIndicatorPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
 enum class ZoomHudPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
@@ -989,6 +990,9 @@ public:
         ReadSetting(L"ImageScaling", imageScaling);
         imageScaling_ = imageScaling == static_cast<DWORD>(ImageScaling::Performance) ? ImageScaling::Performance : ImageScaling::Quality;
         lanczosSelected_ = imageScaling_ == ImageScaling::Quality;
+        DWORD videoWindowSizing = static_cast<DWORD>(VideoWindowSizing::FitToWindow);
+        ReadSetting(L"VideoWindowSizing", videoWindowSizing);
+        videoWindowSizing_ = videoWindowSizing == static_cast<DWORD>(VideoWindowSizing::ResizeWindowToVideo) ? VideoWindowSizing::ResizeWindowToVideo : VideoWindowSizing::FitToWindow;
         DWORD onboardingVersion = 0;
         onboardingRequired_ = !ReadSetting(L"OnboardingVersion", onboardingVersion) || onboardingVersion < 1;
         DWORD tourPending = 0;
@@ -2336,15 +2340,14 @@ public:
     int SettingsContentBottom() const {
         if (settingsPage_ == SettingsPage::General) return GetSettingsResetButtonBounds().bottom - GetOverlayBounds().top;
         if (settingsPage_ == SettingsPage::Image2D) return GetSettingsZoomHudBounds().bottom - GetOverlayBounds().top;
-        if (settingsPage_ == SettingsPage::Video2D) return GetSettingsVideoPlaceholderBounds().bottom - GetOverlayBounds().top;
+        if (settingsPage_ == SettingsPage::Video2D) return GetSettingsVideoSizingBounds(VideoWindowSizing::ResizeWindowToVideo).bottom - GetOverlayBounds().top;
         return GetSettingsSpaceMouseBounds().bottom - GetOverlayBounds().top;
     }
-    RECT GetSettingsVideoPlaceholderBounds() const {
+    RECT GetSettingsVideoSizingBounds(VideoWindowSizing sizing) const {
         const RECT bounds = GetOverlayBounds();
-        const int top = bounds.top + MulDiv(static_cast<int>(kSettingsFirstRowTopDips), GetDpiForWindow(window_), 96);
-        const wchar_t* text = L"video-specific settings will appear here as they are added.";
-        const int height = MeasureSettingsTextHeight(text, SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        return { SettingsContentLeft(), top, SettingsContentRight(), top + height };
+        const int labelHeight = MeasureSettingsTextHeight(L"Video sizing", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
+        const int top = bounds.top + MulDiv(static_cast<int>(kSettingsFirstRowTopDips), GetDpiForWindow(window_), 96) + labelHeight + SettingsLabelToControlGap();
+        return GetSettingsGridCellAtTop(sizing == VideoWindowSizing::FitToWindow ? 0 : 1, top);
     }
     RECT GetSettingsOptionBounds(int option) const {
         const RECT bounds = GetOverlayBounds();
@@ -2594,6 +2597,17 @@ public:
         if (imageScaling_ == ImageScaling::Quality) QueueLanczosRefinement();
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void SetVideoWindowSizing(VideoWindowSizing sizing) {
+        if (videoWindowSizing_ == sizing) return;
+        videoWindowSizing_ = sizing;
+        WriteSetting(L"VideoWindowSizing", static_cast<DWORD>(sizing));
+        if (sizing == VideoWindowSizing::FitToWindow) {
+            if (!fullscreen_) RestoreVideoWindowBounds();
+        } else if (VideoActive()) {
+            videoSizingAppliedForCurrentVideo_ = ResizeWindowToVideo();
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void SetModelProjectionMode(ModelProjectionMode mode) {
         if (modelProjectionMode_ == mode) return;
         modelProjectionMode_ = mode;
@@ -2802,6 +2816,9 @@ public:
                 if (settingsContains(GetSettingsZoomHudBounds())) return ButtonKind::SettingsZoomHudPositionToggle;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Performance))) return ButtonKind::SettingsScalingPerformance;
+            } else if (settingsPage_ == SettingsPage::Video2D) {
+                if (settingsContains(GetSettingsVideoSizingBounds(VideoWindowSizing::FitToWindow))) return ButtonKind::SettingsVideoSizingFit;
+                if (settingsContains(GetSettingsVideoSizingBounds(VideoWindowSizing::ResizeWindowToVideo))) return ButtonKind::SettingsVideoSizingResize;
             } else if (settingsPage_ == SettingsPage::Model3D) {
                 const int row=MulDiv(30,GetDpiForWindow(window_),96);
                 if (upAxisMenuOpen_) { const RECT menu=GetSettingsUpAxisMenuBounds(); if (PtInRect(&menu,settingsPoint)) return settingsPoint.y < menu.top+row ? ButtonKind::SettingsUpAxisZ : settingsPoint.y < menu.top+row*2 ? ButtonKind::SettingsUpAxisY : ButtonKind::SettingsUpAxisX; }
@@ -3003,6 +3020,8 @@ public:
         else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
         else if (button == ButtonKind::SettingsScalingPerformance) SetImageScaling(ImageScaling::Performance);
         else if (button == ButtonKind::SettingsScalingQuality) SetImageScaling(ImageScaling::Quality);
+        else if (button == ButtonKind::SettingsVideoSizingFit) SetVideoWindowSizing(VideoWindowSizing::FitToWindow);
+        else if (button == ButtonKind::SettingsVideoSizingResize) SetVideoWindowSizing(VideoWindowSizing::ResizeWindowToVideo);
         else if (button == ButtonKind::ImageAdjustments) SetImageAdjustmentsPanelOpen(!imageAdjustmentsPanelOpen_);
         else if (button == ButtonKind::SettingsDefaultApps) OpenRegisteredDefaultApps();
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
@@ -3136,6 +3155,7 @@ public:
                 SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER);
             SetWindowPlacement(window_, &fullscreenPlacement_);
             ApplyWindowCornerPreference(window_, !IsZoomed(window_));
+            if (videoWindowSizing_ == VideoWindowSizing::FitToWindow) RestoreVideoWindowBounds();
         }
         if (VideoActive()) ShowVideoControls();
         InvalidateRect(window_, nullptr, FALSE);
@@ -5329,10 +5349,55 @@ public:
         }
     }
 
+    bool ResizeWindowToVideo() {
+        DWORD nativeWidth = 0, nativeHeight = 0;
+        if (!VideoActive() || !videoPlayer_.GetNativeVideoSize(nativeWidth, nativeHeight)) return false;
+        if (fullscreen_ || IsZoomed(window_) || IsLikelySnappedWindow(window_)) return true;
+
+        RECT outer{};
+        RECT client{};
+        GetWindowRect(window_, &outer);
+        GetClientRect(window_, &client);
+        const RECT canvas = ModelCanvasBounds();
+        const LONG clientMarginWidth = std::max(0L, (client.right - client.left) - (canvas.right - canvas.left));
+        const LONG clientMarginHeight = std::max(0L, (client.bottom - client.top) - (canvas.bottom - canvas.top));
+        const LONG chromeWidth = std::max(0L, (outer.right - outer.left) - (client.right - client.left));
+        const LONG chromeHeight = std::max(0L, (outer.bottom - outer.top) - (client.bottom - client.top));
+        const LONGLONG requestedWidth = static_cast<LONGLONG>(nativeWidth) + clientMarginWidth + chromeWidth;
+        const LONGLONG requestedHeight = static_cast<LONGLONG>(nativeHeight) + clientMarginHeight + chromeHeight;
+
+        MONITORINFO monitor{ sizeof(monitor) };
+        if (!GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor)) return true;
+        const LONG workWidth = monitor.rcWork.right - monitor.rcWork.left;
+        const LONG workHeight = monitor.rcWork.bottom - monitor.rcWork.top;
+        const LONG targetWidth = std::min(workWidth, static_cast<LONG>(std::clamp<LONGLONG>(requestedWidth, MulDiv(640, GetDpiForWindow(window_), 96), LONG_MAX)));
+        const LONG targetHeight = std::min(workHeight, static_cast<LONG>(std::clamp<LONGLONG>(requestedHeight, MulDiv(480, GetDpiForWindow(window_), 96), LONG_MAX)));
+        const LONG currentWidth = outer.right - outer.left, currentHeight = outer.bottom - outer.top;
+        if (targetWidth == currentWidth && targetHeight == currentHeight) return true;
+
+        if (!videoWindowResizeSequenceActive_) {
+            videoPreResizePlacement_ = { sizeof(videoPreResizePlacement_) };
+            if (!GetWindowPlacement(window_, &videoPreResizePlacement_)) return true;
+            videoWindowResizeSequenceActive_ = true;
+        }
+        const LONG centerX = outer.left + currentWidth / 2, centerY = outer.top + currentHeight / 2;
+        const LONG targetLeft = std::clamp(centerX - targetWidth / 2, monitor.rcWork.left, monitor.rcWork.right - targetWidth);
+        const LONG targetTop = std::clamp(centerY - targetHeight / 2, monitor.rcWork.top, monitor.rcWork.bottom - targetHeight);
+        SetWindowPos(window_, nullptr, targetLeft, targetTop, targetWidth, targetHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+        return true;
+    }
+    void RestoreVideoWindowBounds() {
+        if (!videoWindowResizeSequenceActive_ || fullscreen_) return;
+        const RECT bounds = videoPreResizePlacement_.rcNormalPosition;
+        videoWindowResizeSequenceActive_ = false;
+        SetWindowPos(window_, nullptr, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     void SaveWindowPlacement() const {
-        if (resetInProgress_ || tutorialPlacementSuppressed_ || !rememberWindowPlacement_ || IsLikelySnappedWindow(window_)) return;
+        if (resetInProgress_ || tutorialPlacementSuppressed_ || !rememberWindowPlacement_) return;
+        if (!videoWindowResizeSequenceActive_ && IsLikelySnappedWindow(window_)) return;
         WINDOWPLACEMENT placement{ sizeof(placement) };
-        if (fullscreen_) placement = fullscreenPlacement_;
+        if (videoWindowResizeSequenceActive_) placement = videoPreResizePlacement_;
+        else if (fullscreen_) placement = fullscreenPlacement_;
         else if (!GetWindowPlacement(window_, &placement)) return;
         const RECT& rect = placement.rcNormalPosition;
         HKEY key = nullptr;
@@ -5677,12 +5742,13 @@ private:
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
     void BeginVideoLoad(const std::wstring& path) {
-        DeactivateModel(); DeactivateVideo(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
+        DeactivateModel(); DeactivateVideo(false); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         videoPreferredPlaybackRatePercent_ = 100;
         videoEffectivePlaybackRate_ = 1.0;
         ++decodeRequestGeneration_; ++modelLoadGeneration_; pendingFullDecode_.reset(); imageDecodePending_ = false;
         source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         videoFitToWindow_ = true; videoZoom_ = 1.0f; videoPan_ = D2D1::Point2F();
+        videoSizingAppliedForCurrentVideo_ = false;
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         fileSizeText_ = FormatFileSize(path); resolutionText_.clear(); error_.clear();
@@ -5693,6 +5759,7 @@ private:
         if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, videoError)) {
             contentKind_ = ContentKind::None;
             error_ = videoError.empty() ? L"Viewtrious could not open this video." : videoError;
+            RestoreVideoWindowBounds();
         } else {
             videoPlayer_.SetDisplayAdjustments(videoAdjustments_);
             videoPlayer_.SetPreferredPlaybackRate(PlaybackRateFromPercent(videoPreferredPlaybackRatePercent_));
@@ -5700,13 +5767,14 @@ private:
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
-    void DeactivateVideo() {
+    void DeactivateVideo(bool restoreWindowBounds = true) {
         if (fullscreen_ && !shuttingDown_) ToggleFullscreen();
         videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
         StopVideoControls();
         videoPlayer_.Shutdown();
         if (contentKind_ == ContentKind::Video2D) { resolutionText_.clear(); contentKind_ = ContentKind::None; }
+        if (restoreWindowBounds) RestoreVideoWindowBounds();
     }
 public:
     void VideoMediaEngineEvent(DWORD event) {
@@ -5716,6 +5784,9 @@ public:
         videoPlayer_.HandleMediaEvent(event, videoError);
         videoEffectivePlaybackRate_ = videoPlayer_.EffectivePlaybackRate();
         UpdateVideoTitleMetadata();
+        if (videoWindowSizing_ == VideoWindowSizing::ResizeWindowToVideo && !videoSizingAppliedForCurrentVideo_ &&
+            (event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA || event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY) && ResizeWindowToVideo())
+            videoSizingAppliedForCurrentVideo_ = true;
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
@@ -9175,9 +9246,20 @@ private:
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"reset", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             } else if (settingsPage_ == SettingsPage::Video2D) {
-            const RECT placeholder = GetSettingsVideoPlaceholderBounds();
-            DrawOverlayText(L"video-specific settings will appear here as they are added.", static_cast<float>(placeholder.left), static_cast<float>(placeholder.top),
-                static_cast<float>(placeholder.right - placeholder.left), static_cast<float>(placeholder.bottom - placeholder.top), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+            group(L"VIDEO", 76.0f);
+            const RECT sizingBounds = GetSettingsVideoSizingBounds(VideoWindowSizing::FitToWindow);
+            const int sizingLabelHeight = MeasureSettingsTextHeight(L"Video sizing", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
+            DrawOverlayText(L"Video sizing", settingsLeft, static_cast<float>(sizingBounds.top - sizingLabelHeight - SettingsLabelToControlGap()), settingsWidth, static_cast<float>(sizingLabelHeight), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+            const auto drawSizingButton = [&](VideoWindowSizing sizing, ButtonKind button, const wchar_t* text) {
+                const RECT control = GetSettingsVideoSizingBounds(sizing);
+                const D2D1_RECT_F r = D2D1::RectF(static_cast<float>(control.left), static_cast<float>(control.top), static_cast<float>(control.right), static_cast<float>(control.bottom));
+                const bool selected = videoWindowSizing_ == sizing;
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r, 4.0f * dpiScale, 4.0f * dpiScale), selected ? accent.Get() : (hoveredButton_ == button ? segmentHover.Get() : segmentIdle.Get()));
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r, 4.0f * dpiScale, 4.0f * dpiScale), selected ? accent.Get() : borderBrush.Get(), 1.0f);
+                DrawOverlayText(text, r.left, r.top, r.right - r.left, r.bottom - r.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, selected ? checkmark.Get() : primaryBrush.Get(), true, false, true);
+            };
+            drawSizingButton(VideoWindowSizing::FitToWindow, ButtonKind::SettingsVideoSizingFit, L"Fit video to window");
+            drawSizingButton(VideoWindowSizing::ResizeWindowToVideo, ButtonKind::SettingsVideoSizingResize, L"Resize window to video");
             } else if (settingsPage_ == SettingsPage::Image2D) {
             group(L"2D VIEWER", 76.0f);
             drawToggle(4, ButtonKind::SettingsAnimations, L"animations and face effects", animationsEnabled_);
@@ -9978,6 +10060,10 @@ private:
     float videoZoom_ = 1.0f;
     bool fitToWindow_ = true;
     bool videoFitToWindow_ = true;
+    VideoWindowSizing videoWindowSizing_ = VideoWindowSizing::FitToWindow;
+    bool videoSizingAppliedForCurrentVideo_ = false;
+    bool videoWindowResizeSequenceActive_ = false;
+    WINDOWPLACEMENT videoPreResizePlacement_{ sizeof(WINDOWPLACEMENT) };
     bool gifPlaying_ = false;
     bool gifPaused_ = false;
     bool gifPlaybackTimerActive_ = false;

@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <d2d1_1.h>
 #include <d3d11.h>
+#include <dcomp.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
@@ -42,6 +43,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
+    Microsoft::WRL::ComPtr<IDCompositionDesktopDevice> dcompDevice_;
+    Microsoft::WRL::ComPtr<IDCompositionTarget> dcompTarget_;
+    Microsoft::WRL::ComPtr<IDCompositionVisual> dcompVisual_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer_;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTarget_;
     Microsoft::WRL::ComPtr<ID2D1Device> d2dDevice_;

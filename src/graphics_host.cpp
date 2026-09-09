@@ -6,6 +6,13 @@
 using Microsoft::WRL::ComPtr;
 
 namespace {
+enum class PresentationMode {
+    HwndSwapChain,
+    CompositionSwapChain,
+};
+
+constexpr PresentationMode kPresentationMode = PresentationMode::CompositionSwapChain;
+
 bool SameLuid(const LUID& left, const LUID& right) { return left.HighPart == right.HighPart && left.LowPart == right.LowPart; }
 bool IsHardwareAdapter(IDXGIAdapter1* adapter) { DXGI_ADAPTER_DESC1 description{}; return adapter && SUCCEEDED(adapter->GetDesc1(&description)) && !(description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE); }
 ComPtr<IDXGIAdapter1> FindHardwareAdapter(const LUID* requested) {
@@ -57,13 +64,32 @@ bool GraphicsHost::Create(HWND window, ID2D1Factory1* factory, const LUID* prefe
     if (FAILED(device_.As(&dxgiDevice)) || FAILED(dxgiDevice->GetAdapter(&activeAdapter)) || FAILED(activeAdapter->GetParent(IID_PPV_ARGS(&factory2)))) { error = L"The graphics adapter could not initialize."; Destroy(); return false; }
     DXGI_ADAPTER_DESC activeDescription{}; if (SUCCEEDED(activeAdapter->GetDesc(&activeDescription))) activeAdapterName_ = activeDescription.Description;
     DXGI_SWAP_CHAIN_DESC1 desc{}; desc.Width = 1; desc.Height = 1; desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1; desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; desc.BufferCount = 2; desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-    if (FAILED(factory2->CreateSwapChainForHwnd(device_.Get(), window_, &desc, nullptr, nullptr, &swapChain_)) || FAILED(factory->CreateDevice(dxgiDevice.Get(), &d2dDevice_)) || FAILED(d2dDevice_->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &d2dContext_))) { error = L"The graphics display surface could not initialize."; Destroy(); return false; }
+    const auto createCompositionSwapChain = [&] {
+        DXGI_SWAP_CHAIN_DESC1 compositionDesc = desc;
+        compositionDesc.Scaling = DXGI_SCALING_STRETCH;
+        compositionDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        if (FAILED(factory2->CreateSwapChainForComposition(device_.Get(), &compositionDesc, nullptr, &swapChain_)) ||
+            FAILED(DCompositionCreateDevice2(dxgiDevice.Get(), IID_PPV_ARGS(&dcompDevice_))) ||
+            FAILED(dcompDevice_->CreateTargetForHwnd(window_, TRUE, &dcompTarget_)) ||
+            FAILED(dcompDevice_->CreateVisual(&dcompVisual_)) ||
+            FAILED(dcompVisual_->SetContent(swapChain_.Get())) ||
+            FAILED(dcompTarget_->SetRoot(dcompVisual_.Get())) ||
+            FAILED(dcompDevice_->Commit())) {
+            dcompVisual_.Reset(); dcompTarget_.Reset(); dcompDevice_.Reset(); swapChain_.Reset();
+            return false;
+        }
+        return true;
+    };
+    const bool swapChainCreated = kPresentationMode == PresentationMode::CompositionSwapChain
+        ? (createCompositionSwapChain() || SUCCEEDED(factory2->CreateSwapChainForHwnd(device_.Get(), window_, &desc, nullptr, nullptr, &swapChain_)))
+        : SUCCEEDED(factory2->CreateSwapChainForHwnd(device_.Get(), window_, &desc, nullptr, nullptr, &swapChain_));
+    if (!swapChainCreated || FAILED(factory->CreateDevice(dxgiDevice.Get(), &d2dDevice_)) || FAILED(d2dDevice_->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &d2dContext_))) { error = L"The graphics display surface could not initialize."; Destroy(); return false; }
     RECT client{}; GetClientRect(window_, &client);
     return Resize(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top), static_cast<float>(GetDpiForWindow(window_)), error);
 }
 
 void GraphicsHost::DiscardTargets() { if (context_) context_->OMSetRenderTargets(0, nullptr, nullptr); if (d2dContext_) d2dContext_->SetTarget(nullptr); d2dTarget_.Reset(); renderTarget_.Reset(); backBuffer_.Reset(); }
-void GraphicsHost::Destroy() { DiscardTargets(); d2dContext_.Reset(); d2dDevice_.Reset(); swapChain_.Reset(); context_.Reset(); device_.Reset(); window_ = nullptr; width_ = height_ = 0; activeAdapterName_.clear(); }
+void GraphicsHost::Destroy() { DiscardTargets(); d2dContext_.Reset(); d2dDevice_.Reset(); dcompVisual_.Reset(); dcompTarget_.Reset(); dcompDevice_.Reset(); swapChain_.Reset(); context_.Reset(); device_.Reset(); window_ = nullptr; width_ = height_ = 0; activeAdapterName_.clear(); }
 bool GraphicsHost::CreateTargets(float dpi, std::wstring& error) {
     ComPtr<IDXGISurface> surface;
     if (FAILED(swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer_))) || FAILED(device_->CreateRenderTargetView(backBuffer_.Get(), nullptr, &renderTarget_)) || FAILED(backBuffer_.As(&surface))) { error = L"The graphics back buffer could not initialize."; return false; }

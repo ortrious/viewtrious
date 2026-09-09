@@ -4930,7 +4930,7 @@ public:
                     renderTarget_->DrawBitmap(previewBitmap, preview, previewOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
                 }
                 if (filmstripVideoHoverLoading_ && !filmstripVideoHoverFadeActive_)
-                    DrawOverlayText(L"video loading...", preview.left, preview.top, preview.right - preview.left, preview.bottom - preview.top,
+                    DrawOverlayText(L"preview loading...", preview.left, preview.top, preview.right - preview.left, preview.bottom - preview.top,
                         22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
 #ifdef _DEBUG
                 if (highQuality) OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HD_PREVIEW_DRAW\n");

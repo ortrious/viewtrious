@@ -95,6 +95,7 @@ constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
 constexpr UINT_PTR kVideoControlsTimer = 15;
 constexpr UINT_PTR kVideoStepHoldTimer = 16;
 constexpr UINT_PTR kStillDissolveTimer = 17;
+constexpr UINT_PTR kStartupVideoSizingFallbackTimer = 23;
 constexpr UINT kVideoStepHoldThresholdMs = 250;
 constexpr UINT kVideoStepHoldIntervalMs = 16;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
@@ -114,6 +115,7 @@ constexpr ULONGLONG kVideoControlsIdleDelayMs = 1500;
 constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kStillDissolveDurationMs = 320;
 constexpr ULONGLONG kStillDissolvePreviewWaitMaxMs = 450;
+constexpr UINT kStartupVideoSizingFallbackMs = 1500;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
 constexpr UINT_PTR kFilmstripHoverPreviewDwellTimer = 19;
@@ -1000,6 +1002,7 @@ public:
         tourPending_ = tourPending != 0;
         aiAddon_.Initialize();
         startupPath_ = path;
+        startupVideoSizingRequested_ = videoWindowSizing_ == VideoWindowSizing::ResizeWindowToVideo && IsVideoPath(path);
         return S_OK;
     }
 
@@ -1118,6 +1121,21 @@ public:
         if (!onboardingRequired_) return;
         overlay_ = OverlayKind::Welcome;
         ShowVideoControls();
+    }
+    bool ShouldDelayInitialShowForVideoSizing(bool restoredMaximized) const {
+        return startupVideoSizingRequested_ && !restoredMaximized && VideoActive();
+    }
+    void DelayInitialShowForVideoSizing(int showCommand) {
+        startupWindowRevealPending_ = true;
+        startupWindowShowCommand_ = showCommand;
+        if (!SetTimer(window_, kStartupVideoSizingFallbackTimer, kStartupVideoSizingFallbackMs, nullptr)) RevealInitialWindowAfterVideoSizing();
+    }
+    void RevealInitialWindowAfterVideoSizing() {
+        if (!startupWindowRevealPending_) return;
+        KillTimer(window_, kStartupVideoSizingFallbackTimer);
+        startupWindowRevealPending_ = false;
+        ShowWindow(window_, startupWindowShowCommand_);
+        UpdateWindow(window_);
     }
     bool WelcomeOpen() const { return overlay_ == OverlayKind::Welcome || overlay_ == OverlayKind::DefaultAppsHelper; }
     bool IsFullscreen() const { return fullscreen_; }
@@ -5775,6 +5793,7 @@ private:
         videoPlayer_.Shutdown();
         if (contentKind_ == ContentKind::Video2D) { resolutionText_.clear(); contentKind_ = ContentKind::None; }
         if (restoreWindowBounds) RestoreVideoWindowBounds();
+        if (!VideoActive()) RevealInitialWindowAfterVideoSizing();
     }
 public:
     void VideoMediaEngineEvent(DWORD event) {
@@ -5787,6 +5806,7 @@ public:
         if (videoWindowSizing_ == VideoWindowSizing::ResizeWindowToVideo && !videoSizingAppliedForCurrentVideo_ &&
             (event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA || event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY) && ResizeWindowToVideo())
             videoSizingAppliedForCurrentVideo_ = true;
+        if (videoSizingAppliedForCurrentVideo_) RevealInitialWindowAfterVideoSizing();
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
@@ -10231,6 +10251,9 @@ private:
     ULONGLONG modelHomeAnimationStartMs_ = 0;
     ULONGLONG modelAnimationDurationMs_ = kModelHomeAnimationDurationMs;
     std::wstring startupPath_;
+    bool startupVideoSizingRequested_ = false;
+    bool startupWindowRevealPending_ = false;
+    int startupWindowShowCommand_ = SW_SHOWNORMAL;
 #if defined(_DEBUG)
     LONGLONG lastModelNavLibTraceQpc_ = 0;
 #endif
@@ -10829,6 +10852,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
         if (wParam == kStillDissolveTimer) { viewer->UpdateStillDissolve(); return 0; }
+        if (wParam == kStartupVideoSizingFallbackTimer) { viewer->RevealInitialWindowAfterVideoSizing(); return 0; }
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }
         if (wParam == kFilmstripHoverPreviewDwellTimer) { viewer->BeginFilmstripHoverPreviewDecode(); return 0; }
         if (wParam == kFilmstripHoverPreviewTimer) { viewer->ShowFilmstripHoverPreview(); return 0; }
@@ -10963,8 +10987,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     ApplyTitleBarTheme(window);
     ApplyWindowCornerPreference(window, true);
     viewer.ShowWelcomeIfNeeded();
-    ShowWindow(window, hasSavedPlacement && savedPlacement.maximized ? SW_MAXIMIZE : showCommand);
-    UpdateWindow(window);
+    const bool restoredMaximized = hasSavedPlacement && savedPlacement.maximized;
+    if (viewer.ShouldDelayInitialShowForVideoSizing(restoredMaximized)) viewer.DelayInitialShowForVideoSizing(showCommand);
+    else {
+        ShowWindow(window, restoredMaximized ? SW_MAXIMIZE : showCommand);
+        UpdateWindow(window);
+    }
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {

@@ -1626,6 +1626,14 @@ public:
         const RECT canvas = ModelCanvasBounds();
         return PtInRect(&canvas, point) != FALSE;
     }
+    bool VideoControlsRevealZoneContains(POINT point) const {
+        if (!VideoActive()) return false;
+        const RECT canvas = ModelCanvasBounds();
+        const VideoControlsLayout controls = GetVideoControlsLayout();
+        const LONG margin = MulDiv(16, GetDpiForWindow(window_), 96);
+        const RECT zone{ canvas.left, std::max(canvas.top, controls.island.top - margin), canvas.right, canvas.bottom };
+        return PtInRect(&zone, point) != FALSE;
+    }
     bool VideoControlsContains(POINT point) const {
         if (!VideoControlsInteractive()) return false;
         const RECT island = GetVideoControlsLayout().island;
@@ -1698,6 +1706,8 @@ public:
     }
     bool BeginVideoControlsInteraction(POINT point) {
         if (!VideoActive()) return false;
+        if (!VideoControlsContains(point) && !VideoControlsRevealZoneContains(point) &&
+            !VideoAdjustmentsPanelContains(point) && !VideoPlaybackSpeedPanelContains(point)) return false;
         ShowVideoControls();
         if (videoPlaybackSpeedPanelOpen_) {
             const VideoPlaybackSpeedPanelLayout panel = GetVideoPlaybackSpeedPanelLayout();
@@ -1777,11 +1787,18 @@ public:
     void UpdateVideoControlsMouse(POINT point) {
         if (!VideoActive()) return;
         lastMousePoint_ = point;
-        ShowVideoControls();
-        videoControlsPointerOver_ = VideoControlsContains(point);
+        const bool wasPointerOver = videoControlsPointerOver_;
+        const bool revealZone = VideoControlsRevealZoneContains(point);
+        const bool activeInteraction = videoScrubbing_ || videoAdjustmentsDragging_ >= 0 || videoAdjustmentsPanelOpen_ || videoPlaybackSpeedPanelOpen_;
+        if (!videoPlayer_.Playing() || revealZone || activeInteraction) ShowVideoControls();
+        videoControlsPointerOver_ = VideoControlsContains(point) || revealZone || activeInteraction;
         videoControlsHovered_ = VideoControlAt(point);
         if (videoControlsPointerOver_) KillTimer(window_, kVideoControlsTimer);
-        else if (videoPlayer_.Playing() && !videoScrubbing_ && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_) SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
+        else if (wasPointerOver && videoPlayer_.Playing()) {
+            videoControlsFadeActive_ = false;
+            videoControlsLastActivity_ = GetTickCount64();
+            SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
+        }
         if (videoAdjustmentsDragging_ >= 0) UpdateVideoAdjustmentSlider(videoAdjustmentsDragging_, point);
         if (videoScrubbing_) UpdateVideoScrub(point);
     }
@@ -1789,7 +1806,11 @@ public:
         if (!VideoActive()) return;
         videoControlsPointerOver_ = false;
         videoControlsHovered_ = ButtonKind::None;
-        if (videoPlayer_.Playing() && !videoScrubbing_ && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_) SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
+        if (videoPlayer_.Playing() && !videoScrubbing_ && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_) {
+            videoControlsFadeActive_ = false;
+            videoControlsLastActivity_ = GetTickCount64();
+            SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
+        }
     }
     void CancelVideoControlsInteraction() {
         StopVideoStepHold();
@@ -3135,6 +3156,7 @@ public:
                 videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_);
                 DrawCanvasNavigationButtons();
                 DrawVideoPlaybackControls();
+                DrawVideoControlsRevealAffordance();
             }
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
@@ -8286,6 +8308,19 @@ private:
         draw(true, canvasNextOpacity_);
     }
 
+    void DrawVideoControlsRevealAffordance() {
+        if (!VideoActive() || !videoPlayer_.Playing() || videoControlsOpacity_ > 0.001f || videoScrubbing_ ||
+            videoAdjustmentsPanelOpen_ || videoPlaybackSpeedPanelOpen_) return;
+        const RECT canvas = ModelCanvasBounds();
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const float width = 30.0f * scale;
+        const float height = 3.0f * scale;
+        const float left = (canvas.left + canvas.right - width) * 0.5f;
+        const float bottom = static_cast<float>(canvas.bottom) - 10.0f * scale;
+        ComPtr<ID2D1SolidColorBrush> handle;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.24f), &handle))) return;
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, bottom - height, left + width, bottom), height * 0.5f, height * 0.5f), handle.Get());
+    }
     void DrawVideoPlaybackControls() {
         if (!VideoActive() || videoControlsOpacity_ <= 0.001f) return;
         const VideoControlsLayout layout = GetVideoControlsLayout();

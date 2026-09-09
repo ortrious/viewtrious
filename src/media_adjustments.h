@@ -31,7 +31,7 @@ public:
     bool Initialize(ID3D11Device* device);
     void Reset();
     bool Process(ID3D11Texture2D* source, UINT width, UINT height, const MediaAdjustments& adjustments);
-    bool ProcessImage(ID3D11Texture2D* source, UINT width, UINT height, const ImageAdjustments& adjustments, float sharpnessTexelRadius);
+    bool ProcessImage(ID3D11Texture2D* source, UINT width, UINT height, const ImageAdjustments& adjustments);
     ID3D11Texture2D* OutputTexture() const { return outputTexture_.Get(); }
 
 private:
@@ -39,7 +39,7 @@ private:
     bool EnsureImageShaders();
     bool EnsureOutput(UINT width, UINT height);
     bool Render(ID3D11Texture2D* source, ID3D11RenderTargetView* target, UINT width, UINT height, const MediaAdjustments& adjustments);
-    bool RenderImage(ID3D11Texture2D* source, ID3D11RenderTargetView* target, UINT width, UINT height, const ImageAdjustments& adjustments, float sharpnessTexelRadius);
+    bool RenderImage(ID3D11Texture2D* source, ID3D11RenderTargetView* target, UINT width, UINT height, const ImageAdjustments& adjustments);
 
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;

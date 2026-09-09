@@ -1463,7 +1463,7 @@ public:
         const LONG left = aboveControls ? std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width) : controls.island.right;
         const LONG right = left + width;
         const LONG bottom = aboveControls ? controls.island.top : controls.island.bottom;
-        const LONG height = std::min<LONG>(MulDiv(308, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
+        const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
         const LONG top = bottom - height;
         const int labelWidth = MulDiv(70, dpi, 96);
         const int valueWidth = MulDiv(38, dpi, 96);
@@ -8609,7 +8609,7 @@ private:
             const float centerY = (slider.top + slider.bottom) * 0.5f;
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
             const int minimum = index == 6 ? 0 : -100;
-            text->SetOpacity(opacity * 0.75f);
+            text->SetOpacity(opacity * 0.50f);
             for (int tick = minimum + 25; tick < 100; tick += 25) {
                 const float tickX = slider.left + (slider.right - slider.left) * (static_cast<float>(tick - minimum) / static_cast<float>(100 - minimum));
                 const float tickHalfHeight = tick == 0 ? 4.0f * scale : 3.0f * scale;
@@ -8801,7 +8801,7 @@ private:
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
                 const int minimum = index == 6 ? 0 : -100;
                 const int maximum = 100;
-                text->SetOpacity(panelOpacity * 0.75f);
+                text->SetOpacity(panelOpacity * 0.50f);
                 for (int tick = minimum + 25; tick < maximum; tick += 25) {
                     const float tickX = slider.left + (slider.right - slider.left) * (static_cast<float>(tick - minimum) / static_cast<float>(maximum - minimum));
                     const float tickHalfHeight = tick == 0 ? 4.0f * scale : 3.0f * scale;

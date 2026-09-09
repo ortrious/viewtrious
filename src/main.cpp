@@ -8634,7 +8634,8 @@ private:
         sink->BeginFigure(panel.aboveControls ? p(pl + r, pt) : p(cl + r, ct), D2D1_FIGURE_BEGIN_FILLED);
         if (!panel.aboveControls) {
             sink->AddLine(p(cr - r, ct));
-            sink->AddBezier(D2D1::BezierSegment(p(cr - r + c * r, ct), p(pl, pt + r - c * r), p(pl, pt + r)));
+            sink->AddBezier(D2D1::BezierSegment(p(cr - r + c * r, ct), p(cr, ct - r + c * r), p(cr, ct - r)));
+            sink->AddLine(p(pl, pt + r));
             sink->AddBezier(D2D1::BezierSegment(p(pl, pt + r - c * r), p(pl + r - c * r, pt), p(pl + r, pt)));
             sink->AddLine(p(pr - r, pt)); sink->AddBezier(D2D1::BezierSegment(p(pr - r + c * r, pt), p(pr, pt + r - c * r), p(pr, pt + r)));
             sink->AddLine(p(pr, pb - r)); sink->AddBezier(D2D1::BezierSegment(p(pr, pb - r + c * r), p(pr - r + c * r, pb), p(pr - r, pb)));

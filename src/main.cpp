@@ -8684,7 +8684,8 @@ private:
             sink->AddLine(p(cr - r, ct)); sink->AddBezier(D2D1::BezierSegment(p(cr - r + c * r, ct), p(cr, ct + r - c * r), p(cr, ct + r)));
             sink->AddLine(p(cr, cb - r)); sink->AddBezier(D2D1::BezierSegment(p(cr, cb - r + c * r), p(cr - r + c * r, cb), p(cr - r, cb)));
             sink->AddLine(p(cl + r, cb)); sink->AddBezier(D2D1::BezierSegment(p(cl + r - c * r, cb), p(cl, cb - r + c * r), p(cl, cb - r)));
-            sink->AddLine(p(cl, ct + r)); sink->AddBezier(D2D1::BezierSegment(p(cl, ct + r - c * r), p(pl - r + c * r, pb), p(pl - r, pb)));
+            sink->AddLine(p(cl, ct + r)); sink->AddBezier(D2D1::BezierSegment(p(cl, ct + r - c * r), p(cl + r - c * r, ct), p(cl + r, ct)));
+            sink->AddLine(p(pl - r, pb));
             sink->AddBezier(D2D1::BezierSegment(p(pl - r + c * r, pb), p(pl, pb - r + c * r), p(pl, pb - r)));
             sink->AddLine(p(pl, pt + r)); sink->AddBezier(D2D1::BezierSegment(p(pl, pt + r - c * r), p(pl + r - c * r, pt), p(pl + r, pt)));
         }

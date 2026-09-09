@@ -5806,7 +5806,6 @@ public:
         if (videoWindowSizing_ == VideoWindowSizing::ResizeWindowToVideo && !videoSizingAppliedForCurrentVideo_ &&
             (event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA || event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY) && ResizeWindowToVideo())
             videoSizingAppliedForCurrentVideo_ = true;
-        if (videoSizingAppliedForCurrentVideo_) RevealInitialWindowAfterVideoSizing();
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
@@ -5815,6 +5814,7 @@ public:
             (event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY || event == MF_MEDIA_ENGINE_EVENT_CANPLAY)) {
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
         }
+        if (videoSizingAppliedForCurrentVideo_ && videoPlayer_.HasValidFrame()) RevealInitialWindowAfterVideoSizing();
         if ((!wasPlaying && videoPlayer_.Playing()) ||
             (event == MF_MEDIA_ENGINE_EVENT_SEEKED && videoPlayer_.Playing())) {
             ScheduleVideoPlaybackTimer(true);

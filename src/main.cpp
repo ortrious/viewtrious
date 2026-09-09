@@ -1552,8 +1552,8 @@ public:
         int value = std::clamp(static_cast<int>(std::lround(continuous)), minimum, maximum);
         const int nearestDetent = std::clamp(static_cast<int>(std::lround(continuous / 5.0f)) * 5, minimum, maximum);
         const bool zeroDetent = nearestDetent == 0;
-        const float attraction = zeroDetent ? 0.60f : 0.30f;
-        const float hold = zeroDetent ? 1.75f : 1.10f;
+        const float attraction = zeroDetent ? 1.75f : 0.30f;
+        const float hold = zeroDetent ? 3.25f : 1.10f;
         if (videoAdjustmentDetentIndex_ == index && std::abs(continuous - videoAdjustmentDetentValue_) <= hold) {
             value = videoAdjustmentDetentValue_;
         } else if (std::abs(continuous - nearestDetent) <= attraction) {
@@ -1596,7 +1596,7 @@ public:
         const D2D1_RECT_F bounds = ImageCanvasBounds();
         return GetZoomHudLayout({ static_cast<LONG>(bounds.left), static_cast<LONG>(bounds.top), static_cast<LONG>(bounds.right), static_cast<LONG>(bounds.bottom) }, true);
     }
-    ZoomHudLayout GetVideoZoomHudLayout() const { return GetZoomHudLayout(ModelCanvasBounds(), false); }
+    ZoomHudLayout GetVideoZoomHudLayout() const { return GetZoomHudLayout(ModelCanvasBounds(), true); }
     ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelLayout() const {
         const ZoomHudLayout hud = GetImageZoomHudLayout();
         const D2D1_RECT_F canvas = ImageCanvasBounds();
@@ -1645,18 +1645,30 @@ public:
         return PtInRect(&panel, point) != FALSE;
     }
     void SetImageAdjustmentsPanelOpen(bool open) { imageAdjustmentsPanelOpen_ = open; imageAdjustmentsDragging_ = -1; InvalidateRect(window_, nullptr, FALSE); }
+    void ToggleAdjustments() {
+        if (VideoActive()) { videoPlaybackSpeedPanelOpen_ = false; SetVideoAdjustmentsPanelOpen(!videoAdjustmentsPanelOpen_); }
+        else SetImageAdjustmentsPanelOpen(!imageAdjustmentsPanelOpen_);
+    }
     void UpdateImageAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 7) return;
         const RECT slider = GetImageAdjustmentsPanelLayout().sliders[index];
         const float position = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f);
-        const float value = position * 2.0f - 1.0f;
-        if (index == 0) imageAdjustments_.exposure = position * 4.0f - 2.0f;
+        const int minimum = index == 6 ? 0 : -100;
+        const float continuous = minimum + position * static_cast<float>(100 - minimum);
+        int integer = std::clamp(static_cast<int>(std::lround(continuous)), minimum, 100);
+        const int detent = std::clamp(static_cast<int>(std::lround(continuous / 5.0f)) * 5, minimum, 100);
+        const bool zeroDetent = detent == 0;
+        if (imageAdjustmentDetentIndex_ == index && std::abs(continuous - imageAdjustmentDetentValue_) <= (zeroDetent ? 3.25f : 1.10f)) integer = imageAdjustmentDetentValue_;
+        else if (std::abs(continuous - detent) <= (zeroDetent ? 1.75f : 0.30f)) { integer = detent; imageAdjustmentDetentIndex_ = index; imageAdjustmentDetentValue_ = detent; }
+        else imageAdjustmentDetentIndex_ = -1;
+        const float value = static_cast<float>(integer) / 100.0f;
+        if (index == 0) imageAdjustments_.exposure = value * 2.0f;
         else if (index == 1) imageAdjustments_.brightness = value;
         else if (index == 2) imageAdjustments_.contrast = value;
         else if (index == 3) imageAdjustments_.shadows = value;
         else if (index == 4) imageAdjustments_.highlights = value;
         else if (index == 5) imageAdjustments_.saturation = value;
-        else imageAdjustments_.sharpness = position;
+        else imageAdjustments_.sharpness = value;
         ApplyImageAdjustments();
         QueueImageAdjustmentPersistence();
     }
@@ -1712,7 +1724,7 @@ public:
             if (PtInRect(&panel.panel, point)) {
                 for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
                     const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
-                    if (PtInRect(&hit, point)) { imageAdjustmentsDragging_ = index; UpdateImageAdjustmentSlider(index, point); return true; }
+                    if (PtInRect(&hit, point)) { imageAdjustmentsDragging_ = index; imageAdjustmentDetentIndex_ = -1; UpdateImageAdjustmentSlider(index, point); return true; }
                 }
                 if (aiAddon_.Available() && PtInRect(&panel.autoButton, point)) { StartAiAnalysis(); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetImageAdjustments(); return true; }
@@ -1731,6 +1743,7 @@ public:
         if (imageAdjustmentsDragging_ < 0) return false;
         UpdateImageAdjustmentSlider(imageAdjustmentsDragging_, point);
         imageAdjustmentsDragging_ = -1;
+        imageAdjustmentDetentIndex_ = -1;
         FlushImageAdjustmentPersistence();
         return true;
     }
@@ -1894,7 +1907,7 @@ public:
         else if (control == ButtonKind::VideoStepForward) BeginVideoStepHold(1);
         else if (control == ButtonKind::VideoMute) { videoPlayer_.ToggleMute(); ShowVideoControls(); }
         else if (control == ButtonKind::VideoPlaybackSpeed) SetVideoPlaybackSpeedPanelOpen(!videoPlaybackSpeedPanelOpen_);
-        else if (control == ButtonKind::VideoAdjustments) { if (videoAdjustmentsPanelOpen_) SetVideoAdjustmentsPanelOpen(false); else { videoPlaybackSpeedPanelOpen_ = false; SetVideoAdjustmentsPanelOpen(true); } }
+        else if (control == ButtonKind::VideoAdjustments) ToggleAdjustments();
         else if (control == ButtonKind::VideoFullscreen) { videoFullscreenToggleTick_ = GetTickCount64(); ToggleVideoFullscreen(); }
         return true;
     }
@@ -2994,7 +3007,10 @@ public:
             if (viewBarVisualStyleMenuOpen_) { const RECT menu = GetModelViewBarStyleMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top+row ? ButtonKind::ViewBarVisualStyleShaded : point.y < menu.top+row*2 ? ButtonKind::ViewBarVisualStyleVisibleEdges : ButtonKind::ViewBarVisualStyleWireframe; }
             const RECT projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();if(PtInRect(&projection,point))return ButtonKind::ViewBarProjectionToggle;if(PtInRect(&style,point))return ButtonKind::ViewBarVisualStyleToggle;
         }
-        if (source_ && renderTarget_) { const ZoomHudLayout hud = GetImageZoomHudLayout(); if (PtInRect(&hud.adjustments, point)) return ButtonKind::ImageAdjustments; }
+        if (renderTarget_) {
+            const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
+            if (PtInRect(&hud.adjustments, point)) return ButtonKind::ImageAdjustments;
+        }
         if (settingsPage_ == SettingsPage::General && SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
         if (ResetConfirmationButtonContains(point, false)) return ButtonKind::ResetCancel;
         if (ResetConfirmationButtonContains(point, true)) return ButtonKind::ResetConfirm;
@@ -3173,7 +3189,7 @@ public:
         else if (button == ButtonKind::SettingsScalingQuality) SetImageScaling(ImageScaling::Quality);
         else if (button == ButtonKind::SettingsVideoSizingFit) SetVideoWindowSizing(VideoWindowSizing::FitToWindow);
         else if (button == ButtonKind::SettingsVideoSizingResize) SetVideoWindowSizing(VideoWindowSizing::ResizeWindowToVideo);
-        else if (button == ButtonKind::ImageAdjustments) SetImageAdjustmentsPanelOpen(!imageAdjustmentsPanelOpen_);
+        else if (button == ButtonKind::ImageAdjustments) ToggleAdjustments();
         else if (button == ButtonKind::SettingsDefaultApps) OpenRegisteredDefaultApps();
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
         else if (button == ButtonKind::ResetCancel) DismissOverlay();
@@ -5080,8 +5096,8 @@ public:
         const float inset = 100.0f * static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float visibleX = std::min(width, inset), visibleY = std::min(height, inset);
         const float centeredX = (canvasWidth - width) * 0.5f, centeredY = (canvasHeight - height) * 0.5f;
-        videoPan_.x = width <= canvasWidth ? 0.0f : std::clamp(videoPan_.x, visibleX - centeredX - width, canvasWidth - visibleX - centeredX);
-        videoPan_.y = height <= canvasHeight ? 0.0f : std::clamp(videoPan_.y, visibleY - centeredY - height, canvasHeight - visibleY - centeredY);
+        videoPan_.x = std::clamp(videoPan_.x, visibleX - centeredX - width, canvasWidth - visibleX - centeredX);
+        videoPan_.y = std::clamp(videoPan_.y, visibleY - centeredY - height, canvasHeight - visibleY - centeredY);
     }
     void SetVideoScaleAt(POINT cursor, float requestedScale) {
         DWORD nativeWidth = 0, nativeHeight = 0;
@@ -5224,7 +5240,12 @@ public:
     }
 
     void BeginPan(POINT point) {
-        if (VideoActive() && !CanPan()) return;
+        if (VideoActive()) {
+            dragging_ = true;
+            lastDragPoint_ = point;
+            SetCapture(window_);
+            return;
+        }
         if (swipeToNavigateWhenFit_) {
             if (!CanPan()) return;
         } else if (!source_ && !VideoActive()) return;
@@ -8517,13 +8538,19 @@ private:
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), scale);
         const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
-        const std::array<float, 7> values{ imageAdjustments_.exposure, imageAdjustments_.brightness, imageAdjustments_.contrast, imageAdjustments_.shadows, imageAdjustments_.highlights, imageAdjustments_.saturation, imageAdjustments_.sharpness };
+        const std::array<float, 7> values{ imageAdjustments_.exposure * 0.5f, imageAdjustments_.brightness, imageAdjustments_.contrast, imageAdjustments_.shadows, imageAdjustments_.highlights, imageAdjustments_.saturation, imageAdjustments_.sharpness };
         for (size_t index = 0; index < panel.sliders.size(); ++index) {
             const RECT slider = panel.sliders[index];
             DrawOverlayText(labels[index], static_cast<float>(panel.panel.left + MulDiv(12, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(slider.left - panel.panel.left - MulDiv(18, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), false, false, true);
             const float centerY = (slider.top + slider.bottom) * 0.5f;
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
-            const float normalizedValue = index == 0 ? (values[index] + 2.0f) * 0.25f : index == 6 ? values[index] : (values[index] + 1.0f) * 0.5f;
+            const int minimum = index == 6 ? 0 : -100;
+            for (int tick = minimum + 10; tick < 100; tick += 10) {
+                const float tickX = slider.left + (slider.right - slider.left) * (static_cast<float>(tick - minimum) / static_cast<float>(100 - minimum));
+                const float tickHalfHeight = tick == 0 ? 3.5f * scale : 2.5f * scale;
+                renderTarget_->DrawLine(D2D1::Point2F(tickX, centerY - tickHalfHeight), D2D1::Point2F(tickX, centerY + tickHalfHeight), border.Get(), tick == 0 ? 2.0f * scale : 1.5f * scale);
+            }
+            const float normalizedValue = index == 6 ? values[index] : (values[index] + 1.0f) * 0.5f;
             const float thumbX = slider.left + (slider.right - slider.left) * normalizedValue;
             renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, centerY), 5.0f * scale, 5.0f * scale), accent.Get());
             const std::wstring value = std::to_wstring(static_cast<int>(std::lround(values[index] * 100.0f)));
@@ -8674,7 +8701,7 @@ private:
                 for (int tick = minimum + 10; tick < maximum; tick += 10) {
                     const float tickX = slider.left + (slider.right - slider.left) * (static_cast<float>(tick - minimum) / static_cast<float>(maximum - minimum));
                     const float tickHalfHeight = tick == 0 ? 3.5f * scale : 2.5f * scale;
-                    renderTarget_->DrawLine(D2D1::Point2F(tickX, centerY - tickHalfHeight), D2D1::Point2F(tickX, centerY + tickHalfHeight), border.Get(), tick == 0 ? 1.1f * scale : scale);
+                    renderTarget_->DrawLine(D2D1::Point2F(tickX, centerY - tickHalfHeight), D2D1::Point2F(tickX, centerY + tickHalfHeight), border.Get(), tick == 0 ? 2.0f * scale : 1.5f * scale);
                 }
                 const float normalized = index == 6 ? values[index] : (values[index] + 1.0f) * 0.5f;
                 const float thumbX = slider.left + (slider.right - slider.left) * normalized;
@@ -8820,7 +8847,7 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker * 1.55f, muteCenterY - speaker * 0.35f), D2D1::Point2F(muteCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), text.Get(), 1.4f * scale);
             renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), D2D1::Point2F(muteCenterX + speaker, muteCenterY + speaker * 0.75f), text.Get(), 1.4f * scale);
         }
-        DrawZoomHud(GetVideoZoomHudLayout(), VideoCurrentScale() * RenderTargetDpi() / 96.0f, opacity, false, false);
+        DrawZoomHud(GetVideoZoomHudLayout(), VideoCurrentScale() * RenderTargetDpi() / 96.0f, opacity, true, videoAdjustmentsPanelOpen_);
     }
 
     bool EnsureTitleTextFormat() {
@@ -10348,6 +10375,8 @@ private:
     std::atomic<bool> aiAnalysisRunning_{ false };
     bool imageAdjustmentsPanelOpen_ = false;
     int imageAdjustmentsDragging_ = -1;
+    int imageAdjustmentDetentIndex_ = -1;
+    int imageAdjustmentDetentValue_ = 0;
     bool videoAdjustmentsPanelOpen_ = false;
     bool videoAdjustmentsPanelFadeActive_ = false;
     bool videoAdjustmentsPanelFadeOut_ = false;

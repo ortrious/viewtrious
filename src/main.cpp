@@ -5033,9 +5033,23 @@ public:
                 } else {
                     renderTarget_->DrawBitmap(previewBitmap, preview, previewOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
                 }
-                if (filmstripVideoHoverLoading_ && !filmstripVideoHoverFadeActive_)
-                    DrawOverlayText(L"preview loading...", preview.left, preview.top, preview.right - preview.left, preview.bottom - preview.top,
-                        22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
+                if (filmstripVideoHoverLoading_ && !filmstripVideoHoverFadeActive_) {
+                    const float previewWidth = preview.right - preview.left;
+                    const float previewHeight = preview.bottom - preview.top;
+                    renderTarget_->PushAxisAlignedClip(preview, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    if (OverlayTextWidth(L"preview loading...", 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD) <= previewWidth) {
+                        DrawOverlayText(L"preview loading...", preview.left, preview.top, previewWidth, previewHeight,
+                            22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
+                    } else {
+                        const float lineHeight = 22.0f * scale;
+                        const float blockTop = preview.top + (previewHeight - lineHeight * 2.0f) * 0.5f;
+                        DrawOverlayText(L"preview", preview.left, blockTop, previewWidth, lineHeight,
+                            22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
+                        DrawOverlayText(L"loading...", preview.left, blockTop + lineHeight, previewWidth, lineHeight,
+                            22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
+                    }
+                    renderTarget_->PopAxisAlignedClip();
+                }
 #ifdef _DEBUG
                 if (highQuality) OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HD_PREVIEW_DRAW\n");
 #endif
@@ -9085,6 +9099,18 @@ private:
         ComPtr<IDWriteTextLayout> layout;
         if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), width, height, &layout))) return;
         renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    float OverlayTextWidth(const wchar_t* text, float size, DWRITE_FONT_WEIGHT weight) const {
+        ComPtr<IDWriteTextFormat> format;
+        const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, size * dpiScale, L"", &format))) return std::numeric_limits<float>::infinity();
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(),
+                4096.0f, 4096.0f, &layout))) return std::numeric_limits<float>::infinity();
+        DWRITE_TEXT_METRICS metrics{};
+        return SUCCEEDED(layout->GetMetrics(&metrics)) ? metrics.widthIncludingTrailingWhitespace : std::numeric_limits<float>::infinity();
     }
 
     void DrawDropdownChevron(const D2D1_RECT_F& bounds, ID2D1Brush* brush, float dpiScale) {

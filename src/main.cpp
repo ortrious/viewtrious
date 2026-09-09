@@ -168,11 +168,11 @@ enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, 
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
-    SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
+    SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoZoomOut, VideoZoomIn, VideoZoomFit, VideoZoomActual, VideoAdjustments, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
-enum class ImageScaling : DWORD { Performance = 0, Quality = 1 };
+enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
 enum class VideoWindowSizing : DWORD { FitToWindow = 0, ResizeWindowToVideo = 1 };
 enum class ModelRenderingApi : DWORD { Direct3D11 = 0 };
 enum class AxisIndicatorPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
@@ -993,9 +993,10 @@ public:
         graphicsAdapterAuto_ = graphicsAdapterAuto != 0; graphicsAdapterLuid_.LowPart = graphicsAdapterLuidLow; graphicsAdapterLuid_.HighPart = static_cast<LONG>(graphicsAdapterLuidHigh);
         graphicsAdapters_ = GraphicsHost::EnumerateHardwareAdapters();
         DWORD antiAliasing = static_cast<DWORD>(ModelAntiAliasing::Msaa4x); ReadSetting(L"ModelAntiAliasing", antiAliasing); modelAntiAliasing_ = antiAliasing <= static_cast<DWORD>(ModelAntiAliasing::Ssaa2x) ? static_cast<ModelAntiAliasing>(antiAliasing) : ModelAntiAliasing::Msaa4x;
-        DWORD imageScaling = static_cast<DWORD>(ImageScaling::Quality);
+        DWORD imageScaling = static_cast<DWORD>(ImageScaling::Hybrid);
         ReadSetting(L"ImageScaling", imageScaling);
-        imageScaling_ = imageScaling == static_cast<DWORD>(ImageScaling::Performance) ? ImageScaling::Performance : ImageScaling::Quality;
+        imageScaling_ = imageScaling == static_cast<DWORD>(ImageScaling::Performance) ? ImageScaling::Performance
+            : imageScaling == static_cast<DWORD>(ImageScaling::Quality) ? ImageScaling::Quality : ImageScaling::Hybrid;
         lanczosSelected_ = imageScaling_ == ImageScaling::Quality;
         DWORD videoWindowSizing = static_cast<DWORD>(VideoWindowSizing::FitToWindow);
         ReadSetting(L"VideoWindowSizing", videoWindowSizing);
@@ -2468,12 +2469,17 @@ public:
         const RECT reverse = GetSettingsOptionBounds(6);
         const int labelHeight = MeasureSettingsTextHeight(L"image scaling", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
         const int top = reverse.bottom + SettingsStackGap() + labelHeight + MulDiv(static_cast<int>(kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96);
-        const int width = MulDiv(scaling == ImageScaling::Quality ? 76 : 104, GetDpiForWindow(window_), 96), gap = MulDiv(8, GetDpiForWindow(window_), 96);
-        const int left = SettingsContentLeft() + (scaling == ImageScaling::Quality ? 0 : width - MulDiv(28, GetDpiForWindow(window_), 96) + gap);
+        const int qualityWidth = MulDiv(76, GetDpiForWindow(window_), 96);
+        const int hybridWidth = MulDiv(76, GetDpiForWindow(window_), 96);
+        const int performanceWidth = MulDiv(104, GetDpiForWindow(window_), 96);
+        const int gap = MulDiv(8, GetDpiForWindow(window_), 96);
+        const int left = SettingsContentLeft() + (scaling == ImageScaling::Quality ? 0
+            : scaling == ImageScaling::Hybrid ? qualityWidth + gap : qualityWidth + gap + hybridWidth + gap);
+        const int width = scaling == ImageScaling::Quality ? qualityWidth : scaling == ImageScaling::Hybrid ? hybridWidth : performanceWidth;
         return { left, top, left + width, top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96) };
     }
     RECT GetSettingsZoomHudBounds() const {
-        const RECT scaling = GetSettingsScalingBounds(ImageScaling::Quality);
+        const RECT scaling = GetSettingsScalingBounds(ImageScaling::Performance);
         const int labelHeight = MeasureSettingsTextHeight(L"show zoom percentage", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
         const int top = scaling.bottom + SettingsStackGap() + labelHeight + MulDiv(static_cast<int>(kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96);
         const int width = std::max(MulDiv(140, GetDpiForWindow(window_), 96), (SettingsContentRight() - SettingsContentLeft()) / 3);
@@ -2554,7 +2560,8 @@ public:
     bool SettingsDropdownControlContains(POINT point) const {
         point.y += static_cast<LONG>(std::lround(settingsScroll_));
         const auto contains = [&point](const RECT& bounds) { return PtInRect(&bounds, point) != FALSE; };
-        if (settingsPage_ == SettingsPage::Image2D) return contains(GetSettingsZoomHudBounds()) || contains(GetSettingsScalingBounds(ImageScaling::Quality));
+        if (settingsPage_ == SettingsPage::Image2D) return contains(GetSettingsZoomHudBounds()) || contains(GetSettingsScalingBounds(ImageScaling::Quality)) ||
+            contains(GetSettingsScalingBounds(ImageScaling::Hybrid)) || contains(GetSettingsScalingBounds(ImageScaling::Performance));
         if (settingsPage_ == SettingsPage::Model3D) return contains(GetSettingsUpAxisBounds()) || contains(GetSettingsBuildPlateBounds()) || contains(GetSettingsAxisIndicatorPositionBounds()) || contains(GetSettingsProjectionBounds()) || contains(GetSettingsGraphicsAdapterBounds()) || contains(GetSettingsAntiAliasingBounds());
         return false;
     }
@@ -2633,13 +2640,22 @@ public:
         ApplyTitleBarTheme(window_);
         InvalidateRect(window_, nullptr, FALSE);
     }
+    bool ShouldUseLanczosForCurrentImage() const {
+        return imageScaling_ == ImageScaling::Quality ||
+            (imageScaling_ == ImageScaling::Hybrid && PhysicalPixelScale() < 1.0f - 0.0001f);
+    }
+    void RefreshLanczosForImageViewChange() {
+        lanczosSelected_ = ShouldUseLanczosForCurrentImage();
+        InvalidateLanczosVariant(true);
+        if (lanczosSelected_) QueueLanczosRefinement();
+    }
     void SetImageScaling(ImageScaling scaling) {
         if (imageScaling_ == scaling) return;
         imageScaling_ = scaling;
         WriteSetting(L"ImageScaling", static_cast<DWORD>(scaling));
-        lanczosSelected_ = imageScaling_ == ImageScaling::Quality;
+        lanczosSelected_ = ShouldUseLanczosForCurrentImage();
         InvalidateLanczosVariant(true);
-        if (imageScaling_ == ImageScaling::Quality) QueueLanczosRefinement();
+        if (lanczosSelected_) QueueLanczosRefinement();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void SetVideoWindowSizing(VideoWindowSizing sizing) {
@@ -2860,6 +2876,7 @@ public:
                 if (settingsContains(GetSettingsOptionBounds(6))) return ButtonKind::SettingsAlwaysShowFilmstrip;
                 if (settingsContains(GetSettingsZoomHudBounds())) return ButtonKind::SettingsZoomHudPositionToggle;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
+                if (settingsContains(GetSettingsScalingBounds(ImageScaling::Hybrid))) return ButtonKind::SettingsScalingHybrid;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Performance))) return ButtonKind::SettingsScalingPerformance;
             } else if (settingsPage_ == SettingsPage::Video2D) {
                 if (settingsContains(GetSettingsVideoSizingBounds(VideoWindowSizing::FitToWindow))) return ButtonKind::SettingsVideoSizingFit;
@@ -3064,6 +3081,7 @@ public:
         else if (button == ButtonKind::SettingsThemeLight) SetThemePreference(ThemePreference::Light);
         else if (button == ButtonKind::SettingsThemeDark) SetThemePreference(ThemePreference::Dark);
         else if (button == ButtonKind::SettingsScalingPerformance) SetImageScaling(ImageScaling::Performance);
+        else if (button == ButtonKind::SettingsScalingHybrid) SetImageScaling(ImageScaling::Hybrid);
         else if (button == ButtonKind::SettingsScalingQuality) SetImageScaling(ImageScaling::Quality);
         else if (button == ButtonKind::SettingsVideoSizingFit) SetVideoWindowSizing(VideoWindowSizing::FitToWindow);
         else if (button == ButtonKind::SettingsVideoSizingResize) SetVideoWindowSizing(VideoWindowSizing::ResizeWindowToVideo);
@@ -3269,10 +3287,7 @@ public:
         ClampVideoPan();
         filmstripPreviewGeometryValid_ = false;
         RebuildFilmstripLayout();
-        if (lanczosSelected_ && source_) {
-            InvalidateLanczosVariant(true);
-            QueueLanczosRefinement();
-        }
+        if (imageScaling_ != ImageScaling::Performance && source_) RefreshLanczosForImageViewChange();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -5055,10 +5070,7 @@ public:
             if (std::abs(newScale - oldScale) < 0.0001f) return;
             fitToWindow_ = false;
             zoom_ = newScale;
-            if (lanczosSelected_) {
-                InvalidateLanczosVariant(true);
-                QueueLanczosRefinement();
-            }
+            if (imageScaling_ != ImageScaling::Performance) RefreshLanczosForImageViewChange();
             InvalidateRect(window_, nullptr, FALSE);
             return;
         }
@@ -5075,10 +5087,7 @@ public:
         fitToWindow_ = false;
         zoom_ = newScale;
         ClampPan();
-        if (lanczosSelected_) {
-            InvalidateLanczosVariant(true);
-            QueueLanczosRefinement();
-        }
+        if (imageScaling_ != ImageScaling::Performance) RefreshLanczosForImageViewChange();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -5114,11 +5123,8 @@ public:
         const D2D1_POINT_2F oldPan = pan_;
         fitToWindow_ = true;
         pan_ = D2D1::Point2F();
-        if (lanczosSelected_ && (std::abs(CurrentScale() - oldScale) >= 0.0001f ||
-                std::abs(oldPan.x) >= 0.0001f || std::abs(oldPan.y) >= 0.0001f)) {
-            InvalidateLanczosVariant(true);
-            QueueLanczosRefinement();
-        }
+        if (imageScaling_ != ImageScaling::Performance && (std::abs(CurrentScale() - oldScale) >= 0.0001f ||
+                std::abs(oldPan.x) >= 0.0001f || std::abs(oldPan.y) >= 0.0001f)) RefreshLanczosForImageViewChange();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -8054,6 +8060,7 @@ private:
         pan_ = D2D1::Point2F();
         EndPan();
         StartDirectoryWatcher(fs::path(path).parent_path());
+        lanczosSelected_ = ShouldUseLanczosForCurrentImage();
         if (lanczosSelected_ && !gifPlaying_) QueueLanczosRefinement();
         if (resetNavigation) {
             CancelQueuedFilmstripThumbnails();
@@ -8194,11 +8201,8 @@ private:
         fitToWindow_ = std::abs(minimumScale - BaseScale()) < 0.0001f;
         zoom_ = minimumScale;
         pan_ = D2D1::Point2F();
-        if (lanczosSelected_ && (std::abs(minimumScale - oldScale) >= 0.0001f ||
-                std::abs(oldPan.x) >= 0.0001f || std::abs(oldPan.y) >= 0.0001f)) {
-            InvalidateLanczosVariant(true);
-            QueueLanczosRefinement();
-        }
+        if (imageScaling_ != ImageScaling::Performance && (std::abs(minimumScale - oldScale) >= 0.0001f ||
+                std::abs(oldPan.x) >= 0.0001f || std::abs(oldPan.y) >= 0.0001f)) RefreshLanczosForImageViewChange();
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -9365,7 +9369,7 @@ private:
             const auto drawImageDropdown = [&](RECT control, ButtonKind button, const wchar_t* value, bool open) { const D2D1_RECT_F r=D2D1::RectF((float)control.left,(float)control.top,(float)control.right,(float)control.bottom); renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),((button != ButtonKind::None && hoveredButton_==button)||open)?segmentHover.Get():segmentIdle.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),borderBrush.Get(),1); DrawOverlayText(value,r.left+kDropdownLeftPaddingDips*dpiScale,r.top,r.right-r.left-(kDropdownLeftPaddingDips+kDropdownChevronReserveDips)*dpiScale,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,primaryBrush.Get(),true); DrawDropdownChevron(r,primaryBrush.Get(),dpiScale); };
             const RECT scalingBounds=GetSettingsScalingBounds(ImageScaling::Quality); const int scalingLabelHeight=MeasureSettingsTextHeight(L"image scaling",static_cast<int>(settingsWidth),16,DWRITE_FONT_WEIGHT_NORMAL); DrawOverlayText(L"image scaling",settingsLeft,(float)scalingBounds.top-scalingLabelHeight-kSettingsLabelToControlGapDips*dpiScale,settingsWidth,(float)scalingLabelHeight,16,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),false,false,false,true);
             const auto drawScalingButton = [&](ImageScaling value, ButtonKind button, const wchar_t* text) { const RECT control=GetSettingsScalingBounds(value); const D2D1_RECT_F r=D2D1::RectF((float)control.left,(float)control.top,(float)control.right,(float)control.bottom); const bool selected=imageScaling_==value; renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),selected?accent.Get():(hoveredButton_==button?segmentHover.Get():segmentIdle.Get())); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),selected?accent.Get():borderBrush.Get(),1); DrawOverlayText(text,r.left,r.top,r.right-r.left,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,selected?checkmark.Get():primaryBrush.Get(),true,false,true); };
-            drawScalingButton(ImageScaling::Quality,ButtonKind::SettingsScalingQuality,L"quality"); drawScalingButton(ImageScaling::Performance,ButtonKind::SettingsScalingPerformance,L"performance");
+            drawScalingButton(ImageScaling::Quality,ButtonKind::SettingsScalingQuality,L"quality"); drawScalingButton(ImageScaling::Hybrid,ButtonKind::SettingsScalingHybrid,L"hybrid"); drawScalingButton(ImageScaling::Performance,ButtonKind::SettingsScalingPerformance,L"performance");
             const RECT zoomHudBounds=GetSettingsZoomHudBounds(); const int zoomLabelHeight=MeasureSettingsTextHeight(L"show zoom percentage",static_cast<int>(settingsWidth),16,DWRITE_FONT_WEIGHT_NORMAL); const wchar_t* zoomHudPositionLabel=zoomHudPosition_==ZoomHudPosition::BottomLeft?L"bottom left":zoomHudPosition_==ZoomHudPosition::BottomRight?L"bottom right":zoomHudPosition_==ZoomHudPosition::TopLeft?L"top left":L"top right"; DrawOverlayText(L"show zoom percentage",settingsLeft,(float)zoomHudBounds.top-zoomLabelHeight-kSettingsLabelToControlGapDips*dpiScale,settingsWidth,(float)zoomLabelHeight,16,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),false,false,false,true); drawImageDropdown(zoomHudBounds,ButtonKind::SettingsZoomHudPositionToggle,zoomHudPositionLabel,zoomHudPositionMenuOpen_);
             } else {
             const auto label = [&](const wchar_t* text, int column, float top) { const RECT cell=GetSettingsGridCell(column, top); const int height=MeasureSettingsTextHeight(text,cell.right-cell.left,16,DWRITE_FONT_WEIGHT_NORMAL); DrawOverlayText(text,static_cast<float>(cell.left),static_cast<float>(cell.top-height-MulDiv(static_cast<int>(kSettingsLabelToControlGapDips),GetDpiForWindow(window_),96)),static_cast<float>(cell.right-cell.left),static_cast<float>(height),16,DWRITE_FONT_WEIGHT_NORMAL,secondaryBrush.Get(),false,false,false,true); };
@@ -10350,7 +10354,7 @@ private:
     int offscreenIndicatorSector_ = -1;
 #endif
     ThemePreference themePreference_ = ThemePreference::System;
-    ImageScaling imageScaling_ = ImageScaling::Quality;
+    ImageScaling imageScaling_ = ImageScaling::Hybrid;
     ModelProjectionMode modelProjectionMode_ = ModelProjectionMode::Perspective;
     ModelVisualStyle modelVisualStyle_ = ModelVisualStyle::Shaded;
     ModelUpAxis modelUpAxis_ = ModelUpAxis::ZUp;

@@ -12,7 +12,6 @@ struct MediaAdjustments {
     bool IsNeutral() const;
 };
 
-// Image2D owns this richer state; Video2D intentionally remains on MediaAdjustments.
 struct ImageAdjustments {
     float exposure = 0.0f;
     float brightness = 0.0f;

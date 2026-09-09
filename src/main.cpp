@@ -169,7 +169,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoZoomOut, VideoZoomIn, VideoZoomFit, VideoZoomActual, VideoAdjustments, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoZoomActual, VideoAdjustments, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
@@ -824,10 +824,6 @@ struct VideoControlsLayout {
     RECT stepBackward;
     RECT stepForward;
     RECT mute;
-    RECT zoomOut;
-    RECT zoomReadout;
-    RECT zoomIn;
-    RECT zoomFit;
     RECT zoomActual;
     RECT playbackSpeed;
     RECT adjustments;
@@ -836,8 +832,7 @@ struct VideoControlsLayout {
 
 struct VideoAdjustmentsPanelLayout {
     RECT panel;
-    std::array<RECT, 4> sliders;
-    RECT autoButton;
+    std::array<RECT, 7> sliders;
     RECT resetButton;
 };
 
@@ -1388,7 +1383,7 @@ public:
         const int margin = MulDiv(16, dpi, 96);
         const int bottomGap = MulDiv(24, dpi, 96);
         const int height = MulDiv(84, dpi, 96);
-        const int preferredWidth = MulDiv(600, dpi, 96);
+        const int preferredWidth = MulDiv(500, dpi, 96);
         const LONG availableWidth = std::max(1L, canvas.right - canvas.left - margin * 2);
         const int width = std::min(preferredWidth, static_cast<int>(availableWidth));
         const int left = static_cast<int>(canvas.left + (canvas.right - canvas.left - width) / 2);
@@ -1411,17 +1406,11 @@ public:
         const int stepForwardLeft = stepBackwardLeft + buttonWidth + gap;
         const int muteLeft = stepForwardLeft + buttonWidth + gap;
         const int speedWidth = std::min(MulDiv(46, dpi, 96), std::max(MulDiv(34, dpi, 96), buttonWidth + gap));
-        const int zoomReadoutWidth = std::min(MulDiv(52, dpi, 96), std::max(MulDiv(38, dpi, 96), buttonWidth + gap));
-        const int zoomFitWidth = std::min(MulDiv(32, dpi, 96), std::max(MulDiv(26, dpi, 96), buttonWidth));
         const int zoomActualWidth = std::min(MulDiv(42, dpi, 96), std::max(MulDiv(32, dpi, 96), buttonWidth + gap));
         const int fullscreenLeft = left + width - padding - buttonWidth;
         const int adjustmentsLeft = fullscreenLeft - gap - buttonWidth;
         const int speedLeft = adjustmentsLeft - gap - speedWidth;
         const int zoomActualLeft = speedLeft - gap - zoomActualWidth;
-        const int zoomFitLeft = zoomActualLeft - gap - zoomFitWidth;
-        const int zoomInLeft = zoomFitLeft - gap - buttonWidth;
-        const int zoomReadoutLeft = zoomInLeft - gap - zoomReadoutWidth;
-        const int zoomOutLeft = zoomReadoutLeft - gap - buttonWidth;
         return { { left, top, left + width, top + height },
             { currentLeft, top + padding, currentLeft + timeWidth, top + padding + timelineHeight },
             { scrubberLeft, top + padding, scrubberRight, top + padding + timelineHeight },
@@ -1430,10 +1419,6 @@ public:
             { stepBackwardLeft, controlTop, stepBackwardLeft + buttonWidth, controlTop + buttonWidth },
             { stepForwardLeft, controlTop, stepForwardLeft + buttonWidth, controlTop + buttonWidth },
             { muteLeft, controlTop, muteLeft + buttonWidth, controlTop + buttonWidth },
-            { zoomOutLeft, controlTop, zoomOutLeft + buttonWidth, controlTop + buttonWidth },
-            { zoomReadoutLeft, controlTop, zoomReadoutLeft + zoomReadoutWidth, controlTop + buttonWidth },
-            { zoomInLeft, controlTop, zoomInLeft + buttonWidth, controlTop + buttonWidth },
-            { zoomFitLeft, controlTop, zoomFitLeft + zoomFitWidth, controlTop + buttonWidth },
             { zoomActualLeft, controlTop, zoomActualLeft + zoomActualWidth, controlTop + buttonWidth },
             { speedLeft, controlTop, speedLeft + speedWidth, controlTop + buttonWidth },
             { adjustmentsLeft, controlTop, adjustmentsLeft + buttonWidth, controlTop + buttonWidth },
@@ -1463,7 +1448,7 @@ public:
         const UINT dpi = GetDpiForWindow(window_);
         const int gap = MulDiv(8, dpi, 96);
         const LONG width = std::min<LONG>(MulDiv(300, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)));
-        const LONG height = MulDiv(218, dpi, 96);
+        const LONG height = MulDiv(308, dpi, 96);
         const LONG right = std::min<LONG>(controls.adjustments.right, canvas.right - MulDiv(8, dpi, 96));
         const LONG left = std::max<LONG>(canvas.left + MulDiv(8, dpi, 96), right - width);
         const LONG bottom = std::max<LONG>(canvas.top + height, controls.island.top - gap);
@@ -1473,16 +1458,15 @@ public:
         const int rowHeight = MulDiv(30, dpi, 96);
         const int sliderLeft = left + labelWidth;
         const int sliderRight = right - valueWidth - MulDiv(12, dpi, 96);
-        std::array<RECT, 4> sliders{};
-        for (int index = 0; index < 4; ++index) {
+        std::array<RECT, 7> sliders{};
+        for (int index = 0; index < 7; ++index) {
             const int y = top + MulDiv(18, dpi, 96) + index * rowHeight;
             sliders[index] = { sliderLeft, y, sliderRight, y + MulDiv(20, dpi, 96) };
         }
-        const int buttonTop = top + MulDiv(150, dpi, 96);
+        const int buttonTop = top + MulDiv(240, dpi, 96);
         const int buttonWidth = MulDiv(74, dpi, 96);
         const RECT reset{ right - buttonWidth, buttonTop, right, buttonTop + MulDiv(30, dpi, 96) };
-        const RECT ai = aiAddon_.Available() ? RECT{ right - buttonWidth * 2 - gap, buttonTop, right - buttonWidth - gap, buttonTop + MulDiv(30, dpi, 96) } : RECT{};
-        return { { left, top, right, bottom }, sliders, ai, reset };
+        return { { left, top, right, bottom }, sliders, reset };
     }
     bool VideoAdjustmentsPanelContains(POINT point) const {
         if (!videoAdjustmentsPanelOpen_) return false;
@@ -1525,13 +1509,16 @@ public:
     }
     void ResetVideoAdjustments() { videoAdjustments_ = {}; ApplyVideoAdjustments(); }
     void UpdateVideoAdjustmentSlider(int index, POINT point) {
-        if (index < 0 || index >= 4) return;
+        if (index < 0 || index >= 7) return;
         const RECT slider = GetVideoAdjustmentsPanelLayout().sliders[index];
-        const float value = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f) * 2.0f - 1.0f;
-        if (index == 0) videoAdjustments_.brightness = value;
-        else if (index == 1) videoAdjustments_.contrast = value;
-        else if (index == 2) videoAdjustments_.shadows = value;
-        else videoAdjustments_.highlights = value;
+        const float position = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f);
+        if (index == 0) videoAdjustments_.exposure = position * 4.0f - 2.0f;
+        else if (index == 1) videoAdjustments_.brightness = position * 2.0f - 1.0f;
+        else if (index == 2) videoAdjustments_.contrast = position * 2.0f - 1.0f;
+        else if (index == 3) videoAdjustments_.shadows = position * 2.0f - 1.0f;
+        else if (index == 4) videoAdjustments_.highlights = position * 2.0f - 1.0f;
+        else if (index == 5) videoAdjustments_.saturation = position * 2.0f - 1.0f;
+        else videoAdjustments_.sharpness = position;
         ApplyVideoAdjustments();
     }
     ImageZoomHudLayout GetImageZoomHudLayout() const {
@@ -1698,9 +1685,6 @@ public:
         if (PtInRect(&layout.stepBackward, point)) return ButtonKind::VideoStepBackward;
         if (PtInRect(&layout.stepForward, point)) return ButtonKind::VideoStepForward;
         if (PtInRect(&layout.mute, point)) return ButtonKind::VideoMute;
-        if (PtInRect(&layout.zoomOut, point)) return ButtonKind::VideoZoomOut;
-        if (PtInRect(&layout.zoomIn, point)) return ButtonKind::VideoZoomIn;
-        if (PtInRect(&layout.zoomFit, point)) return ButtonKind::VideoZoomFit;
         if (PtInRect(&layout.zoomActual, point)) return ButtonKind::VideoZoomActual;
         if (PtInRect(&layout.playbackSpeed, point)) return ButtonKind::VideoPlaybackSpeed;
         if (PtInRect(&layout.adjustments, point)) return ButtonKind::VideoAdjustments;
@@ -1826,7 +1810,6 @@ public:
                     const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
                     if (PtInRect(&hit, point)) { videoAdjustmentsDragging_ = index; UpdateVideoAdjustmentSlider(index, point); return true; }
                 }
-                if (aiAddon_.Available() && PtInRect(&panel.autoButton, point)) { StartAiAnalysis(); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetVideoAdjustments(); return true; }
                 return true;
             }
@@ -1848,9 +1831,6 @@ public:
         else if (control == ButtonKind::VideoStepBackward) BeginVideoStepHold(-1);
         else if (control == ButtonKind::VideoStepForward) BeginVideoStepHold(1);
         else if (control == ButtonKind::VideoMute) { videoPlayer_.ToggleMute(); ShowVideoControls(); }
-        else if (control == ButtonKind::VideoZoomOut) ZoomVideoCentered(1.0f / kWheelZoomStep);
-        else if (control == ButtonKind::VideoZoomIn) ZoomVideoCentered(kWheelZoomStep);
-        else if (control == ButtonKind::VideoZoomFit) FitToWindow();
         else if (control == ButtonKind::VideoZoomActual) ZoomVideoToActualPixels();
         else if (control == ButtonKind::VideoPlaybackSpeed) SetVideoPlaybackSpeedPanelOpen(!videoPlaybackSpeedPanelOpen_);
         else if (control == ButtonKind::VideoAdjustments) { if (videoAdjustmentsPanelOpen_) SetVideoAdjustmentsPanelOpen(false); else { videoPlaybackSpeedPanelOpen_ = false; SetVideoAdjustmentsPanelOpen(true); } }
@@ -5045,9 +5025,10 @@ public:
     void SetVideoScaleAt(POINT cursor, float requestedScale) {
         DWORD nativeWidth = 0, nativeHeight = 0;
         if (!VideoActive() || !videoPlayer_.GetNativeVideoSize(nativeWidth, nativeHeight)) return;
-        const float oldScale = VideoCurrentScale(), fitScale = VideoFitScale();
+        const float oldScale = VideoCurrentScale(), fitScale = VideoFitScale(), actualScale = VideoActualPixelScale();
         const float minimumScale = VideoMinimumScale();
-        const float newScale = std::clamp(requestedScale, minimumScale, std::max(kMaximumZoom, fitScale));
+        float newScale = std::clamp(requestedScale, minimumScale, std::max(kMaximumZoom, fitScale));
+        if ((oldScale < actualScale && newScale >= actualScale) || (oldScale > actualScale && newScale <= actualScale)) newScale = actualScale;
         if (std::abs(newScale - fitScale) <= 0.0001f) {
             if (videoFitToWindow_ && std::abs(videoPan_.x) < 0.0001f && std::abs(videoPan_.y) < 0.0001f) return;
             videoFitToWindow_ = true;
@@ -5085,13 +5066,6 @@ public:
             InvalidateRect(window_, nullptr, FALSE);
         } else SetVideoScaleAt({ canvas.left + (canvas.right - canvas.left) / 2, canvas.top + (canvas.bottom - canvas.top) / 2 }, actualScale);
         ShowVideoControls();
-    }
-    std::wstring VideoZoomLabel() const {
-        if (videoFitToWindow_) return L"Fit";
-        const float percent = VideoCurrentScale() * RenderTargetDpi() / 96.0f * 100.0f;
-        wchar_t label[16]{};
-        if (percent < 10.0f) swprintf_s(label, L"%.1f%%", percent); else swprintf_s(label, L"%.0f%%", percent);
-        return label;
     }
     bool VideoContains(POINT point) const {
         DWORD nativeWidth = 0, nativeHeight = 0;
@@ -8562,17 +8536,16 @@ private:
         if (videoAdjustmentsPanelOpen_) {
             const VideoAdjustmentsPanelLayout panel = GetVideoAdjustmentsPanelLayout();
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), 1.0f * scale);
-            const std::array<const wchar_t*, 4> labels{ L"brightness", L"contrast", L"shadows", L"highlights" };
-            const std::array<float, 4> values{ videoAdjustments_.brightness, videoAdjustments_.contrast, videoAdjustments_.shadows, videoAdjustments_.highlights };
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), scale);
+            const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
+            const std::array<float, 7> values{ videoAdjustments_.exposure, videoAdjustments_.brightness, videoAdjustments_.contrast, videoAdjustments_.shadows, videoAdjustments_.highlights, videoAdjustments_.saturation, videoAdjustments_.sharpness };
             for (size_t index = 0; index < panel.sliders.size(); ++index) {
                 const RECT slider = panel.sliders[index];
                 DrawOverlayText(labels[index], static_cast<float>(panel.panel.left + MulDiv(12, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(slider.left - panel.panel.left - MulDiv(18, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), false, false, true);
                 const float centerY = (slider.top + slider.bottom) * 0.5f;
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
-                const float centerX = slider.left + (slider.right - slider.left) * 0.5f;
-                renderTarget_->DrawLine(D2D1::Point2F(centerX, centerY - 5.0f * scale), D2D1::Point2F(centerX, centerY + 5.0f * scale), border.Get(), scale);
-                const float thumbX = slider.left + (slider.right - slider.left) * (values[index] + 1.0f) * 0.5f;
+                const float normalized = index == 0 ? (values[index] + 2.0f) * 0.25f : index == 6 ? values[index] : (values[index] + 1.0f) * 0.5f;
+                const float thumbX = slider.left + (slider.right - slider.left) * normalized;
                 renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, centerY), 5.0f * scale, 5.0f * scale), accent.Get());
                 const std::wstring value = std::to_wstring(static_cast<int>(std::lround(values[index] * 100.0f)));
                 DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
@@ -8581,7 +8554,6 @@ private:
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), hover.Get());
                 DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
             };
-            if (aiAddon_.Available()) drawPanelButton(panel.autoButton, aiAnalysisRunning_ ? L"AI..." : L"AI Auto");
             drawPanelButton(panel.resetButton, L"reset");
         }
         const D2D1_RECT_F island = rect(layout.island);
@@ -8591,9 +8563,6 @@ private:
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoMute) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), hover.Get());
-        if (videoControlsHovered_ == ButtonKind::VideoZoomOut) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.zoomOut), 5.0f * scale, 5.0f * scale), hover.Get());
-        if (videoControlsHovered_ == ButtonKind::VideoZoomIn) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.zoomIn), 5.0f * scale, 5.0f * scale), hover.Get());
-        if (videoControlsHovered_ == ButtonKind::VideoZoomFit || videoFitToWindow_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.zoomFit), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoZoomActual || (!videoFitToWindow_ && std::abs(VideoCurrentScale() - VideoActualPixelScale()) < 0.0001f)) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.zoomActual), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoPlaybackSpeed || videoPlaybackSpeedPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playbackSpeed), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoAdjustments || videoAdjustmentsPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.adjustments), 5.0f * scale, 5.0f * scale), hover.Get());
@@ -8621,12 +8590,6 @@ private:
 
         DrawOverlayText(L"-1", static_cast<float>(layout.stepBackward.left), static_cast<float>(layout.stepBackward.top), static_cast<float>(layout.stepBackward.right - layout.stepBackward.left), static_cast<float>(layout.stepBackward.bottom - layout.stepBackward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.zoomReadout), 5.0f * scale, 5.0f * scale), track.Get());
-        DrawOverlayText(L"-", static_cast<float>(layout.zoomOut.left), static_cast<float>(layout.zoomOut.top), static_cast<float>(layout.zoomOut.right - layout.zoomOut.left), static_cast<float>(layout.zoomOut.bottom - layout.zoomOut.top), 15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
-        const std::wstring zoomLabel = VideoZoomLabel();
-        DrawOverlayText(zoomLabel.c_str(), static_cast<float>(layout.zoomReadout.left), static_cast<float>(layout.zoomReadout.top), static_cast<float>(layout.zoomReadout.right - layout.zoomReadout.left), static_cast<float>(layout.zoomReadout.bottom - layout.zoomReadout.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
-        DrawOverlayText(L"+", static_cast<float>(layout.zoomIn.left), static_cast<float>(layout.zoomIn.top), static_cast<float>(layout.zoomIn.right - layout.zoomIn.left), static_cast<float>(layout.zoomIn.bottom - layout.zoomIn.top), 15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
-        DrawOverlayText(L"Fit", static_cast<float>(layout.zoomFit.left), static_cast<float>(layout.zoomFit.top), static_cast<float>(layout.zoomFit.right - layout.zoomFit.left), static_cast<float>(layout.zoomFit.bottom - layout.zoomFit.top), 10.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         DrawOverlayText(L"100%", static_cast<float>(layout.zoomActual.left), static_cast<float>(layout.zoomActual.top), static_cast<float>(layout.zoomActual.right - layout.zoomActual.left), static_cast<float>(layout.zoomActual.bottom - layout.zoomActual.top), 10.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         const std::wstring playbackRateLabel = FormatPlaybackRate(videoEffectivePlaybackRate_);
         DrawOverlayText(playbackRateLabel.c_str(), static_cast<float>(layout.playbackSpeed.left), static_cast<float>(layout.playbackSpeed.top), static_cast<float>(layout.playbackSpeed.right - layout.playbackSpeed.left), static_cast<float>(layout.playbackSpeed.bottom - layout.playbackSpeed.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
@@ -10224,7 +10187,7 @@ private:
     std::atomic<uint64_t> videoPlaybackWakePendingGeneration_{ 0 };
     std::atomic<LONGLONG> videoPlaybackWakeQpc_{ 0 };
     bool videoPausedSeekRefreshPending_ = false;
-    MediaAdjustments videoAdjustments_;
+    ImageAdjustments videoAdjustments_;
     ImageAdjustments imageAdjustments_;
     ImageAdjustmentPersistence adjustmentPersistence_;
     std::array<unsigned char, 32> imageAdjustmentHash_{};

@@ -367,11 +367,11 @@ bool VideoPlayer::TryGetFramesPerSecond(float& framesPerSecond) {
     return true;
 }
 
-void VideoPlayer::SetDisplayAdjustments(const MediaAdjustments& adjustments) {
+void VideoPlayer::SetDisplayAdjustments(const ImageAdjustments& adjustments) {
     displayAdjustments_ = adjustments;
     adjustedFrameValid_ = false;
     adjustedFrameBitmap_.Reset();
-    if (hasValidFrame_ && !displayAdjustments_.IsNeutral()) adjustedFrameValid_ = adjustmentProcessor_.Process(frameTexture_.Get(), videoWidth_, videoHeight_, displayAdjustments_);
+    if (hasValidFrame_ && !displayAdjustments_.IsNeutral()) adjustedFrameValid_ = adjustmentProcessor_.ProcessImage(frameTexture_.Get(), videoWidth_, videoHeight_, displayAdjustments_);
 }
 
 bool VideoPlayer::CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const {
@@ -431,7 +431,7 @@ bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
             hasValidFrame_ = hasTransferredPts_ = true;
             lastTransferredPts_ = pts;
             adjustedFrameBitmap_.Reset();
-            adjustedFrameValid_ = !displayAdjustments_.IsNeutral() && adjustmentProcessor_.Process(frameTexture_.Get(), videoWidth_, videoHeight_, displayAdjustments_);
+            adjustedFrameValid_ = !displayAdjustments_.IsNeutral() && adjustmentProcessor_.ProcessImage(frameTexture_.Get(), videoWidth_, videoHeight_, displayAdjustments_);
             RecordFramePacingEvent(FramePacingEvent::CachePublish, pts);
             transferred = true;
         }

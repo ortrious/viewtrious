@@ -35,7 +35,7 @@ public:
     bool Muted() const;
     bool GetNativeVideoSize(DWORD& width, DWORD& height) const;
     bool TryGetFramesPerSecond(float& framesPerSecond);
-    void SetDisplayAdjustments(const MediaAdjustments& adjustments);
+    void SetDisplayAdjustments(const ImageAdjustments& adjustments);
     bool CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
     bool SetPreferredPlaybackRate(double rate);
     bool PlaybackRateSupported(double rate) const;
@@ -71,7 +71,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> frameBitmap_;
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> adjustedFrameBitmap_;
     MediaAdjustmentProcessor adjustmentProcessor_;
-    MediaAdjustments displayAdjustments_;
+    ImageAdjustments displayAdjustments_;
     double preferredPlaybackRate_ = 1.0;
     double effectivePlaybackRate_ = 1.0;
     UINT deviceResetToken_ = 0;

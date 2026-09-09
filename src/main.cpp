@@ -10860,10 +10860,19 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (viewer->FilmstripContains(point)) return 0;
+        if (viewer->ButtonAt(point) == ButtonKind::ImageAdjustments) {
+            viewer->SetButtonPressed(ButtonKind::ImageAdjustments);
+            SetCapture(window);
+            return 0;
+        }
         if (viewer->ImageAdjustmentsPanelContains(point)) return 0;
-        if (viewer->ButtonAt(point) == ButtonKind::ImageAdjustments) return 0;
         if (viewer->ConsumeVideoFullscreenButtonDoubleClick()) return 0;
         const ButtonKind videoControl = viewer->VideoControlAt(point);
+        if (videoControl == ButtonKind::VideoAdjustments) {
+            viewer->SetButtonPressed(ButtonKind::ImageAdjustments);
+            SetCapture(window);
+            return 0;
+        }
         if (videoControl == ButtonKind::VideoStepBackward || videoControl == ButtonKind::VideoStepForward) {
             const int direction = videoControl == ButtonKind::VideoStepBackward ? -1 : 1;
             if (viewer->BeginVideoStepHold(direction)) SetCapture(window);

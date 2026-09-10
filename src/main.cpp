@@ -2359,28 +2359,26 @@ public:
         const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
         const int left = bounds.left + MulDiv(18, dpi, 96);
         const int top = bounds.top + MulDiv(64, dpi, 96);
-        return { left, top, left + MulDiv(178, dpi, 96), bounds.bottom - MulDiv(18, dpi, 96) };
+        return { left, top, left + MulDiv(164, dpi, 96), bounds.bottom - MulDiv(18, dpi, 96) };
     }
     RECT GetHelpContentBounds() const {
         const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
         const int left = bounds.left + MulDiv(220, dpi, 96);
         return { left, bounds.top + MulDiv(64, dpi, 96), bounds.right - MulDiv(24, dpi, 96), bounds.bottom - MulDiv(24, dpi, 96) };
     }
-    int GetHelpTopicRowHeight() const {
-        const RECT rail = GetHelpRailBounds();
-        return std::max(MulDiv(18, GetDpiForWindow(window_), 96), static_cast<int>((rail.bottom - rail.top) / static_cast<LONG>(kHelpTopics.size())));
-    }
     RECT GetHelpTopicBounds(int topic) const {
-        const RECT rail = GetHelpRailBounds(); const int height = GetHelpTopicRowHeight();
-        const int top = rail.top + topic * height;
-        return { rail.left, top, rail.right, std::min<LONG>(rail.bottom, static_cast<LONG>(top) + height) };
+        const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
+        const int left = bounds.left + MulDiv(18, dpi, 96);
+        const int top = bounds.top + MulDiv(66 + topic * 38, dpi, 96);
+        return { left, top, left + MulDiv(164, dpi, 96), top + MulDiv(32, dpi, 96) };
     }
     int HelpTopicAt(POINT point) const {
         if (overlay_ != OverlayKind::Help) return -1;
-        const RECT rail = GetHelpRailBounds();
-        if (!PtInRect(&rail, point)) return -1;
-        const int topic = (point.y - rail.top) / GetHelpTopicRowHeight();
-        return topic >= 0 && topic < static_cast<int>(kHelpTopics.size()) ? topic : -1;
+        for (int topic = 0; topic < static_cast<int>(kHelpTopics.size()); ++topic) {
+            const RECT bounds = GetHelpTopicBounds(topic);
+            if (PtInRect(&bounds, point)) return topic;
+        }
+        return -1;
     }
     bool HelpContentContains(POINT point) const {
         const RECT bounds = GetHelpContentBounds();
@@ -9450,15 +9448,13 @@ private:
             const RECT railBounds = GetHelpRailBounds();
             const float dividerX = static_cast<float>(railBounds.right) + 12.0f * dpiScale;
             renderTarget_->DrawLine(D2D1::Point2F(dividerX, static_cast<float>(railBounds.top)), D2D1::Point2F(dividerX, static_cast<float>(railBounds.bottom)), borderBrush.Get());
-            const int topicRowHeight = GetHelpTopicRowHeight();
-            const float topicFontSize = topicRowHeight < MulDiv(25, GetDpiForWindow(window_), 96) ? 10.0f : 11.5f;
             for (int topic = 0; topic < static_cast<int>(kHelpTopics.size()); ++topic) {
                 const RECT topicBounds = GetHelpTopicBounds(topic);
                 const D2D1_RECT_F topicRect = D2D1::RectF(static_cast<float>(topicBounds.left), static_cast<float>(topicBounds.top), static_cast<float>(topicBounds.right), static_cast<float>(topicBounds.bottom));
                 if (topic == helpTopic_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(topicRect, 4.0f * dpiScale, 4.0f * dpiScale), accent.Get());
                 else if (hoveredButton_ == ButtonKind::HelpTopic && helpTopicHover_ == topic) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(topicRect, 4.0f * dpiScale, 4.0f * dpiScale), rowHover.Get());
                 DrawOverlayText(kHelpTopics[topic].title, topicRect.left + 9.0f * dpiScale, topicRect.top, topicRect.right - topicRect.left - 18.0f * dpiScale,
-                    topicRect.bottom - topicRect.top, topicFontSize, DWRITE_FONT_WEIGHT_SEMI_BOLD, topic == helpTopic_ ? selectedText.Get() : primaryBrush.Get(), true);
+                    topicRect.bottom - topicRect.top, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, topic == helpTopic_ ? selectedText.Get() : primaryBrush.Get(), true);
             }
             const RECT contentBounds = GetHelpContentBounds();
             const D2D1_RECT_F viewport = D2D1::RectF(static_cast<float>(contentBounds.left), static_cast<float>(contentBounds.top), static_cast<float>(contentBounds.right), static_cast<float>(contentBounds.bottom));

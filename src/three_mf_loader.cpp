@@ -155,12 +155,12 @@ ThreeMfLoadResult LoadThreeMfDocument(const std::wstring& path) {
     ParsedModel source; if(!ParseModelXml(stream.Get(),source,true,error)) return {nullptr,std::move(error)};
     std::unordered_set<std::wstring> loadedPartPaths;
     while (true) {
-        std::wstring partPath;
-        for (const std::wstring& candidate : source.referencedPartPaths) if (!loadedPartPaths.contains(candidate)) { partPath=candidate; break; }
-        if (partPath.empty()) break;
-        loadedPartPaths.insert(partPath);
+        std::wstring referencedPartPath;
+        for (const std::wstring& candidate : source.referencedPartPaths) if (!loadedPartPaths.contains(candidate)) { referencedPartPath=candidate; break; }
+        if (referencedPartPath.empty()) break;
+        loadedPartPaths.insert(referencedPartPath);
         std::vector<unsigned char> partXml; std::wstring partError;
-        if (!ReadThreeMfModelXmlPart(path,partPath,partXml,partError)) continue;
+        if (!ReadThreeMfModelXmlPart(path,referencedPartPath,partXml,partError)) continue;
         ComPtr<IStream> partStream=SHCreateMemStream(partXml.data(),static_cast<UINT>(partXml.size())); ParsedModel part;
         if (!partStream || !ParseModelXml(partStream.Get(),part,false,partError) || part.scaleMillimeters!=source.scaleMillimeters) continue;
         bool mergeable=true; for(const auto& [id, object] : part.objects) if(source.objects.contains(id)) { mergeable=false; break; }

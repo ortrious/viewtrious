@@ -67,7 +67,7 @@ std::wstring Timestamp() {
 
 std::wstring FileFacts(std::wstring_view path) {
     WIN32_FILE_ATTRIBUTE_DATA attributes{};
-    const std::filesystem::path file(std::wstring(path));
+    const std::filesystem::path file{ std::wstring(path) };
     std::wstring facts = L"file=\"" + file.filename().wstring() + L"\"";
     if (!GetFileAttributesExW(std::wstring(path).c_str(), GetFileExInfoStandard, &attributes))
         return facts + L" exists=0 win32=" + std::to_wstring(GetLastError());

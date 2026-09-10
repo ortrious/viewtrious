@@ -91,7 +91,6 @@ constexpr UINT_PTR kDirectoryChangeDebounceTimer = 4;
 constexpr UINT_PTR kNavigationDecodeDebounceTimer = 5;
 constexpr UINT_PTR kShellRotationCheckTimer = 6;
 constexpr UINT_PTR kLanczosSettleTimer = 7;
-constexpr UINT_PTR kHeifRotationMenuRefreshTimer = 8;
 constexpr UINT_PTR kGifPlaybackTimer = 10;
 constexpr UINT_PTR kModelHomeAnimationTimer = 11;
 constexpr UINT_PTR kModelLoadingAnimationTimer = 12;
@@ -106,7 +105,6 @@ constexpr UINT kVideoStepHoldThresholdMs = 250;
 constexpr UINT kVideoStepHoldIntervalMs = 16;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
-constexpr ULONGLONG kHeifRotationCooldownMs = 0;
 constexpr int kApplicationIconGroupResourceId = 101;
 constexpr int kFilmstripVideoIconGroupResourceId = 104;
 constexpr int kContextMenuRowCount = 8;
@@ -2547,17 +2545,13 @@ public:
         DismissOverlay();
         contextMenuAnchor_ = point;
         contextMenuOpen_ = true;
-        heifRotationMenuLocked_ = IsHeifPath(currentPath_) && IsHeifRotationGateActive();
-        if (heifRotationMenuLocked_) SetTimer(window_, kHeifRotationMenuRefreshTimer, 100, nullptr);
         contextHovered_ = ContextAction::None;
         contextPressed_ = ContextAction::None;
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DismissContextMenu() {
         if (!contextMenuOpen_) return;
-        KillTimer(window_, kHeifRotationMenuRefreshTimer);
         contextMenuOpen_ = false; if (ModelActive()) ClearModelFaceSelection();
-        heifRotationMenuLocked_ = false;
         openWithSubmenuOpen_ = false;
         contextHovered_ = ContextAction::None;
         contextPressed_ = ContextAction::None;
@@ -2597,7 +2591,7 @@ public:
             return true;
         return (action == ContextAction::RotateLeft || action == ContextAction::RotateRight) &&
             DisplayedImageMatchesTarget() && (IsJpegPath(currentPath_) || IsPngPath(currentPath_) ||
-                (!heifRotationMenuLocked_ && IsHeifPath(currentPath_) &&
+                (!IsHeifRotationGateActive() && IsHeifPath(currentPath_) &&
                     (action == ContextAction::RotateLeft ? heifShellRotateLeftAvailable_ : heifShellRotateRightAvailable_)));
     }
     void SetContextHover(ContextAction action) {
@@ -6200,7 +6194,6 @@ public:
         StopGifPlayback();
         StopDirectoryWatcher();
         KillTimer(window_, kShellRotationCheckTimer);
-        KillTimer(window_, kHeifRotationMenuRefreshTimer);
         ClearStillDissolve();
         ++aiRequestGeneration_;
         if (aiAnalysisThread_.joinable()) aiAnalysisThread_.join();
@@ -6226,7 +6219,6 @@ public:
     void GifPlaybackVisibilityChanged(bool visible) { SetGifPlaybackVisible(visible); }
     void LanczosRefinementTimer() { RequestLanczosVariant(); }
     void ShellRotationTimer() { UpdateShellRotation(); }
-    void HeifRotationMenuRefreshTimer() { RefreshHeifRotationContextMenu(); }
     void ModelLoadingAnimationTimerMessage() { UpdateModelLoadingAnimation(); }
     void FullDecodeCompleteMessage(FullDecodeResult* result) { HandleFullDecodeResult(result); }
     void LanczosCompleteMessage(LanczosResult* result) { HandleLanczosResult(result); }
@@ -7410,37 +7402,17 @@ private:
         SetTimer(window_, kShellRotationCheckTimer, kShellRotationCheckIntervalMs, nullptr);
     }
 
-    bool IsHeifRotationGateActive() const {
-        return shellRotationPending_ || GetTickCount64() < heifRotationCooldownUntil_;
-    }
-
-    void BeginHeifRotationCooldown() {
-        heifRotationCooldownUntil_ = GetTickCount64() + kHeifRotationCooldownMs;
-    }
-
-    void RefreshHeifRotationContextMenu() {
-        if (!contextMenuOpen_ || !heifRotationMenuLocked_ || !IsHeifPath(currentPath_)) {
-            KillTimer(window_, kHeifRotationMenuRefreshTimer);
-            return;
-        }
-        if (IsHeifRotationGateActive()) return;
-        heifRotationMenuLocked_ = false;
-        KillTimer(window_, kHeifRotationMenuRefreshTimer);
-        InvalidateRect(window_, nullptr, FALSE);
-        UpdateWindow(window_);
-    }
+    bool IsHeifRotationGateActive() const { return shellRotationPending_; }
 
     void FailShellRotationRefresh() {
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationPending_ = false;
-        BeginHeifRotationCooldown();
-        ShowActionError(L"HEIC rotation did not complete.");
+        ShowActionError(L"HEIC/HEIF rotation did not complete.");
     }
 
     void CompleteShellRotationRefresh() {
         KillTimer(window_, kShellRotationCheckTimer);
         shellRotationPending_ = false;
-        BeginHeifRotationCooldown();
         if (!PathsEqual(fs::path(shellRotationPath_), fs::path(currentPath_))) return;
         currentFileIdentity_ = ReadFileIdentity(fs::path(currentPath_));
         fileSizeText_ = FormatFileSize(currentPath_);
@@ -10649,9 +10621,8 @@ private:
             top += gap;
         };
         drawItem(ContextAction::Fullscreen, fullscreen_ ? L"Exit Fullscreen" : L"Fullscreen", fullscreen_ ? L'\uE73F' : L'\uE740'); separator();
-        const bool heifRotationWorking = IsHeifPath(currentPath_) && heifRotationMenuLocked_;
-        drawItem(ContextAction::RotateLeft, heifRotationWorking ? L"Rotate Left (working...)" : L"Rotate Left", L'\uE7AD');
-        drawItem(ContextAction::RotateRight, heifRotationWorking ? L"Rotate Right (working...)" : L"Rotate Right", L'\uE7AD'); separator();
+        drawItem(ContextAction::RotateLeft, L"Rotate Left", L'\uE7AD');
+        drawItem(ContextAction::RotateRight, L"Rotate Right", L'\uE7AD'); separator();
         const int openWithTop = top;
         drawItem(ContextAction::OpenWith, L"Open With", L'\uE8A7');
         DrawOverlayText(L">", static_cast<float>(bounds.right - MulDiv(28, dpi, 96)), static_cast<float>(openWithTop), static_cast<float>(MulDiv(16, dpi, 96)),
@@ -11418,8 +11389,6 @@ private:
     bool heifShellRotateLeftAvailable_ = false;
     bool heifShellRotateRightAvailable_ = false;
     bool shellRotationPending_ = false;
-    ULONGLONG heifRotationCooldownUntil_ = 0;
-    bool heifRotationMenuLocked_ = false;
     std::wstring shellRotationPath_;
     WIN32_FILE_ATTRIBUTE_DATA shellRotationInitialState_{};
     bool shellRotationInitialStateValid_ = false;
@@ -11973,7 +11942,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kImageAdjustmentPersistenceTimer) { KillTimer(window, kImageAdjustmentPersistenceTimer); viewer->ImageAdjustmentPersistenceTimer(); return 0; }
         if (wParam == kVideoAdjustmentPersistenceTimer) { KillTimer(window, kVideoAdjustmentPersistenceTimer); viewer->VideoAdjustmentPersistenceTimer(); return 0; }
         if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
-        if (wParam == kHeifRotationMenuRefreshTimer) { viewer->HeifRotationMenuRefreshTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
         if (wParam == kModelHomeAnimationTimer) { viewer->UpdateAnimatedModelHome(); return 0; }
         if (wParam == kModelLoadingAnimationTimer) { viewer->ModelLoadingAnimationTimerMessage(); return 0; }

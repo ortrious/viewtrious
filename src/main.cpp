@@ -171,7 +171,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAdjustments, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
@@ -787,7 +787,6 @@ struct VideoControlsLayout {
     RECT stepForward;
     RECT mute;
     RECT playbackSpeed;
-    RECT adjustments;
     RECT fullscreen;
 };
 
@@ -1380,8 +1379,7 @@ public:
         const int muteLeft = stepForwardLeft + buttonWidth + gap;
         const int speedWidth = std::min(MulDiv(46, dpi, 96), std::max(MulDiv(34, dpi, 96), buttonWidth + gap));
         const int fullscreenLeft = left + width - padding - buttonWidth;
-        const int adjustmentsLeft = fullscreenLeft - gap - buttonWidth;
-        const int speedLeft = adjustmentsLeft - gap - speedWidth;
+        const int speedLeft = fullscreenLeft - gap - speedWidth;
         return { { left, top, left + width, top + height },
             { currentLeft, top + padding, currentLeft + timeWidth, top + padding + timelineHeight },
             { scrubberLeft, top + padding, scrubberRight, top + padding + timelineHeight },
@@ -1391,7 +1389,6 @@ public:
             { stepForwardLeft, controlTop, stepForwardLeft + buttonWidth, controlTop + buttonWidth },
             { muteLeft, controlTop, muteLeft + buttonWidth, controlTop + buttonWidth },
             { speedLeft, controlTop, speedLeft + speedWidth, controlTop + buttonWidth },
-            { adjustmentsLeft, controlTop, adjustmentsLeft + buttonWidth, controlTop + buttonWidth },
             { fullscreenLeft, controlTop, fullscreenLeft + buttonWidth, controlTop + buttonWidth } };
     }
     VideoPlaybackSpeedPanelLayout GetVideoPlaybackSpeedPanelLayout() const {
@@ -1748,7 +1745,6 @@ public:
         if (PtInRect(&layout.stepForward, point)) return ButtonKind::VideoStepForward;
         if (PtInRect(&layout.mute, point)) return ButtonKind::VideoMute;
         if (PtInRect(&layout.playbackSpeed, point)) return ButtonKind::VideoPlaybackSpeed;
-        if (PtInRect(&layout.adjustments, point)) return ButtonKind::VideoAdjustments;
         if (PtInRect(&layout.fullscreen, point)) return ButtonKind::VideoFullscreen;
         return ButtonKind::None;
     }
@@ -1899,7 +1895,6 @@ public:
         else if (control == ButtonKind::VideoStepForward) BeginVideoStepHold(1);
         else if (control == ButtonKind::VideoMute) { videoPlayer_.ToggleMute(); ShowVideoControls(); }
         else if (control == ButtonKind::VideoPlaybackSpeed) SetVideoPlaybackSpeedPanelOpen(!videoPlaybackSpeedPanelOpen_);
-        else if (control == ButtonKind::VideoAdjustments) ToggleAdjustments();
         else if (control == ButtonKind::VideoFullscreen) { videoFullscreenToggleTick_ = GetTickCount64(); ToggleVideoFullscreen(); }
         return true;
     }
@@ -8798,7 +8793,6 @@ private:
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoMute) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoPlaybackSpeed || videoPlaybackSpeedPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playbackSpeed), 5.0f * scale, 5.0f * scale), hover.Get());
-        if (videoControlsHovered_ == ButtonKind::VideoAdjustments || videoAdjustmentsPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.adjustments), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoFullscreen) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.fullscreen), 5.0f * scale, 5.0f * scale), hover.Get());
 
         const float playCenterX = (layout.playPause.left + layout.playPause.right) * 0.5f;
@@ -8831,22 +8825,6 @@ private:
             const float tooltipTop = static_cast<float>(layout.island.top) - tooltipHeight - 6.0f * scale;
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(tooltipLeft, tooltipTop, tooltipLeft + tooltipWidth, tooltipTop + tooltipHeight), 5.0f * scale, 5.0f * scale), surface.Get());
             DrawOverlayText(L"playback speed", tooltipLeft, tooltipTop, tooltipWidth, tooltipHeight, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
-        }
-
-        const float adjustmentsCenterX = (layout.adjustments.left + layout.adjustments.right) * 0.5f;
-        const float adjustmentsCenterY = (layout.adjustments.top + layout.adjustments.bottom) * 0.5f;
-        for (int index = -1; index <= 1; ++index) {
-            const float x = adjustmentsCenterX + index * 5.0f * scale;
-            renderTarget_->DrawLine(D2D1::Point2F(x, adjustmentsCenterY - 7.0f * scale), D2D1::Point2F(x, adjustmentsCenterY + 7.0f * scale), text.Get(), 1.25f * scale);
-            const float y = adjustmentsCenterY + (index == 0 ? 3.0f : -3.0f) * scale;
-            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x, y), 2.1f * scale, 2.1f * scale), text.Get());
-        }
-        if (videoControlsHovered_ == ButtonKind::VideoAdjustments && !videoAdjustmentsPanelOpen_) {
-            const float tooltipWidth = 78.0f * scale, tooltipHeight = 24.0f * scale;
-            const float tooltipLeft = adjustmentsCenterX - tooltipWidth * 0.5f;
-            const float tooltipTop = static_cast<float>(layout.island.top) - tooltipHeight - 6.0f * scale;
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(tooltipLeft, tooltipTop, tooltipLeft + tooltipWidth, tooltipTop + tooltipHeight), 5.0f * scale, 5.0f * scale), surface.Get());
-            DrawOverlayText(L"adjustments", tooltipLeft, tooltipTop, tooltipWidth, tooltipHeight, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
 
         const float fullscreenCenterX = (layout.fullscreen.left + layout.fullscreen.right) * 0.5f;
@@ -10844,11 +10822,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->ImageAdjustmentsPanelContains(point)) return 0;
         if (viewer->ConsumeVideoFullscreenButtonDoubleClick()) return 0;
         const ButtonKind videoControl = viewer->VideoControlAt(point);
-        if (videoControl == ButtonKind::VideoAdjustments) {
-            viewer->SetButtonPressed(ButtonKind::ImageAdjustments);
-            SetCapture(window);
-            return 0;
-        }
         if (videoControl == ButtonKind::VideoStepBackward || videoControl == ButtonKind::VideoStepForward) {
             const int direction = videoControl == ButtonKind::VideoStepBackward ? -1 : 1;
             if (viewer->BeginVideoStepHold(direction)) SetCapture(window);

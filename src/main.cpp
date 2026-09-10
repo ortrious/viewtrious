@@ -1438,15 +1438,15 @@ public:
     }
     bool VideoAdjustmentsPanelAboveControls() const {
         if (!VideoAdjustmentsPanelVisible()) return false;
-        const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const int margin = MulDiv(16, dpi, 96);
-        const ZoomHudLayout hud = GetVideoZoomHudLayout();
-        const LONG width = MulDiv(370, dpi, 96);
-        const LONG bottom = hud.combined.top - MulDiv(8, dpi, 96);
-        return canvas.right - canvas.left < width + margin * 2 || bottom - MulDiv(278, dpi, 96) < canvas.top + margin;
+        const int clearance = MulDiv(8, dpi, 96);
+        const VideoAdjustmentsPanelLayout normalTarget = GetVideoZoomHudAdjustmentsPanelTargetLayout();
+        const RECT controls = GetVideoControlsLayout(false).island;
+        const RECT expandedControls{ controls.left - clearance, controls.top - clearance, controls.right + clearance, controls.bottom + clearance };
+        return normalTarget.panel.left < expandedControls.right && normalTarget.panel.right > expandedControls.left &&
+            normalTarget.panel.top < expandedControls.bottom && normalTarget.panel.bottom > expandedControls.top;
     }
-    VideoControlsLayout GetVideoControlsLayout() const {
+    VideoControlsLayout GetVideoControlsLayout(bool) const {
         const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int margin = MulDiv(16, dpi, 96);
@@ -1457,7 +1457,6 @@ public:
         const int preferredWidth = MulDiv(640, dpi, 96);
         const int sideClearance = MulDiv(110, dpi, 96);
         const LONG availableWidth = std::max(1L, canvas.right - canvas.left - margin * 2);
-        const bool aboveControls = VideoAdjustmentsPanelAboveControls();
         const int responsiveWidth = static_cast<int>(canvas.right - canvas.left) - sideClearance * 2;
         const int width = std::min(static_cast<int>(availableWidth), std::clamp(responsiveWidth, compactWidth, preferredWidth));
         const int centeredLeft = static_cast<int>(canvas.left + (canvas.right - canvas.left - width) / 2);
@@ -1503,6 +1502,7 @@ public:
             { speedLeft, controlTop, speedLeft + speedWidth, controlTop + buttonWidth },
             { fullscreenLeft, controlTop, fullscreenLeft + buttonWidth, controlTop + buttonWidth } };
     }
+    VideoControlsLayout GetVideoControlsLayout() const { return GetVideoControlsLayout(VideoAdjustmentsPanelAboveControls()); }
     VideoPlaybackSpeedPanelLayout GetVideoPlaybackSpeedPanelLayout() const {
         const VideoControlsLayout controls = GetVideoControlsLayout();
         const UINT dpi = GetDpiForWindow(window_);
@@ -1549,21 +1549,29 @@ public:
         const RECT reset{ right - panelPadding - resetButtonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
         return { panel, sliders, autoButton, original, reset, aboveControls };
     }
-    VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
-        const VideoControlsLayout controls = GetVideoControlsLayout();
+    VideoAdjustmentsPanelLayout GetVideoZoomHudAdjustmentsPanelTargetLayout() const {
         const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const bool aboveControls = VideoAdjustmentsPanelAboveControls();
-        const LONG width = aboveControls
-            ? std::min<LONG>(MulDiv(370, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)))
-            : MulDiv(370, dpi, 96);
+        const LONG width = MulDiv(370, dpi, 96);
         const ZoomHudLayout hud = GetVideoZoomHudLayout();
-        const LONG left = aboveControls ? std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width) : std::clamp<LONG>(hud.combined.right - width, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
+        const LONG left = std::clamp<LONG>(hud.combined.right - width, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
         const LONG right = left + width;
-        const LONG bottom = aboveControls ? controls.island.top : hud.combined.top - MulDiv(8, dpi, 96);
+        const LONG bottom = hud.combined.top - MulDiv(8, dpi, 96);
         const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
         const LONG top = bottom - height;
-        return MakeVideoAdjustmentsPanelLayout({ left, top, right, bottom }, aboveControls);
+        return MakeVideoAdjustmentsPanelLayout({ left, top, right, bottom }, false);
+    }
+    VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
+        if (!VideoAdjustmentsPanelAboveControls()) return GetVideoZoomHudAdjustmentsPanelTargetLayout();
+        const VideoControlsLayout controls = GetVideoControlsLayout(true);
+        const RECT canvas = ModelCanvasBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const LONG width = std::min<LONG>(MulDiv(370, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)));
+        const LONG left = std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
+        const LONG right = left + width;
+        const LONG bottom = controls.island.top;
+        const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
+        return MakeVideoAdjustmentsPanelLayout({ left, bottom - height, right, bottom }, true);
     }
     bool VideoAdjustmentsPanelMotionActive() const {
         return videoAdjustmentsPanelMotion_ != VideoAdjustmentsPanelMotion::None;

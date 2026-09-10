@@ -99,6 +99,7 @@ constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
 constexpr UINT_PTR kVideoControlsTimer = 15;
 constexpr UINT_PTR kVideoStepHoldTimer = 16;
 constexpr UINT_PTR kVideoAutoPlayNextCountdownTimer = 27;
+constexpr UINT_PTR kVideoFullscreenGlyphTimer = 28;
 constexpr UINT_PTR kStillDissolveTimer = 17;
 constexpr UINT_PTR kStartupVideoSizingFallbackTimer = 23;
 constexpr UINT kVideoStepHoldThresholdMs = 250;
@@ -118,6 +119,7 @@ constexpr ULONGLONG kModelLoadingOverlayDelayMs = 150;
 constexpr UINT kTriangleCountTooltipDelayMs = 450;
 constexpr ULONGLONG kVideoControlsIdleDelayMs = 1500;
 constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
+constexpr ULONGLONG kVideoFullscreenGlyphDurationMs = 140;
 constexpr ULONGLONG kStillDissolveDurationMs = 320;
 constexpr ULONGLONG kStillDissolvePreviewWaitMaxMs = 450;
 constexpr UINT kStartupVideoSizingFallbackMs = 1500;
@@ -1477,10 +1479,10 @@ public:
         const int stepBackwardLeft = playLeft + buttonWidth + gap;
         const int stepForwardLeft = stepBackwardLeft + buttonWidth + gap;
         const int muteLeft = stepForwardLeft + buttonWidth + gap;
-        const int autoPlayNextLeft = muteLeft + buttonWidth + gap;
         const int speedWidth = std::min(MulDiv(46, dpi, 96), std::max(MulDiv(34, dpi, 96), buttonWidth + gap));
         const int fullscreenLeft = left + width - padding - buttonWidth;
         const int speedLeft = fullscreenLeft - gap - speedWidth;
+        const int autoPlayNextLeft = speedLeft - gap - buttonWidth;
         return { { left, top, left + width, top + height },
             { currentLeft, top + padding, currentLeft + timeWidth, top + padding + timelineHeight },
             { scrubberLeft, top + padding, scrubberRight, top + padding + timelineHeight },
@@ -2159,6 +2161,7 @@ public:
     }
     void StopVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
+        KillTimer(window_, kVideoFullscreenGlyphTimer);
         if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
@@ -2173,6 +2176,9 @@ public:
         videoControlsFadeActive_ = false;
         videoControlsOpacity_ = 0.0f;
         videoControlsHovered_ = ButtonKind::None;
+        videoFullscreenGlyphHoverProgress_ = 0.0f;
+        videoFullscreenGlyphHoverStart_ = 0.0f;
+        videoFullscreenGlyphHoverTarget_ = 0.0f;
         RestoreVideoCursor();
     }
     void UpdateVideoScrub(POINT point) {
@@ -2279,6 +2285,7 @@ public:
         if (!videoPlayer_.Playing() || revealZone || activeInteraction) ShowVideoControls();
         videoControlsPointerOver_ = VideoControlsContains(point) || revealZone || activeInteraction;
         videoControlsHovered_ = VideoControlAt(point);
+        SetVideoFullscreenGlyphHover(videoControlsHovered_ == ButtonKind::VideoFullscreen);
         if (videoControlsPointerOver_) KillTimer(window_, kVideoControlsTimer);
         else if (wasPointerOver && videoPlayer_.Playing()) {
             videoControlsFadeActive_ = false;
@@ -2292,6 +2299,7 @@ public:
         if (!VideoActive()) return;
         videoControlsPointerOver_ = false;
         videoControlsHovered_ = ButtonKind::None;
+        SetVideoFullscreenGlyphHover(false);
         if (videoPlayer_.Playing() && !videoScrubbing_ && !videoAdjustmentsOriginalPreviewActive_ && !videoPlaybackSpeedPanelOpen_) {
             videoControlsFadeActive_ = false;
             videoControlsLastActivity_ = GetTickCount64();
@@ -2308,6 +2316,28 @@ public:
         videoWasPlayingBeforeScrub_ = false;
         if (resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
         else ShowVideoControls();
+    }
+    void SetVideoFullscreenGlyphHover(bool hovered) {
+        const float target = hovered ? 1.0f : 0.0f;
+        if (std::abs(videoFullscreenGlyphHoverTarget_ - target) < 0.001f) return;
+        UpdateVideoFullscreenGlyphHover();
+        videoFullscreenGlyphHoverStart_ = videoFullscreenGlyphHoverProgress_;
+        videoFullscreenGlyphHoverTarget_ = target;
+        videoFullscreenGlyphHoverStartedAt_ = GetTickCount64();
+        if (std::abs(videoFullscreenGlyphHoverStart_ - target) < 0.001f) {
+            videoFullscreenGlyphHoverProgress_ = target;
+            KillTimer(window_, kVideoFullscreenGlyphTimer);
+        } else SetTimer(window_, kVideoFullscreenGlyphTimer, 16, nullptr);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void UpdateVideoFullscreenGlyphHover() {
+        const float elapsed = static_cast<float>(GetTickCount64() - videoFullscreenGlyphHoverStartedAt_);
+        const float progress = std::clamp(elapsed / static_cast<float>(kVideoFullscreenGlyphDurationMs), 0.0f, 1.0f);
+        videoFullscreenGlyphHoverProgress_ = videoFullscreenGlyphHoverStart_ +
+            (videoFullscreenGlyphHoverTarget_ - videoFullscreenGlyphHoverStart_) * SmoothTransitionProgress(progress);
+        InvalidateRect(window_, nullptr, FALSE);
+        if (progress < 1.0f) SetTimer(window_, kVideoFullscreenGlyphTimer, 16, nullptr);
+        else KillTimer(window_, kVideoFullscreenGlyphTimer);
     }
     void UpdateVideoControlsFade() {
         if (!VideoActive()) { StopVideoControls(); return; }
@@ -9290,7 +9320,24 @@ private:
 
         DrawOverlayText(L"-1", static_cast<float>(layout.stepBackward.left), static_cast<float>(layout.stepBackward.top), static_cast<float>(layout.stepBackward.right - layout.stepBackward.left), static_cast<float>(layout.stepBackward.bottom - layout.stepBackward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
-        DrawOverlayText(L">", static_cast<float>(layout.autoPlayNext.left), static_cast<float>(layout.autoPlayNext.top), static_cast<float>(layout.autoPlayNext.right - layout.autoPlayNext.left), static_cast<float>(layout.autoPlayNext.bottom - layout.autoPlayNext.top), 15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        const float autoPlayCenterX = (layout.autoPlayNext.left + layout.autoPlayNext.right) * 0.5f;
+        const float autoPlayCenterY = (layout.autoPlayNext.top + layout.autoPlayNext.bottom) * 0.5f;
+        ComPtr<ID2D1PathGeometry> autoPlayTriangle;
+        ComPtr<ID2D1GeometrySink> autoPlaySink;
+        if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&autoPlayTriangle)) && SUCCEEDED(autoPlayTriangle->Open(&autoPlaySink))) {
+            const float triangleLeft = autoPlayCenterX - 6.0f * scale;
+            const float triangleTip = autoPlayCenterX + 2.0f * scale;
+            const float triangleHalfHeight = 5.0f * scale;
+            autoPlaySink->BeginFigure(D2D1::Point2F(triangleLeft, autoPlayCenterY - triangleHalfHeight), D2D1_FIGURE_BEGIN_FILLED);
+            autoPlaySink->AddLine(D2D1::Point2F(triangleLeft, autoPlayCenterY + triangleHalfHeight));
+            autoPlaySink->AddLine(D2D1::Point2F(triangleTip, autoPlayCenterY));
+            autoPlaySink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            if (SUCCEEDED(autoPlaySink->Close())) {
+                renderTarget_->FillGeometry(autoPlayTriangle.Get(), text.Get());
+                const float barLeft = triangleTip + 2.5f * scale;
+                renderTarget_->DrawLine(D2D1::Point2F(barLeft, autoPlayCenterY - 5.5f * scale), D2D1::Point2F(barLeft, autoPlayCenterY + 5.5f * scale), text.Get(), 1.75f * scale);
+            }
+        }
         if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext) {
             const float tooltipWidth = 124.0f * scale, tooltipHeight = 24.0f * scale;
             const float tooltipLeft = (layout.autoPlayNext.left + layout.autoPlayNext.right) * 0.5f - tooltipWidth * 0.5f;
@@ -9310,22 +9357,16 @@ private:
 
         const float fullscreenCenterX = (layout.fullscreen.left + layout.fullscreen.right) * 0.5f;
         const float fullscreenCenterY = (layout.fullscreen.top + layout.fullscreen.bottom) * 0.5f;
-        const float fullscreenArm = 7.0f * scale, fullscreenInset = 3.0f * scale;
+        const float fullscreenArm = 5.0f * scale;
+        const float fullscreenOffset = fullscreenArm + videoFullscreenGlyphHoverProgress_ * 2.0f * scale;
         const auto drawFullscreenCorner = [&](float x, float y, float horizontal, float vertical) {
             renderTarget_->DrawLine(D2D1::Point2F(x, y), D2D1::Point2F(x + horizontal * fullscreenArm, y), text.Get(), 1.5f * scale);
             renderTarget_->DrawLine(D2D1::Point2F(x, y), D2D1::Point2F(x, y + vertical * fullscreenArm), text.Get(), 1.5f * scale);
         };
-        if (fullscreen_) {
-            drawFullscreenCorner(fullscreenCenterX - fullscreenInset, fullscreenCenterY - fullscreenInset, -1.0f, -1.0f);
-            drawFullscreenCorner(fullscreenCenterX + fullscreenInset, fullscreenCenterY - fullscreenInset, 1.0f, -1.0f);
-            drawFullscreenCorner(fullscreenCenterX - fullscreenInset, fullscreenCenterY + fullscreenInset, -1.0f, 1.0f);
-            drawFullscreenCorner(fullscreenCenterX + fullscreenInset, fullscreenCenterY + fullscreenInset, 1.0f, 1.0f);
-        } else {
-            drawFullscreenCorner(fullscreenCenterX - fullscreenArm, fullscreenCenterY - fullscreenArm, 1.0f, 1.0f);
-            drawFullscreenCorner(fullscreenCenterX + fullscreenArm, fullscreenCenterY - fullscreenArm, -1.0f, 1.0f);
-            drawFullscreenCorner(fullscreenCenterX - fullscreenArm, fullscreenCenterY + fullscreenArm, 1.0f, -1.0f);
-            drawFullscreenCorner(fullscreenCenterX + fullscreenArm, fullscreenCenterY + fullscreenArm, -1.0f, -1.0f);
-        }
+        drawFullscreenCorner(fullscreenCenterX - fullscreenOffset, fullscreenCenterY - fullscreenOffset, 1.0f, 1.0f);
+        drawFullscreenCorner(fullscreenCenterX + fullscreenOffset, fullscreenCenterY - fullscreenOffset, -1.0f, 1.0f);
+        drawFullscreenCorner(fullscreenCenterX - fullscreenOffset, fullscreenCenterY + fullscreenOffset, 1.0f, -1.0f);
+        drawFullscreenCorner(fullscreenCenterX + fullscreenOffset, fullscreenCenterY + fullscreenOffset, -1.0f, -1.0f);
         if (videoControlsHovered_ == ButtonKind::VideoFullscreen) {
             const float tooltipWidth = fullscreen_ ? 98.0f * scale : 72.0f * scale, tooltipHeight = 24.0f * scale;
             const float tooltipLeft = fullscreenCenterX - tooltipWidth * 0.5f;
@@ -9353,17 +9394,18 @@ private:
         const float muteCenterX = (layout.mute.left + layout.mute.right) * 0.5f;
         const float muteCenterY = (layout.mute.top + layout.mute.bottom) * 0.5f;
         const float speaker = 5.0f * scale;
-        renderTarget_->FillRectangle(D2D1::RectF(muteCenterX - speaker, muteCenterY - speaker * 0.45f, muteCenterX - speaker * 0.35f, muteCenterY + speaker * 0.45f), text.Get());
-        renderTarget_->DrawLine(D2D1::Point2F(muteCenterX - speaker * 0.35f, muteCenterY - speaker * 0.45f), D2D1::Point2F(muteCenterX + speaker * 0.55f, muteCenterY - speaker), text.Get(), 1.6f * scale);
-        renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker * 0.55f, muteCenterY - speaker), D2D1::Point2F(muteCenterX + speaker * 0.55f, muteCenterY + speaker), text.Get(), 1.6f * scale);
-        renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker * 0.55f, muteCenterY + speaker), D2D1::Point2F(muteCenterX - speaker * 0.35f, muteCenterY + speaker * 0.45f), text.Get(), 1.6f * scale);
+        const float muteGlyphCenterX = muteCenterX - (videoPlayer_.Muted() ? 2.5f : 1.4f) * scale;
+        renderTarget_->FillRectangle(D2D1::RectF(muteGlyphCenterX - speaker, muteCenterY - speaker * 0.45f, muteGlyphCenterX - speaker * 0.35f, muteCenterY + speaker * 0.45f), text.Get());
+        renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX - speaker * 0.35f, muteCenterY - speaker * 0.45f), D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY - speaker), text.Get(), 1.6f * scale);
+        renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY + speaker), text.Get(), 1.6f * scale);
+        renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY + speaker), D2D1::Point2F(muteGlyphCenterX - speaker * 0.35f, muteCenterY + speaker * 0.45f), text.Get(), 1.6f * scale);
         if (videoPlayer_.Muted()) {
-            renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker, muteCenterY - speaker), D2D1::Point2F(muteCenterX + speaker * 2.0f, muteCenterY + speaker), accent.Get(), 1.8f * scale);
-            renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker * 2.0f, muteCenterY - speaker), D2D1::Point2F(muteCenterX + speaker, muteCenterY + speaker), accent.Get(), 1.8f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker * 2.0f, muteCenterY + speaker), accent.Get(), 1.8f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 2.0f, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY + speaker), accent.Get(), 1.8f * scale);
         } else {
-            renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker, muteCenterY - speaker * 0.75f), D2D1::Point2F(muteCenterX + speaker * 1.55f, muteCenterY - speaker * 0.35f), text.Get(), 1.4f * scale);
-            renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker * 1.55f, muteCenterY - speaker * 0.35f), D2D1::Point2F(muteCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), text.Get(), 1.4f * scale);
-            renderTarget_->DrawLine(D2D1::Point2F(muteCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), D2D1::Point2F(muteCenterX + speaker, muteCenterY + speaker * 0.75f), text.Get(), 1.4f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY - speaker * 0.75f), D2D1::Point2F(muteGlyphCenterX + speaker * 1.55f, muteCenterY - speaker * 0.35f), text.Get(), 1.4f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 1.55f, muteCenterY - speaker * 0.35f), D2D1::Point2F(muteGlyphCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), text.Get(), 1.4f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY + speaker * 0.75f), text.Get(), 1.4f * scale);
         }
         DrawZoomHud(GetVideoZoomHudLayout(), VideoCurrentScale() * RenderTargetDpi() / 96.0f, opacity, true, videoAdjustmentsPanelOpen_);
     }
@@ -11205,6 +11247,10 @@ private:
     ULONGLONG videoControlsFadeStart_ = 0;
     bool videoControlsFadeActive_ = false;
     ULONGLONG videoFullscreenToggleTick_ = 0;
+    float videoFullscreenGlyphHoverProgress_ = 0.0f;
+    float videoFullscreenGlyphHoverStart_ = 0.0f;
+    float videoFullscreenGlyphHoverTarget_ = 0.0f;
+    ULONGLONG videoFullscreenGlyphHoverStartedAt_ = 0;
     ButtonKind hoveredButton_ = ButtonKind::None;
     ButtonKind pressedButton_ = ButtonKind::None;
     bool resetInProgress_ = false;
@@ -11707,6 +11753,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
         if (wParam == kVideoAutoPlayNextCountdownTimer) { viewer->UpdateVideoAutoPlayNextCountdown(); return 0; }
+        if (wParam == kVideoFullscreenGlyphTimer) { viewer->UpdateVideoFullscreenGlyphHover(); return 0; }
         if (wParam == kVideoAdjustmentsFadeTimer) { viewer->UpdateAdjustmentPanelsFade(); return 0; }
         if (wParam == kVideoAdjustmentsPlacementTimer) { viewer->UpdateVideoAdjustmentsPanelPlacementMotion(); return 0; }
         if (wParam == kStillDissolveTimer) { viewer->UpdateStillDissolve(); return 0; }

@@ -2535,6 +2535,13 @@ public:
         if (range >= 0 && modelViewport_.SetSelectedObjectRange(static_cast<uint32_t>(range))) { InvalidateRect(window_, nullptr, FALSE); return true; }
         modelViewport_.ClearSelectedObjectRange(); InvalidateRect(window_, nullptr, FALSE); return false;
     }
+    bool ClearModelSelectionForEscape() {
+        if (!ModelActive() || (!modelFaceSelected_ && !modelViewport_.HasSelectedObjectRange())) return false;
+        ClearModelFaceSelection();
+        modelViewport_.ClearSelectedObjectRange();
+        InvalidateRect(window_, nullptr, FALSE);
+        return true;
+    }
     void SelectAndFitModelObject(POINT point) {
         if (!SelectModelObject(point)) return;
         CancelAnimatedModelHome();
@@ -11999,6 +12006,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kImageAdjustmentPersistenceCompleteMessage: viewer->ImageAdjustmentPersistenceCompleteMessage(reinterpret_cast<ImageAdjustmentPersistenceResult*>(lParam)); return 0;
     case kExternalOpenMessage: viewer->ProcessExternalOpen(); return 0;
     case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE && viewer->ClearModelSelectionForEscape()) return 0;
         if (wParam == VK_ESCAPE && viewer->VideoPlaybackSpeedPanelOpen()) { viewer->SetVideoPlaybackSpeedPanelOpen(false); return 0; }
         if (wParam == VK_ESCAPE && viewer->VideoAdjustmentsPanelOpen()) { viewer->SetVideoAdjustmentsPanelOpen(false); return 0; }
         if (wParam == VK_ESCAPE && viewer->ImageAdjustmentsPanelOpen()) { viewer->SetImageAdjustmentsPanelOpen(false); return 0; }

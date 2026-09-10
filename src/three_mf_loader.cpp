@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cwctype>
 #include <cwchar>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -27,10 +28,10 @@ constexpr uint32_t kMaxObjects = 100'000;
 constexpr uint32_t kMaxComponentDepth = 64;
 
 struct SourceTriangle { uint32_t first = 0, second = 0, third = 0; };
-struct SourceComponent { uint32_t objectId = 0; Matrix4 transform = Matrix4::Identity(); };
+struct SourceComponent { uint32_t objectId = 0; Matrix4 transform = Matrix4::Identity(); std::wstring partPath; };
 struct SourceObject { uint32_t id = 0; std::vector<Float3> vertices; std::vector<SourceTriangle> triangles; std::vector<SourceComponent> components; };
 struct BuildItem { uint32_t objectId = 0; Matrix4 transform = Matrix4::Identity(); };
-struct ParsedModel { std::unordered_map<uint32_t, SourceObject> objects; std::vector<BuildItem> buildItems; std::wstring unit = L"millimeter"; double scaleMillimeters = 1.0; };
+struct ParsedModel { std::unordered_map<uint32_t, SourceObject> objects; std::vector<BuildItem> buildItems; std::unordered_set<std::wstring> referencedPartPaths; std::wstring unit = L"millimeter"; double scaleMillimeters = 1.0; };
 
 bool Finite(Float3 value) { return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z); }
 Float3 Sub(Float3 a, Float3 b) { return { a.x-b.x, a.y-b.y, a.z-b.z }; }
@@ -86,7 +87,7 @@ bool ParseUnit(const std::wstring& unit, double& scale) {
     if (unit == L"foot") { scale=304.8; return true; } return false;
 }
 
-bool ParseModelXml(IStream* stream, ParsedModel& model, std::wstring& error) {
+bool ParseModelXml(IStream* stream, ParsedModel& model, bool requireBuild, std::wstring& error) {
     ComPtr<IXmlReader> reader; if (FAILED(CreateXmlReader(IID_PPV_ARGS(&reader), nullptr)) || FAILED(reader->SetInput(stream))) { error=L"The 3MF model XML could not be read."; return false; }
     uint32_t currentObject = 0; bool haveModel = false; XmlNodeType type{};
     while (reader->Read(&type) == S_OK) {
@@ -96,11 +97,11 @@ bool ParseModelXml(IStream* stream, ParsedModel& model, std::wstring& error) {
             else if (wcscmp(local,L"object") == 0) { uint32_t id=0; if (!ParseUnsigned(Attribute(reader.Get(),L"id"),id) || id==0 || model.objects.size()>=kMaxObjects || model.objects.contains(id)) { error=L"The 3MF contains an invalid object ID."; return false; } model.objects.emplace(id,SourceObject{id}); currentObject=id; }
             else if (wcscmp(local,L"vertex") == 0 && currentObject) { auto object=model.objects.find(currentObject); Float3 vertex{}; if (object==model.objects.end() || !ParseFloat(Attribute(reader.Get(),L"x"),vertex.x) || !ParseFloat(Attribute(reader.Get(),L"y"),vertex.y) || !ParseFloat(Attribute(reader.Get(),L"z"),vertex.z) || !Finite(vertex) || object->second.vertices.size()>=kMaxVertices) { error=L"The 3MF contains an invalid vertex."; return false; } object->second.vertices.push_back(vertex); }
             else if (wcscmp(local,L"triangle") == 0 && currentObject) { auto object=model.objects.find(currentObject); SourceTriangle triangle{}; if (object==model.objects.end() || !ParseUnsigned(Attribute(reader.Get(),L"v1"),triangle.first) || !ParseUnsigned(Attribute(reader.Get(),L"v2"),triangle.second) || !ParseUnsigned(Attribute(reader.Get(),L"v3"),triangle.third) || object->second.triangles.size()>=kMaxTriangles) { error=L"The 3MF contains an invalid triangle."; return false; } object->second.triangles.push_back(triangle); }
-            else if (wcscmp(local,L"component") == 0 && currentObject) { auto object=model.objects.find(currentObject); SourceComponent component{}; if (object==model.objects.end() || !ParseUnsigned(Attribute(reader.Get(),L"objectid"),component.objectId) || component.objectId==0 || !ParseTransform(Attribute(reader.Get(),L"transform"),component.transform)) { error=L"The 3MF contains an invalid component transform."; return false; } object->second.components.push_back(component); }
+            else if (wcscmp(local,L"component") == 0 && currentObject) { auto object=model.objects.find(currentObject); SourceComponent component{}; component.partPath=Attribute(reader.Get(),L"path"); if (object==model.objects.end()) { error=L"The 3MF contains an invalid component."; return false; } if (!ParseUnsigned(Attribute(reader.Get(),L"objectid"),component.objectId) || component.objectId==0 || !ParseTransform(Attribute(reader.Get(),L"transform"),component.transform)) continue; if(!component.partPath.empty()) model.referencedPartPaths.insert(component.partPath); object->second.components.push_back(std::move(component)); }
             else if (wcscmp(local,L"item") == 0) { BuildItem item{}; if (!ParseUnsigned(Attribute(reader.Get(),L"objectid"),item.objectId) || item.objectId==0 || !ParseTransform(Attribute(reader.Get(),L"transform"),item.transform)) { error=L"The 3MF contains an invalid build item transform."; return false; } model.buildItems.push_back(item); }
         } else if (type == XmlNodeType_EndElement) { const wchar_t* local=nullptr; if (SUCCEEDED(reader->GetLocalName(&local,nullptr)) && local && wcscmp(local,L"object")==0) currentObject=0; }
     }
-    if (!haveModel || model.objects.empty() || model.buildItems.empty()) { error=L"The 3MF contains no usable build geometry."; return false; }
+    if (!haveModel || model.objects.empty() || (requireBuild && model.buildItems.empty())) { error=L"The 3MF contains no usable build geometry."; return false; }
     for (const auto& [id, object] : model.objects) for (const SourceTriangle& triangle : object.triangles) if (triangle.first>=object.vertices.size() || triangle.second>=object.vertices.size() || triangle.third>=object.vertices.size()) { error=L"The 3MF contains a triangle with an invalid vertex index."; return false; }
     return true;
 }
@@ -135,7 +136,22 @@ ThreeMfLoadResult LoadThreeMfDocument(const std::wstring& path) {
     Matrix4 translationCheck{}; if(!ParseTransform(L"1 0 0 0 1 0 0 0 1 10 20 30",translationCheck) || TransformPoint({0,0,0},translationCheck).x!=10 || TransformPoint({0,0,0},translationCheck).y!=20 || TransformPoint({0,0,0},translationCheck).z!=30) return {nullptr,L"The 3MF transform convention check failed."};
 #endif
     std::vector<unsigned char> xml; std::wstring partPath,error; if(!ReadThreeMfModelXml(path,xml,partPath,error))return {nullptr,std::move(error)}; ComPtr<IStream> stream=SHCreateMemStream(xml.data(),static_cast<UINT>(xml.size())); if(!stream)return {nullptr,L"The 3MF model part could not be read."};
-    ParsedModel source; if(!ParseModelXml(stream.Get(),source,error)) return {nullptr,std::move(error)};
+    ParsedModel source; if(!ParseModelXml(stream.Get(),source,true,error)) return {nullptr,std::move(error)};
+    std::unordered_set<std::wstring> loadedPartPaths;
+    while (true) {
+        std::wstring partPath;
+        for (const std::wstring& candidate : source.referencedPartPaths) if (!loadedPartPaths.contains(candidate)) { partPath=candidate; break; }
+        if (partPath.empty()) break;
+        loadedPartPaths.insert(partPath);
+        std::vector<unsigned char> partXml; std::wstring partError;
+        if (!ReadThreeMfModelXmlPart(path,partPath,partXml,partError)) continue;
+        ComPtr<IStream> partStream=SHCreateMemStream(partXml.data(),static_cast<UINT>(partXml.size())); ParsedModel part;
+        if (!partStream || !ParseModelXml(partStream.Get(),part,false,partError) || part.scaleMillimeters!=source.scaleMillimeters) continue;
+        bool mergeable=true; for(const auto& [id, object] : part.objects) if(source.objects.contains(id)) { mergeable=false; break; }
+        if (!mergeable) continue;
+        source.referencedPartPaths.insert(part.referencedPartPaths.begin(),part.referencedPartPaths.end());
+        source.objects.insert(std::make_move_iterator(part.objects.begin()),std::make_move_iterator(part.objects.end()));
+    }
     MeshGeometry mesh; ModelBounds bounds{}; bool hasBounds=false; std::vector<ModelInstanceRange> ranges; for(uint32_t index=0;index<source.buildItems.size();++index){std::unordered_set<uint32_t> stack;if(!FlattenObject(source,source.buildItems[index].objectId,source.buildItems[index].transform,index,source.buildItems[index].objectId,0,stack,mesh,bounds,hasBounds,ranges,error))return {nullptr,std::move(error)};}
     if(mesh.indices.empty()||!hasBounds) return {nullptr,L"The 3MF build contains no usable triangles."}; auto document=std::make_shared<ModelDocument>(); document->bounds=bounds; document->geometries.push_back(std::move(mesh)); document->instances.push_back({0,Matrix4::Identity()}); document->sourceFormat=ModelSourceFormat::ThreeMf; document->sourceUnit=source.unit; document->unitScaleMillimeters=source.scaleMillimeters; document->metersPerUnit=.001; document->instanceRanges=std::move(ranges); BuildSnapPlanes(*document);
 #if defined(_DEBUG)

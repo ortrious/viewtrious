@@ -51,3 +51,15 @@ bool ReadThreeMfModelXml(const std::wstring& path, std::vector<unsigned char>& x
     std::string modelName;if(!RelationshipModelPart(entries,package,modelName,error))return false;if(!modelName.empty()&&!entries.contains(modelName)){error=L"The 3MF package relationship references a missing model part.";return false;}if(modelName.empty())for(const auto& [name,entry]:entries)if(name.size()>6&&name.ends_with(".model")){if(!modelName.empty()){error=L"The 3MF package has multiple model parts without a resolvable primary part.";return false;}modelName=name;}
     if(modelName.empty()){error=L"The 3MF package has no model part.";return false;}const auto model=entries.find(modelName);if(model==entries.end()||!Extract(package,model->second,xml,error))return false;modelPartPath.assign(modelName.begin(),modelName.end());return true;
 }
+
+bool ReadThreeMfModelXmlPart(const std::wstring& path, const std::wstring& modelPartPath, std::vector<unsigned char>& xml, std::wstring& error) {
+    std::string partName; partName.reserve(modelPartPath.size());
+    for (wchar_t character : modelPartPath) { if (character > 0x7f) { error=L"The 3MF referenced model part is unsupported."; return false; } partName.push_back(static_cast<char>(character)); }
+    while (!partName.empty() && partName.front() == '/') partName.erase(partName.begin());
+    if (partName.empty() || partName.find("..") != std::string::npos) { error=L"The 3MF referenced model part path is invalid."; return false; }
+    std::unordered_map<std::string,Entry> entries; std::vector<unsigned char> package;
+    if (!ReadPackage(path, entries, package, error)) return false;
+    const auto part = entries.find(partName);
+    if (part == entries.end()) { error=L"The 3MF component references a missing model part."; return false; }
+    return Extract(package, part->second, xml, error);
+}

@@ -1409,7 +1409,7 @@ public:
         }
         return { { left, top, right, bottom }, rates };
     }
-    VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelLayout() const {
+    VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
         const VideoControlsLayout controls = GetVideoControlsLayout();
         const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
@@ -1439,9 +1439,15 @@ public:
         const RECT reset{ right - panelPadding - buttonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
         return { { left, top, right, bottom }, sliders, reset, aboveControls };
     }
+    void SynchronizeVideoAdjustmentsPanelPresentedLayout() {
+        videoAdjustmentsPanelPresentedLayout_ = GetVideoAdjustmentsPanelTargetLayout();
+    }
+    const VideoAdjustmentsPanelLayout& GetVideoAdjustmentsPanelPresentedLayout() const {
+        return videoAdjustmentsPanelPresentedLayout_;
+    }
     bool VideoAdjustmentsPanelContains(POINT point) const {
         if (!videoAdjustmentsPanelOpen_ || !VideoControlsInteractive()) return false;
-        const RECT panel = GetVideoAdjustmentsPanelLayout().panel;
+        const RECT panel = GetVideoAdjustmentsPanelPresentedLayout().panel;
         return PtInRect(&panel, point) != FALSE;
     }
     bool VideoAdjustmentsPanelVisible() const {
@@ -1510,6 +1516,7 @@ public:
         SetAdjustmentPanelOpen(videoAdjustmentsPanelOpen_, videoAdjustmentsPanelFadeActive_,
             videoAdjustmentsPanelOpacity_, videoAdjustmentsPanelFadeStartOpacity_,
             videoAdjustmentsPanelFadeStartedAt_, open);
+        SynchronizeVideoAdjustmentsPanelPresentedLayout();
         ShowVideoControls();
     }
     void UpdateAdjustmentPanelsFade() {
@@ -1524,7 +1531,7 @@ public:
     void ResetVideoAdjustments() { videoAdjustments_ = {}; ApplyVideoAdjustments(); }
     void UpdateVideoAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 7) return;
-        const RECT slider = GetVideoAdjustmentsPanelLayout().sliders[index];
+        const RECT slider = GetVideoAdjustmentsPanelPresentedLayout().sliders[index];
         const float normalized = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f);
         const int minimum = index == 6 ? 0 : -100;
         const int maximum = 100;
@@ -1867,7 +1874,7 @@ public:
             if (!VideoControlsContains(point)) { SetVideoPlaybackSpeedPanelOpen(false); return true; }
         }
         if (videoAdjustmentsPanelOpen_) {
-            const VideoAdjustmentsPanelLayout panel = GetVideoAdjustmentsPanelLayout();
+            const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
             if (PtInRect(&panel.panel, point)) {
                 for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
                     const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
@@ -3376,6 +3383,7 @@ public:
         ClampVideoPan();
         filmstripPreviewGeometryValid_ = false;
         RebuildFilmstripLayout();
+        SynchronizeVideoAdjustmentsPanelPresentedLayout();
         if (imageScaling_ != ImageScaling::Performance && source_) RefreshLanczosForImageViewChange();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -8692,9 +8700,9 @@ private:
                 DrawOverlayText(label.c_str(), static_cast<float>(panel.rates[index].left), static_cast<float>(panel.rates[index].top), static_cast<float>(panel.rates[index].right - panel.rates[index].left), static_cast<float>(panel.rates[index].bottom - panel.rates[index].top), 12.0f, selected ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL, supported ? text.Get() : border.Get(), true, false, true);
             }
         }
-        if (VideoAdjustmentsPanelVisible()) DrawVideoAdjustmentCompositeShell(layout, GetVideoAdjustmentsPanelLayout(), surface.Get(), border.Get(), scale);
+        if (VideoAdjustmentsPanelVisible()) DrawVideoAdjustmentCompositeShell(layout, GetVideoAdjustmentsPanelPresentedLayout(), surface.Get(), border.Get(), scale);
         if (VideoAdjustmentsPanelVisible()) {
-            const VideoAdjustmentsPanelLayout panel = GetVideoAdjustmentsPanelLayout();
+            const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
             const float panelOpacity = videoAdjustmentsPanelOpacity_;
             surface->SetOpacity(panelOpacity);
             border->SetOpacity(panelOpacity);
@@ -10432,6 +10440,7 @@ private:
     float videoAdjustmentsPanelOpacity_ = 0.0f;
     float videoAdjustmentsPanelFadeStartOpacity_ = 0.0f;
     ULONGLONG videoAdjustmentsPanelFadeStartedAt_ = 0;
+    VideoAdjustmentsPanelLayout videoAdjustmentsPanelPresentedLayout_{};
     int videoAdjustmentsDragging_ = -1;
     int videoAdjustmentDetentIndex_ = -1;
     int videoAdjustmentDetentValue_ = 0;

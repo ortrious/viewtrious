@@ -191,48 +191,15 @@ constexpr std::array<HelpSection, 3> kGettingStartedSections{{
     { L"browse the folder", L"after opening a file, Viewtrious can move between other supported sibling files in that folder." },
     { L"learn the controls", L"use quick tutorial for the visual walkthrough and keyboard shortcuts for the complete shortcut reference." },
 }};
-constexpr std::array<HelpSection, 4> kImageViewingSections{{
-    { L"fit and zoom", L"images open fitted to the available viewing area. use the mouse wheel to zoom, and double-click the image to switch between fitted view and 100% scale." },
-    { L"pan", L"when zoomed in, drag the image to pan." },
-    { L"folder navigation", L"the left and right viewer controls move between supported files in the current folder." },
-    { L"transparency", L"transparent image areas use the Viewtrious checkerboard background." },
-}};
-constexpr std::array<HelpSection, 4> kVideoAndAnimationSections{{
-    { L"playback", L"supported video files play inside the normal Viewtrious viewer. use the playback controls or Space to play and pause." },
-    { L"seeking", L"use the scrubber to seek through video; the controls show elapsed time and duration." },
-    { L"folder navigation", L"compatible 2D media stays together, so images, video, and animated media can be browsed naturally from the same folder." },
-    { L"animation", L"GIF files are handled as animated media rather than static images." },
-}};
-constexpr std::array<HelpSection, 4> kModelViewingSections{{
-    { L"orbit", L"use the mouse to orbit a supported 3D model." },
-    { L"pan", L"use the middle mouse button to pan the model view." },
-    { L"zoom", L"use the mouse wheel to move closer to or farther from the model." },
-    { L"reset view", L"press 0 to reset the model view." },
-}};
 constexpr std::array<HelpSection, 3> kSpaceMouseSections{{
     { L"enable SpaceMouse", L"enable or disable compatible 3Dconnexion SpaceMouse devices under 3D settings." },
     { L"3D navigation", L"in the 3D viewer, SpaceMouse provides analog model navigation." },
     { L"2D navigation", L"in the 2D image viewer, supported motion can pan and zoom the image." },
 }};
-constexpr std::array<HelpSection, 1> kKeyboardShortcutSections{{
-    { L"full shortcut list", L"keyboard shortcuts remains a direct main-menu item and contains the complete shortcut reference." },
-}};
-constexpr std::array<HelpSection, 1> kQuickTutorialSections{{
-    { L"interactive walkthrough", L"quick tutorial is a short visual introduction to the main Viewtrious controls; help provides the more complete reference." },
-}};
 constexpr std::array<HelpSection, 3> kSupportedFileTypeSections{{
     { L"images", L"PNG, JPEG, BMP, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF" },
     { L"video", L"MP4, MOV, MKV, GIF" },
     { L"3D", L"STL, 3MF; STEP and STP when the optional Open CASCADE Technology add-on is installed." },
-}};
-constexpr std::array<HelpSection, 2> kFileAssociationSections{{
-    { L"choose defaults", L"use the Viewtrious setup flow or Windows Settings to choose which supported file types open with Viewtrious." },
-    { L"change them later", L"changing a file association does not modify the file; it only changes which application Windows uses to open it." },
-}};
-constexpr std::array<HelpSection, 3> kDeletingFileSections{{
-    { L"confirmation", L"when deletion confirmation is enabled, Viewtrious asks before deleting a file. change this option in general settings." },
-    { L"after deletion", L"after a file is deleted successfully, Viewtrious continues to an appropriate neighboring file when one is available." },
-    { L"delete behavior", L"deleted files are moved to the Windows Recycle Bin rather than permanently deleted." },
 }};
 constexpr std::array<HelpSection, 4> kSettingsSections{{
     { L"general", L"application-wide behavior." },
@@ -251,17 +218,10 @@ constexpr std::array<HelpSection, 5> kTroubleshootingSections{{
     { L"SpaceMouse does not respond", L"confirm that SpaceMouse is enabled under 3D settings and that 3Dconnexion software recognizes the device." },
     { L"Viewtrious behaves unexpectedly", L"use feedback from the main menu and include the file type and steps to reproduce the problem." },
 }};
-constexpr std::array<HelpTopic, 14> kHelpTopics{{
+constexpr std::array<HelpTopic, 7> kHelpTopics{{
     { L"getting started", kGettingStartedSections.data(), kGettingStartedSections.size(), L"" },
-    { L"image viewing", kImageViewingSections.data(), kImageViewingSections.size(), L"" },
-    { L"video and animation", kVideoAndAnimationSections.data(), kVideoAndAnimationSections.size(), L"" },
-    { L"3D viewing", kModelViewingSections.data(), kModelViewingSections.size(), L"" },
     { L"SpaceMouse", kSpaceMouseSections.data(), kSpaceMouseSections.size(), L"" },
-    { L"keyboard shortcuts", kKeyboardShortcutSections.data(), kKeyboardShortcutSections.size(), L"" },
-    { L"quick tutorial", kQuickTutorialSections.data(), kQuickTutorialSections.size(), L"" },
     { L"supported file types", kSupportedFileTypeSections.data(), kSupportedFileTypeSections.size(), L"" },
-    { L"file associations", kFileAssociationSections.data(), kFileAssociationSections.size(), L"" },
-    { L"deleting files", kDeletingFileSections.data(), kDeletingFileSections.size(), L"" },
     { L"settings", kSettingsSections.data(), kSettingsSections.size(), L"" },
     { L"troubleshooting", kTroubleshootingSections.data(), kTroubleshootingSections.size(), L"" },
     { L"feedback and about", kFeedbackAndAboutSections.data(), kFeedbackAndAboutSections.size(), L"" },

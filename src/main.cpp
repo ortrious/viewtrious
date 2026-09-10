@@ -48,6 +48,7 @@
 #include <thread>
 #include <utility>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #pragma comment(lib, "d2d1.lib")
@@ -3414,6 +3415,121 @@ public:
         return contentKind_ != ContentKind::Model3D && contentKind_ != ContentKind::Video2D && source_ == nullptr;
     }
     bool EmptyStatePresentationActive() const { return TutorialActive() || EmptyStateActive(); }
+    bool ComponentsPanelVisible() const { return ModelActive() && modelViewport_.Document() && modelViewport_.Document()->componentTree.size() > 1; }
+    RECT GetComponentsPanelBounds() const { const RECT canvas = ModelCanvasBounds(); const int dpi = GetDpiForWindow(window_); const int inset = MulDiv(12, dpi, 96); return { canvas.left + inset, canvas.top + inset, canvas.left + inset + MulDiv(240, dpi, 96), canvas.bottom - inset }; }
+    RECT GetComponentsPanelContentBounds() const { RECT bounds = GetComponentsPanelBounds(); bounds.top += MulDiv(34, GetDpiForWindow(window_), 96); bounds.left += MulDiv(4, GetDpiForWindow(window_), 96); bounds.right -= MulDiv(4, GetDpiForWindow(window_), 96); bounds.bottom -= MulDiv(4, GetDpiForWindow(window_), 96); return bounds; }
+    bool ComponentsPanelContains(POINT point) const { const RECT panel = GetComponentsPanelBounds(); return ComponentsPanelVisible() && PtInRect(&panel, point); }
+    void EnsureComponentsPanelDocument() {
+        const ModelDocument* document = modelViewport_.Document().get();
+        if (componentPanelDocument_ == document) return;
+        componentPanelDocument_ = document;
+        componentPanelCollapsed_.clear();
+        componentPanelScroll_ = 0.0f;
+        componentPanelHoverRow_ = -1;
+    }
+    void AppendVisibleComponentRows(std::vector<uint32_t>& rows) const {
+        rows.clear();
+        if (!ComponentsPanelVisible()) return;
+        const auto& tree = modelViewport_.Document()->componentTree;
+        std::vector<bool> visited(tree.size());
+        std::function<void(uint32_t)> append = [&](uint32_t id) {
+            if (id >= tree.size() || visited[id]) return;
+            visited[id] = true;
+            rows.push_back(id);
+            if (componentPanelCollapsed_.contains(id)) return;
+            for (uint32_t child : tree[id].children) append(child);
+        };
+        for (const auto& node : tree) if (node.parentId == UINT32_MAX) append(node.id);
+    }
+    float ComponentsPanelRowHeight() const { return static_cast<float>(MulDiv(28, GetDpiForWindow(window_), 96)); }
+    float ComponentsPanelMaxScroll() const {
+        std::vector<uint32_t> rows;
+        AppendVisibleComponentRows(rows);
+        const RECT content = GetComponentsPanelContentBounds();
+        return std::max(0.0f, rows.size() * ComponentsPanelRowHeight() - static_cast<float>(content.bottom - content.top));
+    }
+    void ClampComponentsPanelScroll() { componentPanelScroll_ = std::clamp(componentPanelScroll_, 0.0f, ComponentsPanelMaxScroll()); }
+    int ComponentsPanelRowAt(POINT point) const {
+        const RECT content = GetComponentsPanelContentBounds();
+        if (!PtInRect(&content, point)) return -1;
+        std::vector<uint32_t> rows;
+        AppendVisibleComponentRows(rows);
+        const size_t index = static_cast<size_t>((point.y - content.top + componentPanelScroll_) / ComponentsPanelRowHeight());
+        return index < rows.size() ? static_cast<int>(rows[index]) : -1;
+    }
+    void SetComponentsPanelHover(POINT point) {
+        EnsureComponentsPanelDocument();
+        const int row = ComponentsPanelRowAt(point);
+        if (componentPanelHoverRow_ == row) return;
+        componentPanelHoverRow_ = row;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ClearComponentsPanelHover() { SetComponentsPanelHover({ -1, -1 }); }
+    void ClickComponentsPanel(POINT point) {
+        EnsureComponentsPanelDocument();
+        const int row = ComponentsPanelRowAt(point);
+        if (row >= 0) {
+            const auto& node = modelViewport_.Document()->componentTree[static_cast<size_t>(row)];
+            if (!node.children.empty()) {
+                if (componentPanelCollapsed_.contains(static_cast<uint32_t>(row))) componentPanelCollapsed_.erase(static_cast<uint32_t>(row));
+                else componentPanelCollapsed_.insert(static_cast<uint32_t>(row));
+                ClampComponentsPanelScroll();
+            }
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void BeginComponentsPanelInteraction(POINT point) { componentPanelInteractionActive_ = true; ClickComponentsPanel(point); }
+    bool ComponentsPanelInteractionActive() const { return componentPanelInteractionActive_; }
+    void EndComponentsPanelInteraction() { componentPanelInteractionActive_ = false; }
+    void DrawComponentsPanel() {
+        if (!ComponentsPanelVisible() || !renderTarget_) return;
+        EnsureComponentsPanelDocument();
+        ClampComponentsPanelScroll();
+        const RECT panel = GetComponentsPanelBounds(), content = GetComponentsPanelContentBounds();
+        const float dpi = GetDpiForWindow(window_) / 96.0f, rowHeight = ComponentsPanelRowHeight();
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, hover;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(36.0f / 255, 39.0f / 255, 46.0f / 255, .94f), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(76.0f / 255, 80.0f / 255, 91.0f / 255), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(55.0f / 255, 59.0f / 255, 70.0f / 255), &hover))) return;
+        const D2D1_RECT_F bounds = D2D1::RectF(static_cast<float>(panel.left), static_cast<float>(panel.top), static_cast<float>(panel.right), static_cast<float>(panel.bottom));
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bounds, 6 * dpi, 6 * dpi), surface.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(bounds, 6 * dpi, 6 * dpi), border.Get(), 1.0f);
+        DrawOverlayText(L"components", bounds.left + 12 * dpi, bounds.top, bounds.right - bounds.left - 24 * dpi, 32 * dpi, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true);
+        renderTarget_->DrawLine(D2D1::Point2F(bounds.left, static_cast<float>(content.top)), D2D1::Point2F(bounds.right, static_cast<float>(content.top)), border.Get(), 1.0f);
+        std::vector<uint32_t> rows;
+        AppendVisibleComponentRows(rows);
+        const auto& tree = modelViewport_.Document()->componentTree;
+        renderTarget_->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(content.left), static_cast<float>(content.top), static_cast<float>(content.right), static_cast<float>(content.bottom)), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        for (size_t index = 0; index < rows.size(); ++index) {
+            const uint32_t id = rows[index];
+            const auto& node = tree[id];
+            int depth = 0;
+            uint32_t parent = node.parentId;
+            for (size_t guard = 0; parent != UINT32_MAX && parent < tree.size() && guard < tree.size(); ++guard) {
+                ++depth;
+                parent = tree[parent].parentId;
+            }
+            const float top = static_cast<float>(content.top) + index * rowHeight - componentPanelScroll_;
+            const D2D1_RECT_F row = D2D1::RectF(static_cast<float>(content.left), top, static_cast<float>(content.right), top + rowHeight);
+            if (componentPanelHoverRow_ == static_cast<int>(id)) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(row, 3 * dpi, 3 * dpi), hover.Get());
+            const float chevronX = row.left + 10 * dpi + depth * 16 * dpi;
+            if (!node.children.empty()) {
+                const float middle = top + rowHeight * .5f;
+                if (componentPanelCollapsed_.contains(id)) {
+                    renderTarget_->DrawLine(D2D1::Point2F(chevronX, middle - 5 * dpi), D2D1::Point2F(chevronX + 5 * dpi, middle), text.Get(), 1.0f);
+                    renderTarget_->DrawLine(D2D1::Point2F(chevronX + 5 * dpi, middle), D2D1::Point2F(chevronX, middle + 5 * dpi), text.Get(), 1.0f);
+                } else {
+                    renderTarget_->DrawLine(D2D1::Point2F(chevronX - 4 * dpi, middle - 2 * dpi), D2D1::Point2F(chevronX + 1 * dpi, middle + 3 * dpi), text.Get(), 1.0f);
+                    renderTarget_->DrawLine(D2D1::Point2F(chevronX + 1 * dpi, middle + 3 * dpi), D2D1::Point2F(chevronX + 6 * dpi, middle - 2 * dpi), text.Get(), 1.0f);
+                }
+            }
+            const float textLeft = row.left + 24 * dpi + depth * 16 * dpi;
+            DrawOverlayText(node.name.c_str(), textLeft, top, row.right - textLeft - 8 * dpi, rowHeight, 13.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
+        }
+        renderTarget_->PopAxisAlignedClip();
+    }
+    void ScrollComponentsPanel(float amount) { EnsureComponentsPanelDocument(); componentPanelScroll_ += amount; ClampComponentsPanelScroll(); InvalidateRect(window_, nullptr, FALSE); }
     ButtonKind ButtonAt(POINT point) const {
         const auto contains = [&point](RECT bounds) { return PtInRect(&bounds, point) != FALSE; };
         if (HelpCloseContains(point)) return ButtonKind::HelpClose;
@@ -3841,7 +3957,7 @@ public:
                 EnsureBitmap();
                 if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); DrawGifPlaybackControls(); }
             } else if (EmptyStatePresentationActive()) DrawEmptyState();
-            if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); }
+            if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); DrawComponentsPanel(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
             if (!tutorialPresentation_) DrawRevisionLabel();
             DrawTitleBar();
@@ -11397,6 +11513,11 @@ private:
     bool viewBarVisualStyleMenuOpen_ = false;
     SettingsPage settingsPage_ = SettingsPage::General;
     float settingsScroll_ = 0.0f;
+    float componentPanelScroll_ = 0.0f;
+    mutable int componentPanelHoverRow_ = -1;
+    std::unordered_set<uint32_t> componentPanelCollapsed_;
+    const ModelDocument* componentPanelDocument_ = nullptr;
+    bool componentPanelInteractionActive_ = false;
     float helpScroll_ = 0.0f;
     int helpTopic_ = 0;
     int helpTopicHover_ = -1;
@@ -11596,6 +11717,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->ScrollHelp(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
             return 0;
         }
+        if (viewer->ComponentsPanelContains(point)) { viewer->ScrollComponentsPanel(-static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA * MulDiv(54, GetDpiForWindow(window), 96)); return 0; }
         if (viewer->FilmstripContains(point)) {
             viewer->ScrollFilmstrip(GET_WHEEL_DELTA_WPARAM(wParam));
             return 0;
@@ -11610,6 +11732,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_LBUTTONDBLCLK: {
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->ComponentsPanelContains(point)) return 0;
         if (viewer->FilmstripContains(point)) return 0;
         if (viewer->ButtonAt(point) == ButtonKind::ImageAdjustments) {
             viewer->SetButtonPressed(ButtonKind::ImageAdjustments);
@@ -11744,6 +11867,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             else viewer->DismissModelViewBarMenu();
             return 0;
         }
+        if (viewer->ComponentsPanelContains(point)) {
+            viewer->BeginComponentsPanelInteraction(point);
+            SetCapture(window);
+            return 0;
+        }
         viewer->SetFilmstripHover({ -1, -1 });
         if (viewer->BeginFilmstripHoverDelaySlider(point)) {
             SetCapture(window);
@@ -11790,14 +11918,19 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         return 0;
     }
-    case WM_MBUTTONDOWN:
+    case WM_MBUTTONDOWN: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->ComponentsPanelContains(point)) return 0;
         if (!viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen() && viewer->ModelActive()) {
-            viewer->BeginModelPan({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            viewer->BeginModelPan(point);
             SetCapture(window);
             return 0;
         }
         break;
-    case WM_MBUTTONDBLCLK:
+    }
+    case WM_MBUTTONDBLCLK: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->ComponentsPanelContains(point)) return 0;
         if (!viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen() && viewer->ModelActive()) {
             viewer->BeginAnimatedModelHome();
             return 0;
@@ -11813,6 +11946,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             }
         }
         break;
+    }
     case WM_MOUSEMOVE: {
         viewer->UpdateTriangleCountTooltipHover({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         if (viewer->TutorialActive()) {
@@ -11867,6 +12001,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         const FrameMetrics frame = GetFrameMetrics(window);
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->ComponentsPanelInteractionActive() || viewer->ComponentsPanelContains(point)) {
+            viewer->SetComponentsPanelHover(point);
+            return 0;
+        }
         if (viewer->FilmstripHoverDelaySliderDragging()) viewer->UpdateFilmstripHoverDelaySlider(point);
         viewer->SetFilmstripPointerState(point);
         viewer->SetFilmstripHover(point);
@@ -11890,8 +12028,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         return 0;
     }
-    case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->VideoControlsMouseLeave(); return 0;
+    case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->ClearComponentsPanelHover(); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->VideoControlsMouseLeave(); return 0;
     case WM_LBUTTONUP: {
+        if (viewer->ComponentsPanelInteractionActive()) {
+            viewer->EndComponentsPanelInteraction();
+            if (GetCapture() == window) ReleaseCapture();
+            return 0;
+        }
         if (viewer->FilmstripHoverDelaySliderDragging()) {
             viewer->EndFilmstripHoverDelaySlider();
             if (GetCapture() == window) ReleaseCapture();
@@ -11971,17 +12114,21 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         viewer->EndPan(); viewer->EndModelDrag(); if (GetCapture() == window) ReleaseCapture(); return 0;
     }
-    case WM_MBUTTONUP:
+    case WM_MBUTTONUP: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->ComponentsPanelContains(point)) return 0;
         if (viewer->ModelActive()) {
             viewer->EndModelDrag();
             if (GetCapture() == window) ReleaseCapture();
             return 0;
         }
         break;
+    }
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->EndModelDrag(); viewer->EndFilmstripHoverDelaySlider(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->CancelImageAdjustmentsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->EndModelDrag(); viewer->EndComponentsPanelInteraction(); viewer->EndFilmstripHoverDelaySlider(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->CancelImageAdjustmentsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->ComponentsPanelContains(point)) return 0;
         viewer->HideFilmstripHoverPreviewImmediately();
         viewer->SetFilmstripHover({ -1, -1 });
         if (!viewer->TutorialActive()) { if (viewer->ModelActive()) viewer->SelectModelFace(point); viewer->OpenContextMenu(point); }

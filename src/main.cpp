@@ -5476,9 +5476,12 @@ public:
     }
 
     bool BeginSwipeNavigation(POINT point) {
+        const D2D1_RECT_F imageCanvas = ImageCanvasBounds();
+        const bool canvasContains = VideoActive() ? VideoCanvasContains(point) :
+            point.x >= imageCanvas.left && point.x < imageCanvas.right && point.y >= imageCanvas.top && point.y < imageCanvas.bottom;
         if (!swipeToNavigateWhenFit_ || ModelActive() || CanPan() || currentPath_.empty() ||
             CanvasNavigationZoneAt(point) != ButtonKind::None || VideoControlsContains(point) ||
-            !(VideoActive() ? VideoContains(point) : ImageContains(point))) return false;
+            !canvasContains) return false;
         swipeNavigationPending_ = true;
         swipeNavigationStart_ = point;
         SetCapture(window_);

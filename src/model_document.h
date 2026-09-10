@@ -60,6 +60,15 @@ struct ModelInstanceRange {
     ModelBounds bounds{};
 };
 
+struct ModelComponentNode {
+    uint32_t id = 0;
+    uint32_t parentId = UINT32_MAX;
+    std::vector<uint32_t> children;
+    std::wstring name;
+    int32_t instanceRange = -1;
+    uint32_t sourceObjectId = 0;
+};
+
 struct ModelDocument {
     std::vector<MeshGeometry> geometries;
     std::vector<MeshInstance> instances;
@@ -70,6 +79,7 @@ struct ModelDocument {
     std::wstring sourceUnit = L"unspecified";
     double unitScaleMillimeters = 1.0;
     std::vector<ModelInstanceRange> instanceRanges;
+    std::vector<ModelComponentNode> componentTree;
     std::optional<double> metersPerUnit; // STL does not define units.
     // STEP retains the XDE document behind this opaque owner so future CAD-aware
     // inspection can resolve triangleCadFaceIds back to B-Rep topology.

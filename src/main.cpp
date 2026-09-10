@@ -2069,7 +2069,6 @@ public:
                 if (PtInRect(&panel.resetButton, point)) { ResetImageAdjustments(); return true; }
                 return true;
             }
-            if (ButtonAt(point) != ButtonKind::ImageAdjustments) { SetImageAdjustmentsPanelOpen(false); return true; }
         }
         return false;
     }

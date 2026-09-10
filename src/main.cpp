@@ -1518,7 +1518,8 @@ public:
         const LONG button = MulDiv(36, dpi, 96), gap = MulDiv(4, dpi, 96), padding = MulDiv(6, dpi, 96);
         const LONG width = button * 3 + gap * 2 + padding * 2;
         LONG bottom = canvas.bottom - MulDiv(16, dpi, 96);
-        if (FilmstripVisible()) bottom = std::min(bottom, GetFilmstripBounds().top - MulDiv(12, dpi, 96));
+        // Keep the independent GIF island visibly separate from an open filmstrip.
+        if (FilmstripVisible()) bottom = std::min(bottom, GetFilmstripBounds().top - MulDiv(24, dpi, 96));
         const LONG top = std::max(canvas.top + padding, bottom - button - padding * 2);
         const LONG left = std::clamp((canvas.left + canvas.right - width) / 2, canvas.left + padding, std::max(canvas.left + padding, canvas.right - padding - width));
         const RECT island{ left, top, left + width, top + button + padding * 2 };

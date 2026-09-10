@@ -54,7 +54,11 @@ bool RunCase(const PixelBuffer& source, float scale) {
 } // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    const fs::path path = argc > 1 ? fs::path(argv[1]) : fs::path(L"assets/ViewtriousLogoRuntime.png");
+    if (argc <= 1) {
+        std::fwprintf(stderr, L"Usage: ViewtriousLanczosBenchmark <image-path>\n");
+        return 1;
+    }
+    const fs::path path(argv[1]);
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     PixelBuffer source;
     if ((FAILED(com) && com != RPC_E_CHANGED_MODE) || !DecodePbgra(path, source)) {

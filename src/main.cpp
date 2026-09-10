@@ -1453,10 +1453,13 @@ public:
         const int bottomGap = MulDiv(24, dpi, 96);
         const int zoomHudClearance = MulDiv(12, dpi, 96);
         const int height = MulDiv(84, dpi, 96);
-        const int preferredWidth = MulDiv(420, dpi, 96);
+        const int compactWidth = MulDiv(420, dpi, 96);
+        const int preferredWidth = MulDiv(640, dpi, 96);
+        const int sideClearance = MulDiv(110, dpi, 96);
         const LONG availableWidth = std::max(1L, canvas.right - canvas.left - margin * 2);
         const bool aboveControls = VideoAdjustmentsPanelAboveControls();
-        const int width = std::min(preferredWidth, static_cast<int>(availableWidth));
+        const int responsiveWidth = static_cast<int>(canvas.right - canvas.left) - sideClearance * 2;
+        const int width = std::min(static_cast<int>(availableWidth), std::clamp(responsiveWidth, compactWidth, preferredWidth));
         const int centeredLeft = static_cast<int>(canvas.left + (canvas.right - canvas.left - width) / 2);
         const int left = centeredLeft;
         const bool zoomHudAtBottom = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::BottomRight;

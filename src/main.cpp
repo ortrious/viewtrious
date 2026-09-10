@@ -525,6 +525,7 @@ bool IsHeifPath(const std::wstring& path) {
 }
 
 bool IsGifPath(const std::wstring& path) { return LowercaseExtension(path) == L".gif"; }
+bool IsDngPath(const std::wstring& path) { return LowercaseExtension(path) == L".dng"; }
 bool IsExternalOpenPath(const std::wstring& path) { return !path.empty() && IsTwoDimensionalMediaPath(fs::path(path)); }
 
 std::wstring FormatFramesPerSecond(float value) {
@@ -2762,6 +2763,7 @@ public:
     }
     void DismissOverlay() {
         if (!HasOverlay()) return;
+        if (overlay_ == OverlayKind::PrintError) printErrorForDng_ = false;
         overlay_ = OverlayKind::None;
         if (alwaysShowFilmstrip_) StartFilmstripHold(UINT_MAX);
         ShowVideoControls();
@@ -7239,7 +7241,10 @@ private:
         SHELLEXECUTEINFOW execute{ sizeof(execute) };
         execute.fMask = SEE_MASK_FLAG_NO_UI; execute.hwnd = window_; execute.lpVerb = L"print";
         execute.lpFile = currentPath_.c_str(); execute.nShow = SW_SHOWNORMAL;
-        if (!ShellExecuteExW(&execute)) ShowOverlay(OverlayKind::PrintError);
+        if (!ShellExecuteExW(&execute)) {
+            printErrorForDng_ = IsDngPath(currentPath_);
+            ShowOverlay(OverlayKind::PrintError);
+        }
     }
 
     static UINT RotatedOrientation(UINT orientation, bool clockwise) {
@@ -9819,11 +9824,11 @@ private:
         const int rowHeight = GetShortcutRowHeight();
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
             overlay_ == OverlayKind::Settings ? 760 : overlay_ == OverlayKind::ResetConfirm ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
-            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : overlay_ == OverlayKind::PrintError && printErrorForDng_ ? 500 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? MulDiv(114, dpi, 96) + static_cast<int>(kShortcutEntryCount) * rowHeight
             : overlay_ == OverlayKind::Settings ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::ResetConfirm ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(printErrorForDng_ ? 250 : 190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -10463,10 +10468,11 @@ private:
         } else if (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) {
             const RECT dismissBounds = GetPrintErrorDismissButtonBounds();
             const bool registrationError = overlay_ == OverlayKind::RegistrationError;
-            DrawOverlayText(registrationError ? L"unable to register Viewtrious file types" : L"unable to print this file", left, static_cast<float>(bounds.top) + panelPadding,
+            const bool dngPrintError = overlay_ == OverlayKind::PrintError && printErrorForDng_;
+            DrawOverlayText(registrationError ? L"unable to register Viewtrious file types" : dngPrintError ? L"unable to print this DNG file" : L"unable to print this file", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, registrationError ? 52.0f * dpiScale : 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
-            DrawOverlayText(registrationError ? L"Viewtrious could not prepare Windows file associations." : L"Windows could not start printing this file.", left, static_cast<float>(bounds.top) + panelPadding + (registrationError ? 62.0f : 46.0f) * dpiScale,
-                contentWidth, 42.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
+            DrawOverlayText(registrationError ? L"Viewtrious could not prepare Windows file associations." : dngPrintError ? L"DNG files contain raw camera image data and cannot be printed directly by the standard Windows print path. Save or export the image to a standard image format before printing." : L"Windows could not start printing this file.", left, static_cast<float>(bounds.top) + panelPadding + (registrationError ? 62.0f : 46.0f) * dpiScale,
+                contentWidth, dngPrintError ? 100.0f * dpiScale : 42.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
             const D2D1_RECT_F dismiss = D2D1::RectF(static_cast<float>(dismissBounds.left), static_cast<float>(dismissBounds.top),
                 static_cast<float>(dismissBounds.right), static_cast<float>(dismissBounds.bottom));
             ComPtr<ID2D1SolidColorBrush> hover, pressed;
@@ -11391,6 +11397,7 @@ private:
     bool hamburgerHovered_ = false;
     bool hamburgerPressed_ = false;
     OverlayKind overlay_ = OverlayKind::None;
+    bool printErrorForDng_ = false;
     bool dropdownOpen_ = false;
     bool triangleCountTooltipHovering_ = false;
     bool triangleCountTooltipVisible_ = false;

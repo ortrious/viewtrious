@@ -6571,11 +6571,14 @@ public:
     void UpdateVideoTitleMetadata() {
         if (!VideoActive()) return;
         DWORD width = 0, height = 0;
-        if (videoPlayer_.GetNativeVideoSize(width, height)) resolutionText_ = std::to_wstring(width) + L" x " + std::to_wstring(height);
+        std::wstring metadata;
+        if (videoPlayer_.GetNativeVideoSize(width, height)) metadata = std::to_wstring(width) + L" x " + std::to_wstring(height);
         float framesPerSecond = 0.0f;
         if (videoPlayer_.TryGetFramesPerSecond(framesPerSecond)) {
-            if (!resolutionText_.empty()) resolutionText_ += L"  \x2022  " + FormatFramesPerSecond(framesPerSecond);
+            const std::wstring framesText = FormatFramesPerSecond(framesPerSecond);
+            if (!metadata.empty() && !framesText.empty()) metadata += L"  \x2022  " + framesText;
         }
+        if (!metadata.empty()) resolutionText_ = std::move(metadata);
     }
     void VideoPlaybackWakeMessage(uint64_t generation) {
         uint64_t expected = generation;

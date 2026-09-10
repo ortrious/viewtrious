@@ -854,6 +854,7 @@ struct VideoControlsLayout {
 struct VideoAdjustmentsPanelLayout {
     RECT panel;
     std::array<RECT, 7> sliders;
+    RECT autoButton;
     RECT originalButton;
     RECT resetButton;
     bool aboveControls = false;
@@ -1516,13 +1517,16 @@ public:
             const int y = top + MulDiv(18, dpi, 96) + index * rowHeight;
             sliders[index] = { sliderLeft, y, sliderRight, y + MulDiv(20, dpi, 96) };
         }
+        const int footerGap = MulDiv(8, dpi, 96);
+        const int autoButtonWidth = MulDiv(58, dpi, 96);
         const int originalButtonWidth = MulDiv(78, dpi, 96);
-        const int resetButtonWidth = MulDiv(74, dpi, 96);
+        const int resetButtonWidth = MulDiv(60, dpi, 96);
         const int buttonHeight = MulDiv(30, dpi, 96);
         const int buttonBottom = bottom - panelPadding;
-        const RECT original{ left + panelPadding, buttonBottom - buttonHeight, left + panelPadding + originalButtonWidth, buttonBottom };
+        const RECT autoButton{ left + panelPadding, buttonBottom - buttonHeight, left + panelPadding + autoButtonWidth, buttonBottom };
+        const RECT original{ autoButton.right + footerGap, buttonBottom - buttonHeight, autoButton.right + footerGap + originalButtonWidth, buttonBottom };
         const RECT reset{ right - panelPadding - resetButtonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
-        return { panel, sliders, original, reset, aboveControls };
+        return { panel, sliders, autoButton, original, reset, aboveControls };
     }
     VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
         const VideoControlsLayout controls = GetVideoControlsLayout();
@@ -1743,6 +1747,11 @@ public:
         videoPlayer_.SetDisplayAdjustmentsBypassed(active);
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void SetImageAdjustmentsOriginalPreview(bool active) {
+        if (imageAdjustmentsOriginalPreviewActive_ == active) return;
+        imageAdjustmentsOriginalPreviewActive_ = active;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     bool VideoAdjustmentsPanelOpen() const { return videoAdjustmentsPanelOpen_; }
     void SetAdjustmentPanelOpen(bool& panelOpen, bool& fadeActive, float& opacity,
             float& fadeStartOpacity, ULONGLONG& fadeStartedAt, bool open) {
@@ -1827,6 +1836,16 @@ public:
         if (videoAdjustmentHashResolved_) adjustmentPersistence_.Save(videoAdjustmentHash_, videoAdjustments_, AdjustmentMediaKind::Video);
     }
     void ResetVideoAdjustments() { videoAdjustments_ = {}; ApplyVideoAdjustments(); QueueVideoAdjustmentPersistence(); }
+    void AutoVideoAdjustments() {
+        AiImageBuffer image{};
+        if (!videoPlayer_.CopyCurrentFrameBgra(image.pixels, image.width, image.height) || !image.width || !image.height) return;
+        image.stride = image.width * 4;
+        ImageAdjustments result = videoAdjustments_;
+        if (!ComputeAutoImageAdjustments(image, result)) return;
+        videoAdjustments_.exposure = result.exposure; videoAdjustments_.brightness = result.brightness; videoAdjustments_.contrast = result.contrast;
+        videoAdjustments_.shadows = result.shadows; videoAdjustments_.highlights = result.highlights; videoAdjustments_.saturation = result.saturation;
+        ApplyVideoAdjustments(); QueueVideoAdjustmentPersistence();
+    }
     void UpdateVideoAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 7) return;
         const RECT slider = GetVideoAdjustmentsPanelPresentedLayout().sliders[index];
@@ -1903,10 +1922,15 @@ public:
             sliders[index] = { panel.left + labelWidth, y, panel.right - valueWidth - MulDiv(12, dpi, 96), y + MulDiv(20, dpi, 96) };
         }
         const int buttonTop = panel.top + MulDiv(240, dpi, 96);
-        const int buttonWidth = MulDiv(74, dpi, 96);
-        const RECT reset{ panel.right - buttonWidth, buttonTop, panel.right, buttonTop + MulDiv(30, dpi, 96) };
-        const RECT ai = aiAddon_.Available() ? RECT{ panel.right - buttonWidth * 2 - gap, buttonTop, panel.right - buttonWidth - gap, buttonTop + MulDiv(30, dpi, 96) } : RECT{};
-        return { panel, sliders, ai, reset };
+        const int footerGap = MulDiv(8, dpi, 96);
+        const int autoButtonWidth = MulDiv(58, dpi, 96);
+        const int originalButtonWidth = MulDiv(78, dpi, 96);
+        const int resetButtonWidth = MulDiv(60, dpi, 96);
+        const int buttonHeight = MulDiv(30, dpi, 96);
+        const RECT autoButton{ panel.left, buttonTop, panel.left + autoButtonWidth, buttonTop + buttonHeight };
+        const RECT original{ autoButton.right + footerGap, buttonTop, autoButton.right + footerGap + originalButtonWidth, buttonTop + buttonHeight };
+        const RECT reset{ panel.right - resetButtonWidth, buttonTop, panel.right, buttonTop + buttonHeight };
+        return { panel, sliders, autoButton, original, reset };
     }
     const ImageAdjustmentsPanelLayout& GetImageAdjustmentsPanelLayout() const {
         return ImageAdjustmentsPanelVisible() ? videoAdjustmentsPanelPresentedLayout_ : imageAdjustmentsPanelTargetLayout_;
@@ -1938,6 +1962,10 @@ public:
         const bool wasMoving = VideoAdjustmentsPanelMotionActive();
         if (wasMoving) UpdateVideoAdjustmentsPanelPlacementMotion();
         imageAdjustmentsDragging_ = -1;
+        if (!open && imageAdjustmentsOriginalPreviewActive_) {
+            SetImageAdjustmentsOriginalPreview(false);
+            if (GetCapture() == window_) ReleaseCapture();
+        }
         SetAdjustmentPanelOpen(imageAdjustmentsPanelOpen_, imageAdjustmentsPanelFadeActive_,
             imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_,
             imageAdjustmentsPanelFadeStartedAt_, open);
@@ -1989,7 +2017,6 @@ public:
     }
 
     void StartAiAnalysis() {
-        if (!aiAddon_.Available()) return;
         if (aiAnalysisRunning_.exchange(true)) return;
         AiImageBuffer image;
         if (!BuildAiImage(image)) { aiAnalysisRunning_ = false; return; }
@@ -2027,7 +2054,8 @@ public:
                     const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
                     if (PtInRect(&hit, point)) { imageAdjustmentsDragging_ = index; imageAdjustmentDetentIndex_ = -1; UpdateImageAdjustmentSlider(index, point); return true; }
                 }
-                if (aiAddon_.Available() && PtInRect(&panel.originalButton, point)) { StartAiAnalysis(); return true; }
+                if (PtInRect(&panel.autoButton, point)) { StartAiAnalysis(); return true; }
+                if (PtInRect(&panel.originalButton, point)) { SetImageAdjustmentsOriginalPreview(true); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetImageAdjustments(); return true; }
                 return true;
             }
@@ -2041,12 +2069,17 @@ public:
         return true;
     }
     bool EndImageAdjustmentsInteraction(POINT point) {
+        if (imageAdjustmentsOriginalPreviewActive_) { SetImageAdjustmentsOriginalPreview(false); return true; }
         if (imageAdjustmentsDragging_ < 0) return false;
         UpdateImageAdjustmentSlider(imageAdjustmentsDragging_, point);
         imageAdjustmentsDragging_ = -1;
         imageAdjustmentDetentIndex_ = -1;
         FlushImageAdjustmentPersistence();
         return true;
+    }
+    void CancelImageAdjustmentsInteraction() {
+        imageAdjustmentsDragging_ = -1;
+        SetImageAdjustmentsOriginalPreview(false);
     }
     bool VideoControlsInteractive() const { return VideoActive() && videoControlsOpacity_ > 0.05f; }
     ButtonKind VideoControlAt(POINT point) const {
@@ -2189,6 +2222,7 @@ public:
                     const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
                     if (PtInRect(&hit, point)) { videoAdjustmentsDragging_ = index; videoAdjustmentDetentIndex_ = -1; UpdateVideoAdjustmentSlider(index, point); return true; }
                 }
+                if (PtInRect(&panel.autoButton, point)) { AutoVideoAdjustments(); return true; }
                 if (PtInRect(&panel.originalButton, point)) { SetVideoAdjustmentsOriginalPreview(true); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetVideoAdjustments(); return true; }
                 return true;
@@ -8824,12 +8858,12 @@ private:
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
         renderTarget_->PushAxisAlignedClip(canvas, D2D1_ANTIALIAS_MODE_ALIASED);
         if (imageHasTransparency_) DrawCheckerboard(destination);
-        if (imageAdjustments_.IsNeutral() && !gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
+        if ((imageAdjustments_.IsNeutral() || imageAdjustmentsOriginalPreviewActive_) && !gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
             renderTarget_->DrawBitmap(lanczosBitmap_.Get(), lanczosDestination_, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         else {
             ID2D1Bitmap* displayed = bitmap_.Get();
             D2D1_RECT_F adjustedDestination = destination;
-            if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) { displayed = imageAdjustedBitmap_.Get(); if (imageAdjustmentUsesLanczos_) adjustedDestination = lanczosDestination_; }
+            if (!imageAdjustmentsOriginalPreviewActive_ && !imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) { displayed = imageAdjustedBitmap_.Get(); if (imageAdjustmentUsesLanczos_) adjustedDestination = lanczosDestination_; }
             renderTarget_->DrawBitmap(displayed, adjustedDestination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         }
         renderTarget_->PopAxisAlignedClip();
@@ -8851,7 +8885,7 @@ private:
         renderTarget_->PushAxisAlignedClip(canvas, D2D1_ANTIALIAS_MODE_ALIASED);
         ID2D1Bitmap* displayed = bitmap_.Get();
         D2D1_RECT_F adjustedDestination = newDestination;
-        if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) {
+        if (!imageAdjustmentsOriginalPreviewActive_ && !imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) {
             displayed = imageAdjustedBitmap_.Get();
             if (imageAdjustmentUsesLanczos_) adjustedDestination = lanczosDestination_;
         }
@@ -8966,8 +9000,10 @@ private:
             const std::wstring value = std::to_wstring(static_cast<int>(std::lround(values[index] * 100.0f)));
             DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
-        const auto drawButton = [&](const RECT& bounds, const wchar_t* label) { renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), hover.Get()); DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true); };
-        if (aiAddon_.Available()) drawButton(panel.originalButton, aiAnalysisRunning_ ? L"AI..." : L"AI Auto"); drawButton(panel.resetButton, L"reset");
+        const auto drawButton = [&](const RECT& bounds, const wchar_t* label, bool pressed = false) { renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent.Get() : hover.Get()); DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true); };
+        drawButton(panel.autoButton, L"AUTO", aiAnalysisRunning_);
+        drawButton(panel.originalButton, L"ORIGINAL", imageAdjustmentsOriginalPreviewActive_);
+        drawButton(panel.resetButton, L"RESET");
     }
 
     void DrawRevisionLabel() {
@@ -9174,8 +9210,9 @@ private:
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent.Get() : hover.Get());
                 DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
             };
+            drawPanelButton(panel.autoButton, L"AUTO");
             drawPanelButton(panel.originalButton, L"ORIGINAL", videoAdjustmentsOriginalPreviewActive_);
-            drawPanelButton(panel.resetButton, L"reset");
+            drawPanelButton(panel.resetButton, L"RESET");
             surface->SetOpacity(1.0f);
             border->SetOpacity(1.0f);
             text->SetOpacity(1.0f);
@@ -10832,6 +10869,7 @@ private:
     ULONGLONG imageAdjustmentsPanelFadeStartedAt_ = 0;
     ImageAdjustmentsPanelLayout imageAdjustmentsPanelTargetLayout_{};
     int imageAdjustmentsDragging_ = -1;
+    bool imageAdjustmentsOriginalPreviewActive_ = false;
     int imageAdjustmentDetentIndex_ = -1;
     int imageAdjustmentDetentValue_ = 0;
     bool videoAdjustmentsPanelOpen_ = false;
@@ -11587,7 +11625,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         break;
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->EndModelDrag(); viewer->EndFilmstripHoverDelaySlider(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->EndModelDrag(); viewer->EndFilmstripHoverDelaySlider(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->CancelImageAdjustmentsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         viewer->HideFilmstripHoverPreviewImmediately();

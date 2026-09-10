@@ -1359,6 +1359,7 @@ public:
         const UINT dpi = GetDpiForWindow(window_);
         const int margin = MulDiv(16, dpi, 96);
         const int bottomGap = MulDiv(24, dpi, 96);
+        const int zoomHudClearance = MulDiv(12, dpi, 96);
         const int height = MulDiv(84, dpi, 96);
         const int preferredWidth = MulDiv(420, dpi, 96);
         const LONG availableWidth = std::max(1L, canvas.right - canvas.left - margin * 2);
@@ -1366,7 +1367,10 @@ public:
         const int width = std::min(preferredWidth, static_cast<int>(availableWidth));
         const int centeredLeft = static_cast<int>(canvas.left + (canvas.right - canvas.left - width) / 2);
         const int left = centeredLeft;
-        const int top = static_cast<int>(std::max(canvas.top, canvas.bottom - bottomGap - height));
+        const bool zoomHudAtBottom = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::BottomRight;
+        const LONG preferredTop = canvas.bottom - bottomGap - height;
+        const LONG maximumTop = zoomHudAtBottom ? GetVideoZoomHudLayout().combined.top - zoomHudClearance - height : preferredTop;
+        const int top = static_cast<int>(std::max(canvas.top, std::min(preferredTop, maximumTop)));
         const int padding = std::min(MulDiv(10, dpi, 96), std::max(2, width / 24));
         const int timelineHeight = MulDiv(28, dpi, 96);
         const int rowGap = std::min(MulDiv(5, dpi, 96), std::max(2, height / 16));

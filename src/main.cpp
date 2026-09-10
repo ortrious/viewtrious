@@ -62,6 +62,10 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"ViewtriousWindow";
 constexpr wchar_t kWindowTitle[] = L"Viewtrious";
+constexpr wchar_t kPrimaryMutexName[] = L"Local\\Viewtrious.PrimaryReuseTarget.v1";
+constexpr ULONG_PTR kExternalOpenCopyDataMagic = 0x5654524F00010001ull;
+constexpr DWORD_PTR kPrimaryWindowMagic = 0x5654524Fu;
+constexpr UINT kExternalOpenMessage = WM_APP + 16;
 constexpr UINT kBuildNavigationMessage = WM_APP + 1;
 constexpr UINT kDirectoryChangedMessage = WM_APP + 3;
 constexpr UINT kFullDecodeCompleteMessage = WM_APP + 4;
@@ -178,7 +182,7 @@ enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm,
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
-    SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
+    SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
@@ -191,6 +195,7 @@ enum class AxisIndicatorPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopL
 enum class ZoomHudPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
 enum class SettingsPage { General, Image2D, Video2D, Model3D };
 enum class ContentKind { None, Image2D, Model3D, Video2D };
+enum class ExternalOpenBehavior : DWORD { NewWindow = 0, SameWindow = 1 };
 enum class FilmstripVisibilityState { Hidden, Revealing, Holding, Fading };
 
 struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
@@ -517,6 +522,7 @@ bool IsHeifPath(const std::wstring& path) {
 }
 
 bool IsGifPath(const std::wstring& path) { return LowercaseExtension(path) == L".gif"; }
+bool IsExternalOpenPath(const std::wstring& path) { return !path.empty() && IsTwoDimensionalMediaPath(fs::path(path)); }
 
 std::wstring FormatFramesPerSecond(float value) {
     if (!std::isfinite(value) || value <= 0.0f) return {};
@@ -588,6 +594,51 @@ void WriteSetting(const wchar_t* name, DWORD value) {
     if (RegCreateKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
     RegSetValueExW(key, name, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&value), sizeof(value));
     RegCloseKey(key);
+}
+
+ExternalOpenBehavior ReadExternalOpenBehavior(const wchar_t* name) {
+    DWORD value = static_cast<DWORD>(ExternalOpenBehavior::NewWindow);
+    ReadSetting(name, value);
+    return value == static_cast<DWORD>(ExternalOpenBehavior::SameWindow) ? ExternalOpenBehavior::SameWindow : ExternalOpenBehavior::NewWindow;
+}
+
+bool ShouldReuseExistingWindowForExternalOpen(const std::wstring& path) {
+    if (!IsExternalOpenPath(path)) return false;
+    return ReadExternalOpenBehavior(IsVideoPath(path) ? L"VideoExternalOpenBehavior" : L"ImageExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
+}
+
+UINT gPrimaryWindowQueryMessage = 0;
+bool gPrimaryReuseTarget = false;
+
+struct PrimaryWindowSearch { HWND window = nullptr; };
+BOOL CALLBACK FindPrimaryWindowProc(HWND window, LPARAM parameter) {
+    auto* search = reinterpret_cast<PrimaryWindowSearch*>(parameter);
+    wchar_t className[64]{};
+    if (!GetClassNameW(window, className, 64) || wcscmp(className, kWindowClass) != 0) return TRUE;
+    DWORD_PTR response = 0;
+    if (SendMessageTimeoutW(window, gPrimaryWindowQueryMessage, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 200, &response) && response == kPrimaryWindowMagic) {
+        search->window = window;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+bool ForwardExternalOpenToPrimary(const std::wstring& path) {
+    if (!gPrimaryWindowQueryMessage || path.empty() || path.size() >= 32768) return false;
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        PrimaryWindowSearch search{};
+        EnumWindows(FindPrimaryWindowProc, reinterpret_cast<LPARAM>(&search));
+        if (search.window) {
+            COPYDATASTRUCT data{};
+            data.dwData = kExternalOpenCopyDataMagic;
+            data.cbData = static_cast<DWORD>((path.size() + 1) * sizeof(wchar_t));
+            data.lpData = const_cast<wchar_t*>(path.c_str());
+            DWORD_PTR delivered = 0;
+            if (SendMessageTimeoutW(search.window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&data), SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &delivered) && delivered) return true;
+        }
+        Sleep(75);
+    }
+    return false;
 }
 
 void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const wchar_t* name, LONG error);
@@ -1026,6 +1077,8 @@ public:
         DWORD videoVolumeMilli = 1000;
         ReadSetting(L"VideoVolumeMilli", videoVolumeMilli);
         videoVolume_ = videoVolumeMilli <= 1000 ? static_cast<double>(videoVolumeMilli) / 1000.0 : 1.0;
+        reuseImageWindow_ = ReadExternalOpenBehavior(L"ImageExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
+        reuseVideoWindow_ = ReadExternalOpenBehavior(L"VideoExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
         DWORD onboardingVersion = 0;
         onboardingRequired_ = !ReadSetting(L"OnboardingVersion", onboardingVersion) || onboardingVersion < 1;
         DWORD tourPending = 0;
@@ -1050,6 +1103,21 @@ public:
         DeactivateModel();
         contentKind_ = ContentKind::Image2D;
         return LoadImage(path, resetNavigation);
+    }
+    void QueueExternalOpen(std::wstring path) {
+        if (!IsExternalOpenPath(path)) return;
+        externalOpenQueue_.push_back(std::move(path));
+        PostMessageW(window_, kExternalOpenMessage, 0, 0);
+    }
+    void ProcessExternalOpen() {
+        if (externalOpenQueue_.empty()) return;
+        std::wstring path = std::move(externalOpenQueue_.front());
+        externalOpenQueue_.pop_front();
+        if (IsIconic(window_)) ShowWindow(window_, SW_RESTORE);
+        BringWindowToTop(window_);
+        SetForegroundWindow(window_);
+        LoadContent(path);
+        if (!externalOpenQueue_.empty()) PostMessageW(window_, kExternalOpenMessage, 0, 0);
     }
 
     HRESULT LoadImage(const std::wstring& path, bool resetNavigation = true) {
@@ -2737,7 +2805,9 @@ public:
             const RECT include = GetSettingsSingleColumnBounds(remember.bottom + SettingsStackGap(), L"include hidden images in folder");
             const RECT confirm = GetSettingsSingleColumnBounds(include.bottom + SettingsStackGap(), L"confirm before deleting images");
             const RECT swipe = GetSettingsSingleColumnBounds(confirm.bottom + SettingsStackGap(), L"swipe to navigate when fit");
-            return option == 0 ? remember : option == 1 ? include : option == 2 ? confirm : swipe;
+            const RECT reuseImages = GetSettingsSingleColumnBounds(swipe.bottom + SettingsStackGap(), L"reuse current window for images / GIFs");
+            const RECT reuseVideos = GetSettingsSingleColumnBounds(reuseImages.bottom + SettingsStackGap(), L"reuse current window for videos");
+            return option == 0 ? remember : option == 1 ? include : option == 2 ? confirm : option == 3 ? swipe : option == 4 ? reuseImages : reuseVideos;
         }
         if (settingsPage_ == SettingsPage::Image2D) {
             const RECT animations = GetSettingsSingleColumnBounds(firstTop, L"animations and face effects");
@@ -2792,10 +2862,10 @@ public:
     static bool SameGraphicsAdapterLuid(const LUID& left, const LUID& right) { return left.HighPart == right.HighPart && left.LowPart == right.LowPart; }
     std::wstring GraphicsAdapterLabel() const { if (graphicsAdapterAuto_) return L"Auto (High Performance)"; for (const auto& adapter : graphicsAdapters_) if (SameGraphicsAdapterLuid(adapter.luid, graphicsAdapterLuid_)) return adapter.name; return L"Saved adapter unavailable"; }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
-        const RECT swipe = GetSettingsOptionBounds(3);
+        const RECT finalGeneralOption = GetSettingsOptionBounds(5);
         const int buttonWidth = MulDiv(76, GetDpiForWindow(window_), 96), gap = MulDiv(8, GetDpiForWindow(window_), 96);
         const int left = SettingsContentLeft() + static_cast<int>(preference) * (buttonWidth + gap);
-        RECT result{ left, swipe.bottom + SettingsSectionGap() + MulDiv(static_cast<int>(kSettingsSectionHeadingHeightDips + kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96), left + buttonWidth, 0 };
+        RECT result{ left, finalGeneralOption.bottom + SettingsSectionGap() + MulDiv(static_cast<int>(kSettingsSectionHeadingHeightDips + kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96), left + buttonWidth, 0 };
         result.bottom = result.top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96);
         return result;
     }
@@ -3197,6 +3267,8 @@ public:
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
                 if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsSwipeToNavigateWhenFit;
+                if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsReuseImageWindow;
+                if (settingsContains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsReuseVideoWindow;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -3369,6 +3441,8 @@ public:
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
         else if (button == ButtonKind::SettingsSwipeToNavigateWhenFit) ToggleSwipeToNavigateWhenFit();
+        else if (button == ButtonKind::SettingsReuseImageWindow) { reuseImageWindow_ = !reuseImageWindow_; WriteSetting(L"ImageExternalOpenBehavior", reuseImageWindow_ ? 1 : 0); InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::SettingsReuseVideoWindow) { reuseVideoWindow_ = !reuseVideoWindow_; WriteSetting(L"VideoExternalOpenBehavior", reuseVideoWindow_ ? 1 : 0); InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsShowZoomHud) ToggleShowZoomPercentage();
         else if (button == ButtonKind::SettingsZoomHudPositionToggle) { zoomHudPositionMenuOpen_ = !zoomHudPositionMenuOpen_; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsZoomHudBottomLeft) SetZoomHudPosition(ZoomHudPosition::BottomLeft);
@@ -9850,8 +9924,7 @@ private:
                 for(int i=0;i<(int)items.size();++i) { const D2D1_RECT_F item=D2D1::RectF((float)menu.left,(float)(menu.top+i*row),(float)menu.right,(float)(menu.top+(i+1)*row)); const bool active=i==selected, hover=(i<(int)buttons.size()&&hoveredButton_==buttons[i])||i==hoveredItem; if(active)renderTarget_->FillRectangle(item,accent.Get()); else if(hover)renderTarget_->FillRectangle(item,rowHover.Get()); DrawOverlayText(items[i],item.left+kDropdownLeftPaddingDips*dpiScale,item.top,item.right-item.left-kDropdownLeftPaddingDips*dpiScale,item.bottom-item.top,13,DWRITE_FONT_WEIGHT_NORMAL,active?checkmark.Get():primaryBrush.Get(),true); }
             };
             if (settingsPage_ == SettingsPage::General) {
-            const RECT swipeBounds = GetSettingsOptionBounds(3);
-            const float appearanceTop = static_cast<float>(swipeBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
+            const float appearanceTop = static_cast<float>(GetSettingsOptionBounds(5).bottom - bounds.top + SettingsSectionGap()) / dpiScale;
             const RECT themeBounds = GetSettingsThemeBounds(ThemePreference::System);
             const float defaultTypesTop = static_cast<float>(themeBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
             const RECT defaultAppsLayoutBounds = GetSettingsDefaultAppsButtonBounds();
@@ -9860,6 +9933,8 @@ private:
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden images in folder", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
             drawToggle(3, ButtonKind::SettingsSwipeToNavigateWhenFit, L"swipe to navigate when fit", swipeToNavigateWhenFit_);
+            drawToggle(4, ButtonKind::SettingsReuseImageWindow, L"reuse current window for images / GIFs", reuseImageWindow_);
+            drawToggle(5, ButtonKind::SettingsReuseVideoWindow, L"reuse current window for videos", reuseVideoWindow_);
             group(L"THEME", appearanceTop);
             DrawOverlayText(L"", settingsLeft, static_cast<float>(bounds.top) + (appearanceTop + 28.0f) * dpiScale, settingsWidth,
                 22.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
@@ -10720,6 +10795,9 @@ private:
     std::atomic<uint64_t> videoPlaybackWakePendingGeneration_{ 0 };
     std::atomic<LONGLONG> videoPlaybackWakeQpc_{ 0 };
     bool videoPausedSeekRefreshPending_ = false;
+    std::deque<std::wstring> externalOpenQueue_;
+    bool reuseImageWindow_ = false;
+    bool reuseVideoWindow_ = false;
     ImageAdjustments videoAdjustments_;
     ImageAdjustments imageAdjustments_;
     ImageAdjustmentPersistence adjustmentPersistence_;
@@ -11041,6 +11119,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->SetWindow(window);
     }
     if (!viewer) return DefWindowProcW(window, message, wParam, lParam);
+    if (message == gPrimaryWindowQueryMessage) return gPrimaryReuseTarget ? static_cast<LRESULT>(kPrimaryWindowMagic) : 0;
+    if (message == WM_COPYDATA) {
+        if (!gPrimaryReuseTarget) return FALSE;
+        const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lParam);
+        if (!data || data->dwData != kExternalOpenCopyDataMagic || data->cbData < sizeof(wchar_t) * 2 || data->cbData > 65536 || data->cbData % sizeof(wchar_t) != 0 || !data->lpData) return FALSE;
+        const auto* path = static_cast<const wchar_t*>(data->lpData);
+        const size_t characters = data->cbData / sizeof(wchar_t);
+        if (path[characters - 1] != L'\0') return FALSE;
+        for (size_t index = 0; index + 1 < characters; ++index) if (path[index] == L'\0') return FALSE;
+        viewer->QueueExternalOpen(std::wstring(path, characters - 1));
+        return TRUE;
+    }
 
     if (message == WM_GETMINMAXINFO) {
         auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
@@ -11549,6 +11639,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kVideoPlaybackWakeMessage: viewer->VideoPlaybackWakeMessage(static_cast<uint64_t>(wParam)); return 0;
     case kAiAnalysisCompleteMessage: viewer->AiAnalysisCompleteMessage(reinterpret_cast<AiAnalysisResult*>(lParam)); return 0;
     case kImageAdjustmentPersistenceCompleteMessage: viewer->ImageAdjustmentPersistenceCompleteMessage(reinterpret_cast<ImageAdjustmentPersistenceResult*>(lParam)); return 0;
+    case kExternalOpenMessage: viewer->ProcessExternalOpen(); return 0;
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE && viewer->VideoPlaybackSpeedPanelOpen()) { viewer->SetVideoPlaybackSpeedPanelOpen(false); return 0; }
         if (wParam == VK_ESCAPE && viewer->VideoAdjustmentsPanelOpen()) { viewer->SetVideoAdjustmentsPanelOpen(false); return 0; }
@@ -11606,6 +11697,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     const std::wstring path = (arguments && argumentCount > 1) ? arguments[1] : L"";
     if (arguments) LocalFree(arguments);
 
+    gPrimaryWindowQueryMessage = RegisterWindowMessageW(L"Viewtrious.PrimaryReuseTarget.Query.v1");
+    HANDLE primaryMutex = CreateMutexW(nullptr, FALSE, kPrimaryMutexName);
+    gPrimaryReuseTarget = primaryMutex && GetLastError() != ERROR_ALREADY_EXISTS;
+    if (path.size() && !gPrimaryReuseTarget && ShouldReuseExistingWindowForExternalOpen(path) && ForwardExternalOpenToPrimary(path)) {
+        if (primaryMutex) CloseHandle(primaryMutex);
+        CoUninitialize();
+        return 0;
+    }
+
     Viewer viewer(timer);
     viewer.Initialize(path);
 
@@ -11643,7 +11743,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     HWND window = CreateWindowExW(0, kWindowClass, kWindowTitle, windowStyle,
         bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
         nullptr, nullptr, instance, &viewer);
-    if (!window) { CoUninitialize(); return 1; }
+    if (!window) { if (primaryMutex) CloseHandle(primaryMutex); CoUninitialize(); return 1; }
 
     SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(windowClass.hIcon));
     SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(windowClass.hIconSm));
@@ -11663,6 +11763,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    if (primaryMutex) CloseHandle(primaryMutex);
     CoUninitialize();
     return static_cast<int>(message.wParam);
 }

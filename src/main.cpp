@@ -129,7 +129,7 @@ constexpr ULONGLONG kFilmstripHoverPreviewFadeDurationMs = kStillDissolveDuratio
 constexpr ULONGLONG kVideoAdjustmentsFadeDurationMs = kStillDissolveDurationMs;
 constexpr ULONGLONG kVideoAdjustmentsPlacementDurationMs = 240;
 constexpr ULONGLONG kVideoAdjustmentsOpenDurationMs = 230;
-constexpr ULONGLONG kVideoAdjustmentsCloseDurationMs = 180;
+constexpr ULONGLONG kVideoAdjustmentsCloseDurationMs = 220;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
 constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
@@ -1532,7 +1532,7 @@ public:
             centerX = targetX + directionX * overshoot * (1.0f - phase);
             centerY = targetY + directionY * overshoot * (1.0f - phase);
         } else if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Closing) {
-            const float phase = VideoAdjustmentsPlacementProgress(progress);
+            const float phase = progress * progress * progress;
             centerX = startX + (targetX - startX) * phase;
             centerY = startY + (targetY - startY) * phase;
         }
@@ -1694,7 +1694,7 @@ public:
         const ULONGLONG duration = videoAdjustmentsPanelOpen_ ? kVideoAdjustmentsOpenDurationMs : kVideoAdjustmentsCloseDurationMs;
         const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - videoAdjustmentsPanelFadeStartedAt_) /
             static_cast<float>(duration));
-        const float eased = videoAdjustmentsPanelOpen_ ? VideoAdjustmentsPlacementProgress(progress) : SmoothTransitionProgress(progress);
+        const float eased = videoAdjustmentsPanelOpen_ ? VideoAdjustmentsPlacementProgress(progress) : progress;
         videoAdjustmentsPanelOpacity_ = videoAdjustmentsPanelOpen_
             ? videoAdjustmentsPanelFadeStartOpacity_ + (1.0f - videoAdjustmentsPanelFadeStartOpacity_) * eased
             : videoAdjustmentsPanelFadeStartOpacity_ * (1.0f - eased);

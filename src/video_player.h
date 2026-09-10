@@ -46,7 +46,7 @@ public:
     void RecordFramePacingPresent(HRESULT result);
     void FlushFramePacingDiagnostics();
     bool Playing() const { return playing_; }
-    bool Ended() const { return engine_ && engine_->IsEnded(); }
+    bool Ended() const { return ended_; }
     bool Active() const { return engine_ != nullptr; }
     bool Failed() const { return failed_; }
     bool HasValidFrame() const { return hasValidFrame_; }
@@ -80,6 +80,7 @@ private:
     bool mediaFoundationStarted_ = false;
     bool ready_ = false;
     bool playing_ = false;
+    bool ended_ = false;
     bool failed_ = false;
     bool hasValidFrame_ = false;
     bool adjustedFrameValid_ = false;

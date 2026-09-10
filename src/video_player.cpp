@@ -169,7 +169,7 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
 
 void VideoPlayer::Shutdown() {
     FlushFramePacingDiagnostics();
-    playing_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
+    playing_ = ended_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
     lastTransferredPts_ = 0;
     framesPerSecond_ = 0.0f;
     effectivePlaybackRate_ = 1.0;
@@ -261,9 +261,9 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
         if (FAILED(play)) { error = L"Viewtrious could not start video playback."; failed_ = true; }
         else { playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackBegin); }
     } else if (event == MF_MEDIA_ENGINE_EVENT_PLAYING) {
-        playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackResume);
+        playing_ = true; ended_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackResume);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ENDED) {
-        playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackEnd);
+        playing_ = false; ended_ = true; engine_->Pause(); RecordFramePacingEvent(FramePacingEvent::PlaybackEnd);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ERROR) {
         error = L"Viewtrious could not decode this video. It may be corrupt or use an unsupported codec.";
         failed_ = true; playing_ = false;
@@ -279,9 +279,10 @@ HRESULT VideoPlayer::TogglePlayPause() {
         return pause;
     }
     else {
-        if (engine_->IsEnded()) {
+        if (ended_) {
             const HRESULT restart = engine_->SetCurrentTime(0.0);
             if (FAILED(restart)) return restart;
+            ended_ = false;
         }
         const HRESULT play = engine_->Play();
         if (SUCCEEDED(play)) { playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackResume); }
@@ -303,8 +304,10 @@ bool VideoPlayer::GetPlaybackTimes(double& currentSeconds, double& durationSecon
 bool VideoPlayer::Seek(double seconds) {
     double current = 0.0, duration = 0.0;
     if (!GetPlaybackTimes(current, duration)) return false;
-    RecordFramePacingEvent(FramePacingEvent::PlaybackSeek, 0, S_OK, seconds);
-    const HRESULT result = engine_->SetCurrentTime(std::clamp(seconds, 0.0, duration));
+    const double target = std::clamp(seconds, 0.0, duration);
+    RecordFramePacingEvent(FramePacingEvent::PlaybackSeek, 0, S_OK, target);
+    const HRESULT result = engine_->SetCurrentTime(target);
+    if (SUCCEEDED(result) && target < duration) ended_ = false;
     return SUCCEEDED(result);
 }
 

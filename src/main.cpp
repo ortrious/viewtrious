@@ -868,12 +868,7 @@ struct ZoomHudLayout {
     bool hasZoom;
 };
 
-struct ImageAdjustmentsPanelLayout {
-    RECT panel;
-    std::array<RECT, 7> sliders;
-    RECT autoButton;
-    RECT resetButton;
-};
+using ImageAdjustmentsPanelLayout = VideoAdjustmentsPanelLayout;
 
 struct VideoPlaybackSpeedPanelLayout {
     RECT panel;
@@ -1886,7 +1881,7 @@ public:
         return GetZoomHudLayout({ static_cast<LONG>(bounds.left), static_cast<LONG>(bounds.top), static_cast<LONG>(bounds.right), static_cast<LONG>(bounds.bottom) }, true);
     }
     ZoomHudLayout GetVideoZoomHudLayout() const { return GetZoomHudLayout(ModelCanvasBounds(), true); }
-    ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelLayout() const {
+    ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelTargetLayout() const {
         const ZoomHudLayout hud = GetImageZoomHudLayout();
         const D2D1_RECT_F canvas = ImageCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
@@ -1913,6 +1908,9 @@ public:
         const RECT ai = aiAddon_.Available() ? RECT{ panel.right - buttonWidth * 2 - gap, buttonTop, panel.right - buttonWidth - gap, buttonTop + MulDiv(30, dpi, 96) } : RECT{};
         return { panel, sliders, ai, reset };
     }
+    const ImageAdjustmentsPanelLayout& GetImageAdjustmentsPanelLayout() const {
+        return ImageAdjustmentsPanelVisible() ? videoAdjustmentsPanelPresentedLayout_ : imageAdjustmentsPanelTargetLayout_;
+    }
     void ApplyImageAdjustments() {
         imageAdjustedBitmap_.Reset();
         InvalidateRect(window_, nullptr, FALSE);
@@ -1937,10 +1935,15 @@ public:
         return imageAdjustmentsPanelOpen_ || imageAdjustmentsPanelFadeActive_ || imageAdjustmentsPanelOpacity_ > 0.001f;
     }
     void SetImageAdjustmentsPanelOpen(bool open) {
+        const bool wasMoving = VideoAdjustmentsPanelMotionActive();
+        if (wasMoving) UpdateVideoAdjustmentsPanelPlacementMotion();
         imageAdjustmentsDragging_ = -1;
         SetAdjustmentPanelOpen(imageAdjustmentsPanelOpen_, imageAdjustmentsPanelFadeActive_,
             imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_,
             imageAdjustmentsPanelFadeStartedAt_, open);
+        imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
+        if (open) BeginVideoAdjustmentsPanelOpenMotion(imageAdjustmentsPanelTargetLayout_, wasMoving);
+        else BeginVideoAdjustmentsPanelCloseMotion(imageAdjustmentsPanelTargetLayout_);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleAdjustments() {
@@ -2024,7 +2027,7 @@ public:
                     const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
                     if (PtInRect(&hit, point)) { imageAdjustmentsDragging_ = index; imageAdjustmentDetentIndex_ = -1; UpdateImageAdjustmentSlider(index, point); return true; }
                 }
-                if (aiAddon_.Available() && PtInRect(&panel.autoButton, point)) { StartAiAnalysis(); return true; }
+                if (aiAddon_.Available() && PtInRect(&panel.originalButton, point)) { StartAiAnalysis(); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetImageAdjustments(); return true; }
                 return true;
             }
@@ -3698,7 +3701,11 @@ public:
         ClampVideoPan();
         filmstripPreviewGeometryValid_ = false;
         RebuildFilmstripLayout();
-        SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
+        if (VideoActive()) SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
+        else if (ImageAdjustmentsPanelVisible()) {
+            imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
+            videoAdjustmentsPanelPresentedLayout_ = imageAdjustmentsPanelTargetLayout_;
+        }
         if (imageScaling_ != ImageScaling::Performance && source_) RefreshLanczosForImageViewChange();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -8960,7 +8967,7 @@ private:
             DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
         const auto drawButton = [&](const RECT& bounds, const wchar_t* label) { renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), hover.Get()); DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true); };
-        if (aiAddon_.Available()) drawButton(panel.autoButton, aiAnalysisRunning_ ? L"AI..." : L"AI Auto"); drawButton(panel.resetButton, L"reset");
+        if (aiAddon_.Available()) drawButton(panel.originalButton, aiAnalysisRunning_ ? L"AI..." : L"AI Auto"); drawButton(panel.resetButton, L"reset");
     }
 
     void DrawRevisionLabel() {
@@ -10823,6 +10830,7 @@ private:
     float imageAdjustmentsPanelOpacity_ = 0.0f;
     float imageAdjustmentsPanelFadeStartOpacity_ = 0.0f;
     ULONGLONG imageAdjustmentsPanelFadeStartedAt_ = 0;
+    ImageAdjustmentsPanelLayout imageAdjustmentsPanelTargetLayout_{};
     int imageAdjustmentsDragging_ = -1;
     int imageAdjustmentDetentIndex_ = -1;
     int imageAdjustmentDetentValue_ = 0;

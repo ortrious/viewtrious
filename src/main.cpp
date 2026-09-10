@@ -8789,8 +8789,16 @@ private:
                 DrawOverlayText(label.c_str(), static_cast<float>(panel.rates[index].left), static_cast<float>(panel.rates[index].top), static_cast<float>(panel.rates[index].right - panel.rates[index].left), static_cast<float>(panel.rates[index].bottom - panel.rates[index].top), 12.0f, selected ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL, supported ? text.Get() : border.Get(), true, false, true);
             }
         }
-        if (VideoAdjustmentsPanelVisible()) DrawVideoAdjustmentCompositeShell(layout, GetVideoAdjustmentsPanelPresentedLayout(), surface.Get(), border.Get(), scale);
-        if (VideoAdjustmentsPanelVisible()) {
+        const bool adjustmentsPanelVisible = VideoAdjustmentsPanelVisible();
+        const bool adjustmentsPanelMoving = adjustmentsPanelVisible && videoAdjustmentsPanelPlacementMotionActive_;
+        if (adjustmentsPanelVisible && !adjustmentsPanelMoving)
+            DrawVideoAdjustmentCompositeShell(layout, GetVideoAdjustmentsPanelPresentedLayout(), surface.Get(), border.Get(), scale);
+        const D2D1_RECT_F island = rect(layout.island);
+        if (!adjustmentsPanelVisible || adjustmentsPanelMoving) {
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), 1.0f * scale);
+        }
+        if (adjustmentsPanelVisible) {
             const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
             const float panelOpacity = videoAdjustmentsPanelOpacity_;
             surface->SetOpacity(panelOpacity);
@@ -8799,6 +8807,10 @@ private:
             accent->SetOpacity(panelOpacity);
             track->SetOpacity(panelOpacity);
             hover->SetOpacity(panelOpacity);
+            if (adjustmentsPanelMoving) {
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), 1.0f * scale);
+            }
             const bool legacyShellDisabled = false;
             if (legacyShellDisabled) {
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
@@ -8879,11 +8891,6 @@ private:
             accent->SetOpacity(1.0f);
             track->SetOpacity(1.0f);
             hover->SetOpacity(1.0f);
-        }
-        const D2D1_RECT_F island = rect(layout.island);
-        if (!VideoAdjustmentsPanelVisible()) {
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), 1.0f * scale);
         }
         if (videoControlsHovered_ == ButtonKind::VideoPlayPause) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playPause), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());

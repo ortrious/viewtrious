@@ -850,6 +850,7 @@ struct VideoControlsLayout {
     RECT stepBackward;
     RECT stepForward;
     RECT mute;
+    RECT volume;
     RECT autoPlayNext;
     RECT playbackSpeed;
     RECT fullscreen;
@@ -1483,6 +1484,9 @@ public:
         const int fullscreenLeft = left + width - padding - buttonWidth;
         const int speedLeft = fullscreenLeft - gap - speedWidth;
         const int autoPlayNextLeft = speedLeft - gap - buttonWidth;
+        const int volumeLeft = muteLeft + buttonWidth + gap;
+        const int volumeAvailable = std::max(1, autoPlayNextLeft - gap - volumeLeft);
+        const int volumeWidth = std::min(MulDiv(90, dpi, 96), std::max(MulDiv(44, dpi, 96), volumeAvailable));
         return { { left, top, left + width, top + height },
             { currentLeft, top + padding, currentLeft + timeWidth, top + padding + timelineHeight },
             { scrubberLeft, top + padding, scrubberRight, top + padding + timelineHeight },
@@ -1491,6 +1495,7 @@ public:
             { stepBackwardLeft, controlTop, stepBackwardLeft + buttonWidth, controlTop + buttonWidth },
             { stepForwardLeft, controlTop, stepForwardLeft + buttonWidth, controlTop + buttonWidth },
             { muteLeft, controlTop, muteLeft + buttonWidth, controlTop + buttonWidth },
+            { volumeLeft, controlTop, volumeLeft + volumeWidth, controlTop + buttonWidth },
             { autoPlayNextLeft, controlTop, autoPlayNextLeft + buttonWidth, controlTop + buttonWidth },
             { speedLeft, controlTop, speedLeft + speedWidth, controlTop + buttonWidth },
             { fullscreenLeft, controlTop, fullscreenLeft + buttonWidth, controlTop + buttonWidth } };
@@ -2095,6 +2100,13 @@ public:
             layout.scrubber.right, layout.scrubber.top + (layout.scrubber.bottom - layout.scrubber.top) / 2 + MulDiv(12, GetDpiForWindow(window_), 96) };
         return hit.right > hit.left && PtInRect(&hit, point);
     }
+    bool VideoVolumeContains(POINT point) const {
+        if (!VideoControlsInteractive()) return false;
+        const RECT volume = GetVideoControlsLayout().volume;
+        const int padding = MulDiv(6, GetDpiForWindow(window_), 96);
+        const RECT hit{ volume.left, volume.top - padding, volume.right, volume.bottom + padding };
+        return hit.right > hit.left && PtInRect(&hit, point);
+    }
     bool VideoCanvasContains(POINT point) const {
         if (!VideoActive()) return false;
         const RECT canvas = ModelCanvasBounds();
@@ -2135,7 +2147,7 @@ public:
         videoControlsFadeActive_ = false;
         videoControlsLastActivity_ = GetTickCount64();
         KillTimer(window_, kVideoControlsTimer);
-        if (videoPlayer_.Playing() && !videoControlsPointerOver_ && !videoScrubbing_ && !videoPlaybackSpeedPanelOpen_)
+        if (videoPlayer_.Playing() && !videoControlsPointerOver_ && !videoScrubbing_ && !videoVolumeDragging_ && !videoPlaybackSpeedPanelOpen_)
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -2149,6 +2161,7 @@ public:
         videoControlsFadeActive_ = false;
         videoControlsPointerOver_ = false;
         videoScrubbing_ = false;
+        videoVolumeDragging_ = false;
         videoWasPlayingBeforeScrub_ = false;
         videoAdjustmentsPanelOpen_ = false;
         videoAdjustmentsPanelFadeActive_ = false;
@@ -2167,6 +2180,7 @@ public:
         StopVideoStepHold();
         SetVideoAdjustmentsOriginalPreview(false);
         videoScrubbing_ = false;
+        videoVolumeDragging_ = false;
         videoWasPlayingBeforeScrub_ = false;
         videoAdjustmentsPanelOpen_ = false;
         videoAdjustmentsPanelFadeActive_ = false;
@@ -2240,6 +2254,11 @@ public:
             UpdateVideoScrub(point);
             return true;
         }
+        if (VideoVolumeContains(point)) {
+            videoVolumeDragging_ = true;
+            UpdateVideoVolume(point);
+            return true;
+        }
         const ButtonKind control = VideoControlAt(point);
         if (control == ButtonKind::VideoPlayPause) ToggleVideoPlayPause();
         else if (control == ButtonKind::VideoStepBackward) BeginVideoStepHold(-1);
@@ -2252,6 +2271,7 @@ public:
     }
     bool ContinueVideoControlsInteraction(POINT point) {
         if (videoAdjustmentsDragging_ >= 0) { UpdateVideoAdjustmentSlider(videoAdjustmentsDragging_, point); return true; }
+        if (videoVolumeDragging_) { UpdateVideoVolume(point); return true; }
         if (!videoScrubbing_) return false;
         ShowVideoControls();
         videoScrubbing_ = true;
@@ -2266,6 +2286,7 @@ public:
             ShowVideoControls();
             return true;
         }
+        if (videoVolumeDragging_) { UpdateVideoVolume(point); videoVolumeDragging_ = false; return true; }
         if (!videoScrubbing_) return false;
         UpdateVideoScrub(point);
         videoScrubbing_ = false;
@@ -2281,7 +2302,7 @@ public:
         lastMousePoint_ = point;
         const bool wasPointerOver = videoControlsPointerOver_;
         const bool revealZone = VideoControlsRevealZoneContains(point);
-        const bool activeInteraction = videoScrubbing_ || videoAdjustmentsDragging_ >= 0 || videoAdjustmentsOriginalPreviewActive_ || videoPlaybackSpeedPanelOpen_;
+        const bool activeInteraction = videoScrubbing_ || videoVolumeDragging_ || videoAdjustmentsDragging_ >= 0 || videoAdjustmentsOriginalPreviewActive_ || videoPlaybackSpeedPanelOpen_;
         if (!videoPlayer_.Playing() || revealZone || activeInteraction) ShowVideoControls();
         videoControlsPointerOver_ = VideoControlsContains(point) || revealZone || activeInteraction;
         videoControlsHovered_ = VideoControlAt(point);
@@ -2293,6 +2314,7 @@ public:
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
         }
         if (videoAdjustmentsDragging_ >= 0) UpdateVideoAdjustmentSlider(videoAdjustmentsDragging_, point);
+        if (videoVolumeDragging_) UpdateVideoVolume(point);
         if (videoScrubbing_) UpdateVideoScrub(point);
     }
     void VideoControlsMouseLeave() {
@@ -2300,7 +2322,7 @@ public:
         videoControlsPointerOver_ = false;
         videoControlsHovered_ = ButtonKind::None;
         SetVideoFullscreenGlyphHover(false);
-        if (videoPlayer_.Playing() && !videoScrubbing_ && !videoAdjustmentsOriginalPreviewActive_ && !videoPlaybackSpeedPanelOpen_) {
+        if (videoPlayer_.Playing() && !videoScrubbing_ && !videoVolumeDragging_ && !videoAdjustmentsOriginalPreviewActive_ && !videoPlaybackSpeedPanelOpen_) {
             videoControlsFadeActive_ = false;
             videoControlsLastActivity_ = GetTickCount64();
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
@@ -2309,6 +2331,7 @@ public:
     void CancelVideoControlsInteraction() {
         StopVideoStepHold();
         videoAdjustmentsDragging_ = -1;
+        videoVolumeDragging_ = false;
         SetVideoAdjustmentsOriginalPreview(false);
         if (!videoScrubbing_) return;
         videoScrubbing_ = false;
@@ -2318,7 +2341,7 @@ public:
         else ShowVideoControls();
     }
     void SetVideoFullscreenGlyphHover(bool hovered) {
-        const float target = hovered ? 1.0f : 0.0f;
+        const float target = hovered != fullscreen_ ? 1.0f : 0.0f;
         if (std::abs(videoFullscreenGlyphHoverTarget_ - target) < 0.001f) return;
         UpdateVideoFullscreenGlyphHover();
         videoFullscreenGlyphHoverStart_ = videoFullscreenGlyphHoverProgress_;
@@ -2341,7 +2364,7 @@ public:
     }
     void UpdateVideoControlsFade() {
         if (!VideoActive()) { StopVideoControls(); return; }
-        if (!videoPlayer_.Playing() || videoControlsPointerOver_ || videoScrubbing_ || videoAdjustmentsOriginalPreviewActive_ || videoPlaybackSpeedPanelOpen_) { KillTimer(window_, kVideoControlsTimer); return; }
+        if (!videoPlayer_.Playing() || videoControlsPointerOver_ || videoScrubbing_ || videoVolumeDragging_ || videoAdjustmentsOriginalPreviewActive_ || videoPlaybackSpeedPanelOpen_) { KillTimer(window_, kVideoControlsTimer); return; }
         const ULONGLONG elapsed = GetTickCount64() - videoControlsLastActivity_;
         if (!videoControlsFadeActive_) {
             if (elapsed < kVideoControlsIdleDelayMs) {
@@ -3694,6 +3717,7 @@ public:
             if (videoWindowSizing_ == VideoWindowSizing::FitToWindow) RestoreVideoWindowBounds();
         }
         if (VideoActive()) ShowVideoControls();
+        SetVideoFullscreenGlyphHover(videoControlsHovered_ == ButtonKind::VideoFullscreen);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void Paint() {
@@ -5659,6 +5683,15 @@ public:
         videoVolume_ = std::clamp(volume, 0.0, 1.0);
         if (VideoActive()) videoPlayer_.SetVolume(videoVolume_);
         WriteSetting(L"VideoVolumeMilli", static_cast<DWORD>(std::lround(videoVolume_ * 1000.0)));
+    }
+    void UpdateVideoVolume(POINT point) {
+        const RECT volume = GetVideoControlsLayout().volume;
+        if (volume.right <= volume.left) return;
+        const double value = std::clamp(static_cast<double>(point.x - volume.left) /
+            static_cast<double>(volume.right - volume.left), 0.0, 1.0);
+        SetVideoVolume(value);
+        ShowVideoControls();
+        InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleVideoMute() {
         if (!VideoActive()) return;
@@ -9407,6 +9440,19 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 1.55f, muteCenterY - speaker * 0.35f), D2D1::Point2F(muteGlyphCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), text.Get(), 1.4f * scale);
             renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY + speaker * 0.75f), text.Get(), 1.4f * scale);
         }
+        const float volumeCenterY = (layout.volume.top + layout.volume.bottom) * 0.5f;
+        const float volumeTrackHeight = 4.0f * scale;
+        const float volumeProgressX = static_cast<float>(layout.volume.left) + static_cast<float>(layout.volume.right - layout.volume.left) * static_cast<float>(videoVolume_);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(layout.volume.left), volumeCenterY - volumeTrackHeight * 0.5f, static_cast<float>(layout.volume.right), volumeCenterY + volumeTrackHeight * 0.5f), volumeTrackHeight * 0.5f, volumeTrackHeight * 0.5f), track.Get());
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(layout.volume.left), volumeCenterY - volumeTrackHeight * 0.5f, volumeProgressX, volumeCenterY + volumeTrackHeight * 0.5f), volumeTrackHeight * 0.5f, volumeTrackHeight * 0.5f), accent.Get());
+        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(volumeProgressX, volumeCenterY), 4.5f * scale, 4.5f * scale), accent.Get());
+        if (VideoVolumeContains(lastMousePoint_) || videoVolumeDragging_) {
+            const float tooltipWidth = 58.0f * scale, tooltipHeight = 24.0f * scale;
+            const float tooltipLeft = (layout.volume.left + layout.volume.right) * 0.5f - tooltipWidth * 0.5f;
+            const float tooltipTop = static_cast<float>(layout.island.top) - tooltipHeight - 6.0f * scale;
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(tooltipLeft, tooltipTop, tooltipLeft + tooltipWidth, tooltipTop + tooltipHeight), 5.0f * scale, 5.0f * scale), surface.Get());
+            DrawOverlayText(L"Volume", tooltipLeft, tooltipTop, tooltipWidth, tooltipHeight, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
+        }
         DrawZoomHud(GetVideoZoomHudLayout(), VideoCurrentScale() * RenderTargetDpi() / 96.0f, opacity, true, videoAdjustmentsPanelOpen_);
     }
 
@@ -11238,6 +11284,7 @@ private:
     ButtonKind videoControlsHovered_ = ButtonKind::None;
     bool videoControlsPointerOver_ = false;
     bool videoScrubbing_ = false;
+    bool videoVolumeDragging_ = false;
     bool videoWasPlayingBeforeScrub_ = false;
     bool videoCursorHidden_ = false;
     float videoControlsOpacity_ = 0.0f;
@@ -11385,8 +11432,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->ImageAdjustmentsPanelContains(point)) return 0;
-        if (viewer->ConsumeVideoFullscreenButtonDoubleClick()) return 0;
         const ButtonKind videoControl = viewer->VideoControlAt(point);
+        if (videoControl == ButtonKind::VideoPlayPause || videoControl == ButtonKind::VideoMute ||
+            videoControl == ButtonKind::VideoAutoPlayNext || videoControl == ButtonKind::VideoPlaybackSpeed) {
+            if (viewer->BeginVideoControlsInteraction(point)) SetCapture(window);
+            return 0;
+        }
+        if (viewer->ConsumeVideoFullscreenButtonDoubleClick()) return 0;
         if (videoControl == ButtonKind::VideoStepBackward || videoControl == ButtonKind::VideoStepForward) {
             const int direction = videoControl == ButtonKind::VideoStepBackward ? -1 : 1;
             if (viewer->BeginVideoStepHold(direction)) SetCapture(window);

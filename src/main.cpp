@@ -1907,30 +1907,11 @@ public:
         const D2D1_RECT_F canvas = ImageCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int gap = MulDiv(8, dpi, 96);
-        const int width = std::min(MulDiv(300, dpi, 96), std::max(MulDiv(220, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
-        const int height = MulDiv(308, dpi, 96);
+        const int width = std::min(MulDiv(370, dpi, 96), std::max(MulDiv(220, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
         const int panelLeft = std::clamp(static_cast<int>(hud.combined.right) - width, static_cast<int>(canvas.left) + gap, std::max(static_cast<int>(canvas.left) + gap, static_cast<int>(canvas.right) - gap - width));
-        int panelTop = static_cast<int>(hud.combined.top) - gap - height;
-        panelTop = std::clamp(panelTop, static_cast<int>(canvas.top) + gap, std::max(static_cast<int>(canvas.top) + gap, static_cast<int>(canvas.bottom) - gap - height));
-        const RECT panel{ panelLeft, panelTop, panelLeft + width, panelTop + height };
-        const int labelWidth = MulDiv(72, dpi, 96);
-        const int valueWidth = MulDiv(38, dpi, 96);
-        const int rowHeight = MulDiv(30, dpi, 96);
-        std::array<RECT, 7> sliders{};
-        for (int index = 0; index < 7; ++index) {
-            const int y = panel.top + MulDiv(18, dpi, 96) + index * rowHeight;
-            sliders[index] = { panel.left + labelWidth, y, panel.right - valueWidth - MulDiv(12, dpi, 96), y + MulDiv(20, dpi, 96) };
-        }
-        const int buttonTop = panel.top + MulDiv(240, dpi, 96);
-        const int footerGap = MulDiv(8, dpi, 96);
-        const int autoButtonWidth = MulDiv(58, dpi, 96);
-        const int originalButtonWidth = MulDiv(78, dpi, 96);
-        const int resetButtonWidth = MulDiv(60, dpi, 96);
-        const int buttonHeight = MulDiv(30, dpi, 96);
-        const RECT autoButton{ panel.left, buttonTop, panel.left + autoButtonWidth, buttonTop + buttonHeight };
-        const RECT original{ autoButton.right + footerGap, buttonTop, autoButton.right + footerGap + originalButtonWidth, buttonTop + buttonHeight };
-        const RECT reset{ panel.right - resetButtonWidth, buttonTop, panel.right, buttonTop + buttonHeight };
-        return { panel, sliders, autoButton, original, reset };
+        const int bottom = static_cast<int>(hud.combined.top) - gap;
+        const int height = std::min(MulDiv(278, dpi, 96), std::max(1, bottom - (static_cast<int>(canvas.top) + gap)));
+        return MakeVideoAdjustmentsPanelLayout({ panelLeft, bottom - height, panelLeft + width, bottom }, false);
     }
     const ImageAdjustmentsPanelLayout& GetImageAdjustmentsPanelLayout() const {
         return ImageAdjustmentsPanelVisible() ? videoAdjustmentsPanelPresentedLayout_ : imageAdjustmentsPanelTargetLayout_;
@@ -8956,11 +8937,42 @@ private:
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, topEdge, left + width, topEdge + height), 5.0f * scale, 5.0f * scale), backing.Get());
             DrawOverlayText(L"adjustments", left, topEdge, width, height, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
-        if (ImageAdjustmentsPanelVisible()) DrawImageAdjustmentsPanel(imageAdjustmentsPanelOpacity_);
+        if (ImageAdjustmentsPanelVisible()) DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, imageAdjustmentsPanelOpacity_, aiAnalysisRunning_, imageAdjustmentsOriginalPreviewActive_);
     }
 
-    void DrawImageAdjustmentsPanel(float opacity) {
-        const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
+    void DrawAdjustmentPanelContent(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float opacity,
+        bool autoActive, bool originalActive, ID2D1SolidColorBrush* text, ID2D1SolidColorBrush* accent,
+        ID2D1SolidColorBrush* track, ID2D1SolidColorBrush* hover) {
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
+        const std::array<float, 7> values{ adjustments.exposure * 0.5f, adjustments.brightness, adjustments.contrast, adjustments.shadows, adjustments.highlights, adjustments.saturation, adjustments.sharpness };
+        for (size_t index = 0; index < panel.sliders.size(); ++index) {
+            const RECT slider = panel.sliders[index];
+            DrawOverlayText(labels[index], static_cast<float>(panel.panel.left + MulDiv(12, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(slider.left - panel.panel.left - MulDiv(18, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text, false, false, true);
+            const float centerY = (slider.top + slider.bottom) * 0.5f;
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track);
+            const int minimum = index == 6 ? 0 : -100;
+            text->SetOpacity(opacity * 0.50f);
+            for (int tick = minimum + 25; tick < 100; tick += 25) {
+                const float tickX = slider.left + (slider.right - slider.left) * (static_cast<float>(tick - minimum) / static_cast<float>(100 - minimum));
+                const float tickHalfHeight = tick == 0 ? 4.0f * scale : 3.0f * scale;
+                renderTarget_->DrawLine(D2D1::Point2F(tickX, centerY - tickHalfHeight), D2D1::Point2F(tickX, centerY + tickHalfHeight), text, tick == 0 ? 2.25f * scale : 1.75f * scale);
+            }
+            text->SetOpacity(opacity);
+            const float normalizedValue = index == 6 ? values[index] : (values[index] + 1.0f) * 0.5f;
+            const float thumbX = slider.left + (slider.right - slider.left) * normalizedValue;
+            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, centerY), 5.0f * scale, 5.0f * scale), accent);
+            const std::wstring value = std::to_wstring(static_cast<int>(std::lround(values[index] * 100.0f)));
+            DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text, true, false, true);
+        }
+        const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
+        const auto drawButton = [&](const RECT& bounds, const wchar_t* label, bool pressed = false) { renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent : hover); DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text, true, false, true); };
+        drawButton(panel.autoButton, L"AUTO", autoActive);
+        drawButton(panel.originalButton, L"ORIGINAL", originalActive);
+        drawButton(panel.resetButton, L"RESET");
+    }
+
+    void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float opacity, bool autoActive, bool originalActive) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
         ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover;
@@ -8971,39 +8983,10 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 1.0f), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
-        surface->SetOpacity(opacity);
-        border->SetOpacity(opacity);
-        text->SetOpacity(opacity);
-        accent->SetOpacity(opacity);
-        track->SetOpacity(opacity);
-        hover->SetOpacity(opacity);
+        surface->SetOpacity(opacity); border->SetOpacity(opacity); text->SetOpacity(opacity); accent->SetOpacity(opacity); track->SetOpacity(opacity); hover->SetOpacity(opacity);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), scale);
-        const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
-        const std::array<float, 7> values{ imageAdjustments_.exposure * 0.5f, imageAdjustments_.brightness, imageAdjustments_.contrast, imageAdjustments_.shadows, imageAdjustments_.highlights, imageAdjustments_.saturation, imageAdjustments_.sharpness };
-        for (size_t index = 0; index < panel.sliders.size(); ++index) {
-            const RECT slider = panel.sliders[index];
-            DrawOverlayText(labels[index], static_cast<float>(panel.panel.left + MulDiv(12, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(slider.left - panel.panel.left - MulDiv(18, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), false, false, true);
-            const float centerY = (slider.top + slider.bottom) * 0.5f;
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
-            const int minimum = index == 6 ? 0 : -100;
-            text->SetOpacity(opacity * 0.50f);
-            for (int tick = minimum + 25; tick < 100; tick += 25) {
-                const float tickX = slider.left + (slider.right - slider.left) * (static_cast<float>(tick - minimum) / static_cast<float>(100 - minimum));
-                const float tickHalfHeight = tick == 0 ? 4.0f * scale : 3.0f * scale;
-                renderTarget_->DrawLine(D2D1::Point2F(tickX, centerY - tickHalfHeight), D2D1::Point2F(tickX, centerY + tickHalfHeight), text.Get(), tick == 0 ? 2.25f * scale : 1.75f * scale);
-            }
-            text->SetOpacity(opacity);
-            const float normalizedValue = index == 6 ? values[index] : (values[index] + 1.0f) * 0.5f;
-            const float thumbX = slider.left + (slider.right - slider.left) * normalizedValue;
-            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, centerY), 5.0f * scale, 5.0f * scale), accent.Get());
-            const std::wstring value = std::to_wstring(static_cast<int>(std::lround(values[index] * 100.0f)));
-            DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
-        }
-        const auto drawButton = [&](const RECT& bounds, const wchar_t* label, bool pressed = false) { renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent.Get() : hover.Get()); DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true); };
-        drawButton(panel.autoButton, L"AUTO", aiAnalysisRunning_);
-        drawButton(panel.originalButton, L"ORIGINAL", imageAdjustmentsOriginalPreviewActive_);
-        drawButton(panel.resetButton, L"RESET");
+        DrawAdjustmentPanelContent(panel, adjustments, opacity, autoActive, originalActive, text.Get(), accent.Get(), track.Get(), hover.Get());
     }
 
     void DrawRevisionLabel() {
@@ -9184,35 +9167,7 @@ private:
                 }
             }
             }
-            const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
-            const std::array<float, 7> values{ videoAdjustments_.exposure * 0.5f, videoAdjustments_.brightness, videoAdjustments_.contrast, videoAdjustments_.shadows, videoAdjustments_.highlights, videoAdjustments_.saturation, videoAdjustments_.sharpness };
-            for (size_t index = 0; index < panel.sliders.size(); ++index) {
-                const RECT slider = panel.sliders[index];
-                DrawOverlayText(labels[index], static_cast<float>(panel.panel.left + MulDiv(12, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(slider.left - panel.panel.left - MulDiv(18, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), false, false, true);
-                const float centerY = (slider.top + slider.bottom) * 0.5f;
-                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(slider.left), centerY - 2.0f * scale, static_cast<float>(slider.right), centerY + 2.0f * scale), 2.0f * scale, 2.0f * scale), track.Get());
-                const int minimum = index == 6 ? 0 : -100;
-                const int maximum = 100;
-                text->SetOpacity(panelOpacity * 0.50f);
-                for (int tick = minimum + 25; tick < maximum; tick += 25) {
-                    const float tickX = slider.left + (slider.right - slider.left) * (static_cast<float>(tick - minimum) / static_cast<float>(maximum - minimum));
-                    const float tickHalfHeight = tick == 0 ? 4.0f * scale : 3.0f * scale;
-                    renderTarget_->DrawLine(D2D1::Point2F(tickX, centerY - tickHalfHeight), D2D1::Point2F(tickX, centerY + tickHalfHeight), text.Get(), tick == 0 ? 2.25f * scale : 1.75f * scale);
-                }
-                text->SetOpacity(panelOpacity);
-                const float normalized = index == 6 ? values[index] : (values[index] + 1.0f) * 0.5f;
-                const float thumbX = slider.left + (slider.right - slider.left) * normalized;
-                renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, centerY), 5.0f * scale, 5.0f * scale), accent.Get());
-                const std::wstring value = std::to_wstring(static_cast<int>(std::lround(values[index] * 100.0f)));
-                DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
-            }
-            const auto drawPanelButton = [&](const RECT& bounds, const wchar_t* label, bool pressed = false) {
-                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent.Get() : hover.Get());
-                DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
-            };
-            drawPanelButton(panel.autoButton, L"AUTO");
-            drawPanelButton(panel.originalButton, L"ORIGINAL", videoAdjustmentsOriginalPreviewActive_);
-            drawPanelButton(panel.resetButton, L"RESET");
+            DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
             surface->SetOpacity(1.0f);
             border->SetOpacity(1.0f);
             text->SetOpacity(1.0f);

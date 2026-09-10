@@ -10,6 +10,9 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
+constexpr wchar_t kMissingMediaFeaturesMessage[] =
+    L"Media features are unavailable on this Windows installation. Windows 11 N users may need to install the Microsoft Media Feature Pack.";
+
 class MediaEngineNotify final : public IMFMediaEngineNotify {
 public:
     explicit MediaEngineNotify(HWND window) : window_(window) {}
@@ -144,7 +147,7 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
     ResetFramePacingDiagnostics();
     if (!window || !device) { error = L"The video graphics device is unavailable."; return false; }
     const HRESULT startup = MFStartup(MF_VERSION);
-    if (FAILED(startup)) { error = L"Windows Media Foundation could not initialize."; return false; }
+    if (FAILED(startup)) { error = kMissingMediaFeaturesMessage; return false; }
     mediaFoundationStarted_ = true;
     ReadNominalFrameRate(path);
     if (!RebindDevice(device, error)) { Shutdown(); return false; }
@@ -159,8 +162,12 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
     if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_MFMediaEngineClassFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
     if (SUCCEEDED(hr)) hr = factory->CreateInstance(0, attributes.Get(), &engine_);
     if (SUCCEEDED(hr)) hr = engine_.As(&engineEx_);
-    if (FAILED(hr) || !SetSourceFromPath(path, error)) {
-        if (error.empty()) error = L"Windows could not prepare this video for playback.";
+    if (FAILED(hr)) {
+        error = hr == REGDB_E_CLASSNOTREG ? kMissingMediaFeaturesMessage : L"Windows could not prepare this video for playback.";
+        Shutdown();
+        return false;
+    }
+    if (!SetSourceFromPath(path, error)) {
         Shutdown();
         return false;
     }

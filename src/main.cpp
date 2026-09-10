@@ -8904,11 +8904,11 @@ private:
             }
         }
         const bool adjustmentsPanelVisible = VideoAdjustmentsPanelVisible();
-        const bool adjustmentsPanelMoving = adjustmentsPanelVisible && VideoAdjustmentsPanelMotionActive();
-        if (adjustmentsPanelVisible && !adjustmentsPanelMoving)
+        const bool adjustmentsPanelSeparateShell = adjustmentsPanelVisible && (VideoAdjustmentsPanelMotionActive() || videoAdjustmentsPanelFadeActive_);
+        if (adjustmentsPanelVisible && !adjustmentsPanelSeparateShell)
             DrawVideoAdjustmentCompositeShell(layout, GetVideoAdjustmentsPanelPresentedLayout(), surface.Get(), border.Get(), scale);
         const D2D1_RECT_F island = rect(layout.island);
-        if (!adjustmentsPanelVisible || adjustmentsPanelMoving) {
+        if (!adjustmentsPanelVisible || adjustmentsPanelSeparateShell) {
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), 1.0f * scale);
         }
@@ -8921,7 +8921,7 @@ private:
             accent->SetOpacity(panelOpacity);
             track->SetOpacity(panelOpacity);
             hover->SetOpacity(panelOpacity);
-            if (adjustmentsPanelMoving) {
+            if (adjustmentsPanelSeparateShell) {
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
                 renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), 1.0f * scale);
             }

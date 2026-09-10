@@ -45,7 +45,7 @@ private:
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
     Microsoft::WRL::ComPtr<IDCompositionDesktopDevice> dcompDevice_;
     Microsoft::WRL::ComPtr<IDCompositionTarget> dcompTarget_;
-    Microsoft::WRL::ComPtr<IDCompositionVisual> dcompVisual_;
+    Microsoft::WRL::ComPtr<IDCompositionVisual2> dcompVisual_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer_;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTarget_;
     Microsoft::WRL::ComPtr<ID2D1Device> d2dDevice_;

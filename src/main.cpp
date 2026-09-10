@@ -98,6 +98,7 @@ constexpr UINT_PTR kModelLoadingAnimationTimer = 12;
 constexpr UINT_PTR kTriangleCountTooltipTimer = 13;
 constexpr UINT_PTR kVideoControlsTimer = 15;
 constexpr UINT_PTR kVideoStepHoldTimer = 16;
+constexpr UINT_PTR kVideoAutoPlayNextCountdownTimer = 24;
 constexpr UINT_PTR kStillDissolveTimer = 17;
 constexpr UINT_PTR kStartupVideoSizingFallbackTimer = 23;
 constexpr UINT kVideoStepHoldThresholdMs = 250;
@@ -185,7 +186,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
@@ -847,6 +848,7 @@ struct VideoControlsLayout {
     RECT stepBackward;
     RECT stepForward;
     RECT mute;
+    RECT autoPlayNext;
     RECT playbackSpeed;
     RECT fullscreen;
 };
@@ -1070,6 +1072,9 @@ public:
         DWORD videoMuted = 0;
         ReadSetting(L"VideoMuted", videoMuted);
         videoMuted_ = videoMuted != 0;
+        DWORD videoAutoPlayNext = 0;
+        ReadSetting(L"VideoAutoPlayNext", videoAutoPlayNext);
+        videoAutoPlayNext_ = videoAutoPlayNext != 0;
         DWORD videoVolumeMilli = 1000;
         ReadSetting(L"VideoVolumeMilli", videoVolumeMilli);
         videoVolume_ = videoVolumeMilli <= 1000 ? static_cast<double>(videoVolumeMilli) / 1000.0 : 1.0;
@@ -1087,6 +1092,7 @@ public:
     }
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
+        CancelVideoAutoPlayNextCountdown();
         if (!currentPath_.empty() && !PathsEqual(fs::path(path), fs::path(currentPath_))) {
             if (VideoActive()) FlushVideoAdjustmentPersistence();
             else FlushImageAdjustmentPersistence();
@@ -1331,6 +1337,7 @@ public:
         else if (item == DropdownItem::Close) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
     }
     void OpenFile() {
+        CancelVideoAutoPlayNextCountdown();
         ComPtr<IFileOpenDialog> dialog;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
         static const COMDLG_FILTERSPEC filters[] = {
@@ -1355,6 +1362,7 @@ public:
     bool VideoActive() const { return contentKind_ == ContentKind::Video2D && videoPlayer_.Active(); }
     void ToggleVideoPlayPause() {
         if (!VideoActive()) return;
+        CancelVideoAutoPlayNextCountdown();
         StopVideoStepHold();
         videoPlayer_.TogglePlayPause();
         if (videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = false;
@@ -1408,6 +1416,7 @@ public:
     }
     void NudgeVideoPosition(int direction) {
         if (!VideoActive() || !direction) return;
+        CancelVideoAutoPlayNextCountdown();
         if (videoPlayer_.Playing()) {
             ToggleVideoPlayPause();
             videoPausedSeekRefreshPending_ = false;
@@ -1468,6 +1477,7 @@ public:
         const int stepBackwardLeft = playLeft + buttonWidth + gap;
         const int stepForwardLeft = stepBackwardLeft + buttonWidth + gap;
         const int muteLeft = stepForwardLeft + buttonWidth + gap;
+        const int autoPlayNextLeft = muteLeft + buttonWidth + gap;
         const int speedWidth = std::min(MulDiv(46, dpi, 96), std::max(MulDiv(34, dpi, 96), buttonWidth + gap));
         const int fullscreenLeft = left + width - padding - buttonWidth;
         const int speedLeft = fullscreenLeft - gap - speedWidth;
@@ -1479,6 +1489,7 @@ public:
             { stepBackwardLeft, controlTop, stepBackwardLeft + buttonWidth, controlTop + buttonWidth },
             { stepForwardLeft, controlTop, stepForwardLeft + buttonWidth, controlTop + buttonWidth },
             { muteLeft, controlTop, muteLeft + buttonWidth, controlTop + buttonWidth },
+            { autoPlayNextLeft, controlTop, autoPlayNextLeft + buttonWidth, controlTop + buttonWidth },
             { speedLeft, controlTop, speedLeft + speedWidth, controlTop + buttonWidth },
             { fullscreenLeft, controlTop, fullscreenLeft + buttonWidth, controlTop + buttonWidth } };
     }
@@ -2070,6 +2081,7 @@ public:
         if (PtInRect(&layout.stepBackward, point)) return ButtonKind::VideoStepBackward;
         if (PtInRect(&layout.stepForward, point)) return ButtonKind::VideoStepForward;
         if (PtInRect(&layout.mute, point)) return ButtonKind::VideoMute;
+        if (PtInRect(&layout.autoPlayNext, point)) return ButtonKind::VideoAutoPlayNext;
         if (PtInRect(&layout.playbackSpeed, point)) return ButtonKind::VideoPlaybackSpeed;
         if (PtInRect(&layout.fullscreen, point)) return ButtonKind::VideoFullscreen;
         return ButtonKind::None;
@@ -2164,6 +2176,7 @@ public:
         RestoreVideoCursor();
     }
     void UpdateVideoScrub(POINT point) {
+        CancelVideoAutoPlayNextCountdown();
         double current = 0.0, duration = 0.0;
         if (!videoPlayer_.GetPlaybackTimes(current, duration)) return;
         const RECT scrubber = GetVideoControlsLayout().scrubber;
@@ -2226,6 +2239,7 @@ public:
         else if (control == ButtonKind::VideoStepBackward) BeginVideoStepHold(-1);
         else if (control == ButtonKind::VideoStepForward) BeginVideoStepHold(1);
         else if (control == ButtonKind::VideoMute) { ToggleVideoMute(); ShowVideoControls(); }
+        else if (control == ButtonKind::VideoAutoPlayNext) ToggleVideoAutoPlayNext();
         else if (control == ButtonKind::VideoPlaybackSpeed) SetVideoPlaybackSpeedPanelOpen(!videoPlaybackSpeedPanelOpen_);
         else if (control == ButtonKind::VideoFullscreen) { videoFullscreenToggleTick_ = GetTickCount64(); ToggleVideoFullscreen(); }
         return true;
@@ -3667,6 +3681,7 @@ public:
                 if (videoPausedSeekRefreshPending_ && videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek))
                     videoPausedSeekRefreshPending_ = false;
                 videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_);
+                DrawVideoAutoPlayNextCountdown();
                 DrawCanvasNavigationButtons();
                 DrawVideoPlaybackControls();
                 DrawVideoControlsRevealAffordance();
@@ -4997,6 +5012,7 @@ public:
     }
     void SelectFilmstripItem(int index) {
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
+        CancelVideoAutoPlayNextCountdown();
 #ifdef _DEBUG
         filmstripPostStopPosition_.reset();
 #endif
@@ -5396,6 +5412,7 @@ public:
     }
 
     void Navigate(int direction, bool immediatePaint = true) {
+        CancelVideoAutoPlayNextCountdown();
         ClearStillDissolve();
         const std::optional<std::wstring> path = NavigationTargetPath(direction);
         if (!path) return;
@@ -5618,6 +5635,57 @@ public:
         videoMuted_ = !videoMuted_;
         videoPlayer_.SetMuted(videoMuted_);
         WriteSetting(L"VideoMuted", videoMuted_ ? 1 : 0);
+    }
+    void ToggleVideoAutoPlayNext() {
+        videoAutoPlayNext_ = !videoAutoPlayNext_;
+        WriteSetting(L"VideoAutoPlayNext", videoAutoPlayNext_ ? 1 : 0);
+        if (!videoAutoPlayNext_) CancelVideoAutoPlayNextCountdown();
+        ShowVideoControls();
+    }
+    bool VideoAutoPlayNextCountdownActive() const { return videoAutoPlayNextCountdownActive_; }
+    std::optional<std::wstring> NextEligibleVideoNavigationTargetPath() {
+        if (!VideoActive() || currentPath_.empty()) return std::nullopt;
+        BuildNavigation(true);
+        if (navigationFiles_.size() < 2) return std::nullopt;
+        const fs::path current(currentPath_);
+        const auto currentIt = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&current](const fs::path& path) { return PathsEqual(path, current); });
+        if (currentIt == navigationFiles_.end()) return std::nullopt;
+        const size_t currentIndex = static_cast<size_t>(std::distance(navigationFiles_.begin(), currentIt));
+        for (size_t offset = 1; offset < navigationFiles_.size(); ++offset) {
+            const fs::path& candidate = navigationFiles_[(currentIndex + offset) % navigationFiles_.size()];
+            if (IsVideoPath(candidate.wstring())) return candidate.wstring();
+        }
+        return std::nullopt;
+    }
+    void CancelVideoAutoPlayNextCountdown() {
+        if (!videoAutoPlayNextCountdownActive_) return;
+        KillTimer(window_, kVideoAutoPlayNextCountdownTimer);
+        videoAutoPlayNextCountdownActive_ = false;
+        videoAutoPlayNextCountdownSourcePath_.clear();
+        videoAutoPlayNextCountdownTargetPath_.clear();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void BeginVideoAutoPlayNextCountdown() {
+        if (!videoAutoPlayNext_ || videoAutoPlayNextCountdownActive_ || !VideoActive() || !videoPlayer_.Ended()) return;
+        const std::optional<std::wstring> target = NextEligibleVideoNavigationTargetPath();
+        if (!target) return;
+        videoAutoPlayNextCountdownActive_ = true;
+        videoAutoPlayNextCountdownStartedAt_ = GetTickCount64();
+        videoAutoPlayNextCountdownSourcePath_ = currentPath_;
+        videoAutoPlayNextCountdownTargetPath_ = *target;
+        SetTimer(window_, kVideoAutoPlayNextCountdownTimer, 100, nullptr);
+        ShowVideoControls();
+    }
+    void UpdateVideoAutoPlayNextCountdown() {
+        if (!videoAutoPlayNextCountdownActive_) return;
+        const bool sourceValid = videoAutoPlayNext_ && VideoActive() && videoPlayer_.Ended() && !videoPlayer_.Playing() && PathsEqual(fs::path(currentPath_), fs::path(videoAutoPlayNextCountdownSourcePath_));
+        const std::optional<std::wstring> target = sourceValid ? NextEligibleVideoNavigationTargetPath() : std::nullopt;
+        if (!target || !PathsEqual(fs::path(*target), fs::path(videoAutoPlayNextCountdownTargetPath_))) { CancelVideoAutoPlayNextCountdown(); return; }
+        const ULONGLONG elapsed = GetTickCount64() - videoAutoPlayNextCountdownStartedAt_;
+        if (elapsed < 5000) { InvalidateRect(window_, nullptr, FALSE); return; }
+        const std::wstring nextPath = videoAutoPlayNextCountdownTargetPath_;
+        CancelVideoAutoPlayNextCountdown();
+        LoadContent(nextPath, false);
     }
 
     bool BeginSwipeNavigation(POINT point) {
@@ -6375,6 +6443,7 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void DeactivateVideo(bool restoreWindowBounds = true) {
+        CancelVideoAutoPlayNextCountdown();
         if (fullscreen_ && !shuttingDown_) ToggleFullscreen();
         videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
@@ -6418,6 +6487,7 @@ public:
             StopVideoPlaybackScheduler();
         }
         if (event == MF_MEDIA_ENGINE_EVENT_ENDED || event == MF_MEDIA_ENGINE_EVENT_CANPLAY || event == MF_MEDIA_ENGINE_EVENT_PLAYING) ShowVideoControls();
+        if (event == MF_MEDIA_ENGINE_EVENT_ENDED) BeginVideoAutoPlayNextCountdown();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void UpdateVideoTitleMetadata() {
@@ -9069,6 +9139,21 @@ private:
         sink->EndFigure(D2D1_FIGURE_END_CLOSED);
         if (SUCCEEDED(sink->Close())) { renderTarget_->FillGeometry(geometry.Get(), surface); renderTarget_->DrawGeometry(geometry.Get(), border, scale); }
     }
+    void DrawVideoAutoPlayNextCountdown() {
+        if (!videoAutoPlayNextCountdownActive_) return;
+        const ULONGLONG elapsed = GetTickCount64() - videoAutoPlayNextCountdownStartedAt_;
+        const int remaining = std::max(1, 5 - static_cast<int>(elapsed / 1000));
+        const RECT canvas = ModelCanvasBounds();
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const float size = 42.0f * scale;
+        const float left = (canvas.left + canvas.right - size) * 0.5f;
+        const float top = (canvas.top + canvas.bottom - size) * 0.5f;
+        ComPtr<ID2D1SolidColorBrush> backing, text;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, .42f), &backing)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, .90f), &text))) return;
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, top, left + size, top + size), 8.0f * scale, 8.0f * scale), backing.Get());
+        const std::wstring label = std::to_wstring(remaining);
+        DrawOverlayText(label.c_str(), left, top, size, size, 20.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+    }
     void DrawVideoPlaybackControls() {
         if (!VideoActive() || videoControlsOpacity_ <= 0.001f) return;
         const VideoControlsLayout layout = GetVideoControlsLayout();
@@ -9179,6 +9264,7 @@ private:
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoMute) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), hover.Get());
+        if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext || videoAutoPlayNext_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.autoPlayNext), 5.0f * scale, 5.0f * scale), videoAutoPlayNext_ ? accent.Get() : hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoPlaybackSpeed || videoPlaybackSpeedPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playbackSpeed), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoFullscreen) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.fullscreen), 5.0f * scale, 5.0f * scale), hover.Get());
 
@@ -9204,6 +9290,14 @@ private:
 
         DrawOverlayText(L"-1", static_cast<float>(layout.stepBackward.left), static_cast<float>(layout.stepBackward.top), static_cast<float>(layout.stepBackward.right - layout.stepBackward.left), static_cast<float>(layout.stepBackward.bottom - layout.stepBackward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        DrawOverlayText(L">", static_cast<float>(layout.autoPlayNext.left), static_cast<float>(layout.autoPlayNext.top), static_cast<float>(layout.autoPlayNext.right - layout.autoPlayNext.left), static_cast<float>(layout.autoPlayNext.bottom - layout.autoPlayNext.top), 15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext) {
+            const float tooltipWidth = 124.0f * scale, tooltipHeight = 24.0f * scale;
+            const float tooltipLeft = (layout.autoPlayNext.left + layout.autoPlayNext.right) * 0.5f - tooltipWidth * 0.5f;
+            const float tooltipTop = static_cast<float>(layout.island.top) - tooltipHeight - 6.0f * scale;
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(tooltipLeft, tooltipTop, tooltipLeft + tooltipWidth, tooltipTop + tooltipHeight), 5.0f * scale, 5.0f * scale), surface.Get());
+            DrawOverlayText(L"Auto-play next video", tooltipLeft, tooltipTop, tooltipWidth, tooltipHeight, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
+        }
         const std::wstring playbackRateLabel = FormatPlaybackRate(videoEffectivePlaybackRate_);
         DrawOverlayText(playbackRateLabel.c_str(), static_cast<float>(layout.playbackSpeed.left), static_cast<float>(layout.playbackSpeed.top), static_cast<float>(layout.playbackSpeed.right - layout.playbackSpeed.left), static_cast<float>(layout.playbackSpeed.bottom - layout.playbackSpeed.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         if (videoControlsHovered_ == ButtonKind::VideoPlaybackSpeed && !videoPlaybackSpeedPanelOpen_) {
@@ -10780,6 +10874,11 @@ private:
     bool fitToWindow_ = true;
     bool videoFitToWindow_ = true;
     bool videoMuted_ = false;
+    bool videoAutoPlayNext_ = false;
+    bool videoAutoPlayNextCountdownActive_ = false;
+    ULONGLONG videoAutoPlayNextCountdownStartedAt_ = 0;
+    std::wstring videoAutoPlayNextCountdownSourcePath_;
+    std::wstring videoAutoPlayNextCountdownTargetPath_;
     double videoVolume_ = 1.0;
     VideoWindowSizing videoWindowSizing_ = VideoWindowSizing::FitToWindow;
     bool videoSizingAppliedForCurrentVideo_ = false;
@@ -11607,6 +11706,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kTriangleCountTooltipTimer) { viewer->TriangleCountTooltipTimerMessage(); return 0; }
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
+        if (wParam == kVideoAutoPlayNextCountdownTimer) { viewer->UpdateVideoAutoPlayNextCountdown(); return 0; }
         if (wParam == kVideoAdjustmentsFadeTimer) { viewer->UpdateAdjustmentPanelsFade(); return 0; }
         if (wParam == kVideoAdjustmentsPlacementTimer) { viewer->UpdateVideoAdjustmentsPanelPlacementMotion(); return 0; }
         if (wParam == kStillDissolveTimer) { viewer->UpdateStillDissolve(); return 0; }
@@ -11670,7 +11770,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'O') { viewer->OpenFile(); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'C') { viewer->InvokeContextAction(ContextAction::Copy); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'P') { viewer->InvokeContextAction(ContextAction::Print); return 0; }
-        if (wParam == VK_SPACE && viewer->VideoActive()) { viewer->ToggleVideoPlayPause(); return 0; }
+        if (wParam == VK_SPACE && viewer->VideoActive()) { if (viewer->VideoAutoPlayNextCountdownActive()) viewer->CancelVideoAutoPlayNextCountdown(); else viewer->ToggleVideoPlayPause(); return 0; }
         if (wParam == VK_DELETE) { viewer->InvokeContextAction(ContextAction::Delete); return 0; }
         if (wParam == VK_ESCAPE) { if (viewer->IsFullscreen()) viewer->ToggleFullscreen(); else DestroyWindow(window); return 0; }
         if (wParam == VK_F11) { viewer->ToggleFullscreen(); return 0; }

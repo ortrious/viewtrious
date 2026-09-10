@@ -311,13 +311,15 @@ bool VideoPlayer::Seek(double seconds) {
     return SUCCEEDED(result);
 }
 
-bool VideoPlayer::ToggleMute() {
-    if (!engine_) return false;
-    const HRESULT result = engine_->SetMuted(engine_->GetMuted() ? FALSE : TRUE);
-    return SUCCEEDED(result);
+bool VideoPlayer::SetMuted(bool muted) {
+    return engine_ && SUCCEEDED(engine_->SetMuted(muted ? TRUE : FALSE));
 }
 
 bool VideoPlayer::Muted() const { return engine_ && engine_->GetMuted() != FALSE; }
+
+bool VideoPlayer::SetVolume(double volume) {
+    return engine_ && SUCCEEDED(engine_->SetVolume(std::clamp(volume, 0.0, 1.0)));
+}
 
 bool VideoPlayer::GetNativeVideoSize(DWORD& width, DWORD& height) const {
     width = videoWidth_; height = videoHeight_;

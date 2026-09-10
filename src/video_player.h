@@ -31,8 +31,9 @@ public:
     HRESULT TogglePlayPause();
     bool GetPlaybackTimes(double& currentSeconds, double& durationSeconds) const;
     bool Seek(double seconds);
-    bool ToggleMute();
+    bool SetMuted(bool muted);
     bool Muted() const;
+    bool SetVolume(double volume);
     bool GetNativeVideoSize(DWORD& width, DWORD& height) const;
     bool TryGetFramesPerSecond(float& framesPerSecond);
     void SetDisplayAdjustments(const ImageAdjustments& adjustments);

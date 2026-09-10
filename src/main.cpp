@@ -1018,6 +1018,12 @@ public:
         DWORD videoWindowSizing = static_cast<DWORD>(VideoWindowSizing::FitToWindow);
         ReadSetting(L"VideoWindowSizing", videoWindowSizing);
         videoWindowSizing_ = videoWindowSizing == static_cast<DWORD>(VideoWindowSizing::ResizeWindowToVideo) ? VideoWindowSizing::ResizeWindowToVideo : VideoWindowSizing::FitToWindow;
+        DWORD videoMuted = 0;
+        ReadSetting(L"VideoMuted", videoMuted);
+        videoMuted_ = videoMuted != 0;
+        DWORD videoVolumeMilli = 1000;
+        ReadSetting(L"VideoVolumeMilli", videoVolumeMilli);
+        videoVolume_ = videoVolumeMilli <= 1000 ? static_cast<double>(videoVolumeMilli) / 1000.0 : 1.0;
         DWORD onboardingVersion = 0;
         onboardingRequired_ = !ReadSetting(L"OnboardingVersion", onboardingVersion) || onboardingVersion < 1;
         DWORD tourPending = 0;
@@ -2103,7 +2109,7 @@ public:
         if (control == ButtonKind::VideoPlayPause) ToggleVideoPlayPause();
         else if (control == ButtonKind::VideoStepBackward) BeginVideoStepHold(-1);
         else if (control == ButtonKind::VideoStepForward) BeginVideoStepHold(1);
-        else if (control == ButtonKind::VideoMute) { videoPlayer_.ToggleMute(); ShowVideoControls(); }
+        else if (control == ButtonKind::VideoMute) { ToggleVideoMute(); ShowVideoControls(); }
         else if (control == ButtonKind::VideoPlaybackSpeed) SetVideoPlaybackSpeedPanelOpen(!videoPlaybackSpeedPanelOpen_);
         else if (control == ButtonKind::VideoFullscreen) { videoFullscreenToggleTick_ = GetTickCount64(); ToggleVideoFullscreen(); }
         return true;
@@ -5474,6 +5480,17 @@ public:
         lastDragPoint_ = point;
         SetCapture(window_);
     }
+    void SetVideoVolume(double volume) {
+        videoVolume_ = std::clamp(volume, 0.0, 1.0);
+        if (VideoActive()) videoPlayer_.SetVolume(videoVolume_);
+        WriteSetting(L"VideoVolumeMilli", static_cast<DWORD>(std::lround(videoVolume_ * 1000.0)));
+    }
+    void ToggleVideoMute() {
+        if (!VideoActive()) return;
+        videoMuted_ = !videoMuted_;
+        videoPlayer_.SetMuted(videoMuted_);
+        WriteSetting(L"VideoMuted", videoMuted_ ? 1 : 0);
+    }
 
     bool BeginSwipeNavigation(POINT point) {
         const D2D1_RECT_F imageCanvas = ImageCanvasBounds();
@@ -6182,6 +6199,8 @@ private:
             error_ = videoError.empty() ? L"Viewtrious could not open this video." : videoError;
             RestoreVideoWindowBounds();
         } else {
+            videoPlayer_.SetMuted(videoMuted_);
+            videoPlayer_.SetVolume(videoVolume_);
             videoPlayer_.SetDisplayAdjustments(videoAdjustments_);
             videoPlayer_.SetPreferredPlaybackRate(PlaybackRateFromPercent(videoPreferredPlaybackRatePercent_));
             videoEffectivePlaybackRate_ = videoPlayer_.EffectivePlaybackRate();
@@ -10614,6 +10633,8 @@ private:
     float videoZoom_ = 1.0f;
     bool fitToWindow_ = true;
     bool videoFitToWindow_ = true;
+    bool videoMuted_ = false;
+    double videoVolume_ = 1.0;
     VideoWindowSizing videoWindowSizing_ = VideoWindowSizing::FitToWindow;
     bool videoSizingAppliedForCurrentVideo_ = false;
     bool videoInitialZoomApplied_ = false;

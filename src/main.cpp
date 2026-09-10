@@ -3412,7 +3412,7 @@ public:
             if (!graphicsHost_.Resize(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top), static_cast<float>(GetDpiForWindow(window_)), error)) error_ = error;
             renderTarget_ = graphicsHost_.D2DContext();
             bitmap_.Reset(); lanczosBitmap_.Reset(); imageAdjustedBitmap_.Reset(); aboutLogo_.Reset(); aboutLogoWidth_ = 0; aboutLogoHeight_ = 0;
-            topBarLogo_.Reset(); topBarLogoWidth_ = 0; topBarLogoHeight_ = 0; checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
+            checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
             filmstripVideoIcon_.Reset(); filmstripVideoIconSize_ = 0;
             if (VideoActive()) videoPlayer_.HandleRenderTargetResize();
         }
@@ -9188,6 +9188,22 @@ private:
         renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
+    void DrawProductName(float x, float y, float width, float height, float size, ID2D1Brush* brush, bool centerAlign) {
+        ComPtr<IDWriteTextFormat> format;
+        const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        HRESULT result = dwriteFactory_->CreateTextFormat(L"Segoe UI Variable Display", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size * dpiScale, L"", &format);
+        if (FAILED(result)) result = dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size * dpiScale, L"", &format);
+        if (FAILED(result)) return;
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        if (centerAlign) format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(L"Viewtrious", 10, format.Get(), width, height, &layout))) return;
+        renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
     float OverlayTextWidth(const wchar_t* text, float size, DWRITE_FONT_WEIGHT weight) const {
         ComPtr<IDWriteTextFormat> format;
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
@@ -9247,17 +9263,6 @@ private:
         if (!CreateBitmapFromResource(kTopBarLogoResourceId, RT_RCDATA, width, height, aboutLogo_)) return false;
         aboutLogoWidth_ = width;
         aboutLogoHeight_ = height;
-        return true;
-    }
-
-    bool EnsureTopBarLogo(UINT width, UINT height) {
-        if (topBarLogo_ && topBarLogoWidth_ == width && topBarLogoHeight_ == height) return true;
-        topBarLogo_.Reset();
-        topBarLogoWidth_ = 0;
-        topBarLogoHeight_ = 0;
-        if (!CreateBitmapFromResource(kTopBarLogoResourceId, RT_RCDATA, width, height, topBarLogo_)) return false;
-        topBarLogoWidth_ = width;
-        topBarLogoHeight_ = height;
         return true;
     }
 
@@ -9395,13 +9400,8 @@ private:
                 secondaryButton.right - secondaryButton.left, secondaryButton.bottom - secondaryButton.top, 16.0f,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::DefaultAppsHelper) {
-            const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(24.0f * dpiScale)));
-            const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoHeight) * 300.0f / 73.0f)));
-            if (EnsureTopBarLogo(logoWidth, logoHeight)) {
-                const float logoTop = std::round(static_cast<float>(bounds.top) + 24.0f * dpiScale);
-                renderTarget_->DrawBitmap(topBarLogo_.Get(), D2D1::RectF(left, logoTop, left + logoWidth, logoTop + logoHeight),
-                    1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
-            }
+            DrawProductName(left, static_cast<float>(bounds.top) + 24.0f * dpiScale, contentWidth, 24.0f * dpiScale,
+                17.0f, primaryBrush.Get(), false);
             DrawOverlayText(L"choose which file types should open with Viewtrious.", left,
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
@@ -10319,15 +10319,9 @@ private:
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         if (EmptyStatePresentationActive() && !(tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails)) {
-            const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(std::min(18.0f * dpiScale,
-                static_cast<float>(frame.titleBarHeight) - 12.0f * dpiScale))));
-            const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoHeight) * 300.0f / 73.0f)));
-            if (EnsureTopBarLogo(logoWidth, logoHeight)) {
-                const float logoLeft = std::round((VisibleClientSize().width - static_cast<float>(logoWidth)) * 0.5f);
-                const float logoTop = std::round((static_cast<float>(frame.titleBarHeight) - static_cast<float>(logoHeight)) * 0.5f);
-                renderTarget_->DrawBitmap(topBarLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight),
-                    1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
-            }
+            const float titleHeight = std::max(1.0f, std::min(18.0f * dpiScale, static_cast<float>(frame.titleBarHeight) - 12.0f * dpiScale));
+            DrawProductName(0.0f, (static_cast<float>(frame.titleBarHeight) - titleHeight) * 0.5f,
+                VisibleClientSize().width, titleHeight, 14.0f, filenameBrush.Get(), true);
         }
 
         const float stroke = 1.0f;
@@ -10362,9 +10356,6 @@ private:
         aboutLogo_.Reset();
         aboutLogoWidth_ = 0;
         aboutLogoHeight_ = 0;
-        topBarLogo_.Reset();
-        topBarLogoWidth_ = 0;
-        topBarLogoHeight_ = 0;
         filmstripVideoIcon_.Reset();
         filmstripVideoIconSize_ = 0;
         checkerboardBrush_.Reset();
@@ -10411,9 +10402,6 @@ private:
     ComPtr<ID2D1Bitmap> aboutLogo_;
     UINT aboutLogoWidth_ = 0;
     UINT aboutLogoHeight_ = 0;
-    ComPtr<ID2D1Bitmap> topBarLogo_;
-    UINT topBarLogoWidth_ = 0;
-    UINT topBarLogoHeight_ = 0;
     ComPtr<ID2D1Bitmap> filmstripVideoIcon_;
     UINT filmstripVideoIconSize_ = 0;
     ComPtr<ID2D1Bitmap> checkerboardBitmap_;

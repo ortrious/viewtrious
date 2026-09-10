@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.9.6.21 LANGUAGES CXX)
+project(Viewtrious VERSION 0.9.7.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -67,7 +67,16 @@ target_compile_features(Viewtrious PRIVATE cxx_std_20)
 target_compile_definitions(Viewtrious PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX VIEWTRIOUS_VERSION=L\"${PROJECT_VERSION}\")
 target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_3DXWARE_INCLUDE_DIR}")
 target_include_directories(Viewtrious PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz")
-target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 bcrypt d3d11 dxgi d3dcompiler dcomp xmllite ole32 oleaut32 mfplat mf mfreadwrite mfuuid "${VIEWTRIOUS_3DXWARE_LIBRARY}")
+file(GLOB VIEWTRIOUS_CPPWINRT_INCLUDE_CANDIDATES
+    "$ENV{WindowsSdkDir}Include/$ENV{WindowsSDKVersion}cppwinrt"
+    "C:/Program Files (x86)/Windows Kits/10/Include/*/cppwinrt")
+find_path(VIEWTRIOUS_CPPWINRT_INCLUDE_DIR winrt/base.h
+    HINTS ${VIEWTRIOUS_CPPWINRT_INCLUDE_CANDIDATES})
+if(NOT VIEWTRIOUS_CPPWINRT_INCLUDE_DIR)
+    message(FATAL_ERROR "The installed Windows SDK C++/WinRT projection is required for the Windows.UI.Composition experiment.")
+endif()
+target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_CPPWINRT_INCLUDE_DIR}")
+target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 bcrypt d3d11 dxgi d3dcompiler dcomp xmllite ole32 oleaut32 mfplat mf mfreadwrite mfuuid windowsapp coremessaging "${VIEWTRIOUS_3DXWARE_LIBRARY}")
 
 if(VIEWTRIOUS_BUILD_STEP_ADDON)
     set(VIEWTRIOUS_OCCT_INCLUDE_DIR "${VIEWTRIOUS_OCCT_ROOT}/inc")

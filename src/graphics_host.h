@@ -6,6 +6,11 @@
 #include <dcomp.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
+#include <DispatcherQueue.h>
+#include <windows.ui.composition.interop.h>
+#include <winrt/Windows.System.h>
+#include <winrt/Windows.UI.Composition.h>
+#include <winrt/Windows.UI.Composition.Desktop.h>
 
 #include <string>
 #include <vector>
@@ -42,6 +47,9 @@ private:
     bool CreateTargets(float dpi, std::wstring& error);
     bool CreateModelTargets(std::wstring& error);
     bool UpdateCompositionClip(UINT width, UINT height, std::wstring& error);
+    bool CreateWindowsUiCompositionTree(std::wstring& error);
+    bool RebindWindowsUiCompositionSurface(std::wstring& error);
+    void DestroyWindowsUiCompositionTree();
     SIZE CompositionCapacity(UINT minimumWidth, UINT minimumHeight) const;
     void DiscardModelTargets();
     void DiscardTargets();
@@ -53,6 +61,14 @@ private:
     Microsoft::WRL::ComPtr<IDCompositionTarget> dcompTarget_;
     Microsoft::WRL::ComPtr<IDCompositionVisual2> dcompVisual_;
     Microsoft::WRL::ComPtr<IDCompositionRectangleClip> dcompClip_;
+    winrt::Windows::System::DispatcherQueueController dispatcherQueueController_{ nullptr };
+    winrt::Windows::UI::Composition::Compositor uiCompositor_{ nullptr };
+    winrt::Windows::UI::Composition::Desktop::DesktopWindowTarget uiCompositionTarget_{ nullptr };
+    winrt::Windows::UI::Composition::ContainerVisual uiRootVisual_{ nullptr };
+    winrt::Windows::UI::Composition::SpriteVisual uiSurfaceVisual_{ nullptr };
+    winrt::Windows::UI::Composition::CompositionSurfaceBrush uiSurfaceBrush_{ nullptr };
+    winrt::Windows::UI::Composition::ICompositionSurface uiCompositionSurface_{ nullptr };
+    winrt::Windows::UI::Composition::RectangleClip uiClip_{ nullptr };
     Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer_;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTarget_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> modelBackBuffer_;

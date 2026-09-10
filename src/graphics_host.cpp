@@ -6,20 +6,10 @@
 using Microsoft::WRL::ComPtr;
 
 namespace {
-enum class PresentationMode {
-    HwndSwapChain,
-    CompositionSwapChain,
-};
-
-constexpr PresentationMode kPresentationMode = PresentationMode::CompositionSwapChain;
-
-enum class CompositionResizeMode {
-    ExactCompositionResize,
-    RetainedCompositionCapacity,
-};
-
+enum class PresentationMode { HwndSwapChain, CompositionSwapChain, WindowsUiComposition };
+constexpr PresentationMode kPresentationMode = PresentationMode::WindowsUiComposition;
+enum class CompositionResizeMode { ExactCompositionResize, RetainedCompositionCapacity };
 constexpr CompositionResizeMode kCompositionResizeMode = CompositionResizeMode::RetainedCompositionCapacity;
-
 bool SameLuid(const LUID& left, const LUID& right) { return left.HighPart == right.HighPart && left.LowPart == right.LowPart; }
 bool IsHardwareAdapter(IDXGIAdapter1* adapter) { DXGI_ADAPTER_DESC1 description{}; return adapter && SUCCEEDED(adapter->GetDesc1(&description)) && !(description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE); }
 ComPtr<IDXGIAdapter1> FindHardwareAdapter(const LUID* requested) {
@@ -55,6 +45,66 @@ std::vector<GraphicsAdapterInfo> GraphicsHost::EnumerateHardwareAdapters() {
     return result;
 }
 
+bool GraphicsHost::CreateWindowsUiCompositionTree(std::wstring& error) {
+    try {
+        if (!winrt::Windows::System::DispatcherQueue::GetForCurrentThread()) {
+            DispatcherQueueOptions options{};
+            options.dwSize = sizeof(options);
+            options.threadType = DQTYPE_THREAD_CURRENT;
+            options.apartmentType = DQTAT_COM_STA;
+            winrt::check_hresult(CreateDispatcherQueueController(options, reinterpret_cast<PDISPATCHERQUEUECONTROLLER*>(winrt::put_abi(dispatcherQueueController_))));
+        }
+        uiCompositor_ = winrt::Windows::UI::Composition::Compositor();
+        const auto desktopInterop = uiCompositor_.as<ABI::Windows::UI::Composition::Desktop::ICompositorDesktopInterop>();
+        winrt::check_hresult(desktopInterop->CreateDesktopWindowTarget(window_, FALSE, reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(winrt::put_abi(uiCompositionTarget_))));
+        uiRootVisual_ = uiCompositor_.CreateContainerVisual();
+        uiSurfaceVisual_ = uiCompositor_.CreateSpriteVisual();
+        uiSurfaceBrush_ = uiCompositor_.CreateSurfaceBrush();
+        uiSurfaceBrush_.Stretch(winrt::Windows::UI::Composition::CompositionStretch::None);
+        uiSurfaceBrush_.HorizontalAlignmentRatio(0.0f);
+        uiSurfaceBrush_.VerticalAlignmentRatio(0.0f);
+        uiSurfaceVisual_.Brush(uiSurfaceBrush_);
+        uiClip_ = uiCompositor_.as<winrt::Windows::UI::Composition::ICompositor7>().CreateRectangleClip();
+        uiRootVisual_.Clip(uiClip_);
+        uiRootVisual_.Children().InsertAtTop(uiSurfaceVisual_);
+        uiCompositionTarget_.Root(uiRootVisual_);
+        return RebindWindowsUiCompositionSurface(error);
+    } catch (const winrt::hresult_error&) {
+        error = L"The Windows UI Composition display surface could not initialize.";
+        DestroyWindowsUiCompositionTree();
+        return false;
+    }
+}
+
+bool GraphicsHost::RebindWindowsUiCompositionSurface(std::wstring& error) {
+    if (!uiCompositor_) return true;
+    if (!uiSurfaceBrush_ || !swapChain_) return false;
+    try {
+        uiCompositionSurface_ = nullptr;
+        const auto compositorInterop = uiCompositor_.as<ABI::Windows::UI::Composition::ICompositorInterop>();
+        winrt::check_hresult(compositorInterop->CreateCompositionSurfaceForSwapChain(swapChain_.Get(), reinterpret_cast<ABI::Windows::UI::Composition::ICompositionSurface**>(winrt::put_abi(uiCompositionSurface_))));
+        uiSurfaceBrush_.Surface(uiCompositionSurface_);
+        return true;
+    } catch (const winrt::hresult_error&) {
+        error = L"The Windows UI Composition surface could not bind the swap chain.";
+        return false;
+    }
+}
+
+void GraphicsHost::DestroyWindowsUiCompositionTree() {
+    uiCompositionSurface_ = nullptr;
+    uiClip_ = nullptr;
+    uiSurfaceBrush_ = nullptr;
+    uiSurfaceVisual_ = nullptr;
+    uiRootVisual_ = nullptr;
+    uiCompositionTarget_ = nullptr;
+    uiCompositor_ = nullptr;
+    if (dispatcherQueueController_) {
+        try { dispatcherQueueController_.ShutdownQueueAsync(); } catch (const winrt::hresult_error&) {}
+        dispatcherQueueController_ = nullptr;
+    }
+}
+
 bool GraphicsHost::Create(HWND window, ID2D1Factory1* factory, const LUID* preferredAdapter, std::wstring& error) {
     Destroy(); window_ = window;
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
@@ -75,23 +125,25 @@ bool GraphicsHost::Create(HWND window, ID2D1Factory1* factory, const LUID* prefe
         DXGI_SWAP_CHAIN_DESC1 compositionDesc = desc;
         compositionDesc.Scaling = DXGI_SCALING_STRETCH;
         compositionDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-        if (FAILED(factory2->CreateSwapChainForComposition(device_.Get(), &compositionDesc, nullptr, &swapChain_)) ||
-            FAILED(DCompositionCreateDevice2(dxgiDevice.Get(), IID_PPV_ARGS(&dcompDevice_))) ||
-            FAILED(dcompDevice_->CreateTargetForHwnd(window_, TRUE, &dcompTarget_)) ||
-            FAILED(dcompDevice_->CreateVisual(&dcompVisual_)) ||
-            FAILED(dcompDevice_->CreateRectangleClip(&dcompClip_)) ||
-            FAILED(dcompVisual_->SetClip(dcompClip_.Get())) ||
-            FAILED(dcompVisual_->SetContent(swapChain_.Get())) ||
-            FAILED(dcompTarget_->SetRoot(dcompVisual_.Get())) ||
-            FAILED(dcompDevice_->Commit())) {
-            dcompClip_.Reset(); dcompVisual_.Reset(); dcompTarget_.Reset(); dcompDevice_.Reset(); swapChain_.Reset();
-            return false;
+        if (FAILED(factory2->CreateSwapChainForComposition(device_.Get(), &compositionDesc, nullptr, &swapChain_)) || FAILED(DCompositionCreateDevice2(dxgiDevice.Get(), IID_PPV_ARGS(&dcompDevice_))) || FAILED(dcompDevice_->CreateTargetForHwnd(window_, TRUE, &dcompTarget_)) || FAILED(dcompDevice_->CreateVisual(&dcompVisual_)) || FAILED(dcompDevice_->CreateRectangleClip(&dcompClip_)) || FAILED(dcompVisual_->SetClip(dcompClip_.Get())) || FAILED(dcompVisual_->SetContent(swapChain_.Get())) || FAILED(dcompTarget_->SetRoot(dcompVisual_.Get())) || FAILED(dcompDevice_->Commit())) {
+            dcompClip_.Reset(); dcompVisual_.Reset(); dcompTarget_.Reset(); dcompDevice_.Reset(); swapChain_.Reset(); return false;
         }
         return true;
     };
-    const bool swapChainCreated = kPresentationMode == PresentationMode::CompositionSwapChain
-        ? (createCompositionSwapChain() || SUCCEEDED(factory2->CreateSwapChainForHwnd(device_.Get(), window_, &desc, nullptr, nullptr, &swapChain_)))
-        : SUCCEEDED(factory2->CreateSwapChainForHwnd(device_.Get(), window_, &desc, nullptr, nullptr, &swapChain_));
+    const auto createWindowsUiCompositionSwapChain = [&] {
+        DXGI_SWAP_CHAIN_DESC1 compositionDesc = desc;
+        compositionDesc.Scaling = DXGI_SCALING_STRETCH;
+        compositionDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        if (FAILED(factory2->CreateSwapChainForComposition(device_.Get(), &compositionDesc, nullptr, &swapChain_)) || !CreateWindowsUiCompositionTree(error)) {
+            DestroyWindowsUiCompositionTree(); swapChain_.Reset(); return false;
+        }
+        return true;
+    };
+    const bool swapChainCreated = kPresentationMode == PresentationMode::WindowsUiComposition
+        ? (createWindowsUiCompositionSwapChain() || createCompositionSwapChain() || SUCCEEDED(factory2->CreateSwapChainForHwnd(device_.Get(), window_, &desc, nullptr, nullptr, &swapChain_)))
+        : kPresentationMode == PresentationMode::CompositionSwapChain
+            ? (createCompositionSwapChain() || SUCCEEDED(factory2->CreateSwapChainForHwnd(device_.Get(), window_, &desc, nullptr, nullptr, &swapChain_)))
+            : SUCCEEDED(factory2->CreateSwapChainForHwnd(device_.Get(), window_, &desc, nullptr, nullptr, &swapChain_));
     if (!swapChainCreated || FAILED(factory->CreateDevice(dxgiDevice.Get(), &d2dDevice_)) || FAILED(d2dDevice_->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &d2dContext_))) { error = L"The graphics display surface could not initialize."; Destroy(); return false; }
     RECT client{}; GetClientRect(window_, &client);
     return Resize(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top), static_cast<float>(GetDpiForWindow(window_)), error);
@@ -99,7 +151,7 @@ bool GraphicsHost::Create(HWND window, ID2D1Factory1* factory, const LUID* prefe
 
 void GraphicsHost::DiscardModelTargets() { modelRenderTarget_.Reset(); modelBackBuffer_.Reset(); }
 void GraphicsHost::DiscardTargets() { if (context_) context_->OMSetRenderTargets(0, nullptr, nullptr); if (d2dContext_) d2dContext_->SetTarget(nullptr); d2dTarget_.Reset(); DiscardModelTargets(); renderTarget_.Reset(); backBuffer_.Reset(); }
-void GraphicsHost::Destroy() { DiscardTargets(); d2dContext_.Reset(); d2dDevice_.Reset(); dcompClip_.Reset(); dcompVisual_.Reset(); dcompTarget_.Reset(); dcompDevice_.Reset(); swapChain_.Reset(); context_.Reset(); device_.Reset(); window_ = nullptr; clientWidth_ = clientHeight_ = capacityWidth_ = capacityHeight_ = 0; activeAdapterName_.clear(); }
+void GraphicsHost::Destroy() { DiscardTargets(); d2dContext_.Reset(); d2dDevice_.Reset(); dcompClip_.Reset(); dcompVisual_.Reset(); dcompTarget_.Reset(); dcompDevice_.Reset(); DestroyWindowsUiCompositionTree(); swapChain_.Reset(); context_.Reset(); device_.Reset(); window_ = nullptr; clientWidth_ = clientHeight_ = capacityWidth_ = capacityHeight_ = 0; activeAdapterName_.clear(); }
 bool GraphicsHost::CreateTargets(float dpi, std::wstring& error) {
     ComPtr<IDXGISurface> surface;
     if (FAILED(swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer_))) || FAILED(device_->CreateRenderTargetView(backBuffer_.Get(), nullptr, &renderTarget_)) || FAILED(backBuffer_.As(&surface))) { error = L"The graphics back buffer could not initialize."; return false; }
@@ -109,12 +161,11 @@ bool GraphicsHost::CreateTargets(float dpi, std::wstring& error) {
 }
 bool GraphicsHost::CreateModelTargets(std::wstring& error) {
     DiscardModelTargets();
-    if (!(dcompClip_ && kCompositionResizeMode == CompositionResizeMode::RetainedCompositionCapacity)) return true;
+    if (!((dcompClip_ || uiClip_) && kCompositionResizeMode == CompositionResizeMode::RetainedCompositionCapacity)) return true;
     D3D11_TEXTURE2D_DESC description{};
     description.Width = clientWidth_; description.Height = clientHeight_; description.MipLevels = 1; description.ArraySize = 1;
     description.Format = DXGI_FORMAT_B8G8R8A8_UNORM; description.SampleDesc.Count = 1; description.BindFlags = D3D11_BIND_RENDER_TARGET;
-    if (FAILED(device_->CreateTexture2D(&description, nullptr, &modelBackBuffer_)) ||
-        FAILED(device_->CreateRenderTargetView(modelBackBuffer_.Get(), nullptr, &modelRenderTarget_))) { error = L"The model display surface could not initialize."; DiscardModelTargets(); return false; }
+    if (FAILED(device_->CreateTexture2D(&description, nullptr, &modelBackBuffer_)) || FAILED(device_->CreateRenderTargetView(modelBackBuffer_.Get(), nullptr, &modelRenderTarget_))) { error = L"The model display surface could not initialize."; DiscardModelTargets(); return false; }
     return true;
 }
 SIZE GraphicsHost::CompositionCapacity(UINT minimumWidth, UINT minimumHeight) const {
@@ -127,25 +178,31 @@ SIZE GraphicsHost::CompositionCapacity(UINT minimumWidth, UINT minimumHeight) co
     return { static_cast<LONG>(minimumWidth), static_cast<LONG>(minimumHeight) };
 }
 bool GraphicsHost::UpdateCompositionClip(UINT width, UINT height, std::wstring& error) {
+    if (uiClip_) {
+        try {
+            uiRootVisual_.Size({ static_cast<float>(width), static_cast<float>(height) });
+            uiSurfaceVisual_.Size({ static_cast<float>(width), static_cast<float>(height) });
+            uiClip_.Left(0.0f); uiClip_.Top(0.0f); uiClip_.Right(static_cast<float>(width)); uiClip_.Bottom(static_cast<float>(height));
+            return true;
+        } catch (const winrt::hresult_error&) { error = L"The Windows UI Composition display surface could not update."; return false; }
+    }
     if (!dcompClip_) return true;
-    if (FAILED(dcompClip_->SetLeft(0.0f)) || FAILED(dcompClip_->SetTop(0.0f)) ||
-        FAILED(dcompClip_->SetRight(static_cast<float>(width))) || FAILED(dcompClip_->SetBottom(static_cast<float>(height))) ||
-        FAILED(dcompDevice_->Commit())) { error = L"The composition display surface could not update."; return false; }
+    if (FAILED(dcompClip_->SetLeft(0.0f)) || FAILED(dcompClip_->SetTop(0.0f)) || FAILED(dcompClip_->SetRight(static_cast<float>(width))) || FAILED(dcompClip_->SetBottom(static_cast<float>(height))) || FAILED(dcompDevice_->Commit())) { error = L"The composition display surface could not update."; return false; }
     return true;
 }
 bool GraphicsHost::Resize(UINT width, UINT height, float dpi, std::wstring& error) {
     if (!swapChain_ || !width || !height) return false;
     clientWidth_ = width; clientHeight_ = height;
-    const bool retainedComposition = kPresentationMode == PresentationMode::CompositionSwapChain && dcompClip_ && kCompositionResizeMode == CompositionResizeMode::RetainedCompositionCapacity;
+    const bool retainedComposition = (dcompClip_ || uiClip_) && kCompositionResizeMode == CompositionResizeMode::RetainedCompositionCapacity;
     if (retainedComposition && width <= capacityWidth_ && height <= capacityHeight_) return CreateModelTargets(error) && UpdateCompositionClip(width, height, error);
     const SIZE requestedCapacity = retainedComposition ? CompositionCapacity(width, height) : SIZE{ static_cast<LONG>(width), static_cast<LONG>(height) };
     DiscardTargets();
+    if (uiCompositionSurface_) { uiSurfaceBrush_.Surface(nullptr); uiCompositionSurface_ = nullptr; }
     if (FAILED(swapChain_->ResizeBuffers(0, static_cast<UINT>(requestedCapacity.cx), static_cast<UINT>(requestedCapacity.cy), DXGI_FORMAT_UNKNOWN, 0))) {
-        if (!retainedComposition || (requestedCapacity.cx == static_cast<LONG>(width) && requestedCapacity.cy == static_cast<LONG>(height)) ||
-            FAILED(swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0))) { error = L"The graphics surface could not resize."; return false; }
+        if (!retainedComposition || (requestedCapacity.cx == static_cast<LONG>(width) && requestedCapacity.cy == static_cast<LONG>(height)) || FAILED(swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0))) { error = L"The graphics surface could not resize."; return false; }
         capacityWidth_ = width; capacityHeight_ = height;
     } else { capacityWidth_ = static_cast<UINT>(requestedCapacity.cx); capacityHeight_ = static_cast<UINT>(requestedCapacity.cy); }
-    return CreateTargets(dpi, error) && UpdateCompositionClip(width, height, error);
+    return RebindWindowsUiCompositionSurface(error) && CreateTargets(dpi, error) && UpdateCompositionClip(width, height, error);
 }
 bool GraphicsHost::BeginDraw() { if (!Ready()) return false; if (modelBackBuffer_) { context_->OMSetRenderTargets(0, nullptr, nullptr); context_->CopySubresourceRegion(backBuffer_.Get(), 0, 0, 0, 0, modelBackBuffer_.Get(), 0, nullptr); } d2dContext_->BeginDraw(); return true; }
 HRESULT GraphicsHost::EndDraw() { return d2dContext_ ? d2dContext_->EndDraw() : E_FAIL; }

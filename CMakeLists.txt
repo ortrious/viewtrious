@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.9.7.3 LANGUAGES CXX)
+project(Viewtrious VERSION 0.9.7.4 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -125,7 +125,8 @@ target_link_libraries(ViewtriousLanczosBenchmark PRIVATE windowscodecs ole32)
 
 if(MSVC)
     target_compile_options(Viewtrious PRIVATE /W4 /permissive- /EHsc)
-    target_compile_options(Viewtrious PRIVATE $<$<CONFIG:Release>:/O2>)
+    target_compile_options(Viewtrious PRIVATE $<$<CONFIG:Release>:/O2 /Gy /Gw>)
+    target_link_options(Viewtrious PRIVATE $<$<CONFIG:Release>:/OPT:REF /OPT:ICF>)
     target_compile_options(ViewtriousLanczosBenchmark PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(ViewtriousStlThumbnail PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(ViewtriousLanczosBenchmark PRIVATE $<$<CONFIG:Release>:/O2>)

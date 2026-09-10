@@ -188,7 +188,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, ImageAdjustments };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
@@ -856,6 +856,13 @@ struct VideoControlsLayout {
     RECT fullscreen;
 };
 
+struct GifControlsLayout {
+    RECT island;
+    RECT playPause;
+    RECT stepBackward;
+    RECT stepForward;
+};
+
 struct VideoAdjustmentsPanelLayout {
     RECT panel;
     std::array<RECT, 7> sliders;
@@ -1503,6 +1510,36 @@ public:
             { fullscreenLeft, controlTop, fullscreenLeft + buttonWidth, controlTop + buttonWidth } };
     }
     VideoControlsLayout GetVideoControlsLayout() const { return GetVideoControlsLayout(VideoAdjustmentsPanelAboveControls()); }
+    bool AnimatedGifActive() const { return gifDecoder_ && gifFrameCount_ > 1 && source_ != nullptr; }
+    GifControlsLayout GetGifControlsLayout() const {
+        const D2D1_RECT_F imageCanvas = ImageCanvasBounds();
+        const RECT canvas{ static_cast<LONG>(imageCanvas.left), static_cast<LONG>(imageCanvas.top), static_cast<LONG>(imageCanvas.right), static_cast<LONG>(imageCanvas.bottom) };
+        const UINT dpi = GetDpiForWindow(window_);
+        const LONG button = MulDiv(36, dpi, 96), gap = MulDiv(4, dpi, 96), padding = MulDiv(6, dpi, 96);
+        const LONG width = button * 3 + gap * 2 + padding * 2;
+        LONG bottom = canvas.bottom - MulDiv(16, dpi, 96);
+        if (FilmstripVisible()) bottom = std::min(bottom, GetFilmstripBounds().top - MulDiv(12, dpi, 96));
+        const LONG top = std::max(canvas.top + padding, bottom - button - padding * 2);
+        const LONG left = std::clamp((canvas.left + canvas.right - width) / 2, canvas.left + padding, std::max(canvas.left + padding, canvas.right - padding - width));
+        const RECT island{ left, top, left + width, top + button + padding * 2 };
+        const LONG buttonTop = island.top + padding;
+        return { island, { left + padding, buttonTop, left + padding + button, buttonTop + button },
+            { left + padding + button + gap, buttonTop, left + padding + button * 2 + gap, buttonTop + button },
+            { left + padding + button * 2 + gap * 2, buttonTop, left + padding + button * 3 + gap * 2, buttonTop + button } };
+    }
+    ButtonKind GifControlAt(POINT point) const {
+        if (!AnimatedGifActive()) return ButtonKind::None;
+        const GifControlsLayout layout = GetGifControlsLayout();
+        if (PtInRect(&layout.playPause, point)) return ButtonKind::GifPlayPause;
+        if (PtInRect(&layout.stepBackward, point)) return ButtonKind::GifStepBackward;
+        if (PtInRect(&layout.stepForward, point)) return ButtonKind::GifStepForward;
+        return ButtonKind::None;
+    }
+    bool GifControlsContains(POINT point) const {
+        if (!AnimatedGifActive()) return false;
+        const RECT island = GetGifControlsLayout().island;
+        return PtInRect(&island, point) != FALSE;
+    }
     VideoPlaybackSpeedPanelLayout GetVideoPlaybackSpeedPanelLayout() const {
         const VideoControlsLayout controls = GetVideoControlsLayout();
         const UINT dpi = GetDpiForWindow(window_);
@@ -3415,6 +3452,7 @@ public:
             if (viewBarVisualStyleMenuOpen_) { const RECT menu = GetModelViewBarStyleMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top+row ? ButtonKind::ViewBarVisualStyleShaded : point.y < menu.top+row*2 ? ButtonKind::ViewBarVisualStyleVisibleEdges : ButtonKind::ViewBarVisualStyleWireframe; }
             const RECT projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();if(PtInRect(&projection,point))return ButtonKind::ViewBarProjectionToggle;if(PtInRect(&style,point))return ButtonKind::ViewBarVisualStyleToggle;
         }
+        if (const ButtonKind gifControl = GifControlAt(point); gifControl != ButtonKind::None) return gifControl;
         if (renderTarget_) {
             const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
             if (PtInRect(&hud.adjustments, point)) return ButtonKind::ImageAdjustments;
@@ -3599,6 +3637,9 @@ public:
         else if (button == ButtonKind::SettingsScalingQuality) SetImageScaling(ImageScaling::Quality);
         else if (button == ButtonKind::SettingsVideoSizingFit) SetVideoWindowSizing(VideoWindowSizing::FitToWindow);
         else if (button == ButtonKind::SettingsVideoSizingResize) SetVideoWindowSizing(VideoWindowSizing::ResizeWindowToVideo);
+        else if (button == ButtonKind::GifPlayPause) ToggleGifPlayback();
+        else if (button == ButtonKind::GifStepBackward) StepGifFrame(-1);
+        else if (button == ButtonKind::GifStepForward) StepGifFrame(1);
         else if (button == ButtonKind::ImageAdjustments) ToggleAdjustments();
         else if (button == ButtonKind::SettingsDefaultApps) OpenRegisteredDefaultApps();
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
@@ -3760,7 +3801,7 @@ public:
             }
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
-                if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); }
+                if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); DrawGifPlaybackControls(); }
             } else if (EmptyStatePresentationActive()) DrawEmptyState();
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
@@ -5774,7 +5815,7 @@ public:
         const bool canvasContains = VideoActive() ? VideoCanvasContains(point) :
             point.x >= imageCanvas.left && point.x < imageCanvas.right && point.y >= imageCanvas.top && point.y < imageCanvas.bottom;
         if (!swipeToNavigateWhenFit_ || ModelActive() || CanPan() || currentPath_.empty() ||
-            CanvasNavigationZoneAt(point) != ButtonKind::None || VideoControlsContains(point) ||
+            CanvasNavigationZoneAt(point) != ButtonKind::None || VideoControlsContains(point) || GifControlsContains(point) ||
             !canvasContains) return false;
         swipeNavigationPending_ = true;
         swipeNavigationStart_ = point;
@@ -7911,26 +7952,80 @@ private:
 
     void StopGifPlayback() {
         KillTimer(window_, kGifPlaybackTimer);
+        if (hoveredButton_ == ButtonKind::GifPlayPause || hoveredButton_ == ButtonKind::GifStepBackward || hoveredButton_ == ButtonKind::GifStepForward)
+            hoveredButton_ = ButtonKind::None;
+        if (pressedButton_ == ButtonKind::GifPlayPause || pressedButton_ == ButtonKind::GifStepBackward || pressedButton_ == ButtonKind::GifStepForward)
+            pressedButton_ = ButtonKind::None;
         gifDecoder_.Reset();
         gifCanvas_.reset();
         gifPreviousCanvas_.reset();
         gifFrameIndex_ = gifFrameCount_ = 0;
         gifCompletedLoops_ = 0;
         gifLoopCount_ = 0; gifHasLoopExtension_ = false;
-        gifPlaying_ = gifPaused_ = gifPlaybackTimerActive_ = false;
+        gifPlaying_ = gifPaused_ = gifUserPaused_ = gifPlaybackTimerActive_ = false;
     }
 
     void FinishGifPlayback() {
         KillTimer(window_, kGifPlaybackTimer);
         gifDecoder_.Reset();
         gifPreviousCanvas_.reset();
-        gifPlaying_ = gifPaused_ = gifPlaybackTimerActive_ = false;
+        gifPlaying_ = gifPaused_ = gifUserPaused_ = gifPlaybackTimerActive_ = false;
         if (lanczosSelected_) QueueLanczosRefinement();
     }
 
     void ActivateGifPlayback() {
         if (!window_ || !gifPlaying_ || gifPaused_ || gifPlaybackTimerActive_) return;
         if (SetTimer(window_, kGifPlaybackTimer, gifFrameDelayMs_, nullptr)) gifPlaybackTimerActive_ = true;
+    }
+
+    void PauseGifPlayback(bool userInitiated) {
+        if (!AnimatedGifActive()) return;
+        KillTimer(window_, kGifPlaybackTimer);
+        gifPlaybackTimerActive_ = false;
+        gifPaused_ = true;
+        gifUserPaused_ = userInitiated;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void ToggleGifPlayback() {
+        if (!AnimatedGifActive()) return;
+        if (!gifPaused_) { PauseGifPlayback(true); return; }
+        gifUserPaused_ = false;
+        gifPaused_ = false;
+        ActivateGifPlayback();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    bool RebuildGifFrame(UINT frameIndex) {
+        if (!AnimatedGifActive() || frameIndex >= gifFrameCount_) return false;
+        gifCanvas_ = std::make_shared<std::vector<BYTE>>(static_cast<size_t>(gifCanvasWidth_) * gifCanvasHeight_ * 4, BYTE{ 0 });
+        gifPreviousCanvas_.reset();
+        gifPreviousDisposal_ = gifPreviousLeft_ = gifPreviousTop_ = gifPreviousWidth_ = gifPreviousHeight_ = 0;
+        for (UINT index = 0; index <= frameIndex; ++index) {
+            gifFrameIndex_ = index;
+            if (FAILED(PresentGifFrame(false))) return false;
+        }
+        return true;
+    }
+
+    void StepGifFrame(int direction) {
+        if (!AnimatedGifActive() || !direction) return;
+        PauseGifPlayback(true);
+        UINT target = gifFrameIndex_;
+        if (direction < 0) {
+            if (target == 0) {
+                target = gifFrameCount_ - 1;
+                if (gifCompletedLoops_) --gifCompletedLoops_;
+            } else --target;
+        } else if (target + 1 < gifFrameCount_) {
+            ++target;
+        } else {
+            // Match normal playback: no extension and a zero count both mean looping indefinitely.
+            if (gifHasLoopExtension_ && gifLoopCount_ != 0 && gifCompletedLoops_ >= gifLoopCount_) return;
+            target = 0;
+            ++gifCompletedLoops_;
+        }
+        if (!RebuildGifFrame(target)) StopGifPlayback();
     }
 
     void ApplyGifPreviousDisposal() {
@@ -8034,7 +8129,7 @@ private:
         gifHasLoopExtension_ = ReadGifLoopCount(path, gifLoopCount_);
         gifCanvas_ = std::make_shared<std::vector<BYTE>>(bytes, BYTE{ 0 }); gifPreviousCanvas_.reset();
         gifPreviousDisposal_ = gifPreviousLeft_ = gifPreviousTop_ = gifPreviousWidth_ = gifPreviousHeight_ = 0;
-        gifPlaying_ = true; gifPaused_ = !gifVisible_;
+        gifPlaying_ = true; gifPaused_ = !gifVisible_; gifUserPaused_ = false;
         currentPath_ = path;
         SuppressFilmstripHoverPreviewForCurrentMedia();
         hr = PresentGifFrame(true, resetNavigation);
@@ -8043,6 +8138,7 @@ private:
     }
 
     void GifPlaybackTimer() {
+        gifPlaybackTimerActive_ = false;
         if (!gifPlaying_ || gifPaused_) return;
         ++gifFrameIndex_;
         if (gifFrameIndex_ == gifFrameCount_) {
@@ -8052,7 +8148,6 @@ private:
             gifFrameIndex_ = 0;
         }
         if (FAILED(PresentGifFrame(false))) { StopGifPlayback(); return; }
-        gifPlaybackTimerActive_ = false;
         ActivateGifPlayback();
     }
 
@@ -8060,7 +8155,7 @@ private:
         gifVisible_ = visible;
         if (!gifPlaying_) return;
         if (!visible) { gifPaused_ = true; gifPlaybackTimerActive_ = false; KillTimer(window_, kGifPlaybackTimer); }
-        else if (gifPaused_) { gifPaused_ = false; ActivateGifPlayback(); }
+        else if (gifPaused_ && !gifUserPaused_) { gifPaused_ = false; ActivateGifPlayback(); }
     }
 
     HRESULT DecodeImage(const std::wstring& path, ComPtr<IWICBitmapSource>& source, UINT& width, UINT& height) {
@@ -9237,6 +9332,44 @@ private:
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, top, left + size, top + size), 8.0f * scale, 8.0f * scale), backing.Get());
         const std::wstring label = std::to_wstring(remaining);
         DrawOverlayText(label.c_str(), left, top, size, size, 20.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+    }
+    void DrawGifPlaybackControls() {
+        if (!AnimatedGifActive()) return;
+        const GifControlsLayout layout = GetGifControlsLayout();
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const bool dark = UseDarkAppMode();
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, hover;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 35.0f / 255.0f : 246.0f / 255.0f, dark ? 38.0f / 255.0f : 246.0f / 255.0f, dark ? 45.0f / 255.0f : 246.0f / 255.0f, 0.94f), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, 0.14f), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, 0.92f), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, 0.12f), &hover))) return;
+        const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.island), 9.0f * scale, 9.0f * scale), surface.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(layout.island), 9.0f * scale, 9.0f * scale), border.Get(), scale);
+        const auto drawHover = [&](const RECT& bounds, ButtonKind button) {
+            if (hoveredButton_ == button || pressedButton_ == button)
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), hover.Get());
+        };
+        drawHover(layout.playPause, ButtonKind::GifPlayPause);
+        drawHover(layout.stepBackward, ButtonKind::GifStepBackward);
+        drawHover(layout.stepForward, ButtonKind::GifStepForward);
+        const float centerX = (layout.playPause.left + layout.playPause.right) * 0.5f;
+        const float centerY = (layout.playPause.top + layout.playPause.bottom) * 0.5f;
+        if (!gifPaused_) {
+            const float bar = 3.0f * scale, height = 13.0f * scale, gap = 3.0f * scale;
+            renderTarget_->FillRectangle(D2D1::RectF(centerX - gap - bar, centerY - height * 0.5f, centerX - gap, centerY + height * 0.5f), text.Get());
+            renderTarget_->FillRectangle(D2D1::RectF(centerX + gap, centerY - height * 0.5f, centerX + gap + bar, centerY + height * 0.5f), text.Get());
+        } else {
+            ComPtr<ID2D1PathGeometry> triangle; ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&triangle)) && SUCCEEDED(triangle->Open(&sink))) {
+                const float half = 7.0f * scale;
+                sink->BeginFigure(D2D1::Point2F(centerX - half * 0.55f, centerY - half), D2D1_FIGURE_BEGIN_FILLED);
+                sink->AddLine(D2D1::Point2F(centerX - half * 0.55f, centerY + half)); sink->AddLine(D2D1::Point2F(centerX + half, centerY)); sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                if (SUCCEEDED(sink->Close())) renderTarget_->FillGeometry(triangle.Get(), text.Get());
+            }
+        }
+        DrawOverlayText(L"-1", static_cast<float>(layout.stepBackward.left), static_cast<float>(layout.stepBackward.top), static_cast<float>(layout.stepBackward.right - layout.stepBackward.left), static_cast<float>(layout.stepBackward.bottom - layout.stepBackward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
     }
     void DrawVideoPlaybackControls() {
         if (!VideoActive() || videoControlsOpacity_ <= 0.001f) return;
@@ -10997,6 +11130,7 @@ private:
     WINDOWPLACEMENT videoPreResizePlacement_{ sizeof(WINDOWPLACEMENT) };
     bool gifPlaying_ = false;
     bool gifPaused_ = false;
+    bool gifUserPaused_ = false;
     bool gifPlaybackTimerActive_ = false;
     HANDLE videoPlaybackTimer_ = nullptr;
     HANDLE videoPlaybackStopEvent_ = nullptr;
@@ -11436,7 +11570,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->ScrollFilmstrip(GET_WHEEL_DELTA_WPARAM(wParam));
             return 0;
         }
-        if (viewer->VideoControlsContains(point)) return 0;
+        if (viewer->VideoControlsContains(point) || viewer->GifControlsContains(point)) return 0;
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen() || viewer->ModelViewBarMenuOpen()) return 0;
         const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
         if (viewer->ModelActive()) { viewer->DollyModel(wheelUnits); return 0; }
@@ -11453,6 +11587,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->ImageAdjustmentsPanelContains(point)) return 0;
+        if (viewer->GifControlsContains(point)) {
+            viewer->SetButtonPressed(viewer->ButtonAt(point));
+            SetCapture(window);
+            return 0;
+        }
         const ButtonKind videoControl = viewer->VideoControlAt(point);
         if (videoControl == ButtonKind::VideoPlayPause || videoControl == ButtonKind::VideoMute ||
             videoControl == ButtonKind::VideoAutoPlayNext || videoControl == ButtonKind::VideoPlaybackSpeed) {
@@ -11579,6 +11718,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (viewer->ButtonAt(point) == ButtonKind::ImageAdjustments) {
             viewer->SetButtonPressed(ButtonKind::ImageAdjustments);
+            SetCapture(window);
+            return 0;
+        }
+        if (viewer->GifControlsContains(point)) {
+            viewer->SetButtonPressed(viewer->ButtonAt(point));
             SetCapture(window);
             return 0;
         }

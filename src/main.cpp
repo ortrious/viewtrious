@@ -19,6 +19,7 @@
 #include "lanczos_resampler.h"
 #include "d3d11_model_viewport.h"
 #include "video_player.h"
+#include "file_open_diagnostics.h"
 #include "shell_thumbnail_reader.h"
 #include "video_hover_frame_stream.h"
 #include "stl_loader.h"
@@ -1101,7 +1102,10 @@ public:
         return S_OK;
     }
 
-    HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
+    HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true, const wchar_t* route = L"internal") {
+        const wchar_t* mediaKind = IsModelPath(path) ? L"model" : IsVideoPath(path) ? L"video" : IsGifPath(path) ? L"gif" : L"image";
+        activeOpenAttemptId_ = FileOpenDiagnostics::Begin(path, route, mediaKind);
+        FileOpenDiagnostics::Log(activeOpenAttemptId_, L"load-content-dispatch");
         CancelVideoAutoPlayNextCountdown();
         if (!currentPath_.empty() && !PathsEqual(fs::path(path), fs::path(currentPath_))) {
             if (VideoActive()) FlushVideoAdjustmentPersistence();
@@ -1110,11 +1114,13 @@ public:
         ++aiRequestGeneration_;
         ClearStillDissolve();
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
-        if (IsVideoPath(path)) { BeginVideoLoad(path); return S_OK; }
+        if (IsVideoPath(path)) { BeginVideoLoad(path, activeOpenAttemptId_); return S_OK; }
         DeactivateVideo();
         DeactivateModel();
         contentKind_ = ContentKind::Image2D;
-        return LoadImage(path, resetNavigation);
+        const HRESULT result = LoadImage(path, resetNavigation);
+        FileOpenDiagnostics::Log(activeOpenAttemptId_, SUCCEEDED(result) ? L"nonvideo-open-complete" : L"nonvideo-open-failed", L"hr=0x" + std::to_wstring(static_cast<unsigned int>(result)));
+        return result;
     }
     void QueueExternalOpen(std::wstring path) {
         if (!IsExternalOpenPath(path)) return;
@@ -1128,7 +1134,7 @@ public:
         if (IsIconic(window_)) ShowWindow(window_, SW_RESTORE);
         BringWindowToTop(window_);
         SetForegroundWindow(window_);
-        LoadContent(path);
+        LoadContent(path, true, L"same-window-ipc");
         if (!externalOpenQueue_.empty()) PostMessageW(window_, kExternalOpenMessage, 0, 0);
     }
 
@@ -1202,7 +1208,7 @@ public:
         EnsureRenderTarget();
         InitializeSpaceMouse();
         ActivateGifPlayback();
-        if (!startupPath_.empty()) LoadContent(std::exchange(startupPath_, {}));
+        if (!startupPath_.empty()) LoadContent(std::exchange(startupPath_, {}), true, L"startup");
     }
     void InitializeSpaceMouse() {
         if (!window_ || spaceMouse_) return;
@@ -1362,7 +1368,7 @@ public:
         ComPtr<IShellItem> item;
         PWSTR path = nullptr;
         if (SUCCEEDED(dialog->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-            LoadContent(path);
+            LoadContent(path, true, L"open-file");
             CoTaskMemFree(path);
         }
         InvalidateRect(window_, nullptr, FALSE);
@@ -3869,7 +3875,7 @@ public:
             std::wstring path(length + 1, L'\0');
             DragQueryFileW(drop, 0, path.data(), length + 1);
             path.resize(length);
-            LoadContent(path);
+            LoadContent(path, true, L"drag-drop");
             InvalidateRect(window_, nullptr, FALSE);
         }
         DragFinish(drop);
@@ -5133,7 +5139,7 @@ public:
         filmstripClickedRevealTarget_ = static_cast<size_t>(index);
         const std::wstring path = navigationFiles_[index].wstring();
         if (!PathsEqual(fs::path(path), fs::path(currentPath_))) {
-            if (FAILED(LoadContent(path, false))) filmstripClickedRevealTarget_.reset();
+            if (FAILED(LoadContent(path, false, L"filmstrip"))) filmstripClickedRevealTarget_.reset();
             else if (!imageDecodePending_) RevealClickedFilmstripItem();
         }
         else RevealClickedFilmstripItem();
@@ -5529,7 +5535,7 @@ public:
         ClearStillDissolve();
         const std::optional<std::wstring> path = NavigationTargetPath(direction);
         if (!path) return;
-        LoadContent(*path, false);
+        LoadContent(*path, false, L"next-previous");
         if (immediatePaint) UpdateWindow(window_);
     }
 
@@ -5807,7 +5813,7 @@ public:
         if (elapsed < 5000) { InvalidateRect(window_, nullptr, FALSE); return; }
         const std::wstring nextPath = videoAutoPlayNextCountdownTargetPath_;
         CancelVideoAutoPlayNextCountdown();
-        LoadContent(nextPath, false);
+        LoadContent(nextPath, false, L"auto-play-next");
     }
 
     bool BeginSwipeNavigation(POINT point) {
@@ -6524,7 +6530,8 @@ private:
         DismissTriangleCountTooltip(false);
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
-    void BeginVideoLoad(const std::wstring& path) {
+    void BeginVideoLoad(const std::wstring& path, uint64_t openAttemptId) {
+        FileOpenDiagnostics::Log(openAttemptId, L"video-load-begin");
         const bool replacingVideo = VideoActive();
         const std::wstring previousTitleMetadata = resolutionText_;
         if (replacingVideo && PathsEqual(fs::path(path), fs::path(currentPath_))) FlushVideoAdjustmentPersistence();
@@ -6547,10 +6554,11 @@ private:
         ResetVideoControls();
         EnsureRenderTarget();
         std::wstring videoError;
-        if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, videoError)) {
+        if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, openAttemptId, videoError)) {
             contentKind_ = ContentKind::None;
             resolutionText_.clear();
             error_ = videoError.empty() ? L"Viewtrious could not open this video." : videoError;
+            FileOpenDiagnostics::Log(openAttemptId, L"video-load-failed", L"message=\"" + error_ + L"\"");
             RestoreVideoWindowBounds();
         } else {
             videoPlayer_.SetMuted(videoMuted_);
@@ -6574,8 +6582,10 @@ private:
         if (!VideoActive()) RevealInitialWindowAfterVideoSizing();
     }
 public:
-    void VideoMediaEngineEvent(DWORD event) {
-        if (!VideoActive()) return;
+    void VideoMediaEngineEvent(DWORD event, uint64_t callbackOpenAttemptId) {
+        if (!VideoActive()) { FileOpenDiagnostics::Log(callbackOpenAttemptId, L"media-engine-callback-ignored", L"reason=no-active-video"); return; }
+        if (callbackOpenAttemptId != activeOpenAttemptId_)
+            FileOpenDiagnostics::Log(callbackOpenAttemptId, L"media-engine-callback-stale", L"active-open=" + std::to_wstring(activeOpenAttemptId_));
         const bool wasPlaying = videoPlayer_.Playing();
         std::wstring videoError;
         videoPlayer_.HandleMediaEvent(event, videoError);
@@ -11124,6 +11134,7 @@ private:
     bool reuseImageWindow_ = false;
     bool reuseVideoWindow_ = false;
     ImageAdjustments videoAdjustments_;
+    uint64_t activeOpenAttemptId_ = 0;
     ImageAdjustments imageAdjustments_;
     ImageAdjustmentPersistence adjustmentPersistence_;
     std::array<unsigned char, 32> imageAdjustmentHash_{};
@@ -11982,7 +11993,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kLanczosCompleteMessage: viewer->LanczosCompleteMessage(reinterpret_cast<LanczosResult*>(lParam)); return 0;
     case kDecodeWorkerFinishedMessage: viewer->DecodeWorkerFinishedMessage(reinterpret_cast<DecodeWorkerFinished*>(lParam)); return 0;
     case kModelLoadCompleteMessage: viewer->ModelLoadCompleteMessage(reinterpret_cast<ModelLoadResult*>(lParam)); return 0;
-    case kVideoMediaEngineEventMessage: viewer->VideoMediaEngineEvent(static_cast<DWORD>(wParam)); return 0;
+    case kVideoMediaEngineEventMessage: viewer->VideoMediaEngineEvent(static_cast<DWORD>(wParam), static_cast<uint64_t>(lParam)); return 0;
     case kVideoPlaybackWakeMessage: viewer->VideoPlaybackWakeMessage(static_cast<uint64_t>(wParam)); return 0;
     case kAiAnalysisCompleteMessage: viewer->AiAnalysisCompleteMessage(reinterpret_cast<AiAnalysisResult*>(lParam)); return 0;
     case kImageAdjustmentPersistenceCompleteMessage: viewer->ImageAdjustmentPersistenceCompleteMessage(reinterpret_cast<ImageAdjustmentPersistenceResult*>(lParam)); return 0;

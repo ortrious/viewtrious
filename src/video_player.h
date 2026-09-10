@@ -13,6 +13,7 @@
 #include "media_adjustments.h"
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -21,7 +22,7 @@ class VideoPlayer {
 public:
     enum class FrameAcquisitionReason : unsigned char { Scheduler, InitialLoad, Seek };
 
-    bool Open(HWND window, ID3D11Device* device, const std::wstring& path, std::wstring& error);
+    bool Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, std::wstring& error);
     void Shutdown();
     bool RebindDevice(ID3D11Device* device, std::wstring& error);
     void HandleRenderTargetResize();
@@ -89,8 +90,13 @@ private:
     bool adjustedFrameValid_ = false;
     bool hasTransferredPts_ = false;
     bool hasFramesPerSecond_ = false;
+    bool firstFrameLogged_ = false;
     float framesPerSecond_ = 0.0f;
     LONGLONG lastTransferredPts_ = 0;
+    uint64_t openAttemptId_ = 0;
+    ULONGLONG openStartedAtMs_ = 0;
+    DWORD lastMediaEvent_ = 0;
+    DWORD lastSuccessfulLifecycleEvent_ = 0;
 #if defined(_DEBUG)
     static constexpr size_t kFramePacingRecordCapacity = 8192;
     std::array<FramePacingRecord, kFramePacingRecordCapacity> framePacingRecords_{};

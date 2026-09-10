@@ -1428,9 +1428,10 @@ public:
         const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int margin = MulDiv(16, dpi, 96);
-        const LONG controlsWidth = std::min<LONG>(MulDiv(420, dpi, 96), std::max(1L, canvas.right - canvas.left - margin * 2));
-        const LONG controlsLeft = canvas.left + (canvas.right - canvas.left - controlsWidth) / 2;
-        return controlsLeft + controlsWidth + MulDiv(370, dpi, 96) > canvas.right - margin;
+        const ZoomHudLayout hud = GetVideoZoomHudLayout();
+        const LONG width = MulDiv(370, dpi, 96);
+        const LONG bottom = hud.combined.top - MulDiv(8, dpi, 96);
+        return canvas.right - canvas.left < width + margin * 2 || bottom - MulDiv(278, dpi, 96) < canvas.top + margin;
     }
     VideoControlsLayout GetVideoControlsLayout() const {
         const RECT canvas = ModelCanvasBounds();
@@ -1531,9 +1532,10 @@ public:
         const LONG width = aboveControls
             ? std::min<LONG>(MulDiv(370, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)))
             : MulDiv(370, dpi, 96);
-        const LONG left = aboveControls ? std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width) : controls.island.right;
+        const ZoomHudLayout hud = GetVideoZoomHudLayout();
+        const LONG left = aboveControls ? std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width) : std::clamp<LONG>(hud.combined.right - width, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
         const LONG right = left + width;
-        const LONG bottom = aboveControls ? controls.island.top : controls.island.bottom;
+        const LONG bottom = aboveControls ? controls.island.top : hud.combined.top - MulDiv(8, dpi, 96);
         const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
         const LONG top = bottom - height;
         return MakeVideoAdjustmentsPanelLayout({ left, top, right, bottom }, aboveControls);
@@ -1548,7 +1550,7 @@ public:
     }
     VideoAdjustmentsPanelLayout VideoAdjustmentsPanelAttachmentLayout(const VideoAdjustmentsPanelLayout& target) const {
         const LONG offset = MulDiv(16, GetDpiForWindow(window_), 96);
-        return OffsetVideoAdjustmentsPanelLayout(target, target.aboveControls ? 0 : -offset, target.aboveControls ? offset : 0);
+        return OffsetVideoAdjustmentsPanelLayout(target, 0, offset);
     }
     void StopVideoAdjustmentsPanelMotion() {
         videoAdjustmentsPanelMotion_ = VideoAdjustmentsPanelMotion::None;
@@ -1592,8 +1594,8 @@ public:
     RECT VideoAdjustmentsPanelOpenCloseMotionRect(float progress) const {
         const RECT start = videoAdjustmentsPanelPlacementStartLayout_.panel;
         const RECT target = videoAdjustmentsPanelPlacementTargetLayout_.panel;
-        const float directionX = videoAdjustmentsPanelPlacementTargetLayout_.aboveControls ? 0.0f : 1.0f;
-        const float directionY = videoAdjustmentsPanelPlacementTargetLayout_.aboveControls ? -1.0f : 0.0f;
+        const float directionX = 0.0f;
+        const float directionY = -1.0f;
         const float startX = (start.left + start.right) * 0.5f, startY = (start.top + start.bottom) * 0.5f;
         const float targetX = (target.left + target.right) * 0.5f, targetY = (target.top + target.bottom) * 0.5f;
         float centerX = targetX, centerY = targetY;
@@ -1888,10 +1890,8 @@ public:
         const int gap = MulDiv(8, dpi, 96);
         const int width = std::min(MulDiv(300, dpi, 96), std::max(MulDiv(220, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
         const int height = MulDiv(308, dpi, 96);
-        const bool left = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::TopLeft;
-        const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
-        const int panelLeft = left ? std::max(static_cast<int>(canvas.left) + gap, static_cast<int>(hud.combined.left)) : std::min(static_cast<int>(canvas.right) - gap - width, static_cast<int>(hud.combined.right) - width);
-        int panelTop = top ? hud.combined.bottom + gap : hud.combined.top - gap - height;
+        const int panelLeft = std::clamp(static_cast<int>(hud.combined.right) - width, static_cast<int>(canvas.left) + gap, std::max(static_cast<int>(canvas.left) + gap, static_cast<int>(canvas.right) - gap - width));
+        int panelTop = static_cast<int>(hud.combined.top) - gap - height;
         panelTop = std::clamp(panelTop, static_cast<int>(canvas.top) + gap, std::max(static_cast<int>(canvas.top) + gap, static_cast<int>(canvas.bottom) - gap - height));
         const RECT panel{ panelLeft, panelTop, panelLeft + width, panelTop + height };
         const int labelWidth = MulDiv(72, dpi, 96);
@@ -9080,7 +9080,7 @@ private:
             }
         }
         const bool adjustmentsPanelVisible = VideoAdjustmentsPanelVisible();
-        const bool adjustmentsPanelSeparateShell = adjustmentsPanelVisible && (VideoAdjustmentsPanelMotionActive() || videoAdjustmentsPanelFadeActive_);
+        const bool adjustmentsPanelSeparateShell = adjustmentsPanelVisible && (!GetVideoAdjustmentsPanelPresentedLayout().aboveControls || VideoAdjustmentsPanelMotionActive() || videoAdjustmentsPanelFadeActive_);
         if (adjustmentsPanelVisible && !adjustmentsPanelSeparateShell)
             DrawVideoAdjustmentCompositeShell(layout, GetVideoAdjustmentsPanelPresentedLayout(), surface.Get(), border.Get(), scale);
         const D2D1_RECT_F island = rect(layout.island);

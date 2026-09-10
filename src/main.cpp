@@ -179,6 +179,7 @@ constexpr wchar_t kRegisteredApplicationName[] = L"Viewtrious";
 constexpr wchar_t kCapabilitiesPath[] = L"Software\\Viewtrious\\Capabilities";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
+constexpr float kSharpnessSliderMaximum = 2.0f;
 
 
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError, RegistrationError };
@@ -1947,7 +1948,7 @@ public:
         else if (index == 3) videoAdjustments_.shadows = normalizedValue;
         else if (index == 4) videoAdjustments_.highlights = normalizedValue;
         else if (index == 5) videoAdjustments_.saturation = normalizedValue;
-        else videoAdjustments_.sharpness = normalizedValue;
+        else videoAdjustments_.sharpness = normalizedValue * kSharpnessSliderMaximum;
         ApplyVideoAdjustments();
         QueueVideoAdjustmentPersistence();
     }
@@ -2051,7 +2052,7 @@ public:
         else if (index == 3) imageAdjustments_.shadows = value;
         else if (index == 4) imageAdjustments_.highlights = value;
         else if (index == 5) imageAdjustments_.saturation = value;
-        else imageAdjustments_.sharpness = value;
+        else imageAdjustments_.sharpness = value * kSharpnessSliderMaximum;
         ApplyImageAdjustments();
         QueueImageAdjustmentPersistence();
     }
@@ -9202,7 +9203,7 @@ private:
         ID2D1SolidColorBrush* track, ID2D1SolidColorBrush* hover) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
-        const std::array<float, 7> values{ adjustments.exposure * 0.5f, adjustments.brightness, adjustments.contrast, adjustments.shadows, adjustments.highlights, adjustments.saturation, adjustments.sharpness };
+        const std::array<float, 7> values{ adjustments.exposure * 0.5f, adjustments.brightness, adjustments.contrast, adjustments.shadows, adjustments.highlights, adjustments.saturation, adjustments.sharpness / kSharpnessSliderMaximum };
         for (size_t index = 0; index < panel.sliders.size(); ++index) {
             const RECT slider = panel.sliders[index];
             DrawOverlayText(labels[index], static_cast<float>(panel.panel.left + MulDiv(12, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(slider.left - panel.panel.left - MulDiv(18, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, text, false, false, true);

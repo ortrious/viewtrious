@@ -11181,7 +11181,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             else viewer->DismissModelViewBarMenu();
             return 0;
         }
-        viewer->HideFilmstripHoverPreviewImmediately();
         viewer->SetFilmstripHover({ -1, -1 });
         if (viewer->BeginFilmstripHoverDelaySlider(point)) {
             SetCapture(window);

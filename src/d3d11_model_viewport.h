@@ -15,7 +15,7 @@ public:
     D3D11ModelViewport(const D3D11ModelViewport&) = delete;
     D3D11ModelViewport& operator=(const D3D11ModelViewport&) = delete;
 
-    bool Create(GraphicsHost& host, std::shared_ptr<ModelDocument> document, std::wstring& error, Float3 upAxis);
+    bool Create(GraphicsHost& host, std::shared_ptr<ModelDocument> document, std::wstring& error, Float3 upAxis, bool centerOnBuildPlate);
     void Destroy();
     void Resize(GraphicsHost& host, const RECT& bounds);
     void Render(GraphicsHost& host, const RECT& bounds);
@@ -37,6 +37,7 @@ public:
     void SetProjectionMode(ModelProjectionMode mode) { camera_.SetProjectionMode(mode); }
     void SetVisualStyle(ModelVisualStyle style) { if (visualStyle_ != style) { visualStyle_ = style; width_ = height_ = 0; } }
     void SetBuildPlate(bool visible, Float3 upAxis, float widthMillimeters, float depthMillimeters) { if (buildPlateVisible_ != visible || buildPlateUpAxis_.x != upAxis.x || buildPlateUpAxis_.y != upAxis.y || buildPlateUpAxis_.z != upAxis.z || buildPlateWidth_ != widthMillimeters || buildPlateDepth_ != depthMillimeters) { buildPlateVisible_ = visible; buildPlateUpAxis_ = upAxis; buildPlateWidth_ = widthMillimeters; buildPlateDepth_ = depthMillimeters; buildPlateDirty_ = true; } }
+    bool CenterModelOnBuildPlate(Float3 upAxis, std::wstring& error);
     void SetAntiAliasing(ModelAntiAliasing mode) { if (antiAliasing_ != mode) { antiAliasing_ = mode; width_ = height_ = 0; } }
     ModelAntiAliasing EffectiveAntiAliasing() const { return effectiveAntiAliasing_; }
     void SetOrthographicHalfHeight(float halfHeight) { camera_.SetOrthographicHalfHeight(halfHeight); }
@@ -70,6 +71,7 @@ private:
     bool UploadSelectedSnapPlane();
     bool UploadSelectedObjectRange();
     bool UploadBuildPlate();
+    bool ApplyBuildPlatePresentation(Float3 upAxis);
 
     std::shared_ptr<ModelDocument> document_;
     OrbitCamera camera_;
@@ -88,6 +90,7 @@ private:
     ModelVisualStyle visualStyle_ = ModelVisualStyle::Shaded;
     bool buildPlateVisible_ = false;
     bool buildPlateDirty_ = true;
+    bool buildPlatePresentationApplied_ = false;
     Float3 buildPlateUpAxis_{ 0, 0, 1 };
     float buildPlateWidth_ = 256.0f, buildPlateDepth_ = 256.0f;
     ModelAntiAliasing antiAliasing_ = ModelAntiAliasing::Msaa4x;

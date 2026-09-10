@@ -9527,9 +9527,9 @@ private:
                     navigation.bottom - navigation.top, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, selected ? checkmark.Get() : primaryBrush.Get(), true);
             };
             drawNavigation(SettingsPage::General, ButtonKind::SettingsGeneralPage, L"GENERAL");
-            drawNavigation(SettingsPage::Image2D, ButtonKind::SettingsImage2DPage, L"IMAGE SETTINGS");
-            drawNavigation(SettingsPage::Video2D, ButtonKind::SettingsVideoPage, L"VIDEO SETTINGS");
-            drawNavigation(SettingsPage::Model3D, ButtonKind::SettingsModel3DPage, L"3D SETTINGS");
+            drawNavigation(SettingsPage::Image2D, ButtonKind::SettingsImage2DPage, L"IMAGE");
+            drawNavigation(SettingsPage::Video2D, ButtonKind::SettingsVideoPage, L"VIDEO");
+            drawNavigation(SettingsPage::Model3D, ButtonKind::SettingsModel3DPage, L"3D");
             const float dividerX = static_cast<float>(bounds.left) + 194.0f * dpiScale;
             renderTarget_->DrawLine(D2D1::Point2F(dividerX, static_cast<float>(bounds.top) + 58.0f * dpiScale),
                 D2D1::Point2F(dividerX, static_cast<float>(bounds.bottom) - 18.0f * dpiScale), borderBrush.Get(), 1.0f);
@@ -9570,7 +9570,6 @@ private:
             const float defaultTypesTop = static_cast<float>(themeBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
             const RECT defaultAppsLayoutBounds = GetSettingsDefaultAppsButtonBounds();
             const float resetTop = static_cast<float>(defaultAppsLayoutBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
-            group(L"GENERAL", 76.0f);
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"remember application position and size", rememberWindowPlacement_);
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden images in folder", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
@@ -9613,7 +9612,6 @@ private:
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"reset", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             } else if (settingsPage_ == SettingsPage::Video2D) {
-            group(L"VIDEO", 76.0f);
             const RECT sizingBounds = GetSettingsVideoSizingBounds(VideoWindowSizing::FitToWindow);
             const int sizingLabelHeight = MeasureSettingsTextHeight(L"Video sizing", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
             DrawOverlayText(L"Video sizing", settingsLeft, static_cast<float>(sizingBounds.top - sizingLabelHeight - SettingsLabelToControlGap()), settingsWidth, static_cast<float>(sizingLabelHeight), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
@@ -9628,7 +9626,6 @@ private:
             drawSizingButton(VideoWindowSizing::FitToWindow, ButtonKind::SettingsVideoSizingFit, L"Fit video to window");
             drawSizingButton(VideoWindowSizing::ResizeWindowToVideo, ButtonKind::SettingsVideoSizingResize, L"Resize window to video");
             } else if (settingsPage_ == SettingsPage::Image2D) {
-            group(L"2D VIEWER", 76.0f);
             drawToggle(4, ButtonKind::SettingsAnimations, L"animations and face effects", animationsEnabled_);
             drawToggle(5, ButtonKind::SettingsReverseWheelZoom, L"reverse mouse wheel zoom direction", reverseMouseWheelZoom_);
             drawToggle(6, ButtonKind::SettingsAlwaysShowFilmstrip, L"always show filmstrip", alwaysShowFilmstrip_);

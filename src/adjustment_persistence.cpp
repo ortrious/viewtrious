@@ -181,6 +181,7 @@ struct ImageAdjustmentPersistence::Impl {
     enum class TaskKind { Resolve, Save };
     struct Task {
         TaskKind kind = TaskKind::Resolve;
+        AdjustmentMediaKind mediaKind = AdjustmentMediaKind::Image;
         std::wstring path;
         uint64_t mediaGeneration = 0;
         uint64_t editGeneration = 0;
@@ -229,10 +230,10 @@ struct ImageAdjustmentPersistence::Impl {
         int version = 0;
         if (!Prepare("PRAGMA user_version;", &statement) || step(statement) != kSqliteRow) { if (statement) finalize(statement); CloseDatabase(); return false; }
         version = columnInt(statement, 0); finalize(statement);
-        if (version > 2) { Trace(L"[Viewtrious] SQLITE_ERROR newer schema"); CloseDatabase(); return false; }
-        if (!Execute("PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS file_hash_cache (path TEXT PRIMARY KEY, file_size INTEGER NOT NULL, file_mtime INTEGER NOT NULL, sha256 BLOB NOT NULL); CREATE TABLE IF NOT EXISTS image_adjustments (sha256 BLOB PRIMARY KEY, adjustment_version INTEGER NOT NULL, exposure REAL NOT NULL, brightness REAL NOT NULL, contrast REAL NOT NULL, shadows REAL NOT NULL, highlights REAL NOT NULL, saturation REAL NOT NULL, sharpness REAL NOT NULL DEFAULT 0, updated_utc INTEGER NOT NULL);")) { CloseDatabase(); return false; }
-        if (version == 1 && !Execute("BEGIN IMMEDIATE; ALTER TABLE image_adjustments ADD COLUMN sharpness REAL NOT NULL DEFAULT 0; PRAGMA user_version=2; COMMIT;")) { CloseDatabase(); return false; }
-        if (version == 0 && !Execute("PRAGMA user_version=2;")) { CloseDatabase(); return false; }
+        if (version > 3) { Trace(L"[Viewtrious] SQLITE_ERROR newer schema"); CloseDatabase(); return false; }
+        if (!Execute("PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS file_hash_cache (path TEXT PRIMARY KEY, file_size INTEGER NOT NULL, file_mtime INTEGER NOT NULL, sha256 BLOB NOT NULL); CREATE TABLE IF NOT EXISTS image_adjustments (sha256 BLOB PRIMARY KEY, adjustment_version INTEGER NOT NULL, exposure REAL NOT NULL, brightness REAL NOT NULL, contrast REAL NOT NULL, shadows REAL NOT NULL, highlights REAL NOT NULL, saturation REAL NOT NULL, sharpness REAL NOT NULL DEFAULT 0, updated_utc INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS video_adjustments (sha256 BLOB PRIMARY KEY, adjustment_version INTEGER NOT NULL, exposure REAL NOT NULL, brightness REAL NOT NULL, contrast REAL NOT NULL, shadows REAL NOT NULL, highlights REAL NOT NULL, saturation REAL NOT NULL, sharpness REAL NOT NULL DEFAULT 0, updated_utc INTEGER NOT NULL);")) { CloseDatabase(); return false; }
+        if (version == 1 && !Execute("BEGIN IMMEDIATE; ALTER TABLE image_adjustments ADD COLUMN sharpness REAL NOT NULL DEFAULT 0; PRAGMA user_version=3; COMMIT;")) { CloseDatabase(); return false; }
+        if (version < 3 && version != 1 && !Execute("PRAGMA user_version=3;")) { CloseDatabase(); return false; }
         Trace(L"[Viewtrious] WINSQLITE_RUNTIME_LOADED"); Trace(L"[Viewtrious] SQLITE_DB_OPEN"); Trace(L"[Viewtrious] SQLITE_SCHEMA_READY");
         return true;
     }
@@ -279,9 +280,14 @@ struct ImageAdjustmentPersistence::Impl {
         finalize(statement);
     }
 
-    bool ReadAdjustments(const std::array<unsigned char, 32>& hash, ImageAdjustments& adjustments) {
+    const char* AdjustmentsTable(AdjustmentMediaKind mediaKind) const {
+        return mediaKind == AdjustmentMediaKind::Video ? "video_adjustments" : "image_adjustments";
+    }
+
+    bool ReadAdjustments(const std::array<unsigned char, 32>& hash, ImageAdjustments& adjustments, AdjustmentMediaKind mediaKind) {
         sqlite3_stmt* statement = nullptr;
-        if (!Prepare("SELECT adjustment_version,exposure,brightness,contrast,shadows,highlights,saturation,sharpness FROM image_adjustments WHERE sha256=?1;", &statement)) return false;
+        const std::string query = std::string("SELECT adjustment_version,exposure,brightness,contrast,shadows,highlights,saturation,sharpness FROM ") + AdjustmentsTable(mediaKind) + " WHERE sha256=?1;";
+        if (!Prepare(query.c_str(), &statement)) return false;
         bindBlob(statement, 1, hash.data(), static_cast<int>(hash.size()), kSqliteTransient);
         const bool hit = step(statement) == kSqliteRow && columnInt(statement, 0) == kAdjustmentVersion;
         if (hit) adjustments = { static_cast<float>(columnDouble(statement, 1)), static_cast<float>(columnDouble(statement, 2)), static_cast<float>(columnDouble(statement, 3)), static_cast<float>(columnDouble(statement, 4)), static_cast<float>(columnDouble(statement, 5)), static_cast<float>(columnDouble(statement, 6)), static_cast<float>(columnDouble(statement, 7)) };
@@ -289,16 +295,19 @@ struct ImageAdjustmentPersistence::Impl {
         return hit;
     }
 
-    void SaveAdjustments(const std::array<unsigned char, 32>& hash, const ImageAdjustments& adjustments) {
+    void SaveAdjustments(const std::array<unsigned char, 32>& hash, const ImageAdjustments& adjustments, AdjustmentMediaKind mediaKind) {
         sqlite3_stmt* statement = nullptr;
+        const char* table = AdjustmentsTable(mediaKind);
         if (IsNeutral(adjustments)) {
-            if (!Prepare("DELETE FROM image_adjustments WHERE sha256=?1;", &statement)) return;
+            const std::string query = std::string("DELETE FROM ") + table + " WHERE sha256=?1;";
+            if (!Prepare(query.c_str(), &statement)) return;
             bindBlob(statement, 1, hash.data(), static_cast<int>(hash.size()), kSqliteTransient);
             const int result = step(statement);
             if (result != kSqliteDone) TraceSqliteError(L"adjustment delete", result); else Trace(L"[Viewtrious] ADJUST_DB_DELETE_NEUTRAL");
             finalize(statement); return;
         }
-        if (!Prepare("INSERT INTO image_adjustments(sha256,adjustment_version,exposure,brightness,contrast,shadows,highlights,saturation,sharpness,updated_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(sha256) DO UPDATE SET adjustment_version=excluded.adjustment_version,exposure=excluded.exposure,brightness=excluded.brightness,contrast=excluded.contrast,shadows=excluded.shadows,highlights=excluded.highlights,saturation=excluded.saturation,sharpness=excluded.sharpness,updated_utc=excluded.updated_utc;", &statement)) return;
+        const std::string query = std::string("INSERT INTO ") + table + "(sha256,adjustment_version,exposure,brightness,contrast,shadows,highlights,saturation,sharpness,updated_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(sha256) DO UPDATE SET adjustment_version=excluded.adjustment_version,exposure=excluded.exposure,brightness=excluded.brightness,contrast=excluded.contrast,shadows=excluded.shadows,highlights=excluded.highlights,saturation=excluded.saturation,sharpness=excluded.sharpness,updated_utc=excluded.updated_utc;";
+        if (!Prepare(query.c_str(), &statement)) return;
         bindBlob(statement, 1, hash.data(), static_cast<int>(hash.size()), kSqliteTransient);
         bindInt64(statement, 2, kAdjustmentVersion); bindDouble(statement, 3, adjustments.exposure); bindDouble(statement, 4, adjustments.brightness); bindDouble(statement, 5, adjustments.contrast); bindDouble(statement, 6, adjustments.shadows); bindDouble(statement, 7, adjustments.highlights); bindDouble(statement, 8, adjustments.saturation); bindDouble(statement, 9, adjustments.sharpness); bindInt64(statement, 10, static_cast<int64_t>(std::time(nullptr)));
         const int result = step(statement);
@@ -322,8 +331,8 @@ struct ImageAdjustmentPersistence::Impl {
             WriteCache(path, metadata, hash); Trace(L"[Viewtrious] ADJUST_HASH_COMPLETE");
         }
         ImageAdjustmentPersistenceResult result{};
-        result.path = task.path; result.mediaGeneration = task.mediaGeneration; result.editGeneration = task.editGeneration;
-        result.hash = hash; result.hashResolved = true; result.hasAdjustments = ReadAdjustments(hash, result.adjustments);
+        result.mediaKind = task.mediaKind; result.path = task.path; result.mediaGeneration = task.mediaGeneration; result.editGeneration = task.editGeneration;
+        result.hash = hash; result.hashResolved = true; result.hasAdjustments = ReadAdjustments(hash, result.adjustments, task.mediaKind);
         if (completion) completion(std::move(result));
     }
 
@@ -333,7 +342,7 @@ struct ImageAdjustmentPersistence::Impl {
             Task task;
             { std::unique_lock lock(mutex); wake.wait(lock, [this] { return stopping || !tasks.empty(); }); if (tasks.empty() && stopping) break; task = std::move(tasks.front()); tasks.pop_front(); }
             if (!available) continue;
-            if (task.kind == TaskKind::Resolve) ResolveMedia(task); else SaveAdjustments(task.hash, task.adjustments);
+            if (task.kind == TaskKind::Resolve) ResolveMedia(task); else SaveAdjustments(task.hash, task.adjustments, task.mediaKind);
         }
         CloseDatabase();
     }
@@ -347,15 +356,15 @@ void ImageAdjustmentPersistence::Start(std::function<void(ImageAdjustmentPersist
     impl_->completion = std::move(completion); impl_->stopping = false; impl_->thread = std::thread([impl = impl_] { impl->Run(); });
 }
 
-void ImageAdjustmentPersistence::Resolve(const std::wstring& path, uint64_t mediaGeneration, uint64_t editGeneration) {
+void ImageAdjustmentPersistence::Resolve(const std::wstring& path, uint64_t mediaGeneration, uint64_t editGeneration, AdjustmentMediaKind mediaKind) {
     if (!impl_ || path.empty()) return;
-    { std::lock_guard lock(impl_->mutex); if (impl_->stopping) return; impl_->tasks.push_back({ Impl::TaskKind::Resolve, path, mediaGeneration, editGeneration }); }
+    { std::lock_guard lock(impl_->mutex); if (impl_->stopping) return; Impl::Task task{}; task.kind = Impl::TaskKind::Resolve; task.mediaKind = mediaKind; task.path = path; task.mediaGeneration = mediaGeneration; task.editGeneration = editGeneration; impl_->tasks.push_back(std::move(task)); }
     impl_->wake.notify_one();
 }
 
-void ImageAdjustmentPersistence::Save(const std::array<unsigned char, 32>& hash, const ImageAdjustments& adjustments) {
+void ImageAdjustmentPersistence::Save(const std::array<unsigned char, 32>& hash, const ImageAdjustments& adjustments, AdjustmentMediaKind mediaKind) {
     if (!impl_) return;
-    { std::lock_guard lock(impl_->mutex); if (impl_->stopping) return; Impl::Task task{}; task.kind = Impl::TaskKind::Save; task.hash = hash; task.adjustments = adjustments; impl_->tasks.push_back(std::move(task)); }
+    { std::lock_guard lock(impl_->mutex); if (impl_->stopping) return; Impl::Task task{}; task.kind = Impl::TaskKind::Save; task.mediaKind = mediaKind; task.hash = hash; task.adjustments = adjustments; impl_->tasks.push_back(std::move(task)); }
     impl_->wake.notify_one();
 }
 

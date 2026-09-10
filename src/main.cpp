@@ -121,6 +121,7 @@ constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
 constexpr UINT_PTR kFilmstripHoverPreviewDwellTimer = 19;
 constexpr UINT_PTR kFilmstripVideoHoverFadeTimer = 20;
 constexpr UINT_PTR kImageAdjustmentPersistenceTimer = 21;
+constexpr UINT_PTR kVideoAdjustmentPersistenceTimer = 26;
 constexpr UINT_PTR kFilmstripHoverPreviewFadeTimer = 22;
 constexpr UINT_PTR kVideoAdjustmentsFadeTimer = 24;
 constexpr UINT_PTR kVideoAdjustmentsPlacementTimer = 25;
@@ -1037,7 +1038,10 @@ public:
     }
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
-        if (!currentPath_.empty() && !PathsEqual(fs::path(path), fs::path(currentPath_))) FlushImageAdjustmentPersistence();
+        if (!currentPath_.empty() && !PathsEqual(fs::path(path), fs::path(currentPath_))) {
+            if (VideoActive()) FlushVideoAdjustmentPersistence();
+            else FlushImageAdjustmentPersistence();
+        }
         ++aiRequestGeneration_;
         ClearStillDissolve();
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
@@ -1748,7 +1752,16 @@ public:
         if (imageActive || videoActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
         else KillTimer(window_, kVideoAdjustmentsFadeTimer);
     }
-    void ResetVideoAdjustments() { videoAdjustments_ = {}; ApplyVideoAdjustments(); }
+    void QueueVideoAdjustmentPersistence() {
+        ++videoAdjustmentEditGeneration_;
+        if (videoAdjustmentHashResolved_) SetTimer(window_, kVideoAdjustmentPersistenceTimer, 300, nullptr);
+        else pendingVideoAdjustmentSaves_[videoAdjustmentMediaGeneration_] = videoAdjustments_;
+    }
+    void FlushVideoAdjustmentPersistence() {
+        KillTimer(window_, kVideoAdjustmentPersistenceTimer);
+        if (videoAdjustmentHashResolved_) adjustmentPersistence_.Save(videoAdjustmentHash_, videoAdjustments_, AdjustmentMediaKind::Video);
+    }
+    void ResetVideoAdjustments() { videoAdjustments_ = {}; ApplyVideoAdjustments(); QueueVideoAdjustmentPersistence(); }
     void UpdateVideoAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 7) return;
         const RECT slider = GetVideoAdjustmentsPanelPresentedLayout().sliders[index];
@@ -1779,6 +1792,7 @@ public:
         else if (index == 5) videoAdjustments_.saturation = normalizedValue;
         else videoAdjustments_.sharpness = normalizedValue;
         ApplyVideoAdjustments();
+        QueueVideoAdjustmentPersistence();
     }
     ZoomHudLayout GetZoomHudLayout(const RECT& canvas, bool includeAdjustmentButton) const {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
@@ -2140,7 +2154,7 @@ public:
     }
     bool EndVideoControlsInteraction(POINT point) {
         if (videoAdjustmentsOriginalPreviewActive_) { SetVideoAdjustmentsOriginalPreview(false); return true; }
-        if (videoAdjustmentsDragging_ >= 0) { UpdateVideoAdjustmentSlider(videoAdjustmentsDragging_, point); videoAdjustmentsDragging_ = -1; videoAdjustmentDetentIndex_ = -1; return true; }
+        if (videoAdjustmentsDragging_ >= 0) { UpdateVideoAdjustmentSlider(videoAdjustmentsDragging_, point); videoAdjustmentsDragging_ = -1; videoAdjustmentDetentIndex_ = -1; FlushVideoAdjustmentPersistence(); return true; }
         if (videoStepHoldDirection_) {
             StopVideoStepHold();
             ShowVideoControls();
@@ -5866,6 +5880,7 @@ public:
     void Shutdown() {
         shuttingDown_ = true;
         FlushImageAdjustmentPersistence();
+        if (VideoActive()) FlushVideoAdjustmentPersistence();
         adjustmentPersistence_.Shutdown();
         MSG adjustmentMessage{};
         while (PeekMessageW(&adjustmentMessage, window_, kImageAdjustmentPersistenceCompleteMessage, kImageAdjustmentPersistenceCompleteMessage, PM_REMOVE))
@@ -5929,6 +5944,10 @@ public:
     void ImageAdjustmentPersistenceCompleteMessage(ImageAdjustmentPersistenceResult* result) {
         std::unique_ptr<ImageAdjustmentPersistenceResult> owned(result);
         if (!result || shuttingDown_ || !result->hashResolved) return;
+        if (result->mediaKind == AdjustmentMediaKind::Video) {
+            VideoAdjustmentPersistenceComplete(*result);
+            return;
+        }
         if (result->mediaGeneration != imageAdjustmentMediaGeneration_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_))) {
             const auto pending = pendingImageAdjustmentSaves_.find(result->mediaGeneration);
             if (pending != pendingImageAdjustmentSaves_.end()) {
@@ -5954,6 +5973,32 @@ public:
         }
     }
     void ImageAdjustmentPersistenceTimer() { FlushImageAdjustmentPersistence(); }
+    void VideoAdjustmentPersistenceComplete(const ImageAdjustmentPersistenceResult& result) {
+        if (result.mediaGeneration != videoAdjustmentMediaGeneration_ || contentKind_ != ContentKind::Video2D || !PathsEqual(fs::path(result.path), fs::path(currentPath_))) {
+            const auto pending = pendingVideoAdjustmentSaves_.find(result.mediaGeneration);
+            if (pending != pendingVideoAdjustmentSaves_.end()) {
+                adjustmentPersistence_.Save(result.hash, pending->second, AdjustmentMediaKind::Video);
+                pendingVideoAdjustmentSaves_.erase(pending);
+            }
+            OutputDebugStringW(L"[Viewtrious] VIDEO_ADJUST_DB_LOAD_STALE_GENERATION\n");
+            return;
+        }
+        videoAdjustmentHash_ = result.hash;
+        videoAdjustmentHashResolved_ = true;
+        if (result.editGeneration != videoAdjustmentEditGeneration_) {
+            pendingVideoAdjustmentSaves_.erase(result.mediaGeneration);
+            FlushVideoAdjustmentPersistence();
+            return;
+        }
+        if (result.hasAdjustments) {
+            videoAdjustments_ = result.adjustments;
+            ApplyVideoAdjustments();
+            OutputDebugStringW(L"[Viewtrious] VIDEO_ADJUST_DB_LOAD_HIT\n");
+        } else {
+            OutputDebugStringW(L"[Viewtrious] VIDEO_ADJUST_DB_LOAD_NEUTRAL\n");
+        }
+    }
+    void VideoAdjustmentPersistenceTimer() { FlushVideoAdjustmentPersistence(); }
     void DrainQueuedFullDecodeResults() {
         MSG message{};
         bool drained = false;
@@ -6196,6 +6241,7 @@ private:
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
     void BeginVideoLoad(const std::wstring& path) {
+        if (VideoActive() && PathsEqual(fs::path(path), fs::path(currentPath_))) FlushVideoAdjustmentPersistence();
         DeactivateModel(); DeactivateVideo(false); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         videoPreferredPlaybackRatePercent_ = 100;
         videoEffectivePlaybackRate_ = 1.0;
@@ -6205,6 +6251,9 @@ private:
         videoSizingAppliedForCurrentVideo_ = false;
         videoInitialZoomApplied_ = false;
         videoWindowSizedForNativePresentation_ = false;
+        videoAdjustments_ = {};
+        videoAdjustmentHashResolved_ = false;
+        ++videoAdjustmentMediaGeneration_;
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         fileSizeText_ = FormatFileSize(path); resolutionText_.clear(); error_.clear();
@@ -6222,6 +6271,7 @@ private:
             videoPlayer_.SetDisplayAdjustments(videoAdjustments_);
             videoPlayer_.SetPreferredPlaybackRate(PlaybackRateFromPercent(videoPreferredPlaybackRatePercent_));
             videoEffectivePlaybackRate_ = videoPlayer_.EffectivePlaybackRate();
+            adjustmentPersistence_.Resolve(path, videoAdjustmentMediaGeneration_, videoAdjustmentEditGeneration_, AdjustmentMediaKind::Video);
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -10678,6 +10728,11 @@ private:
     uint64_t imageAdjustmentEditGeneration_ = 0;
     bool imageAdjustmentHashResolved_ = false;
     std::unordered_map<uint64_t, ImageAdjustments> pendingImageAdjustmentSaves_;
+    std::array<unsigned char, 32> videoAdjustmentHash_{};
+    uint64_t videoAdjustmentMediaGeneration_ = 0;
+    uint64_t videoAdjustmentEditGeneration_ = 0;
+    bool videoAdjustmentHashResolved_ = false;
+    std::unordered_map<uint64_t, ImageAdjustments> pendingVideoAdjustmentSaves_;
     AiAddonLoader aiAddon_;
     std::thread aiAnalysisThread_;
     std::atomic<uint64_t> aiRequestGeneration_{ 0 };
@@ -11449,6 +11504,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kDirectoryChangeDebounceTimer) { KillTimer(window, kDirectoryChangeDebounceTimer); viewer->RefreshNavigationFromFileSystem(); return 0; }
         if (wParam == kNavigationDecodeDebounceTimer) { viewer->NavigationDecodeTimer(); return 0; }
         if (wParam == kImageAdjustmentPersistenceTimer) { KillTimer(window, kImageAdjustmentPersistenceTimer); viewer->ImageAdjustmentPersistenceTimer(); return 0; }
+        if (wParam == kVideoAdjustmentPersistenceTimer) { KillTimer(window, kVideoAdjustmentPersistenceTimer); viewer->VideoAdjustmentPersistenceTimer(); return 0; }
         if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
         if (wParam == kHeifRotationMenuRefreshTimer) { viewer->HeifRotationMenuRefreshTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }

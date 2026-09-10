@@ -7,7 +7,10 @@
 #include <functional>
 #include <string>
 
+enum class AdjustmentMediaKind : unsigned char { Image, Video };
+
 struct ImageAdjustmentPersistenceResult {
+    AdjustmentMediaKind mediaKind = AdjustmentMediaKind::Image;
     std::wstring path;
     uint64_t mediaGeneration = 0;
     uint64_t editGeneration = 0;
@@ -27,8 +30,8 @@ public:
     ImageAdjustmentPersistence& operator=(const ImageAdjustmentPersistence&) = delete;
 
     void Start(std::function<void(ImageAdjustmentPersistenceResult&&)> completion);
-    void Resolve(const std::wstring& path, uint64_t mediaGeneration, uint64_t editGeneration);
-    void Save(const std::array<unsigned char, 32>& hash, const ImageAdjustments& adjustments);
+    void Resolve(const std::wstring& path, uint64_t mediaGeneration, uint64_t editGeneration, AdjustmentMediaKind mediaKind = AdjustmentMediaKind::Image);
+    void Save(const std::array<unsigned char, 32>& hash, const ImageAdjustments& adjustments, AdjustmentMediaKind mediaKind = AdjustmentMediaKind::Image);
     void Shutdown();
 
 private:

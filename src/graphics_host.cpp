@@ -13,6 +13,13 @@ enum class PresentationMode {
 
 constexpr PresentationMode kPresentationMode = PresentationMode::CompositionSwapChain;
 
+enum class CompositionResizeMode {
+    ExactCompositionResize,
+    RetainedCompositionCapacity,
+};
+
+constexpr CompositionResizeMode kCompositionResizeMode = CompositionResizeMode::RetainedCompositionCapacity;
+
 bool SameLuid(const LUID& left, const LUID& right) { return left.HighPart == right.HighPart && left.LowPart == right.LowPart; }
 bool IsHardwareAdapter(IDXGIAdapter1* adapter) { DXGI_ADAPTER_DESC1 description{}; return adapter && SUCCEEDED(adapter->GetDesc1(&description)) && !(description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE); }
 ComPtr<IDXGIAdapter1> FindHardwareAdapter(const LUID* requested) {
@@ -72,10 +79,12 @@ bool GraphicsHost::Create(HWND window, ID2D1Factory1* factory, const LUID* prefe
             FAILED(DCompositionCreateDevice2(dxgiDevice.Get(), IID_PPV_ARGS(&dcompDevice_))) ||
             FAILED(dcompDevice_->CreateTargetForHwnd(window_, TRUE, &dcompTarget_)) ||
             FAILED(dcompDevice_->CreateVisual(&dcompVisual_)) ||
+            FAILED(dcompDevice_->CreateRectangleClip(&dcompClip_)) ||
+            FAILED(dcompVisual_->SetClip(dcompClip_.Get())) ||
             FAILED(dcompVisual_->SetContent(swapChain_.Get())) ||
             FAILED(dcompTarget_->SetRoot(dcompVisual_.Get())) ||
             FAILED(dcompDevice_->Commit())) {
-            dcompVisual_.Reset(); dcompTarget_.Reset(); dcompDevice_.Reset(); swapChain_.Reset();
+            dcompClip_.Reset(); dcompVisual_.Reset(); dcompTarget_.Reset(); dcompDevice_.Reset(); swapChain_.Reset();
             return false;
         }
         return true;
@@ -88,20 +97,56 @@ bool GraphicsHost::Create(HWND window, ID2D1Factory1* factory, const LUID* prefe
     return Resize(std::max(1L, client.right - client.left), std::max(1L, client.bottom - client.top), static_cast<float>(GetDpiForWindow(window_)), error);
 }
 
-void GraphicsHost::DiscardTargets() { if (context_) context_->OMSetRenderTargets(0, nullptr, nullptr); if (d2dContext_) d2dContext_->SetTarget(nullptr); d2dTarget_.Reset(); renderTarget_.Reset(); backBuffer_.Reset(); }
-void GraphicsHost::Destroy() { DiscardTargets(); d2dContext_.Reset(); d2dDevice_.Reset(); dcompVisual_.Reset(); dcompTarget_.Reset(); dcompDevice_.Reset(); swapChain_.Reset(); context_.Reset(); device_.Reset(); window_ = nullptr; width_ = height_ = 0; activeAdapterName_.clear(); }
+void GraphicsHost::DiscardModelTargets() { modelRenderTarget_.Reset(); modelBackBuffer_.Reset(); }
+void GraphicsHost::DiscardTargets() { if (context_) context_->OMSetRenderTargets(0, nullptr, nullptr); if (d2dContext_) d2dContext_->SetTarget(nullptr); d2dTarget_.Reset(); DiscardModelTargets(); renderTarget_.Reset(); backBuffer_.Reset(); }
+void GraphicsHost::Destroy() { DiscardTargets(); d2dContext_.Reset(); d2dDevice_.Reset(); dcompClip_.Reset(); dcompVisual_.Reset(); dcompTarget_.Reset(); dcompDevice_.Reset(); swapChain_.Reset(); context_.Reset(); device_.Reset(); window_ = nullptr; clientWidth_ = clientHeight_ = capacityWidth_ = capacityHeight_ = 0; activeAdapterName_.clear(); }
 bool GraphicsHost::CreateTargets(float dpi, std::wstring& error) {
     ComPtr<IDXGISurface> surface;
     if (FAILED(swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer_))) || FAILED(device_->CreateRenderTargetView(backBuffer_.Get(), nullptr, &renderTarget_)) || FAILED(backBuffer_.As(&surface))) { error = L"The graphics back buffer could not initialize."; return false; }
     const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), dpi, dpi);
     if (FAILED(d2dContext_->CreateBitmapFromDxgiSurface(surface.Get(), &properties, &d2dTarget_))) { error = L"The Direct2D display surface could not initialize."; return false; }
-    d2dContext_->SetTarget(d2dTarget_.Get()); return true;
+    d2dContext_->SetTarget(d2dTarget_.Get()); return CreateModelTargets(error);
+}
+bool GraphicsHost::CreateModelTargets(std::wstring& error) {
+    DiscardModelTargets();
+    if (!(dcompClip_ && kCompositionResizeMode == CompositionResizeMode::RetainedCompositionCapacity)) return true;
+    D3D11_TEXTURE2D_DESC description{};
+    description.Width = clientWidth_; description.Height = clientHeight_; description.MipLevels = 1; description.ArraySize = 1;
+    description.Format = DXGI_FORMAT_B8G8R8A8_UNORM; description.SampleDesc.Count = 1; description.BindFlags = D3D11_BIND_RENDER_TARGET;
+    if (FAILED(device_->CreateTexture2D(&description, nullptr, &modelBackBuffer_)) ||
+        FAILED(device_->CreateRenderTargetView(modelBackBuffer_.Get(), nullptr, &modelRenderTarget_))) { error = L"The model display surface could not initialize."; DiscardModelTargets(); return false; }
+    return true;
+}
+SIZE GraphicsHost::CompositionCapacity(UINT minimumWidth, UINT minimumHeight) const {
+    MONITORINFO monitor{ sizeof(monitor) };
+    if (window_ && GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        const UINT width = std::max(minimumWidth, static_cast<UINT>(monitor.rcMonitor.right - monitor.rcMonitor.left));
+        const UINT height = std::max(minimumHeight, static_cast<UINT>(monitor.rcMonitor.bottom - monitor.rcMonitor.top));
+        return { static_cast<LONG>(width), static_cast<LONG>(height) };
+    }
+    return { static_cast<LONG>(minimumWidth), static_cast<LONG>(minimumHeight) };
+}
+bool GraphicsHost::UpdateCompositionClip(UINT width, UINT height, std::wstring& error) {
+    if (!dcompClip_) return true;
+    if (FAILED(dcompClip_->SetLeft(0.0f)) || FAILED(dcompClip_->SetTop(0.0f)) ||
+        FAILED(dcompClip_->SetRight(static_cast<float>(width))) || FAILED(dcompClip_->SetBottom(static_cast<float>(height))) ||
+        FAILED(dcompDevice_->Commit())) { error = L"The composition display surface could not update."; return false; }
+    return true;
 }
 bool GraphicsHost::Resize(UINT width, UINT height, float dpi, std::wstring& error) {
     if (!swapChain_ || !width || !height) return false;
-    DiscardTargets(); if (FAILED(swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0))) { error = L"The graphics surface could not resize."; return false; }
-    width_ = width; height_ = height; return CreateTargets(dpi, error);
+    clientWidth_ = width; clientHeight_ = height;
+    const bool retainedComposition = kPresentationMode == PresentationMode::CompositionSwapChain && dcompClip_ && kCompositionResizeMode == CompositionResizeMode::RetainedCompositionCapacity;
+    if (retainedComposition && width <= capacityWidth_ && height <= capacityHeight_) return CreateModelTargets(error) && UpdateCompositionClip(width, height, error);
+    const SIZE requestedCapacity = retainedComposition ? CompositionCapacity(width, height) : SIZE{ static_cast<LONG>(width), static_cast<LONG>(height) };
+    DiscardTargets();
+    if (FAILED(swapChain_->ResizeBuffers(0, static_cast<UINT>(requestedCapacity.cx), static_cast<UINT>(requestedCapacity.cy), DXGI_FORMAT_UNKNOWN, 0))) {
+        if (!retainedComposition || (requestedCapacity.cx == static_cast<LONG>(width) && requestedCapacity.cy == static_cast<LONG>(height)) ||
+            FAILED(swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0))) { error = L"The graphics surface could not resize."; return false; }
+        capacityWidth_ = width; capacityHeight_ = height;
+    } else { capacityWidth_ = static_cast<UINT>(requestedCapacity.cx); capacityHeight_ = static_cast<UINT>(requestedCapacity.cy); }
+    return CreateTargets(dpi, error) && UpdateCompositionClip(width, height, error);
 }
-bool GraphicsHost::BeginDraw() { if (!Ready()) return false; d2dContext_->BeginDraw(); return true; }
+bool GraphicsHost::BeginDraw() { if (!Ready()) return false; if (modelBackBuffer_) { context_->OMSetRenderTargets(0, nullptr, nullptr); context_->CopySubresourceRegion(backBuffer_.Get(), 0, 0, 0, 0, modelBackBuffer_.Get(), 0, nullptr); } d2dContext_->BeginDraw(); return true; }
 HRESULT GraphicsHost::EndDraw() { return d2dContext_ ? d2dContext_->EndDraw() : E_FAIL; }
 HRESULT GraphicsHost::Present() { return swapChain_ ? swapChain_->Present(1, 0) : E_FAIL; }

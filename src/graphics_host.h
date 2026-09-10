@@ -29,15 +29,21 @@ public:
     ID2D1DeviceContext* D2DContext() const { return d2dContext_.Get(); }
     ID3D11Device* Device() const { return device_.Get(); }
     ID3D11DeviceContext* Context() const { return context_.Get(); }
-    ID3D11RenderTargetView* RenderTarget() const { return renderTarget_.Get(); }
-    ID3D11RenderTargetView* const* RenderTargetAddress() const { return renderTarget_.GetAddressOf(); }
-    ID3D11Texture2D* BackBuffer() const { return backBuffer_.Get(); }
-    UINT Width() const { return width_; }
-    UINT Height() const { return height_; }
+    ID3D11RenderTargetView* RenderTarget() const { return modelRenderTarget_ ? modelRenderTarget_.Get() : renderTarget_.Get(); }
+    ID3D11RenderTargetView* const* RenderTargetAddress() const { return modelRenderTarget_ ? modelRenderTarget_.GetAddressOf() : renderTarget_.GetAddressOf(); }
+    ID3D11Texture2D* BackBuffer() const { return modelBackBuffer_ ? modelBackBuffer_.Get() : backBuffer_.Get(); }
+    UINT Width() const { return clientWidth_; }
+    UINT Height() const { return clientHeight_; }
+    UINT CapacityWidth() const { return capacityWidth_; }
+    UINT CapacityHeight() const { return capacityHeight_; }
     const std::wstring& ActiveAdapterName() const { return activeAdapterName_; }
 
 private:
     bool CreateTargets(float dpi, std::wstring& error);
+    bool CreateModelTargets(std::wstring& error);
+    bool UpdateCompositionClip(UINT width, UINT height, std::wstring& error);
+    SIZE CompositionCapacity(UINT minimumWidth, UINT minimumHeight) const;
+    void DiscardModelTargets();
     void DiscardTargets();
     HWND window_ = nullptr;
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
@@ -46,11 +52,15 @@ private:
     Microsoft::WRL::ComPtr<IDCompositionDesktopDevice> dcompDevice_;
     Microsoft::WRL::ComPtr<IDCompositionTarget> dcompTarget_;
     Microsoft::WRL::ComPtr<IDCompositionVisual2> dcompVisual_;
+    Microsoft::WRL::ComPtr<IDCompositionRectangleClip> dcompClip_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer_;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTarget_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> modelBackBuffer_;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> modelRenderTarget_;
     Microsoft::WRL::ComPtr<ID2D1Device> d2dDevice_;
     Microsoft::WRL::ComPtr<ID2D1DeviceContext> d2dContext_;
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> d2dTarget_;
-    UINT width_ = 0, height_ = 0;
+    UINT clientWidth_ = 0, clientHeight_ = 0;
+    UINT capacityWidth_ = 0, capacityHeight_ = 0;
     std::wstring activeAdapterName_;
 };

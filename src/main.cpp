@@ -5866,6 +5866,10 @@ private:
         DrawOverlayText(L"Y",origin.x-8*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,y.Get(),true,false,true);
         DrawOverlayText(L"Z",origin.x+8*dpi,legendTop,16*dpi,15*dpi,12,DWRITE_FONT_WEIGHT_SEMI_BOLD,z.Get(),true,false,true);
     }
+    D2D1_SIZE_F VisibleClientSize() const {
+        RECT client{}; GetClientRect(window_, &client);
+        return D2D1::SizeF(static_cast<float>(std::max(1L, client.right - client.left)), static_cast<float>(std::max(1L, client.bottom - client.top)));
+    }
     RECT ModelCanvasBounds() const {
         RECT client{}; GetClientRect(window_, &client);
         const LONG top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
@@ -8628,7 +8632,7 @@ private:
 
     void DrawRevisionLabel() {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const D2D1_SIZE_F target = renderTarget_->GetSize();
+        const D2D1_SIZE_F target = VisibleClientSize();
         const float margin = 14.0f * scale, width = 78.0f * scale, height = 24.0f * scale;
         const D2D1_RECT_F bounds = D2D1::RectF(margin, target.height - margin - height, margin + width,
             target.height - margin);
@@ -9344,7 +9348,7 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(border, &borderBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(primary, &primaryBrush)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(secondary, &secondaryBrush))) return;
-        const D2D1_SIZE_F size = renderTarget_->GetSize();
+        const D2D1_SIZE_F size = VisibleClientSize();
         const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
         renderTarget_->FillRectangle(D2D1::RectF(0, top, size.width, size.height), veilBrush.Get());
         const D2D1_RECT_F panelRect = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top),
@@ -10160,7 +10164,7 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f, opacity), &outline)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, opacity * 0.45f), &textHalo)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f, opacity), &textOutline))) return;
-        const D2D1_SIZE_F size = renderTarget_->GetSize(); const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const D2D1_SIZE_F size = VisibleClientSize(); const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
         const float glyph = 200.0f * scale;
         const float stroke = 12.0f * scale;
@@ -10281,7 +10285,7 @@ private:
         if (tutorialStep_ == TutorialStep::ImageDetails &&
             FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(250.f / 255, 194.f / 255, 72.f / 255) : D2D1::ColorF(93.f / 255, 64.f / 255, 12.f / 255), &tutorialMetadataBrush))) return;
 
-        const D2D1_RECT_F top = D2D1::RectF(0.0f, 0.0f, renderTarget_->GetSize().width, static_cast<float>(frame.titleBarHeight));
+        const D2D1_RECT_F top = D2D1::RectF(0.0f, 0.0f, VisibleClientSize().width, static_cast<float>(frame.titleBarHeight));
         renderTarget_->FillRectangle(top, stripBrush.Get());
         const auto rect = [](const RECT& value) {
             return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top),
@@ -10319,7 +10323,7 @@ private:
                 static_cast<float>(frame.titleBarHeight) - 12.0f * dpiScale))));
             const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoHeight) * 300.0f / 73.0f)));
             if (EnsureTopBarLogo(logoWidth, logoHeight)) {
-                const float logoLeft = std::round((renderTarget_->GetSize().width - static_cast<float>(logoWidth)) * 0.5f);
+                const float logoLeft = std::round((VisibleClientSize().width - static_cast<float>(logoWidth)) * 0.5f);
                 const float logoTop = std::round((static_cast<float>(frame.titleBarHeight) - static_cast<float>(logoHeight)) * 0.5f);
                 renderTarget_->DrawBitmap(topBarLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight),
                     1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);

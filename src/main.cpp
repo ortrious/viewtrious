@@ -6315,7 +6315,9 @@ private:
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
     void BeginVideoLoad(const std::wstring& path) {
-        if (VideoActive() && PathsEqual(fs::path(path), fs::path(currentPath_))) FlushVideoAdjustmentPersistence();
+        const bool replacingVideo = VideoActive();
+        const std::wstring previousTitleMetadata = resolutionText_;
+        if (replacingVideo && PathsEqual(fs::path(path), fs::path(currentPath_))) FlushVideoAdjustmentPersistence();
         DeactivateModel(); DeactivateVideo(false); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         videoPreferredPlaybackRatePercent_ = 100;
         videoEffectivePlaybackRate_ = 1.0;
@@ -6330,13 +6332,14 @@ private:
         ++videoAdjustmentMediaGeneration_;
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
-        fileSizeText_ = FormatFileSize(path); resolutionText_.clear(); error_.clear();
+        fileSizeText_ = FormatFileSize(path); resolutionText_ = replacingVideo ? previousTitleMetadata : L""; error_.clear();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false; contentKind_ = ContentKind::Video2D;
         ResetVideoControls();
         EnsureRenderTarget();
         std::wstring videoError;
         if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, videoError)) {
             contentKind_ = ContentKind::None;
+            resolutionText_.clear();
             error_ = videoError.empty() ? L"Viewtrious could not open this video." : videoError;
             RestoreVideoWindowBounds();
         } else {

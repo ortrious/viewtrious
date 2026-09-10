@@ -33,6 +33,7 @@ struct ModelBounds {
 struct MeshGeometry {
     std::vector<Float3> positions;
     std::vector<Float3> normals;
+    std::vector<Float3> colors;
     std::vector<uint32_t> indices;
 };
 

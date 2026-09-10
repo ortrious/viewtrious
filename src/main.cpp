@@ -2394,7 +2394,7 @@ public:
         if (overlay_ != OverlayKind::Help) return 0;
         const RECT content = GetHelpContentBounds(); const UINT dpi = GetDpiForWindow(window_);
         const int width = static_cast<int>(std::max<LONG>(1, content.right - content.left));
-        int height = MeasureHelpTextHeight(kHelpTopics[helpTopic_].title, width, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD) + MulDiv(14, dpi, 96);
+        int height = 0;
         const HelpTopic& topic = kHelpTopics[helpTopic_];
         if (topic.sectionCount == 0)
             return height + MeasureHelpTextHeight(topic.body, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
@@ -2482,7 +2482,7 @@ public:
     }
     RECT GetSettingsVideoSizingBounds(VideoWindowSizing sizing) const {
         const RECT bounds = GetOverlayBounds();
-        const int labelHeight = MeasureSettingsTextHeight(L"Video sizing", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
+        const int labelHeight = MeasureSettingsTextHeight(L"video sizing", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
         const int top = bounds.top + MulDiv(static_cast<int>(kSettingsFirstRowTopDips), GetDpiForWindow(window_), 96) + labelHeight + SettingsLabelToControlGap();
         return GetSettingsGridCellAtTop(sizing == VideoWindowSizing::FitToWindow ? 0 : 1, top);
     }
@@ -9463,9 +9463,6 @@ private:
             const HelpTopic& topic = kHelpTopics[helpTopic_];
             const int helpWidth = static_cast<int>(std::max<LONG>(1, contentBounds.right - contentBounds.left));
             float y = viewport.top + helpScroll_;
-            const float titleHeight = static_cast<float>(MeasureHelpTextHeight(topic.title, helpWidth, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD));
-            DrawOverlayText(topic.title, viewport.left, y, viewport.right - viewport.left, titleHeight, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, false, true);
-            y += titleHeight + 14.0f * dpiScale;
             if (topic.sectionCount == 0) {
                 const float bodyHeight = static_cast<float>(MeasureHelpTextHeight(topic.body, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_NORMAL));
                 DrawOverlayText(topic.body, viewport.left, y, viewport.right - viewport.left, bodyHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
@@ -9623,8 +9620,8 @@ private:
                 renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r, 4.0f * dpiScale, 4.0f * dpiScale), selected ? accent.Get() : borderBrush.Get(), 1.0f);
                 DrawOverlayText(text, r.left, r.top, r.right - r.left, r.bottom - r.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, selected ? checkmark.Get() : primaryBrush.Get(), true, false, true);
             };
-            drawSizingButton(VideoWindowSizing::FitToWindow, ButtonKind::SettingsVideoSizingFit, L"Fit video to window");
-            drawSizingButton(VideoWindowSizing::ResizeWindowToVideo, ButtonKind::SettingsVideoSizingResize, L"Resize window to video");
+            drawSizingButton(VideoWindowSizing::FitToWindow, ButtonKind::SettingsVideoSizingFit, L"fit video to window");
+            drawSizingButton(VideoWindowSizing::ResizeWindowToVideo, ButtonKind::SettingsVideoSizingResize, L"resize window to video");
             } else if (settingsPage_ == SettingsPage::Image2D) {
             drawToggle(4, ButtonKind::SettingsAnimations, L"animations and face effects", animationsEnabled_);
             drawToggle(5, ButtonKind::SettingsReverseWheelZoom, L"reverse mouse wheel zoom direction", reverseMouseWheelZoom_);
@@ -9778,7 +9775,7 @@ private:
                 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::Feedback) {
             DrawOverlayText(L"feedback", left, static_cast<float>(bounds.top) + panelPadding, contentWidth, 34.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            DrawOverlayText(L"help make Viewtrious better.", left, static_cast<float>(bounds.top) + panelPadding + 42.0f * dpiScale, contentWidth, 26.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            DrawOverlayText(L"help make viewtrious better.", left, static_cast<float>(bounds.top) + panelPadding + 42.0f * dpiScale, contentWidth, 26.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             ComPtr<ID2D1SolidColorBrush> actionHover, actionPressed;
             if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255), &actionHover)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(75.f / 255, 80.f / 255, 92.f / 255), &actionPressed))) return;
             const auto drawAction = [&](bool feature, const wchar_t* title, const wchar_t* detail) {
@@ -9792,7 +9789,7 @@ private:
                 DrawOverlayText(detail, action.left + 16.0f * dpiScale, action.top + 35.0f * dpiScale, action.right - action.left - 32.0f * dpiScale, 23.0f * dpiScale, 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), true);
             };
             drawAction(false, L"report a bug", L"something isn't working correctly.");
-            drawAction(true, L"suggest a feature", L"have an idea for Viewtrious?");
+            drawAction(true, L"suggest a feature", L"have an idea for viewtrious?");
             DrawOverlayText(L"opens GitHub in your web browser.", left, static_cast<float>(bounds.bottom) - panelPadding - 20.0f * dpiScale, contentWidth, 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         } else {
             const UINT logoSize = static_cast<UINT>(std::max(1.0f, std::round(std::min(76.0f * dpiScale, contentWidth))));

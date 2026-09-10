@@ -170,6 +170,7 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
 void VideoPlayer::Shutdown() {
     FlushFramePacingDiagnostics();
     playing_ = ended_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
+    displayAdjustmentsBypassed_ = false;
     lastTransferredPts_ = 0;
     framesPerSecond_ = 0.0f;
     effectivePlaybackRate_ = 1.0;
@@ -453,7 +454,7 @@ bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas, float sc
         canvas.left + (canvasWidth + width) * 0.5f + pan.x, canvas.top + (canvasHeight + height) * 0.5f + pan.y);
     ID3D11Texture2D* displayTexture = frameTexture_.Get();
     ComPtr<ID2D1Bitmap1>* displayBitmap = &frameBitmap_;
-    if (adjustedFrameValid_ && adjustmentProcessor_.OutputTexture()) {
+    if (!displayAdjustmentsBypassed_ && adjustedFrameValid_ && adjustmentProcessor_.OutputTexture()) {
         displayTexture = adjustmentProcessor_.OutputTexture();
         displayBitmap = &adjustedFrameBitmap_;
     }

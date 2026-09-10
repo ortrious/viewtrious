@@ -802,6 +802,7 @@ struct VideoControlsLayout {
 struct VideoAdjustmentsPanelLayout {
     RECT panel;
     std::array<RECT, 7> sliders;
+    RECT originalButton;
     RECT resetButton;
     bool aboveControls = false;
 };
@@ -1447,11 +1448,13 @@ public:
             const int y = top + MulDiv(18, dpi, 96) + index * rowHeight;
             sliders[index] = { sliderLeft, y, sliderRight, y + MulDiv(20, dpi, 96) };
         }
-        const int buttonWidth = MulDiv(74, dpi, 96);
+        const int originalButtonWidth = MulDiv(78, dpi, 96);
+        const int resetButtonWidth = MulDiv(74, dpi, 96);
         const int buttonHeight = MulDiv(30, dpi, 96);
         const int buttonBottom = bottom - panelPadding;
-        const RECT reset{ right - panelPadding - buttonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
-        return { panel, sliders, reset, aboveControls };
+        const RECT original{ left + panelPadding, buttonBottom - buttonHeight, left + panelPadding + originalButtonWidth, buttonBottom };
+        const RECT reset{ right - panelPadding - resetButtonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
+        return { panel, sliders, original, reset, aboveControls };
     }
     VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
         const VideoControlsLayout controls = GetVideoControlsLayout();
@@ -1665,6 +1668,12 @@ public:
         videoPlayer_.SetDisplayAdjustments(videoAdjustments_);
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void SetVideoAdjustmentsOriginalPreview(bool active) {
+        if (videoAdjustmentsOriginalPreviewActive_ == active) return;
+        videoAdjustmentsOriginalPreviewActive_ = active;
+        videoPlayer_.SetDisplayAdjustmentsBypassed(active);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     bool VideoAdjustmentsPanelOpen() const { return videoAdjustmentsPanelOpen_; }
     void SetAdjustmentPanelOpen(bool& panelOpen, bool& fadeActive, float& opacity,
             float& fadeStartOpacity, ULONGLONG& fadeStartedAt, bool open) {
@@ -1717,6 +1726,10 @@ public:
         const VideoAdjustmentsPanelLayout closeTarget = !open ? GetVideoAdjustmentsPanelTargetLayout() : VideoAdjustmentsPanelLayout{};
         if (open) videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
+        if (!open && videoAdjustmentsOriginalPreviewActive_) {
+            SetVideoAdjustmentsOriginalPreview(false);
+            if (GetCapture() == window_) ReleaseCapture();
+        }
         if (!open) videoControlsPointerOver_ = false;
         SetAdjustmentPanelOpen(videoAdjustmentsPanelOpen_, videoAdjustmentsPanelFadeActive_,
             videoAdjustmentsPanelOpacity_, videoAdjustmentsPanelFadeStartOpacity_,
@@ -2018,6 +2031,7 @@ public:
         if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
+        SetVideoAdjustmentsOriginalPreview(false);
         videoControlsOpacity_ = 1.0f;
         videoControlsFadeActive_ = false;
         videoControlsPointerOver_ = false;
@@ -2037,6 +2051,7 @@ public:
         if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
+        SetVideoAdjustmentsOriginalPreview(false);
         videoScrubbing_ = false;
         videoWasPlayingBeforeScrub_ = false;
         videoAdjustmentsPanelOpen_ = false;
@@ -2089,6 +2104,7 @@ public:
                     const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
                     if (PtInRect(&hit, point)) { videoAdjustmentsDragging_ = index; videoAdjustmentDetentIndex_ = -1; UpdateVideoAdjustmentSlider(index, point); return true; }
                 }
+                if (PtInRect(&panel.originalButton, point)) { SetVideoAdjustmentsOriginalPreview(true); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetVideoAdjustments(); return true; }
                 return true;
             }
@@ -2123,6 +2139,7 @@ public:
         return true;
     }
     bool EndVideoControlsInteraction(POINT point) {
+        if (videoAdjustmentsOriginalPreviewActive_) { SetVideoAdjustmentsOriginalPreview(false); return true; }
         if (videoAdjustmentsDragging_ >= 0) { UpdateVideoAdjustmentSlider(videoAdjustmentsDragging_, point); videoAdjustmentsDragging_ = -1; videoAdjustmentDetentIndex_ = -1; return true; }
         if (videoStepHoldDirection_) {
             StopVideoStepHold();
@@ -2144,7 +2161,7 @@ public:
         lastMousePoint_ = point;
         const bool wasPointerOver = videoControlsPointerOver_;
         const bool revealZone = VideoControlsRevealZoneContains(point);
-        const bool activeInteraction = videoScrubbing_ || videoAdjustmentsDragging_ >= 0 || videoPlaybackSpeedPanelOpen_;
+        const bool activeInteraction = videoScrubbing_ || videoAdjustmentsDragging_ >= 0 || videoAdjustmentsOriginalPreviewActive_ || videoPlaybackSpeedPanelOpen_;
         if (!videoPlayer_.Playing() || revealZone || activeInteraction) ShowVideoControls();
         videoControlsPointerOver_ = VideoControlsContains(point) || revealZone || activeInteraction;
         videoControlsHovered_ = VideoControlAt(point);
@@ -2161,7 +2178,7 @@ public:
         if (!VideoActive()) return;
         videoControlsPointerOver_ = false;
         videoControlsHovered_ = ButtonKind::None;
-        if (videoPlayer_.Playing() && !videoScrubbing_ && !videoPlaybackSpeedPanelOpen_) {
+        if (videoPlayer_.Playing() && !videoScrubbing_ && !videoAdjustmentsOriginalPreviewActive_ && !videoPlaybackSpeedPanelOpen_) {
             videoControlsFadeActive_ = false;
             videoControlsLastActivity_ = GetTickCount64();
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
@@ -2170,6 +2187,7 @@ public:
     void CancelVideoControlsInteraction() {
         StopVideoStepHold();
         videoAdjustmentsDragging_ = -1;
+        SetVideoAdjustmentsOriginalPreview(false);
         if (!videoScrubbing_) return;
         videoScrubbing_ = false;
         const bool resumePlayback = videoWasPlayingBeforeScrub_;
@@ -2179,7 +2197,7 @@ public:
     }
     void UpdateVideoControlsFade() {
         if (!VideoActive()) { StopVideoControls(); return; }
-        if (!videoPlayer_.Playing() || videoControlsPointerOver_ || videoScrubbing_ || videoPlaybackSpeedPanelOpen_) { KillTimer(window_, kVideoControlsTimer); return; }
+        if (!videoPlayer_.Playing() || videoControlsPointerOver_ || videoScrubbing_ || videoAdjustmentsOriginalPreviewActive_ || videoPlaybackSpeedPanelOpen_) { KillTimer(window_, kVideoControlsTimer); return; }
         const ULONGLONG elapsed = GetTickCount64() - videoControlsLastActivity_;
         if (!videoControlsFadeActive_) {
             if (elapsed < kVideoControlsIdleDelayMs) {
@@ -9018,10 +9036,11 @@ private:
                 const std::wstring value = std::to_wstring(static_cast<int>(std::lround(values[index] * 100.0f)));
                 DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
             }
-            const auto drawPanelButton = [&](const RECT& bounds, const wchar_t* label) {
-                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), hover.Get());
+            const auto drawPanelButton = [&](const RECT& bounds, const wchar_t* label, bool pressed = false) {
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent.Get() : hover.Get());
                 DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
             };
+            drawPanelButton(panel.originalButton, L"ORIGINAL", videoAdjustmentsOriginalPreviewActive_);
             drawPanelButton(panel.resetButton, L"reset");
             surface->SetOpacity(1.0f);
             border->SetOpacity(1.0f);
@@ -10682,6 +10701,7 @@ private:
     VideoAdjustmentsPanelLayout videoAdjustmentsPanelPlacementStartLayout_{};
     VideoAdjustmentsPanelLayout videoAdjustmentsPanelPlacementTargetLayout_{};
     int videoAdjustmentsDragging_ = -1;
+    bool videoAdjustmentsOriginalPreviewActive_ = false;
     int videoAdjustmentDetentIndex_ = -1;
     int videoAdjustmentDetentValue_ = 0;
     DWORD videoPreferredPlaybackRatePercent_ = 100;

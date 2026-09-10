@@ -37,6 +37,7 @@ public:
     bool GetNativeVideoSize(DWORD& width, DWORD& height) const;
     bool TryGetFramesPerSecond(float& framesPerSecond);
     void SetDisplayAdjustments(const ImageAdjustments& adjustments);
+    void SetDisplayAdjustmentsBypassed(bool bypassed) { displayAdjustmentsBypassed_ = bypassed; }
     bool CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
     bool SetPreferredPlaybackRate(double rate);
     bool PlaybackRateSupported(double rate) const;
@@ -73,6 +74,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> adjustedFrameBitmap_;
     MediaAdjustmentProcessor adjustmentProcessor_;
     ImageAdjustments displayAdjustments_;
+    bool displayAdjustmentsBypassed_ = false;
     double preferredPlaybackRate_ = 1.0;
     double effectivePlaybackRate_ = 1.0;
     UINT deviceResetToken_ = 0;

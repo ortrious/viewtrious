@@ -123,9 +123,11 @@ constexpr UINT_PTR kFilmstripVideoHoverFadeTimer = 20;
 constexpr UINT_PTR kImageAdjustmentPersistenceTimer = 21;
 constexpr UINT_PTR kFilmstripHoverPreviewFadeTimer = 22;
 constexpr UINT_PTR kVideoAdjustmentsFadeTimer = 24;
+constexpr UINT_PTR kVideoAdjustmentsPlacementTimer = 25;
 constexpr ULONGLONG kFilmstripVideoHoverFadeDurationMs = 175;
 constexpr ULONGLONG kFilmstripHoverPreviewFadeDurationMs = kStillDissolveDurationMs;
 constexpr ULONGLONG kVideoAdjustmentsFadeDurationMs = kStillDissolveDurationMs;
+constexpr ULONGLONG kVideoAdjustmentsPlacementDurationMs = 420;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
 constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
@@ -1409,19 +1411,12 @@ public:
         }
         return { { left, top, right, bottom }, rates };
     }
-    VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
-        const VideoControlsLayout controls = GetVideoControlsLayout();
-        const RECT canvas = ModelCanvasBounds();
+    VideoAdjustmentsPanelLayout MakeVideoAdjustmentsPanelLayout(RECT panel, bool aboveControls) const {
         const UINT dpi = GetDpiForWindow(window_);
-        const bool aboveControls = VideoAdjustmentsPanelAboveControls();
-        const LONG width = aboveControls
-            ? std::min<LONG>(MulDiv(370, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)))
-            : MulDiv(370, dpi, 96);
-        const LONG left = aboveControls ? std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width) : controls.island.right;
-        const LONG right = left + width;
-        const LONG bottom = aboveControls ? controls.island.top : controls.island.bottom;
-        const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
-        const LONG top = bottom - height;
+        const LONG left = panel.left;
+        const LONG right = panel.right;
+        const LONG top = panel.top;
+        const LONG bottom = panel.bottom;
         const int labelWidth = MulDiv(70, dpi, 96);
         const int valueWidth = MulDiv(38, dpi, 96);
         const int rowHeight = MulDiv(30, dpi, 96);
@@ -1437,10 +1432,102 @@ public:
         const int buttonHeight = MulDiv(30, dpi, 96);
         const int buttonBottom = bottom - panelPadding;
         const RECT reset{ right - panelPadding - buttonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
-        return { { left, top, right, bottom }, sliders, reset, aboveControls };
+        return { panel, sliders, reset, aboveControls };
     }
-    void SynchronizeVideoAdjustmentsPanelPresentedLayout() {
-        videoAdjustmentsPanelPresentedLayout_ = GetVideoAdjustmentsPanelTargetLayout();
+    VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
+        const VideoControlsLayout controls = GetVideoControlsLayout();
+        const RECT canvas = ModelCanvasBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const bool aboveControls = VideoAdjustmentsPanelAboveControls();
+        const LONG width = aboveControls
+            ? std::min<LONG>(MulDiv(370, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)))
+            : MulDiv(370, dpi, 96);
+        const LONG left = aboveControls ? std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width) : controls.island.right;
+        const LONG right = left + width;
+        const LONG bottom = aboveControls ? controls.island.top : controls.island.bottom;
+        const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
+        const LONG top = bottom - height;
+        return MakeVideoAdjustmentsPanelLayout({ left, top, right, bottom }, aboveControls);
+    }
+    static bool SameVideoAdjustmentsPanelLayout(const VideoAdjustmentsPanelLayout& left, const VideoAdjustmentsPanelLayout& right) {
+        return left.aboveControls == right.aboveControls && EqualRect(&left.panel, &right.panel);
+    }
+    void StopVideoAdjustmentsPanelPlacementMotion() {
+        videoAdjustmentsPanelPlacementMotionActive_ = false;
+        KillTimer(window_, kVideoAdjustmentsPlacementTimer);
+    }
+    RECT VideoAdjustmentsPanelMotionRect(float progress) const {
+        const RECT start = videoAdjustmentsPanelPlacementStartLayout_.panel;
+        const RECT target = videoAdjustmentsPanelPlacementTargetLayout_.panel;
+        const float startWidth = static_cast<float>(start.right - start.left), startHeight = static_cast<float>(start.bottom - start.top);
+        const float targetWidth = static_cast<float>(target.right - target.left), targetHeight = static_cast<float>(target.bottom - target.top);
+        const float startX = (start.left + start.right) * 0.5f, startY = (start.top + start.bottom) * 0.5f;
+        const float targetX = (target.left + target.right) * 0.5f, targetY = (target.top + target.bottom) * 0.5f;
+        const float directionX = targetX - startX, directionY = targetY - startY;
+        const float distance = std::sqrt(directionX * directionX + directionY * directionY);
+        const float overshoot = std::min(static_cast<float>(MulDiv(9, GetDpiForWindow(window_), 96)), distance * 0.10f);
+        float centerX = targetX, centerY = targetY, width = targetWidth, height = targetHeight;
+        if (progress < 0.82f && distance > 0.01f) {
+            const float phase = SmoothTransitionProgress(progress / 0.82f);
+            const float endX = targetX + directionX / distance * overshoot;
+            const float endY = targetY + directionY / distance * overshoot;
+            const float curve = std::min(static_cast<float>(MulDiv(10, GetDpiForWindow(window_), 96)), distance * 0.08f);
+            const float bend = videoAdjustmentsPanelPlacementStartLayout_.aboveControls ? -curve : curve;
+            const float controlX = (startX + endX) * 0.5f - directionY / distance * bend;
+            const float controlY = (startY + endY) * 0.5f + directionX / distance * bend;
+            const float inverse = 1.0f - phase;
+            centerX = inverse * inverse * startX + 2.0f * inverse * phase * controlX + phase * phase * endX;
+            centerY = inverse * inverse * startY + 2.0f * inverse * phase * controlY + phase * phase * endY;
+            width = startWidth + (targetWidth - startWidth) * phase;
+            height = startHeight + (targetHeight - startHeight) * phase;
+        } else if (progress < 1.0f && distance > 0.01f) {
+            const float phase = SmoothTransitionProgress((progress - 0.82f) / 0.18f);
+            const float overshootX = targetX + directionX / distance * overshoot;
+            const float overshootY = targetY + directionY / distance * overshoot;
+            centerX = overshootX + (targetX - overshootX) * phase;
+            centerY = overshootY + (targetY - overshootY) * phase;
+        }
+        const LONG left = static_cast<LONG>(std::lround(centerX - width * 0.5f));
+        const LONG top = static_cast<LONG>(std::lround(centerY - height * 0.5f));
+        return { left, top, left + static_cast<LONG>(std::lround(width)), top + static_cast<LONG>(std::lround(height)) };
+    }
+    void UpdateVideoAdjustmentsPanelPlacementMotion() {
+        if (!videoAdjustmentsPanelPlacementMotionActive_) return;
+        const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - videoAdjustmentsPanelPlacementStartedAt_) /
+            static_cast<float>(kVideoAdjustmentsPlacementDurationMs));
+        if (progress >= 1.0f) {
+            videoAdjustmentsPanelPresentedLayout_ = videoAdjustmentsPanelPlacementTargetLayout_;
+            StopVideoAdjustmentsPanelPlacementMotion();
+        } else {
+            videoAdjustmentsPanelPresentedLayout_ = MakeVideoAdjustmentsPanelLayout(
+                VideoAdjustmentsPanelMotionRect(progress), videoAdjustmentsPanelPlacementTargetLayout_.aboveControls);
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void BeginVideoAdjustmentsPanelPlacementMotion(const VideoAdjustmentsPanelLayout& target) {
+        videoAdjustmentsPanelPlacementStartLayout_ = videoAdjustmentsPanelPresentedLayout_;
+        videoAdjustmentsPanelPlacementTargetLayout_ = target;
+        videoAdjustmentsPanelPlacementStartedAt_ = GetTickCount64();
+        videoAdjustmentsPanelPlacementMotionActive_ = true;
+        SetTimer(window_, kVideoAdjustmentsPlacementTimer, 16, nullptr);
+    }
+    void SynchronizeVideoAdjustmentsPanelPresentedLayout(bool animatePlacement = false) {
+        const VideoAdjustmentsPanelLayout target = GetVideoAdjustmentsPanelTargetLayout();
+        if (!animatePlacement || !videoAdjustmentsPanelOpen_ || videoAdjustmentsDragging_ >= 0) {
+            StopVideoAdjustmentsPanelPlacementMotion();
+            videoAdjustmentsPanelPresentedLayout_ = target;
+            return;
+        }
+        if (videoAdjustmentsPanelPlacementMotionActive_) {
+            UpdateVideoAdjustmentsPanelPlacementMotion();
+            if (SameVideoAdjustmentsPanelLayout(target, videoAdjustmentsPanelPlacementTargetLayout_)) return;
+            BeginVideoAdjustmentsPanelPlacementMotion(target);
+            return;
+        }
+        if (target.aboveControls != videoAdjustmentsPanelPresentedLayout_.aboveControls)
+            BeginVideoAdjustmentsPanelPlacementMotion(target);
+        else
+            videoAdjustmentsPanelPresentedLayout_ = target;
     }
     const VideoAdjustmentsPanelLayout& GetVideoAdjustmentsPanelPresentedLayout() const {
         return videoAdjustmentsPanelPresentedLayout_;
@@ -1516,7 +1603,7 @@ public:
         SetAdjustmentPanelOpen(videoAdjustmentsPanelOpen_, videoAdjustmentsPanelFadeActive_,
             videoAdjustmentsPanelOpacity_, videoAdjustmentsPanelFadeStartOpacity_,
             videoAdjustmentsPanelFadeStartedAt_, open);
-        SynchronizeVideoAdjustmentsPanelPresentedLayout();
+        SynchronizeVideoAdjustmentsPanelPresentedLayout(false);
         ShowVideoControls();
     }
     void UpdateAdjustmentPanelsFade() {
@@ -1809,6 +1896,7 @@ public:
     void ResetVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
         if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        StopVideoAdjustmentsPanelPlacementMotion();
         StopVideoStepHold();
         videoControlsOpacity_ = 1.0f;
         videoControlsFadeActive_ = false;
@@ -1827,6 +1915,7 @@ public:
     void StopVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
         if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        StopVideoAdjustmentsPanelPlacementMotion();
         StopVideoStepHold();
         videoScrubbing_ = false;
         videoWasPlayingBeforeScrub_ = false;
@@ -3383,7 +3472,7 @@ public:
         ClampVideoPan();
         filmstripPreviewGeometryValid_ = false;
         RebuildFilmstripLayout();
-        SynchronizeVideoAdjustmentsPanelPresentedLayout();
+        SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
         if (imageScaling_ != ImageScaling::Performance && source_) RefreshLanczosForImageViewChange();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -10441,6 +10530,10 @@ private:
     float videoAdjustmentsPanelFadeStartOpacity_ = 0.0f;
     ULONGLONG videoAdjustmentsPanelFadeStartedAt_ = 0;
     VideoAdjustmentsPanelLayout videoAdjustmentsPanelPresentedLayout_{};
+    bool videoAdjustmentsPanelPlacementMotionActive_ = false;
+    ULONGLONG videoAdjustmentsPanelPlacementStartedAt_ = 0;
+    VideoAdjustmentsPanelLayout videoAdjustmentsPanelPlacementStartLayout_{};
+    VideoAdjustmentsPanelLayout videoAdjustmentsPanelPlacementTargetLayout_{};
     int videoAdjustmentsDragging_ = -1;
     int videoAdjustmentDetentIndex_ = -1;
     int videoAdjustmentDetentValue_ = 0;
@@ -11197,6 +11290,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
         if (wParam == kVideoAdjustmentsFadeTimer) { viewer->UpdateAdjustmentPanelsFade(); return 0; }
+        if (wParam == kVideoAdjustmentsPlacementTimer) { viewer->UpdateVideoAdjustmentsPanelPlacementMotion(); return 0; }
         if (wParam == kStillDissolveTimer) { viewer->UpdateStillDissolve(); return 0; }
         if (wParam == kStartupVideoSizingFallbackTimer) { viewer->RevealInitialWindowAfterVideoSizing(); return 0; }
         if (wParam == kFilmstripVisibilityTimer) { viewer->UpdateFilmstripVisibility(); return 0; }

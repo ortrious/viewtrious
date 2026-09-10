@@ -5521,6 +5521,8 @@ public:
 
         dissolveOldWidth_ = imageWidth_;
         dissolveOldHeight_ = imageHeight_;
+        dissolveOldScale_ = CurrentScale();
+        dissolveOldTopLeft_ = ImageTopLeft(dissolveOldScale_, ImageCanvasSize());
         dissolveTargetPath_ = *target;
         if (!QueryPerformanceFrequency(&dissolveQpcFrequency_) || dissolveQpcFrequency_.QuadPart <= 0) { ClearStillDissolve(); return false; }
         LARGE_INTEGER now{};
@@ -5547,6 +5549,8 @@ public:
         dissolveAwaitingTarget_ = false;
         dissolveOldBitmap_.Reset();
         dissolveOldWidth_ = dissolveOldHeight_ = 0;
+        dissolveOldScale_ = 0.0f;
+        dissolveOldTopLeft_ = D2D1::Point2F();
         dissolveTargetPath_.clear();
     }
 
@@ -8281,7 +8285,7 @@ private:
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         filenameText_ = fs::path(path).filename().wstring();
         fileSizeText_ = FormatFileSize(path);
-        resolutionText_.clear();
+        if (!dissolveAwaitingTarget_) resolutionText_.clear();
         error_.clear();
         imageDecodePending_ = true;
         ++decodeRequestGeneration_;
@@ -8664,10 +8668,9 @@ private:
         if (!dissolveActive_ || !dissolveOldBitmap_ || !dissolveOldWidth_ || !dissolveOldHeight_) { DrawImage(); return; }
         const D2D1_SIZE_F target = ImageCanvasSize();
         const D2D1_RECT_F canvas = ImageCanvasBounds();
-        const float oldScale = std::min(target.width / dissolveOldWidth_, target.height / dissolveOldHeight_);
+        const float oldScale = dissolveOldScale_;
         const float newScale = CurrentScale();
-        const D2D1_POINT_2F oldTopLeft = D2D1::Point2F(canvas.left + (target.width - dissolveOldWidth_ * oldScale) * 0.5f,
-            canvas.top + (target.height - dissolveOldHeight_ * oldScale) * 0.5f);
+        const D2D1_POINT_2F oldTopLeft = dissolveOldTopLeft_;
         const D2D1_POINT_2F newTopLeft = ImageTopLeft(newScale, target);
         const D2D1_RECT_F oldDestination = D2D1::RectF(oldTopLeft.x, oldTopLeft.y, oldTopLeft.x + dissolveOldWidth_ * oldScale, oldTopLeft.y + dissolveOldHeight_ * oldScale);
         const D2D1_RECT_F newDestination = D2D1::RectF(newTopLeft.x, newTopLeft.y, newTopLeft.x + imageWidth_ * newScale, newTopLeft.y + imageHeight_ * newScale);
@@ -10683,6 +10686,8 @@ private:
     LARGE_INTEGER dissolveQpcFrequency_{};
     UINT dissolveOldWidth_ = 0;
     UINT dissolveOldHeight_ = 0;
+    float dissolveOldScale_ = 0.0f;
+    D2D1_POINT_2F dissolveOldTopLeft_ = D2D1::Point2F();
     std::wstring dissolveTargetPath_;
     ComPtr<ID2D1Bitmap> dissolveOldBitmap_;
     bool presented_ = false;

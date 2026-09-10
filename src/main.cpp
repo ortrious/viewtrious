@@ -128,6 +128,8 @@ constexpr ULONGLONG kFilmstripVideoHoverFadeDurationMs = 175;
 constexpr ULONGLONG kFilmstripHoverPreviewFadeDurationMs = kStillDissolveDurationMs;
 constexpr ULONGLONG kVideoAdjustmentsFadeDurationMs = kStillDissolveDurationMs;
 constexpr ULONGLONG kVideoAdjustmentsPlacementDurationMs = 240;
+constexpr ULONGLONG kVideoAdjustmentsOpenDurationMs = 230;
+constexpr ULONGLONG kVideoAdjustmentsCloseDurationMs = 180;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
 constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
@@ -804,6 +806,8 @@ struct VideoAdjustmentsPanelLayout {
     bool aboveControls = false;
 };
 
+enum class VideoAdjustmentsPanelMotion { None, Placement, Opening, Closing };
+
 struct ZoomHudLayout {
     RECT combined;
     RECT zoom;
@@ -1458,8 +1462,20 @@ public:
         const LONG top = bottom - height;
         return MakeVideoAdjustmentsPanelLayout({ left, top, right, bottom }, aboveControls);
     }
-    void StopVideoAdjustmentsPanelPlacementMotion() {
-        videoAdjustmentsPanelPlacementMotionActive_ = false;
+    bool VideoAdjustmentsPanelMotionActive() const {
+        return videoAdjustmentsPanelMotion_ != VideoAdjustmentsPanelMotion::None;
+    }
+    VideoAdjustmentsPanelLayout OffsetVideoAdjustmentsPanelLayout(const VideoAdjustmentsPanelLayout& layout, LONG x, LONG y) const {
+        RECT panel = layout.panel;
+        OffsetRect(&panel, x, y);
+        return MakeVideoAdjustmentsPanelLayout(panel, layout.aboveControls);
+    }
+    VideoAdjustmentsPanelLayout VideoAdjustmentsPanelAttachmentLayout(const VideoAdjustmentsPanelLayout& target) const {
+        const LONG offset = MulDiv(16, GetDpiForWindow(window_), 96);
+        return OffsetVideoAdjustmentsPanelLayout(target, target.aboveControls ? 0 : -offset, target.aboveControls ? offset : 0);
+    }
+    void StopVideoAdjustmentsPanelMotion() {
+        videoAdjustmentsPanelMotion_ = VideoAdjustmentsPanelMotion::None;
         KillTimer(window_, kVideoAdjustmentsPlacementTimer);
     }
     RECT VideoAdjustmentsPanelMotionRect(float progress) const {
@@ -1497,16 +1513,48 @@ public:
         const LONG top = static_cast<LONG>(std::lround(centerY - height * 0.5f));
         return { left, top, left + static_cast<LONG>(std::lround(width)), top + static_cast<LONG>(std::lround(height)) };
     }
+    RECT VideoAdjustmentsPanelOpenCloseMotionRect(float progress) const {
+        const RECT start = videoAdjustmentsPanelPlacementStartLayout_.panel;
+        const RECT target = videoAdjustmentsPanelPlacementTargetLayout_.panel;
+        const float directionX = videoAdjustmentsPanelPlacementTargetLayout_.aboveControls ? 0.0f : 1.0f;
+        const float directionY = videoAdjustmentsPanelPlacementTargetLayout_.aboveControls ? -1.0f : 0.0f;
+        const float startX = (start.left + start.right) * 0.5f, startY = (start.top + start.bottom) * 0.5f;
+        const float targetX = (target.left + target.right) * 0.5f, targetY = (target.top + target.bottom) * 0.5f;
+        float centerX = targetX, centerY = targetY;
+        if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Opening && progress < 0.82f) {
+            const float phase = VideoAdjustmentsPlacementProgress(progress / 0.82f);
+            const float overshoot = static_cast<float>(MulDiv(5, GetDpiForWindow(window_), 96));
+            centerX = startX + (targetX + directionX * overshoot - startX) * phase;
+            centerY = startY + (targetY + directionY * overshoot - startY) * phase;
+        } else if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Opening && progress < 1.0f) {
+            const float phase = SmoothTransitionProgress((progress - 0.82f) / 0.18f);
+            const float overshoot = static_cast<float>(MulDiv(5, GetDpiForWindow(window_), 96));
+            centerX = targetX + directionX * overshoot * (1.0f - phase);
+            centerY = targetY + directionY * overshoot * (1.0f - phase);
+        } else if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Closing) {
+            const float phase = VideoAdjustmentsPlacementProgress(progress);
+            centerX = startX + (targetX - startX) * phase;
+            centerY = startY + (targetY - startY) * phase;
+        }
+        const LONG width = target.right - target.left;
+        const LONG height = target.bottom - target.top;
+        const LONG left = static_cast<LONG>(std::lround(centerX - width * 0.5f));
+        const LONG top = static_cast<LONG>(std::lround(centerY - height * 0.5f));
+        return { left, top, left + width, top + height };
+    }
     void UpdateVideoAdjustmentsPanelPlacementMotion() {
-        if (!videoAdjustmentsPanelPlacementMotionActive_) return;
+        if (!VideoAdjustmentsPanelMotionActive()) return;
+        const ULONGLONG duration = videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Placement ? kVideoAdjustmentsPlacementDurationMs :
+            videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Opening ? kVideoAdjustmentsOpenDurationMs : kVideoAdjustmentsCloseDurationMs;
         const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - videoAdjustmentsPanelPlacementStartedAt_) /
-            static_cast<float>(kVideoAdjustmentsPlacementDurationMs));
+            static_cast<float>(duration));
         if (progress >= 1.0f) {
             videoAdjustmentsPanelPresentedLayout_ = videoAdjustmentsPanelPlacementTargetLayout_;
-            StopVideoAdjustmentsPanelPlacementMotion();
+            StopVideoAdjustmentsPanelMotion();
         } else {
             videoAdjustmentsPanelPresentedLayout_ = MakeVideoAdjustmentsPanelLayout(
-                VideoAdjustmentsPanelMotionRect(progress), videoAdjustmentsPanelPlacementTargetLayout_.aboveControls);
+                videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Placement ? VideoAdjustmentsPanelMotionRect(progress) :
+                VideoAdjustmentsPanelOpenCloseMotionRect(progress), videoAdjustmentsPanelPlacementTargetLayout_.aboveControls);
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -1514,26 +1562,59 @@ public:
         videoAdjustmentsPanelPlacementStartLayout_ = videoAdjustmentsPanelPresentedLayout_;
         videoAdjustmentsPanelPlacementTargetLayout_ = target;
         videoAdjustmentsPanelPlacementStartedAt_ = GetTickCount64();
-        videoAdjustmentsPanelPlacementMotionActive_ = true;
+        videoAdjustmentsPanelMotion_ = VideoAdjustmentsPanelMotion::Placement;
+        SetTimer(window_, kVideoAdjustmentsPlacementTimer, 16, nullptr);
+    }
+    void BeginVideoAdjustmentsPanelOpenMotion(const VideoAdjustmentsPanelLayout& target, bool fromPresentedLayout) {
+        videoAdjustmentsPanelPlacementStartLayout_ = fromPresentedLayout ? videoAdjustmentsPanelPresentedLayout_ : VideoAdjustmentsPanelAttachmentLayout(target);
+        if (!fromPresentedLayout) videoAdjustmentsPanelPresentedLayout_ = videoAdjustmentsPanelPlacementStartLayout_;
+        videoAdjustmentsPanelPlacementTargetLayout_ = target;
+        videoAdjustmentsPanelPlacementStartedAt_ = GetTickCount64();
+        videoAdjustmentsPanelMotion_ = VideoAdjustmentsPanelMotion::Opening;
+        SetTimer(window_, kVideoAdjustmentsPlacementTimer, 16, nullptr);
+    }
+    void BeginVideoAdjustmentsPanelCloseMotion(const VideoAdjustmentsPanelLayout& target) {
+        videoAdjustmentsPanelPlacementStartLayout_ = videoAdjustmentsPanelPresentedLayout_;
+        videoAdjustmentsPanelPlacementTargetLayout_ = VideoAdjustmentsPanelAttachmentLayout(target);
+        videoAdjustmentsPanelPlacementStartedAt_ = GetTickCount64();
+        videoAdjustmentsPanelMotion_ = VideoAdjustmentsPanelMotion::Closing;
         SetTimer(window_, kVideoAdjustmentsPlacementTimer, 16, nullptr);
     }
     void SynchronizeVideoAdjustmentsPanelPresentedLayout(bool animatePlacement = false) {
         const VideoAdjustmentsPanelLayout target = GetVideoAdjustmentsPanelTargetLayout();
-        if (!animatePlacement || !videoAdjustmentsPanelOpen_ || videoAdjustmentsDragging_ >= 0) {
-            StopVideoAdjustmentsPanelPlacementMotion();
+        if (!animatePlacement || videoAdjustmentsDragging_ >= 0) {
+            StopVideoAdjustmentsPanelMotion();
             videoAdjustmentsPanelPresentedLayout_ = target;
             return;
         }
-        if (videoAdjustmentsPanelPlacementMotionActive_) {
+        if (VideoAdjustmentsPanelMotionActive()) {
             UpdateVideoAdjustmentsPanelPlacementMotion();
-            if (!videoAdjustmentsPanelPlacementMotionActive_) {
+            if (!VideoAdjustmentsPanelMotionActive()) {
                 videoAdjustmentsPanelPresentedLayout_ = target;
+                return;
+            }
+            if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Closing) {
+                if (target.aboveControls != videoAdjustmentsPanelPlacementTargetLayout_.aboveControls)
+                    BeginVideoAdjustmentsPanelCloseMotion(target);
+                else
+                    videoAdjustmentsPanelPlacementTargetLayout_ = VideoAdjustmentsPanelAttachmentLayout(target);
+                return;
+            }
+            if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Opening) {
+                if (target.aboveControls != videoAdjustmentsPanelPlacementTargetLayout_.aboveControls)
+                    BeginVideoAdjustmentsPanelOpenMotion(target, true);
+                else
+                    videoAdjustmentsPanelPlacementTargetLayout_ = target;
                 return;
             }
             if (target.aboveControls != videoAdjustmentsPanelPlacementTargetLayout_.aboveControls)
                 BeginVideoAdjustmentsPanelPlacementMotion(target);
             else
                 videoAdjustmentsPanelPlacementTargetLayout_ = target;
+            return;
+        }
+        if (!videoAdjustmentsPanelOpen_) {
+            videoAdjustmentsPanelPresentedLayout_ = target;
             return;
         }
         if (target.aboveControls != videoAdjustmentsPanelPresentedLayout_.aboveControls)
@@ -1608,21 +1689,42 @@ public:
         }
         return fadeActive;
     }
+    bool UpdateVideoAdjustmentsPanelFade() {
+        if (!videoAdjustmentsPanelFadeActive_) return false;
+        const ULONGLONG duration = videoAdjustmentsPanelOpen_ ? kVideoAdjustmentsOpenDurationMs : kVideoAdjustmentsCloseDurationMs;
+        const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - videoAdjustmentsPanelFadeStartedAt_) /
+            static_cast<float>(duration));
+        const float eased = videoAdjustmentsPanelOpen_ ? VideoAdjustmentsPlacementProgress(progress) : SmoothTransitionProgress(progress);
+        videoAdjustmentsPanelOpacity_ = videoAdjustmentsPanelOpen_
+            ? videoAdjustmentsPanelFadeStartOpacity_ + (1.0f - videoAdjustmentsPanelFadeStartOpacity_) * eased
+            : videoAdjustmentsPanelFadeStartOpacity_ * (1.0f - eased);
+        if (progress >= 1.0f) {
+            videoAdjustmentsPanelFadeActive_ = false;
+            videoAdjustmentsPanelOpacity_ = videoAdjustmentsPanelOpen_ ? 1.0f : 0.0f;
+        }
+        return videoAdjustmentsPanelFadeActive_;
+    }
     void SetVideoAdjustmentsPanelOpen(bool open) {
+        if (open == videoAdjustmentsPanelOpen_ && !videoAdjustmentsPanelFadeActive_) return;
+        const bool wasMoving = VideoAdjustmentsPanelMotionActive();
+        if (wasMoving) UpdateVideoAdjustmentsPanelPlacementMotion();
+        const VideoAdjustmentsPanelLayout closeTarget = !open ? GetVideoAdjustmentsPanelTargetLayout() : VideoAdjustmentsPanelLayout{};
         if (open) videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
         if (!open) videoControlsPointerOver_ = false;
         SetAdjustmentPanelOpen(videoAdjustmentsPanelOpen_, videoAdjustmentsPanelFadeActive_,
             videoAdjustmentsPanelOpacity_, videoAdjustmentsPanelFadeStartOpacity_,
             videoAdjustmentsPanelFadeStartedAt_, open);
-        SynchronizeVideoAdjustmentsPanelPresentedLayout(false);
+        if (open)
+            BeginVideoAdjustmentsPanelOpenMotion(GetVideoAdjustmentsPanelTargetLayout(), wasMoving);
+        else
+            BeginVideoAdjustmentsPanelCloseMotion(closeTarget);
         ShowVideoControls();
     }
     void UpdateAdjustmentPanelsFade() {
         const bool imageActive = UpdateAdjustmentPanelFade(imageAdjustmentsPanelOpen_, imageAdjustmentsPanelFadeActive_,
             imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_, imageAdjustmentsPanelFadeStartedAt_);
-        const bool videoActive = UpdateAdjustmentPanelFade(videoAdjustmentsPanelOpen_, videoAdjustmentsPanelFadeActive_,
-            videoAdjustmentsPanelOpacity_, videoAdjustmentsPanelFadeStartOpacity_, videoAdjustmentsPanelFadeStartedAt_);
+        const bool videoActive = UpdateVideoAdjustmentsPanelFade();
         InvalidateRect(window_, nullptr, FALSE);
         if (imageActive || videoActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
         else KillTimer(window_, kVideoAdjustmentsFadeTimer);
@@ -1908,7 +2010,7 @@ public:
     void ResetVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
         if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
-        StopVideoAdjustmentsPanelPlacementMotion();
+        StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
         videoControlsOpacity_ = 1.0f;
         videoControlsFadeActive_ = false;
@@ -1927,7 +2029,7 @@ public:
     void StopVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
         if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
-        StopVideoAdjustmentsPanelPlacementMotion();
+        StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
         videoScrubbing_ = false;
         videoWasPlayingBeforeScrub_ = false;
@@ -8802,7 +8904,7 @@ private:
             }
         }
         const bool adjustmentsPanelVisible = VideoAdjustmentsPanelVisible();
-        const bool adjustmentsPanelMoving = adjustmentsPanelVisible && videoAdjustmentsPanelPlacementMotionActive_;
+        const bool adjustmentsPanelMoving = adjustmentsPanelVisible && VideoAdjustmentsPanelMotionActive();
         if (adjustmentsPanelVisible && !adjustmentsPanelMoving)
             DrawVideoAdjustmentCompositeShell(layout, GetVideoAdjustmentsPanelPresentedLayout(), surface.Get(), border.Get(), scale);
         const D2D1_RECT_F island = rect(layout.island);
@@ -10549,7 +10651,7 @@ private:
     float videoAdjustmentsPanelFadeStartOpacity_ = 0.0f;
     ULONGLONG videoAdjustmentsPanelFadeStartedAt_ = 0;
     VideoAdjustmentsPanelLayout videoAdjustmentsPanelPresentedLayout_{};
-    bool videoAdjustmentsPanelPlacementMotionActive_ = false;
+    VideoAdjustmentsPanelMotion videoAdjustmentsPanelMotion_ = VideoAdjustmentsPanelMotion::None;
     ULONGLONG videoAdjustmentsPanelPlacementStartedAt_ = 0;
     VideoAdjustmentsPanelLayout videoAdjustmentsPanelPlacementStartLayout_{};
     VideoAdjustmentsPanelLayout videoAdjustmentsPanelPlacementTargetLayout_{};

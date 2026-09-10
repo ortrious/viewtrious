@@ -188,7 +188,7 @@ enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, Setting
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments, ViewBarBuildPlateSize, ViewBarPlateWidth, ViewBarPlateDepth, ViewBarPlateLink, ViewBarPlateReset };
 enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
@@ -1063,6 +1063,11 @@ public:
         DWORD buildPlate = static_cast<DWORD>(ModelBuildPlate::Auto);
         ReadSetting(L"ModelBuildPlate", buildPlate);
         modelBuildPlate_ = buildPlate <= static_cast<DWORD>(ModelBuildPlate::Off) ? static_cast<ModelBuildPlate>(buildPlate) : ModelBuildPlate::Auto;
+        DWORD buildPlateWidth = 256, buildPlateDepth = 256;
+        ReadSetting(L"ModelBuildPlateWidthMm", buildPlateWidth); ReadSetting(L"ModelBuildPlateDepthMm", buildPlateDepth);
+        modelBuildPlateWidthMm_ = buildPlateWidth >= 50 && buildPlateWidth <= 5000 ? static_cast<float>(buildPlateWidth) : 256.0f;
+        modelBuildPlateDepthMm_ = buildPlateDepth >= 50 && buildPlateDepth <= 5000 ? static_cast<float>(buildPlateDepth) : 256.0f;
+        DWORD buildPlateLinked = 1; ReadSetting(L"ModelBuildPlateSizeLinked", buildPlateLinked); buildPlateSizeLinked_ = buildPlateLinked != 0;
         DWORD axisIndicatorPosition = static_cast<DWORD>(AxisIndicatorPosition::BottomRight);
         ReadSetting(L"AxisIndicatorPosition", axisIndicatorPosition);
         axisIndicatorPosition_ = axisIndicatorPosition <= static_cast<DWORD>(AxisIndicatorPosition::TopRight) ? static_cast<AxisIndicatorPosition>(axisIndicatorPosition) : AxisIndicatorPosition::BottomRight;
@@ -1193,7 +1198,7 @@ public:
         modelViewport_.SetVisualStyle(modelVisualStyle_);
         modelViewport_.SetAntiAliasing(modelAntiAliasing_);
         contentKind_ = ContentKind::Model3D;
-        modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector());
+        modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector(), modelBuildPlateWidthMm_, modelBuildPlateDepthMm_);
         modelTriangleCount_ = modelDocument_->geometries.front().indices.size() / 3;
         resolutionText_ = FormatCompactTriangleCount(modelTriangleCount_) + L" triangles";
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
@@ -3123,19 +3128,27 @@ public:
         return false;
     }
     int ModelViewBarProjectionWidth() const { return DropdownWidth(kProjectionOptions, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD); }
+    int ModelViewBarPlateWidth() const { return MulDiv(112,GetDpiForWindow(window_),96); }
     int ModelViewBarStyleWidth() const { return DropdownWidth(kVisualStyleOptions, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD); }
     RECT GetModelViewBarBounds() const {
         const RECT canvas = ModelCanvasBounds(); const int dpi = GetDpiForWindow(window_);
-        const int width = ModelViewBarProjectionWidth() + 1 + ModelViewBarStyleWidth(), height = MulDiv(32, dpi, 96), top = canvas.top + MulDiv(12, dpi, 96);
+        const int width = (BuildPlateVisible()?ModelViewBarPlateWidth()+1:0) + ModelViewBarProjectionWidth() + 1 + ModelViewBarStyleWidth(), height = MulDiv(32, dpi, 96), top = canvas.top + MulDiv(12, dpi, 96);
         const int left = canvas.left + ((canvas.right - canvas.left) - width) / 2;
         return { left, top, left + width, top + height };
     }
-    RECT GetModelViewBarProjectionBounds() const { RECT result=GetModelViewBarBounds(); result.right=result.left+ModelViewBarProjectionWidth(); return result; }
+    RECT GetModelViewBarPlateBounds() const { RECT result=GetModelViewBarBounds(); result.right=BuildPlateVisible()?result.left+ModelViewBarPlateWidth():result.left; return result; }
+    RECT GetModelViewBarProjectionBounds() const { RECT result=GetModelViewBarBounds(); result.left=GetModelViewBarPlateBounds().right+(BuildPlateVisible()?1:0); result.right=result.left+ModelViewBarProjectionWidth(); return result; }
     RECT GetModelViewBarStyleBounds() const { RECT result=GetModelViewBarBounds(); result.left=GetModelViewBarProjectionBounds().right+1; return result; }
     RECT GetModelViewBarProjectionMenuBounds() const { const RECT bar=GetModelViewBarProjectionBounds();const int row=MulDiv(32,GetDpiForWindow(window_),96),gap=MulDiv(4,GetDpiForWindow(window_),96);return {bar.left,bar.bottom+gap,bar.right,bar.bottom+gap+row*2}; }
     RECT GetModelViewBarStyleMenuBounds() const { const RECT bar=GetModelViewBarStyleBounds();const int row=MulDiv(32,GetDpiForWindow(window_),96),gap=MulDiv(4,GetDpiForWindow(window_),96);return {bar.left,bar.bottom+gap,bar.right,bar.bottom+gap+row*3}; }
     void DismissModelViewBarMenu() { if (viewBarProjectionMenuOpen_||viewBarVisualStyleMenuOpen_) { viewBarProjectionMenuOpen_=false;viewBarVisualStyleMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); } }
     bool ModelViewBarMenuOpen() const { return viewBarProjectionMenuOpen_||viewBarVisualStyleMenuOpen_; }
+    bool BuildPlateSizePopupOpen() const { return buildPlateSizePopupOpen_; }
+    bool BuildPlateSizePopupContains(POINT point) const { const RECT bounds=GetBuildPlateSizePopupBounds(); return PtInRect(&bounds,point)!=FALSE; }
+    void DismissBuildPlateSizePopup() { buildPlateSizePopupOpen_=false; buildPlateSizeEdit_=0; buildPlateSizeReplace_=false; InvalidateRect(window_,nullptr,FALSE); }
+    RECT GetBuildPlateSizePopupBounds() const { const RECT bar=GetModelViewBarPlateBounds(); const int dpi=GetDpiForWindow(window_); const int width=MulDiv(230,dpi,96),height=MulDiv(154,dpi,96); return {std::max(ModelCanvasBounds().left,bar.left),bar.bottom+MulDiv(4,dpi,96),std::max(ModelCanvasBounds().left,bar.left)+width,bar.bottom+MulDiv(4,dpi,96)+height}; }
+    void CommitBuildPlateSize(bool width) { wchar_t* end=nullptr; const float value=std::wcstof(buildPlateSizeText_.c_str(),&end); if(end==buildPlateSizeText_.c_str()||*end||!std::isfinite(value)||value<50||value>5000)return; if(width)modelBuildPlateWidthMm_=value;else modelBuildPlateDepthMm_=value;if(buildPlateSizeLinked_){modelBuildPlateWidthMm_=modelBuildPlateDepthMm_=value;}WriteSetting(L"ModelBuildPlateWidthMm",DWORD(std::lround(modelBuildPlateWidthMm_)));WriteSetting(L"ModelBuildPlateDepthMm",DWORD(std::lround(modelBuildPlateDepthMm_)));if(ModelActive())modelViewport_.SetBuildPlate(BuildPlateVisible(),ModelUpVector(),modelBuildPlateWidthMm_,modelBuildPlateDepthMm_);InvalidateRect(window_,nullptr,FALSE); }
+    void BuildPlateSizeChar(wchar_t character) { if(!buildPlateSizeEdit_)return; if(character==L'\b'){buildPlateSizeReplace_=false;if(!buildPlateSizeText_.empty())buildPlateSizeText_.pop_back();}else if((character>=L'0'&&character<=L'9')||character==L'.'){if(buildPlateSizeReplace_){buildPlateSizeText_.clear();buildPlateSizeReplace_=false;}if(buildPlateSizeText_.size()<8)buildPlateSizeText_+=character;}else if(character==L'\r'){CommitBuildPlateSize(buildPlateSizeEdit_==1);buildPlateSizeEdit_=0;buildPlateSizeReplace_=false;}InvalidateRect(window_,nullptr,FALSE); }
     void ToggleIncludeHiddenImages() {
         includeHiddenImages_ = !includeHiddenImages_;
         WriteSetting(L"IncludeHiddenImages", includeHiddenImages_ ? 1 : 0);
@@ -3233,8 +3246,8 @@ public:
         if (ModelActive()) modelViewport_.SetProjectionMode(mode);
         InvalidateRect(window_, nullptr, FALSE);
     }
-    void SetModelUpAxis(ModelUpAxis axis) { if (modelUpAxis_ == axis) return; modelUpAxis_ = axis; WriteSetting(L"ModelUpAxis", static_cast<DWORD>(axis)); if (ModelActive()) modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector()); InvalidateRect(window_, nullptr, FALSE); }
-    void SetModelBuildPlate(ModelBuildPlate mode) { if (modelBuildPlate_ == mode) return; modelBuildPlate_ = mode; WriteSetting(L"ModelBuildPlate", static_cast<DWORD>(mode)); if (ModelActive()) modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector()); InvalidateRect(window_, nullptr, FALSE); }
+    void SetModelUpAxis(ModelUpAxis axis) { if (modelUpAxis_ == axis) return; modelUpAxis_ = axis; WriteSetting(L"ModelUpAxis", static_cast<DWORD>(axis)); if (ModelActive()) modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector(), modelBuildPlateWidthMm_, modelBuildPlateDepthMm_); InvalidateRect(window_, nullptr, FALSE); }
+    void SetModelBuildPlate(ModelBuildPlate mode) { if (modelBuildPlate_ == mode) return; modelBuildPlate_ = mode; WriteSetting(L"ModelBuildPlate", static_cast<DWORD>(mode)); if (!BuildPlateVisible()) DismissBuildPlateSizePopup(); if (ModelActive()) modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector(), modelBuildPlateWidthMm_, modelBuildPlateDepthMm_); InvalidateRect(window_, nullptr, FALSE); }
     void SetAxisIndicatorPosition(AxisIndicatorPosition position) { if (axisIndicatorPosition_ == position) { axisIndicatorPositionMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); return; } axisIndicatorPosition_ = position; WriteSetting(L"AxisIndicatorPosition", static_cast<DWORD>(position)); axisIndicatorPositionMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); }
     void SetModelVisualStyle(ModelVisualStyle style) { if(modelVisualStyle_==style)return;modelVisualStyle_=style;WriteSetting(L"ModelVisualStyle",static_cast<DWORD>(style));if(ModelActive())modelViewport_.SetVisualStyle(style);InvalidateRect(window_,nullptr,FALSE); }
     void SetGraphicsAdapterPreference(int option) { if(option==0){graphicsAdapterAuto_=true;}else if(option>0&&option<=static_cast<int>(graphicsAdapters_.size())){graphicsAdapterAuto_=false;graphicsAdapterLuid_=graphicsAdapters_[option-1].luid;}else return;WriteSetting(L"GraphicsAdapterAuto",graphicsAdapterAuto_?1:0);WriteSetting(L"GraphicsAdapterLuidLow",graphicsAdapterLuid_.LowPart);WriteSetting(L"GraphicsAdapterLuidHigh",static_cast<DWORD>(graphicsAdapterLuid_.HighPart));graphicsAdapterMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); }
@@ -3463,7 +3476,8 @@ public:
             if (OffscreenModelIndicatorContains(point)) return ButtonKind::ModelOffscreenIndicator;
             if (viewBarProjectionMenuOpen_) { const RECT menu = GetModelViewBarProjectionMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top + row ? ButtonKind::ViewBarProjectionPerspective : ButtonKind::ViewBarProjectionOrthographic; }
             if (viewBarVisualStyleMenuOpen_) { const RECT menu = GetModelViewBarStyleMenuBounds(); const int row = MulDiv(32, GetDpiForWindow(window_), 96); if (PtInRect(&menu, point)) return point.y < menu.top+row ? ButtonKind::ViewBarVisualStyleShaded : point.y < menu.top+row*2 ? ButtonKind::ViewBarVisualStyleVisibleEdges : ButtonKind::ViewBarVisualStyleWireframe; }
-            const RECT projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();if(PtInRect(&projection,point))return ButtonKind::ViewBarProjectionToggle;if(PtInRect(&style,point))return ButtonKind::ViewBarVisualStyleToggle;
+            if(BuildPlateVisible()&&buildPlateSizePopupOpen_){const RECT popup=GetBuildPlateSizePopupBounds();if(!PtInRect(&popup,point))return ButtonKind::None;const int row=MulDiv(30,GetDpiForWindow(window_),96);if(point.y<popup.top+row)return ButtonKind::None;if(point.y<popup.top+row*2)return ButtonKind::ViewBarPlateWidth;if(point.y<popup.top+row*3)return ButtonKind::ViewBarPlateDepth;if(point.y<popup.top+row*4)return ButtonKind::ViewBarPlateLink;return ButtonKind::ViewBarPlateReset;}
+            const RECT plate=GetModelViewBarPlateBounds(),projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();if(BuildPlateVisible()&&PtInRect(&plate,point))return ButtonKind::ViewBarBuildPlateSize;if(PtInRect(&projection,point))return ButtonKind::ViewBarProjectionToggle;if(PtInRect(&style,point))return ButtonKind::ViewBarVisualStyleToggle;
         }
         if (const ButtonKind gifControl = GifControlAt(point); gifControl != ButtonKind::None) return gifControl;
         if (renderTarget_) {
@@ -3628,6 +3642,11 @@ public:
         else if (button == ButtonKind::SettingsGraphicsAdapterToggle) { graphicsAdapters_=GraphicsHost::EnumerateHardwareAdapters();graphicsAdapterMenuOpen_=!graphicsAdapterMenuOpen_;upAxisMenuOpen_=buildPlateMenuOpen_=axisIndicatorPositionMenuOpen_=projectionMenuOpen_=antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); }
         else if (button == ButtonKind::SettingsGraphicsAdapterOption) SetGraphicsAdapterPreference(graphicsAdapterMenuOption_);
         else if (button == ButtonKind::SettingsAntiAliasingToggle) { antiAliasingMenuOpen_=!antiAliasingMenuOpen_;upAxisMenuOpen_=buildPlateMenuOpen_=axisIndicatorPositionMenuOpen_=projectionMenuOpen_=graphicsAdapterMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::ViewBarBuildPlateSize) { buildPlateSizePopupOpen_=!buildPlateSizePopupOpen_; buildPlateSizeEdit_=0; buildPlateSizeReplace_=false; InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::ViewBarPlateWidth) { buildPlateSizeEdit_=1; buildPlateSizeReplace_=true; buildPlateSizeText_=std::to_wstring(int(std::lround(modelBuildPlateWidthMm_))); InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::ViewBarPlateDepth) { buildPlateSizeEdit_=2; buildPlateSizeReplace_=true; buildPlateSizeText_=std::to_wstring(int(std::lround(modelBuildPlateDepthMm_))); InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::ViewBarPlateLink) { buildPlateSizeLinked_=!buildPlateSizeLinked_; WriteSetting(L"ModelBuildPlateSizeLinked",buildPlateSizeLinked_?1:0); InvalidateRect(window_,nullptr,FALSE); }
+        else if (button == ButtonKind::ViewBarPlateReset) { modelBuildPlateWidthMm_=modelBuildPlateDepthMm_=256; WriteSetting(L"ModelBuildPlateWidthMm",256);WriteSetting(L"ModelBuildPlateDepthMm",256);if(ModelActive())modelViewport_.SetBuildPlate(BuildPlateVisible(),ModelUpVector(),256,256);InvalidateRect(window_,nullptr,FALSE); }
         else if (button == ButtonKind::SettingsAntiAliasingOff) SetModelAntiAliasing(ModelAntiAliasing::Off);
         else if (button == ButtonKind::SettingsAntiAliasing2x) SetModelAntiAliasing(ModelAntiAliasing::Msaa2x);
         else if (button == ButtonKind::SettingsAntiAliasing4x) SetModelAntiAliasing(ModelAntiAliasing::Msaa4x);
@@ -8873,7 +8892,7 @@ private:
             contentKind_ = ContentKind::None;
             error_ = error;
         }
-        if (contentKind_ == ContentKind::Model3D && modelViewport_.Active()) { modelViewport_.SetProjectionMode(modelProjectionMode_); modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector()); }
+        if (contentKind_ == ContentKind::Model3D && modelViewport_.Active()) { modelViewport_.SetProjectionMode(modelProjectionMode_); modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector(), modelBuildPlateWidthMm_, modelBuildPlateDepthMm_); }
         timer_.Log(L"shared graphics/window initialization complete");
     }
 
@@ -10901,10 +10920,11 @@ private:
         if(FAILED(renderTarget_->CreateSolidColorBrush(dark?D2D1::ColorF(36.f/255,39.f/255,46.f/255,.94f):D2D1::ColorF(250.f/255,250.f/255,250.f/255,.94f),&surface))||FAILED(renderTarget_->CreateSolidColorBrush(dark?D2D1::ColorF(76.f/255,80.f/255,91.f/255):D2D1::ColorF(185.f/255,185.f/255,185.f/255),&border))||FAILED(renderTarget_->CreateSolidColorBrush(dark?D2D1::ColorF(D2D1::ColorF::White):D2D1::ColorF(28.f/255,28.f/255,28.f/255),&text))||FAILED(renderTarget_->CreateSolidColorBrush(dark?D2D1::ColorF(55.f/255,59.f/255,70.f/255):D2D1::ColorF(226.f/255,226.f/255,226.f/255),&hover))||FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,120.f/255,212.f/255),&selected)))return;
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bar,6*dpi,6*dpi),surface.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(bar,6*dpi,6*dpi),border.Get(),1);
         const auto control=[&](RECT rect,ButtonKind button,const wchar_t* label,bool open){const D2D1_RECT_F r=D2D1::RectF((float)rect.left,(float)rect.top,(float)rect.right,(float)rect.bottom);if(hoveredButton_==button||pressedButton_==button||open)renderTarget_->FillRectangle(r,hover.Get());DrawOverlayText(label,r.left+static_cast<float>(kDropdownLeftPaddingDips)*dpi,r.top,r.right-r.left-static_cast<float>(kDropdownLeftPaddingDips+kDropdownChevronReserveDips)*dpi,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,text.Get(),true);DrawDropdownChevron(r,text.Get(),dpi);};
-        const RECT projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();control(projection,ButtonKind::ViewBarProjectionToggle,modelProjectionMode_==ModelProjectionMode::Perspective?L"Perspective":L"Orthographic",viewBarProjectionMenuOpen_);renderTarget_->DrawLine(D2D1::Point2F((float)style.left,(float)style.top+7*dpi),D2D1::Point2F((float)style.left,(float)style.bottom-7*dpi),border.Get(),1);const wchar_t* styleLabel=modelVisualStyle_==ModelVisualStyle::Shaded?L"Shaded":modelVisualStyle_==ModelVisualStyle::ShadedWithVisibleEdges?L"Shaded with Visible Edges":L"Wireframe";control(style,ButtonKind::ViewBarVisualStyleToggle,styleLabel,viewBarVisualStyleMenuOpen_);
+        const RECT plate=GetModelViewBarPlateBounds(),projection=GetModelViewBarProjectionBounds(),style=GetModelViewBarStyleBounds();if(BuildPlateVisible()){const D2D1_RECT_F r=D2D1::RectF((float)plate.left,(float)plate.top,(float)plate.right,(float)plate.bottom);if(hoveredButton_==ButtonKind::ViewBarBuildPlateSize||pressedButton_==ButtonKind::ViewBarBuildPlateSize||buildPlateSizePopupOpen_)renderTarget_->FillRectangle(r,hover.Get());wchar_t label[48]{};swprintf_s(label,L"%.0f × %.0f mm",modelBuildPlateWidthMm_,modelBuildPlateDepthMm_);DrawOverlayText(label,r.left+12*dpi,r.top,r.right-r.left-24*dpi,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,text.Get(),true);renderTarget_->DrawLine(D2D1::Point2F((float)projection.left,(float)projection.top+7*dpi),D2D1::Point2F((float)projection.left,(float)projection.bottom-7*dpi),border.Get(),1);}control(projection,ButtonKind::ViewBarProjectionToggle,modelProjectionMode_==ModelProjectionMode::Perspective?L"Perspective":L"Orthographic",viewBarProjectionMenuOpen_);renderTarget_->DrawLine(D2D1::Point2F((float)style.left,(float)style.top+7*dpi),D2D1::Point2F((float)style.left,(float)style.bottom-7*dpi),border.Get(),1);const wchar_t* styleLabel=modelVisualStyle_==ModelVisualStyle::Shaded?L"Shaded":modelVisualStyle_==ModelVisualStyle::ShadedWithVisibleEdges?L"Shaded with Visible Edges":L"Wireframe";control(style,ButtonKind::ViewBarVisualStyleToggle,styleLabel,viewBarVisualStyleMenuOpen_);
         const auto menuItem=[&](RECT bounds,ButtonKind button,const wchar_t* value,bool active,int top){const int row=MulDiv(32,GetDpiForWindow(window_),96);const D2D1_RECT_F r=D2D1::RectF((float)bounds.left,(float)top,(float)bounds.right,(float)(top+row));if(active)renderTarget_->FillRectangle(r,selected.Get());else if(hoveredButton_==button||pressedButton_==button)renderTarget_->FillRectangle(r,hover.Get());DrawOverlayText(value,r.left+12*dpi,r.top,r.right-r.left-24*dpi,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_NORMAL,text.Get(),true);};
         if(viewBarProjectionMenuOpen_){const RECT menu=GetModelViewBarProjectionMenuBounds();const D2D1_RECT_F r=D2D1::RectF((float)menu.left,(float)menu.top,(float)menu.right,(float)menu.bottom);renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,6*dpi,6*dpi),surface.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,6*dpi,6*dpi),border.Get(),1);const int row=MulDiv(32,GetDpiForWindow(window_),96);menuItem(menu,ButtonKind::ViewBarProjectionPerspective,L"Perspective",modelProjectionMode_==ModelProjectionMode::Perspective,menu.top);menuItem(menu,ButtonKind::ViewBarProjectionOrthographic,L"Orthographic",modelProjectionMode_==ModelProjectionMode::Orthographic,menu.top+row);}
         if(viewBarVisualStyleMenuOpen_){const RECT menu=GetModelViewBarStyleMenuBounds();const D2D1_RECT_F r=D2D1::RectF((float)menu.left,(float)menu.top,(float)menu.right,(float)menu.bottom);renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,6*dpi,6*dpi),surface.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,6*dpi,6*dpi),border.Get(),1);const int row=MulDiv(32,GetDpiForWindow(window_),96);menuItem(menu,ButtonKind::ViewBarVisualStyleShaded,L"Shaded",modelVisualStyle_==ModelVisualStyle::Shaded,menu.top);menuItem(menu,ButtonKind::ViewBarVisualStyleVisibleEdges,L"Shaded with Visible Edges",modelVisualStyle_==ModelVisualStyle::ShadedWithVisibleEdges,menu.top+row);menuItem(menu,ButtonKind::ViewBarVisualStyleWireframe,L"Wireframe",modelVisualStyle_==ModelVisualStyle::Wireframe,menu.top+row*2);}
+        if(BuildPlateVisible()&&buildPlateSizePopupOpen_){const RECT popup=GetBuildPlateSizePopupBounds();const int row=MulDiv(30,GetDpiForWindow(window_),96);const D2D1_RECT_F r=D2D1::RectF((float)popup.left,(float)popup.top,(float)popup.right,(float)popup.bottom);renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,6*dpi,6*dpi),surface.Get());renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,6*dpi,6*dpi),border.Get(),1);DrawOverlayText(L"Build plate size",r.left+12*dpi,r.top,r.right-r.left-24*dpi,(float)row,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,text.Get(),true);const auto sizeRow=[&](int index,ButtonKind button,const wchar_t* name,float value){const D2D1_RECT_F item=D2D1::RectF(r.left,(float)(popup.top+row*index),r.right,(float)(popup.top+row*(index+1)));if(hoveredButton_==button||pressedButton_==button||buildPlateSizeEdit_==index)renderTarget_->FillRectangle(item,hover.Get());wchar_t display[32]{};if(buildPlateSizeEdit_==index)swprintf_s(display,L"%s",buildPlateSizeText_.c_str());else swprintf_s(display,L"%.0f mm",value);DrawOverlayText(name,item.left+12*dpi,item.top,(item.right-item.left)*.40f,item.bottom-item.top,14,DWRITE_FONT_WEIGHT_NORMAL,text.Get(),true);DrawOverlayText(display,item.left+(item.right-item.left)*.40f,item.top,(item.right-item.left)*.60f-12*dpi,item.bottom-item.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,text.Get(),true);};sizeRow(1,ButtonKind::ViewBarPlateWidth,L"Width",modelBuildPlateWidthMm_);sizeRow(2,ButtonKind::ViewBarPlateDepth,L"Depth",modelBuildPlateDepthMm_);const D2D1_RECT_F link=D2D1::RectF(r.left,(float)(popup.top+row*3),r.right,(float)(popup.top+row*4));if(hoveredButton_==ButtonKind::ViewBarPlateLink||pressedButton_==ButtonKind::ViewBarPlateLink)renderTarget_->FillRectangle(link,hover.Get());const float linkY=(link.top+link.bottom)*.5f,linkX=link.left+20*dpi;renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(linkX-4*dpi,linkY),5*dpi,3*dpi),text.Get(),1);renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(linkX+4*dpi,linkY),5*dpi,3*dpi),text.Get(),1);renderTarget_->DrawLine(D2D1::Point2F(linkX-1*dpi,linkY),D2D1::Point2F(linkX+1*dpi,linkY),text.Get(),1);DrawOverlayText(buildPlateSizeLinked_?L"Link width and depth: on":L"Link width and depth: off",link.left+36*dpi,link.top,link.right-link.left-48*dpi,link.bottom-link.top,14,DWRITE_FONT_WEIGHT_NORMAL,text.Get(),true);const D2D1_RECT_F reset=D2D1::RectF(r.left,(float)(popup.top+row*4),r.right,r.bottom);if(hoveredButton_==ButtonKind::ViewBarPlateReset||pressedButton_==ButtonKind::ViewBarPlateReset)renderTarget_->FillRectangle(reset,hover.Get());DrawOverlayText(L"Reset to 256 × 256 mm",reset.left+12*dpi,reset.top,reset.right-reset.left-24*dpi,reset.bottom-reset.top,14,DWRITE_FONT_WEIGHT_NORMAL,text.Get(),true);}
     }
     void DrawTitleBar() {
         if (fullscreen_) return;
@@ -11350,6 +11370,12 @@ private:
     ModelVisualStyle modelVisualStyle_ = ModelVisualStyle::Shaded;
     ModelUpAxis modelUpAxis_ = ModelUpAxis::ZUp;
     ModelBuildPlate modelBuildPlate_ = ModelBuildPlate::Auto;
+    float modelBuildPlateWidthMm_ = 256.0f, modelBuildPlateDepthMm_ = 256.0f;
+    bool buildPlateSizePopupOpen_ = false;
+    bool buildPlateSizeLinked_ = true;
+    bool buildPlateSizeReplace_ = false;
+    int buildPlateSizeEdit_ = 0;
+    std::wstring buildPlateSizeText_;
     ModelRenderingApi modelRenderingApi_ = ModelRenderingApi::Direct3D11;
     AxisIndicatorPosition axisIndicatorPosition_ = AxisIndicatorPosition::BottomRight;
     ModelAntiAliasing modelAntiAliasing_ = ModelAntiAliasing::Msaa4x;
@@ -11569,7 +11595,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->VideoControlsContains(point) || viewer->GifControlsContains(point)) return 0;
-        if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen() || viewer->ModelViewBarMenuOpen()) return 0;
+        if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen() || viewer->ModelViewBarMenuOpen() || viewer->BuildPlateSizePopupOpen()) return 0;
         const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
         if (viewer->ModelActive()) { viewer->DollyModel(wheelUnits); return 0; }
         viewer->ZoomAt(point, viewer->WheelZoomFactor(wheelUnits));
@@ -11697,6 +11723,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const ButtonKind button = viewer->ButtonAt(point);
             if (button != ButtonKind::None) { viewer->SetButtonPressed(button); SetCapture(window); return 0; }
             if (!viewer->OverlayContains(point) && !viewer->WelcomeOpen()) viewer->DismissOverlay();
+            return 0;
+        }
+        if (viewer->BuildPlateSizePopupOpen()) {
+            if (!viewer->BuildPlateSizePopupContains(point)) { viewer->DismissBuildPlateSizePopup(); return 0; }
+            const ButtonKind button = viewer->ButtonAt(point);
+            if (button != ButtonKind::None) { viewer->SetButtonPressed(button); SetCapture(window); }
             return 0;
         }
         if (viewer->ModelViewBarMenuOpen()) {
@@ -12006,6 +12038,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kImageAdjustmentPersistenceCompleteMessage: viewer->ImageAdjustmentPersistenceCompleteMessage(reinterpret_cast<ImageAdjustmentPersistenceResult*>(lParam)); return 0;
     case kExternalOpenMessage: viewer->ProcessExternalOpen(); return 0;
     case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE && viewer->BuildPlateSizePopupOpen()) { viewer->DismissBuildPlateSizePopup(); return 0; }
         if (wParam == VK_ESCAPE && viewer->ClearModelSelectionForEscape()) return 0;
         if (wParam == VK_ESCAPE && viewer->VideoPlaybackSpeedPanelOpen()) { viewer->SetVideoPlaybackSpeedPanelOpen(false); return 0; }
         if (wParam == VK_ESCAPE && viewer->VideoAdjustmentsPanelOpen()) { viewer->SetVideoAdjustmentsPanelOpen(false); return 0; }
@@ -12046,6 +12079,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) { viewer->ZoomCentered(1.0f / kWheelZoomStep); return 0; }
         if (wParam == L'0' || wParam == VK_NUMPAD0) { if (viewer->ModelActive()) viewer->FitModel(); else viewer->FitToWindow(); return 0; }
         break;
+    case WM_CHAR:
+        viewer->BuildPlateSizeChar(static_cast<wchar_t>(wParam));
+        return 0;
     case WM_DESTROY: viewer->SaveWindowPlacement(); viewer->Shutdown(); PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(window, message, wParam, lParam);

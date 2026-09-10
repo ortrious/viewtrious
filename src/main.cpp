@@ -1869,6 +1869,9 @@ public:
         AiImageBuffer image{};
         if (!videoPlayer_.CopyCurrentFrameBgra(image.pixels, image.width, image.height) || !image.width || !image.height) return;
         image.stride = image.width * 4;
+        // Video is opaque; its transfer surface is displayed with alpha ignored, while the shared analyzer
+        // treats zero alpha as transparent and skips those pixels.
+        for (size_t offset = 3; offset < image.pixels.size(); offset += 4) image.pixels[offset] = 255;
         ImageAdjustments result = videoAdjustments_;
         if (!ComputeAutoImageAdjustments(image, result)) return;
         videoAdjustments_.exposure = result.exposure; videoAdjustments_.brightness = result.brightness; videoAdjustments_.contrast = result.contrast;

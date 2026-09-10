@@ -63,3 +63,7 @@ bool ReadThreeMfModelXmlPart(const std::wstring& path, const std::wstring& model
     if (part == entries.end()) { error=L"The 3MF component references a missing model part."; return false; }
     return Extract(package, part->second, xml, error);
 }
+
+bool ReadThreeMfPackagePart(const std::wstring& path, const std::wstring& partPath, std::vector<unsigned char>& bytes, std::wstring& error) {
+    return ReadThreeMfModelXmlPart(path, partPath, bytes, error);
+}

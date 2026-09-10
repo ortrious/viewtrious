@@ -1454,7 +1454,7 @@ public:
         const int zoomHudClearance = MulDiv(12, dpi, 96);
         const int height = MulDiv(84, dpi, 96);
         const int compactWidth = MulDiv(420, dpi, 96);
-        const int preferredWidth = MulDiv(640, dpi, 96);
+        const int preferredWidth = MulDiv(540, dpi, 96);
         const int sideClearance = MulDiv(110, dpi, 96);
         const LONG availableWidth = std::max(1L, canvas.right - canvas.left - margin * 2);
         const int responsiveWidth = static_cast<int>(canvas.right - canvas.left) - sideClearance * 2;
@@ -2151,16 +2151,17 @@ public:
         ShowCursor(FALSE);
         videoCursorHidden_ = true;
     }
-    void ShowVideoControls() {
+    void ShowVideoControls(bool invalidate = true) {
         if (!VideoActive()) return;
         RestoreVideoCursor();
+        const bool visibilityChanged = videoControlsOpacity_ < 0.999f || videoControlsFadeActive_;
         videoControlsOpacity_ = 1.0f;
         videoControlsFadeActive_ = false;
         videoControlsLastActivity_ = GetTickCount64();
         KillTimer(window_, kVideoControlsTimer);
         if (videoPlayer_.Playing() && !videoControlsPointerOver_ && !videoScrubbing_ && !videoVolumeDragging_ && !videoPlaybackSpeedPanelOpen_)
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
-        InvalidateRect(window_, nullptr, FALSE);
+        if (invalidate || visibilityChanged) InvalidateRect(window_, nullptr, FALSE);
     }
     void ResetVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
@@ -2310,11 +2311,13 @@ public:
     void UpdateVideoControlsMouse(POINT point) {
         if (!VideoActive()) return;
         RestoreVideoCursor();
+        const ButtonKind previousHovered = videoControlsHovered_;
+        const bool volumeWasHot = VideoVolumeContains(lastMousePoint_);
         lastMousePoint_ = point;
         const bool wasPointerOver = videoControlsPointerOver_;
         const bool revealZone = VideoControlsRevealZoneContains(point);
         const bool activeInteraction = videoScrubbing_ || videoVolumeDragging_ || videoAdjustmentsDragging_ >= 0 || videoAdjustmentsOriginalPreviewActive_ || videoPlaybackSpeedPanelOpen_;
-        if (!videoPlayer_.Playing() || revealZone || activeInteraction) ShowVideoControls();
+        if (!videoPlayer_.Playing() || revealZone || activeInteraction) ShowVideoControls(false);
         videoControlsPointerOver_ = VideoControlsContains(point) || revealZone || activeInteraction;
         videoControlsHovered_ = VideoControlAt(point);
         SetVideoFullscreenGlyphHover(videoControlsHovered_ == ButtonKind::VideoFullscreen);
@@ -2327,6 +2330,8 @@ public:
         if (videoAdjustmentsDragging_ >= 0) UpdateVideoAdjustmentSlider(videoAdjustmentsDragging_, point);
         if (videoVolumeDragging_) UpdateVideoVolume(point);
         if (videoScrubbing_) UpdateVideoScrub(point);
+        if (videoControlsHovered_ != previousHovered || VideoVolumeContains(point) != volumeWasHot)
+            InvalidateRect(window_, nullptr, FALSE);
     }
     void VideoControlsMouseLeave() {
         if (!VideoActive()) return;

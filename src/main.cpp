@@ -5462,15 +5462,14 @@ public:
     }
 
     void BeginPan(POINT point) {
+        if (swipeToNavigateWhenFit_ && !CanPan()) return;
         if (VideoActive()) {
             dragging_ = true;
             lastDragPoint_ = point;
             SetCapture(window_);
             return;
         }
-        if (swipeToNavigateWhenFit_) {
-            if (!CanPan()) return;
-        } else if (!source_ && !VideoActive()) return;
+        if (!source_) return;
         dragging_ = true;
         lastDragPoint_ = point;
         SetCapture(window_);

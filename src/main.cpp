@@ -127,7 +127,7 @@ constexpr UINT_PTR kVideoAdjustmentsPlacementTimer = 25;
 constexpr ULONGLONG kFilmstripVideoHoverFadeDurationMs = 175;
 constexpr ULONGLONG kFilmstripHoverPreviewFadeDurationMs = kStillDissolveDurationMs;
 constexpr ULONGLONG kVideoAdjustmentsFadeDurationMs = kStillDissolveDurationMs;
-constexpr ULONGLONG kVideoAdjustmentsPlacementDurationMs = 420;
+constexpr ULONGLONG kVideoAdjustmentsPlacementDurationMs = 240;
 constexpr double kFilmstripWheelImpulseDipsPerSecond = 1500.0;
 constexpr double kFilmstripMaximumVelocityDipsPerSecond = 4800.0;
 constexpr double kFilmstripVelocityDampingPerSecond = 28.0;
@@ -137,6 +137,11 @@ constexpr std::array<DWORD, 6> kVideoPlaybackRatePercents{ 25, 50, 100, 125, 150
 float SmoothTransitionProgress(float progress) {
     progress = std::clamp(progress, 0.0f, 1.0f);
     return progress * progress * (3.0f - 2.0f * progress);
+}
+float VideoAdjustmentsPlacementProgress(float progress) {
+    progress = std::clamp(progress, 0.0f, 1.0f);
+    const float remaining = 1.0f - progress;
+    return 1.0f - remaining * remaining * remaining;
 }
 // Shared Settings grid geometry. Every page uses these values for section and control placement.
 constexpr float kSettingsContentLeftPaddingDips = 206.0f;
@@ -1449,9 +1454,6 @@ public:
         const LONG top = bottom - height;
         return MakeVideoAdjustmentsPanelLayout({ left, top, right, bottom }, aboveControls);
     }
-    static bool SameVideoAdjustmentsPanelLayout(const VideoAdjustmentsPanelLayout& left, const VideoAdjustmentsPanelLayout& right) {
-        return left.aboveControls == right.aboveControls && EqualRect(&left.panel, &right.panel);
-    }
     void StopVideoAdjustmentsPanelPlacementMotion() {
         videoAdjustmentsPanelPlacementMotionActive_ = false;
         KillTimer(window_, kVideoAdjustmentsPlacementTimer);
@@ -1465,10 +1467,10 @@ public:
         const float targetX = (target.left + target.right) * 0.5f, targetY = (target.top + target.bottom) * 0.5f;
         const float directionX = targetX - startX, directionY = targetY - startY;
         const float distance = std::sqrt(directionX * directionX + directionY * directionY);
-        const float overshoot = std::min(static_cast<float>(MulDiv(9, GetDpiForWindow(window_), 96)), distance * 0.10f);
+        const float overshoot = std::min(static_cast<float>(MulDiv(5, GetDpiForWindow(window_), 96)), distance * 0.10f);
         float centerX = targetX, centerY = targetY, width = targetWidth, height = targetHeight;
         if (progress < 0.82f && distance > 0.01f) {
-            const float phase = SmoothTransitionProgress(progress / 0.82f);
+            const float phase = VideoAdjustmentsPlacementProgress(progress / 0.82f);
             const float endX = targetX + directionX / distance * overshoot;
             const float endY = targetY + directionY / distance * overshoot;
             const float curve = std::min(static_cast<float>(MulDiv(10, GetDpiForWindow(window_), 96)), distance * 0.08f);
@@ -1520,8 +1522,14 @@ public:
         }
         if (videoAdjustmentsPanelPlacementMotionActive_) {
             UpdateVideoAdjustmentsPanelPlacementMotion();
-            if (SameVideoAdjustmentsPanelLayout(target, videoAdjustmentsPanelPlacementTargetLayout_)) return;
-            BeginVideoAdjustmentsPanelPlacementMotion(target);
+            if (!videoAdjustmentsPanelPlacementMotionActive_) {
+                videoAdjustmentsPanelPresentedLayout_ = target;
+                return;
+            }
+            if (target.aboveControls != videoAdjustmentsPanelPlacementTargetLayout_.aboveControls)
+                BeginVideoAdjustmentsPanelPlacementMotion(target);
+            else
+                videoAdjustmentsPanelPlacementTargetLayout_ = target;
             return;
         }
         if (target.aboveControls != videoAdjustmentsPanelPresentedLayout_.aboveControls)

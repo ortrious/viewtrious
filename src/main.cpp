@@ -101,7 +101,7 @@ constexpr UINT kVideoStepHoldIntervalMs = 16;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr ULONGLONG kHeifRotationCooldownMs = 0;
-constexpr int kTopBarLogoResourceId = 102;
+constexpr int kApplicationIconGroupResourceId = 101;
 constexpr int kFilmstripVideoIconGroupResourceId = 104;
 constexpr int kContextMenuRowCount = 8;
 constexpr int kContextMenuSeparatorCount = 4;
@@ -9188,7 +9188,7 @@ private:
         renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
-    void DrawProductName(float x, float y, float width, float height, float size, ID2D1Brush* brush, bool centerAlign) {
+    void DrawProductName(const wchar_t* text, float x, float y, float width, float height, float size, ID2D1Brush* brush, bool centerAlign) {
         ComPtr<IDWriteTextFormat> format;
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         HRESULT result = dwriteFactory_->CreateTextFormat(L"Segoe UI Variable Display", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
@@ -9200,7 +9200,7 @@ private:
         format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         if (centerAlign) format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         ComPtr<IDWriteTextLayout> layout;
-        if (FAILED(dwriteFactory_->CreateTextLayout(L"Viewtrious", 10, format.Get(), width, height, &layout))) return;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), width, height, &layout))) return;
         renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
@@ -9260,7 +9260,21 @@ private:
         aboutLogo_.Reset();
         aboutLogoWidth_ = 0;
         aboutLogoHeight_ = 0;
-        if (!CreateBitmapFromResource(kTopBarLogoResourceId, RT_RCDATA, width, height, aboutLogo_)) return false;
+        const HRSRC groupResource = FindResourceW(nullptr, MAKEINTRESOURCEW(kApplicationIconGroupResourceId), RT_GROUP_ICON);
+        const DWORD groupSize = groupResource ? SizeofResource(nullptr, groupResource) : 0;
+        const HGLOBAL loadedGroup = groupResource ? LoadResource(nullptr, groupResource) : nullptr;
+        const BYTE* group = static_cast<const BYTE*>(loadedGroup ? LockResource(loadedGroup) : nullptr);
+        if (!group || groupSize < 6) return false;
+        const UINT count = static_cast<UINT>(group[4]) | static_cast<UINT>(group[5]) << 8;
+        UINT frameResourceId = 0;
+        for (UINT index = 0; index < count && groupSize >= 6 + (index + 1) * 14; ++index) {
+            const BYTE* entry = group + 6 + index * 14;
+            if ((entry[0] ? entry[0] : 256) == 256) {
+                frameResourceId = static_cast<UINT>(entry[12]) | static_cast<UINT>(entry[13]) << 8;
+                break;
+            }
+        }
+        if (!frameResourceId || !CreateBitmapFromResource(static_cast<int>(frameResourceId), RT_ICON, width, height, aboutLogo_)) return false;
         aboutLogoWidth_ = width;
         aboutLogoHeight_ = height;
         return true;
@@ -9365,12 +9379,11 @@ private:
         const float left = static_cast<float>(bounds.left) + panelPadding;
         const float contentWidth = static_cast<float>(bounds.right - bounds.left) - panelPadding * 2.0f;
         if (overlay_ == OverlayKind::Welcome) {
-            const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(std::min(216.0f * dpiScale, contentWidth))));
-            const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoWidth) * 577.0f / 2375.0f)));
-            if (EnsureAboutLogo(logoWidth, logoHeight)) {
-                const float logoLeft = std::round(static_cast<float>(bounds.left) + (static_cast<float>(bounds.right - bounds.left) - logoWidth) * 0.5f);
+            const UINT logoSize = static_cast<UINT>(std::max(1.0f, std::round(std::min(64.0f * dpiScale, contentWidth))));
+            if (EnsureAboutLogo(logoSize, logoSize)) {
+                const float logoLeft = std::round(static_cast<float>(bounds.left) + (static_cast<float>(bounds.right - bounds.left) - logoSize) * 0.5f);
                 const float logoTop = std::round(static_cast<float>(bounds.top) + 20.0f * dpiScale);
-                renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
+                renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoSize, logoTop + logoSize));
             }
             DrawOverlayText(L"make Viewtrious the default for common media formats?", left, static_cast<float>(bounds.top) + 94.0f * dpiScale,
                 contentWidth, 26.0f * dpiScale, 19.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
@@ -9400,7 +9413,7 @@ private:
                 secondaryButton.right - secondaryButton.left, secondaryButton.bottom - secondaryButton.top, 16.0f,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::DefaultAppsHelper) {
-            DrawProductName(left, static_cast<float>(bounds.top) + 24.0f * dpiScale, contentWidth, 24.0f * dpiScale,
+            DrawProductName(L"viewtrious", left, static_cast<float>(bounds.top) + 24.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 17.0f, primaryBrush.Get(), false);
             DrawOverlayText(L"choose which file types should open with Viewtrious.", left,
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
@@ -9829,23 +9842,27 @@ private:
             drawAction(true, L"suggest a feature", L"have an idea for Viewtrious?");
             DrawOverlayText(L"opens GitHub in your web browser.", left, static_cast<float>(bounds.bottom) - panelPadding - 20.0f * dpiScale, contentWidth, 20.0f * dpiScale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, true);
         } else {
-            const UINT logoWidth = static_cast<UINT>(std::max(1.0f, std::round(std::min(216.0f * dpiScale, contentWidth))));
-            const UINT logoHeight = static_cast<UINT>(std::max(1.0f, std::round(static_cast<float>(logoWidth) * 577.0f / 2375.0f)));
-            const float aboutTextGap = 16.0f * dpiScale;
+            const UINT logoSize = static_cast<UINT>(std::max(1.0f, std::round(std::min(76.0f * dpiScale, contentWidth))));
+            const float wordmarkHeight = 24.0f * dpiScale;
+            const float wordmarkGap = 6.0f * dpiScale;
+            const float aboutTextGap = 12.0f * dpiScale;
             const float aboutLineHeight = 20.0f * dpiScale;
             const float aboutLineGap = 5.0f * dpiScale;
-            const float aboutGroupHeight = static_cast<float>(logoHeight) + aboutTextGap + aboutLineHeight + aboutLineGap + aboutLineHeight;
-            const float logoLeft = std::round(static_cast<float>(bounds.left) + (static_cast<float>(bounds.right - bounds.left) - static_cast<float>(logoWidth)) * 0.5f);
+            const float aboutGroupHeight = static_cast<float>(logoSize) + wordmarkGap + wordmarkHeight + aboutTextGap + aboutLineHeight + aboutLineGap + aboutLineHeight;
+            const float logoLeft = std::round(static_cast<float>(bounds.left) + (static_cast<float>(bounds.right - bounds.left) - static_cast<float>(logoSize)) * 0.5f);
             const float logoTop = std::round(static_cast<float>(bounds.top) + (static_cast<float>(bounds.bottom - bounds.top) - aboutGroupHeight) * 0.5f);
             float logoBottom = logoTop;
-            if (EnsureAboutLogo(logoWidth, logoHeight)) {
-                renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoWidth, logoTop + logoHeight));
-                logoBottom = logoTop + logoHeight;
+            if (EnsureAboutLogo(logoSize, logoSize)) {
+                renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoSize, logoTop + logoSize));
+                logoBottom = logoTop + logoSize;
             }
-            const float textTop = logoBottom + aboutTextGap;
-            DrawOverlayText(L"version " VIEWTRIOUS_VERSION, logoLeft, textTop, static_cast<float>(logoWidth), aboutLineHeight,
+            const float wordmarkTop = logoBottom + wordmarkGap;
+            DrawProductName(L"viewtrious", static_cast<float>(bounds.left), wordmarkTop, static_cast<float>(bounds.right - bounds.left), wordmarkHeight,
+                18.0f, primaryBrush.Get(), true);
+            const float textTop = wordmarkTop + wordmarkHeight + aboutTextGap;
+            DrawOverlayText(L"version " VIEWTRIOUS_VERSION, static_cast<float>(bounds.left), textTop, static_cast<float>(bounds.right - bounds.left), aboutLineHeight,
                 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
-            DrawOverlayText(L"extremely lightweight image viewer", logoLeft, textTop + aboutLineHeight + aboutLineGap, static_cast<float>(logoWidth),
+            DrawOverlayText(L"extremely lightweight image viewer", static_cast<float>(bounds.left), textTop + aboutLineHeight + aboutLineGap, static_cast<float>(bounds.right - bounds.left),
                 aboutLineHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
         }
     }
@@ -10320,7 +10337,7 @@ private:
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         if (EmptyStatePresentationActive() && !(tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails)) {
             const float titleHeight = std::max(1.0f, std::min(18.0f * dpiScale, static_cast<float>(frame.titleBarHeight) - 12.0f * dpiScale));
-            DrawProductName(0.0f, (static_cast<float>(frame.titleBarHeight) - titleHeight) * 0.5f,
+            DrawProductName(L"viewtrious", 0.0f, (static_cast<float>(frame.titleBarHeight) - titleHeight) * 0.5f,
                 VisibleClientSize().width, titleHeight, 14.0f, filenameBrush.Get(), true);
         }
 

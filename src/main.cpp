@@ -10284,13 +10284,14 @@ private:
         const float opacity = overlayOpacity >= 0.0f ? overlayOpacity : videoControlsOpacity_;
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
-        ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover;
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover, muted;
         if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, opacity), &surface)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, opacity), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, opacity), &text)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, opacity), &accent)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * opacity), &track)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, opacity), &hover))) return;
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, opacity), &hover)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(196.0f / 255.0f, 43.0f / 255.0f, 28.0f / 255.0f, opacity), &muted))) return;
 
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         if (videoPlaybackSpeedPanelOpen_) {
@@ -10394,8 +10395,8 @@ private:
         if (videoControlsHovered_ == ButtonKind::VideoPlayPause) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playPause), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
-        if (videoControlsHovered_ == ButtonKind::VideoMute || videoMuted_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), videoMuted_ ? accent.Get() : hover.Get());
-        if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext || videoAutoPlayNext_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.autoPlayNext), 5.0f * scale, 5.0f * scale), videoAutoPlayNext_ ? accent.Get() : hover.Get());
+        if (videoControlsHovered_ == ButtonKind::VideoMute) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), hover.Get());
+        if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext || videoAutoPlayNext_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.autoPlayNext), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoPlaybackSpeed || videoPlaybackSpeedPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playbackSpeed), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoFullscreen) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.fullscreen), 5.0f * scale, 5.0f * scale), hover.Get());
 
@@ -10501,8 +10502,8 @@ private:
         renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY + speaker), text.Get(), 1.6f * scale);
         renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY + speaker), D2D1::Point2F(muteGlyphCenterX - speaker * 0.35f, muteCenterY + speaker * 0.45f), text.Get(), 1.6f * scale);
         if (videoMuted_) {
-            renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker * 2.0f, muteCenterY + speaker), accent.Get(), 1.8f * scale);
-            renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 2.0f, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY + speaker), accent.Get(), 1.8f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker * 2.0f, muteCenterY + speaker), muted.Get(), 1.8f * scale);
+            renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 2.0f, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY + speaker), muted.Get(), 1.8f * scale);
         } else {
             renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY - speaker * 0.75f), D2D1::Point2F(muteGlyphCenterX + speaker * 1.55f, muteCenterY - speaker * 0.35f), text.Get(), 1.4f * scale);
             renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 1.55f, muteCenterY - speaker * 0.35f), D2D1::Point2F(muteGlyphCenterX + speaker * 1.55f, muteCenterY + speaker * 0.35f), text.Get(), 1.4f * scale);

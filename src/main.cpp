@@ -553,36 +553,23 @@ std::wstring FormatFramesPerSecond(float value) {
     return text;
 }
 
-std::wstring FormatFocalLength(double value) {
-    if (!std::isfinite(value) || value <= 0.0) return {};
-    const double rounded = std::round(value * 100.0) / 100.0;
-    wchar_t text[32]{};
-    swprintf_s(text, L"%.2f", rounded);
-    std::wstring compact(text);
-    while (!compact.empty() && compact.back() == L'0') compact.pop_back();
-    if (!compact.empty() && compact.back() == L'.') compact.pop_back();
-    return compact + L"mm";
-}
-
-std::wstring ReadImageFocalLength(const std::wstring& path) {
+std::wstring ReadImageBitDepth(const std::wstring& path) {
     ComPtr<IPropertyStore> store;
     if (FAILED(SHGetPropertyStoreFromParsingName(path.c_str(), nullptr, GPS_DEFAULT, IID_PPV_ARGS(&store)))) return {};
     PROPVARIANT value{};
     PropVariantInit(&value);
-    const HRESULT result = store->GetValue(PKEY_Photo_FocalLength, &value);
-    double millimeters = 0.0;
+    const HRESULT result = store->GetValue(PKEY_Image_BitDepth, &value);
+    UINT bitDepth = 0;
     if (SUCCEEDED(result)) {
         switch (value.vt) {
-        case VT_R8: millimeters = value.dblVal; break;
-        case VT_R4: millimeters = value.fltVal; break;
-        case VT_UI8: millimeters = static_cast<double>(value.uhVal.QuadPart); break;
-        case VT_UI4: millimeters = value.ulVal; break;
-        case VT_UI2: millimeters = value.uiVal; break;
+        case VT_UI4: bitDepth = value.ulVal; break;
+        case VT_UI2: bitDepth = value.uiVal; break;
+        case VT_UI1: bitDepth = value.bVal; break;
         default: break;
         }
     }
     PropVariantClear(&value);
-    return FormatFocalLength(millimeters);
+    return bitDepth ? std::to_wstring(bitDepth) + L"-bit" : std::wstring{};
 }
 
 UINT GifMetadataUInt(IWICMetadataQueryReader* reader, const wchar_t* name, UINT fallback = 0) {
@@ -6959,6 +6946,7 @@ private:
         DeactivateVideo(); DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         ++decodeRequestGeneration_; ++modelLoadGeneration_; const uint64_t generation = modelLoadGeneration_;
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
+        ClearPresentationTitleMetadata();
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
         navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; modelLoadingStartedAtMs_ = GetTickCount64(); contentKind_ = ContentKind::Model3D;
         ClearModelFaceSelection(); ResetComponentsPanelState(); modelClickCandidate_ = false;
@@ -7009,6 +6997,7 @@ private:
         videoAdjustments_ = {};
         videoAdjustmentHashResolved_ = false;
         ++videoAdjustmentMediaGeneration_;
+        if (!replacingVideo) ClearPresentationTitleMetadata();
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         fileSizeText_ = FormatFileSize(path); resolutionText_ = replacingVideo ? previousTitleMetadata : L""; error_.clear();
@@ -7084,17 +7073,28 @@ public:
         if (event == MF_MEDIA_ENGINE_EVENT_ENDED) BeginVideoAutoPlayNextCountdown();
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void SetPresentationTitleMetadata(std::wstring width, std::wstring height, std::wstring separator, std::wstring detail) {
+        titleResolutionWidthText_ = std::move(width);
+        titleResolutionHeightText_ = std::move(height);
+        titleResolutionSeparatorText_ = std::move(separator);
+        titleDetailText_ = detail.empty() ? L"-" : std::move(detail);
+    }
+
+    void ClearPresentationTitleMetadata() {
+        titleResolutionWidthText_.clear();
+        titleResolutionHeightText_.clear();
+        titleResolutionSeparatorText_.clear();
+        titleDetailText_.clear();
+    }
+
     void UpdateVideoTitleMetadata() {
         if (!VideoActive()) return;
         DWORD width = 0, height = 0;
-        std::wstring metadata;
-        if (videoPlayer_.GetNativeVideoSize(width, height)) metadata = std::to_wstring(width) + L" x " + std::to_wstring(height);
+        if (!videoPlayer_.GetNativeVideoSize(width, height)) return;
         float framesPerSecond = 0.0f;
-        if (videoPlayer_.TryGetFramesPerSecond(framesPerSecond)) {
-            const std::wstring framesText = FormatFramesPerSecond(framesPerSecond);
-            if (!metadata.empty() && !framesText.empty()) metadata += L"  \x2022  " + framesText;
-        }
-        if (!metadata.empty()) resolutionText_ = std::move(metadata);
+        std::wstring framesText;
+        if (videoPlayer_.TryGetFramesPerSecond(framesPerSecond)) framesText = FormatFramesPerSecond(framesPerSecond);
+        SetPresentationTitleMetadata(std::to_wstring(width), std::to_wstring(height), L"x", std::move(framesText));
     }
     void VideoPlaybackWakeMessage(uint64_t generation) {
         uint64_t expected = generation;
@@ -8263,7 +8263,7 @@ private:
         KillTimer(window_, kNavigationDecodeDebounceTimer);
         source_.Reset(); bitmap_.Reset(); imageWidth_ = imageHeight_ = 0;
         displayedPixels_.reset();
-        currentPath_.clear(); displayedPath_.clear(); currentFileIdentity_ = {}; resolutionText_.clear(); fileSizeText_.clear(); filenameText_.clear();
+        currentPath_.clear(); displayedPath_.clear(); currentFileIdentity_ = {}; resolutionText_.clear(); ClearPresentationTitleMetadata(); fileSizeText_.clear(); filenameText_.clear();
         CancelQueuedFilmstripThumbnails();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         filmstripClickedRevealTarget_.reset();
@@ -9291,8 +9291,7 @@ private:
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         resolutionText_ = std::to_wstring(width) + L"\u00D7" + std::to_wstring(height);
         fileSizeText_ = FormatFileSize(path);
-        const std::wstring focalLength = ReadImageFocalLength(path);
-        resolutionText_ += L"  \x2022  " + (focalLength.empty() ? L"-" : focalLength);
+        SetPresentationTitleMetadata(std::to_wstring(width), std::to_wstring(height), L"\u00D7", ReadImageBitDepth(path));
         filenameText_ = fs::path(path).filename().wstring();
         error_.clear();
         fitToWindow_ = true;
@@ -10166,6 +10165,24 @@ private:
         const float top = std::max(0.0f, (static_cast<float>(GetFrameMetrics(window_).titleBarHeight) - metrics.height) / 2.0f);
         const float textLeft = center ? left + std::max(0.0f, (width - metrics.width) / 2.0f) : left;
         renderTarget_->DrawTextLayout(D2D1::Point2F(textLeft, top), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    void DrawPresentationTitleMetadata(const FrameMetrics& frame, ID2D1Brush* brush) {
+        if (titleResolutionWidthText_.empty() || titleResolutionHeightText_.empty()) return;
+        const float left = static_cast<float>(frame.resolutionLeft);
+        const float width = static_cast<float>(frame.resolutionWidth);
+        const float multiplyCenter = left + width * 0.35f;
+        const float dotCenter = left + width * 0.73f;
+        const float multiplyWidth = width * 0.075f;
+        const float dotWidth = width * 0.06f;
+        const float gap = width * 0.02f;
+        DrawTitleText(titleResolutionWidthText_, left, multiplyCenter - multiplyWidth * 0.5f - left - gap, brush, false, true);
+        DrawTitleText(titleResolutionSeparatorText_, multiplyCenter - multiplyWidth * 0.5f, multiplyWidth, brush, false, true);
+        DrawTitleText(titleResolutionHeightText_, multiplyCenter + multiplyWidth * 0.5f + gap,
+            dotCenter - dotWidth * 0.5f - multiplyCenter - multiplyWidth * 0.5f - gap * 2.0f, brush, false, true);
+        DrawTitleText(L"\x2022", dotCenter - dotWidth * 0.5f, dotWidth, brush, false, true);
+        DrawTitleText(titleDetailText_, dotCenter + dotWidth * 0.5f + gap,
+            left + width - dotCenter - dotWidth * 0.5f - gap, brush, false, true);
     }
 
     static std::wstring FormatExactTriangleCount(uint64_t count) {
@@ -11449,7 +11466,9 @@ private:
         const bool tutorialMetadata = tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails;
         const bool hideTutorialMetadata = tutorialPresentation_ && !tutorialMetadata;
         ID2D1Brush* activeMetadataBrush = tutorialMetadata ? tutorialMetadataBrush.Get() : metadataBrush.Get();
-        DrawTitleText(tutorialMetadata ? L"1920 x 1080" : hideTutorialMetadata ? L"" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
+        if (tutorialMetadata) DrawTitleText(L"1920 x 1080", static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
+        else if (!hideTutorialMetadata && (VideoActive() || source_) && !titleResolutionWidthText_.empty()) DrawPresentationTitleMetadata(frame, activeMetadataBrush);
+        else DrawTitleText(hideTutorialMetadata ? L"" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
         DrawTitleText(tutorialMetadata ? L"1.2 MB" : hideTutorialMetadata ? L"" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);
         const float filenameWidth = static_cast<float>(std::max(0L,
             frame.titleBarContent.right - frame.filenameLeft - MulDiv(8, GetDpiForWindow(window_), 96)));
@@ -11570,6 +11589,10 @@ private:
     std::wstring displayedPath_;
     FileIdentity currentFileIdentity_{};
     std::wstring resolutionText_;
+    std::wstring titleResolutionWidthText_;
+    std::wstring titleResolutionHeightText_;
+    std::wstring titleResolutionSeparatorText_;
+    std::wstring titleDetailText_;
     uint64_t modelTriangleCount_ = 0;
     std::wstring fileSizeText_;
     std::wstring filenameText_;

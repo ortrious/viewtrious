@@ -121,7 +121,7 @@ constexpr ULONGLONG kVideoControlsIdleDelayMs = 1500;
 constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kVideoFullscreenGlyphDurationMs = 140;
 constexpr ULONGLONG kStillDissolveDurationMs = 320;
-constexpr ULONGLONG kVideoOpeningPosterBlendDurationMs = 120;
+constexpr ULONGLONG kVideoOpeningPosterBlendDurationMs = 200;
 constexpr UINT_PTR kVideoOpeningPosterBlendTimer = 29;
 constexpr UINT kVideoOpeningPosterMaximumLongEdge = 1280;
 constexpr size_t kVideoOpeningPosterCacheBudget = 48u * 1024u * 1024u;
@@ -6572,8 +6572,8 @@ public:
         if (!transitioning) {
             if (holdPoster) DrawVideoOpeningPoster(1.0f);
             else if (poster && videoOpeningPosterBlending_) {
+                videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_);
                 DrawVideoOpeningPoster(1.0f - posterBlend);
-                videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, posterBlend);
             } else videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_);
             return;
         }

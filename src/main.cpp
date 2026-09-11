@@ -7313,8 +7313,12 @@ private:
 public:
     void VideoMediaEngineEvent(DWORD event, uint64_t callbackOpenAttemptId) {
         if (!VideoActive()) { FileOpenDiagnostics::Log(callbackOpenAttemptId, L"media-engine-callback-ignored", L"reason=no-active-video"); return; }
-        if (callbackOpenAttemptId != activeOpenAttemptId_)
-            FileOpenDiagnostics::Log(callbackOpenAttemptId, L"media-engine-callback-stale", L"active-open=" + std::to_wstring(activeOpenAttemptId_));
+        if (callbackOpenAttemptId != activeOpenAttemptId_ || !videoPlayer_.OwnsOpenAttempt(callbackOpenAttemptId)) {
+            FileOpenDiagnostics::Log(callbackOpenAttemptId, L"media-engine-callback-stale",
+                L"active-open=" + std::to_wstring(activeOpenAttemptId_) + L" player-open=" +
+                std::to_wstring(videoPlayer_.OpenAttemptId()) + L" action=ignored");
+            return;
+        }
         const bool wasPlaying = videoPlayer_.Playing();
         std::wstring videoError;
         videoPlayer_.HandleMediaEvent(event, videoError);

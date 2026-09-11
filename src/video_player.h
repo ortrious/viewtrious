@@ -51,6 +51,8 @@ public:
     bool Playing() const { return playing_; }
     bool Ended() const { return ended_; }
     bool Active() const { return engine_ != nullptr; }
+    bool OwnsOpenAttempt(uint64_t openAttemptId) const { return engine_ && openAttemptId_ == openAttemptId; }
+    uint64_t OpenAttemptId() const { return openAttemptId_; }
     bool Failed() const { return failed_; }
     bool HasValidFrame() const { return hasValidFrame_; }
 

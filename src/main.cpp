@@ -6603,14 +6603,14 @@ private:
         const D2D1_ROUNDED_RECT bounds = D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 8.0f * scale, 8.0f * scale);
         renderTarget_->FillRoundedRectangle(bounds, panel.Get());
         renderTarget_->DrawRoundedRectangle(bounds, border.Get(), 1.0f);
-        DrawOverlayText(L"Opening model...", left + 20.0f * scale, top + 20.0f * scale, width - 40.0f * scale, 28.0f * scale, 18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primary.Get(), true);
-        DrawOverlayText(filenameText_.c_str(), left + 20.0f * scale, top + 51.0f * scale, width - 40.0f * scale, 24.0f * scale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true);
+        DrawOverlayText(L"opening model...", left + 20.0f * scale, top + 40.0f * scale, width - 40.0f * scale, 20.0f * scale, 18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primary.Get(), true, false, true);
         const bool determinate = modelLoadingProgressMode_ == LoadingProgressMode::Determinate;
         const float percentageWidth = 40.0f * scale, percentageGap = 8.0f * scale, trackHeight = 7.0f * scale;
         const float trackWidth = std::min(240.0f * scale, width - 40.0f * scale - (determinate ? percentageGap + percentageWidth : 0.0f));
         const float groupWidth = trackWidth + (determinate ? percentageGap + percentageWidth : 0.0f);
         const float groupLeft = left + (width - groupWidth) * .5f;
         const D2D1_RECT_F bar = D2D1::RectF(groupLeft, top + 105.0f * scale, groupLeft + trackWidth, top + 105.0f * scale + trackHeight);
+        DrawOverlayText(filenameText_.c_str(), bar.left, bar.top - 27.0f * scale, trackWidth, 18.0f * scale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bar, trackHeight * .5f, trackHeight * .5f), track.Get());
         if (determinate) {
             const float filledRight = bar.left + (bar.right - bar.left) * std::clamp(modelLoadingProgress_, 0.0f, 1.0f);

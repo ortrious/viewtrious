@@ -6605,15 +6605,19 @@ private:
         renderTarget_->DrawRoundedRectangle(bounds, border.Get(), 1.0f);
         DrawOverlayText(L"Opening model...", left + 20.0f * scale, top + 20.0f * scale, width - 40.0f * scale, 28.0f * scale, 18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primary.Get(), true);
         DrawOverlayText(filenameText_.c_str(), left + 20.0f * scale, top + 51.0f * scale, width - 40.0f * scale, 24.0f * scale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true);
-        const float trackWidth = std::min(240.0f * scale, width - 40.0f * scale), trackHeight = 7.0f * scale;
-        const D2D1_RECT_F bar = D2D1::RectF(left + (width - trackWidth) * .5f, top + 105.0f * scale, left + (width + trackWidth) * .5f, top + 105.0f * scale + trackHeight);
+        const bool determinate = modelLoadingProgressMode_ == LoadingProgressMode::Determinate;
+        const float percentageWidth = 40.0f * scale, percentageGap = 8.0f * scale, trackHeight = 7.0f * scale;
+        const float trackWidth = std::min(240.0f * scale, width - 40.0f * scale - (determinate ? percentageGap + percentageWidth : 0.0f));
+        const float groupWidth = trackWidth + (determinate ? percentageGap + percentageWidth : 0.0f);
+        const float groupLeft = left + (width - groupWidth) * .5f;
+        const D2D1_RECT_F bar = D2D1::RectF(groupLeft, top + 105.0f * scale, groupLeft + trackWidth, top + 105.0f * scale + trackHeight);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bar, trackHeight * .5f, trackHeight * .5f), track.Get());
-        if (modelLoadingProgressMode_ == LoadingProgressMode::Determinate) {
+        if (determinate) {
             const float filledRight = bar.left + (bar.right - bar.left) * std::clamp(modelLoadingProgress_, 0.0f, 1.0f);
             if (filledRight > bar.left) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(bar.left, bar.top, filledRight, bar.bottom), trackHeight * .5f, trackHeight * .5f), progress.Get());
             wchar_t percentage[8]{};
             swprintf_s(percentage, L"%d%%", static_cast<int>(std::lround(std::clamp(modelLoadingProgress_, 0.0f, 1.0f) * 100.0f)));
-            DrawOverlayText(percentage, left, bar.bottom + 8.0f * scale, width, 18.0f * scale, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, secondary.Get(), true);
+            DrawOverlayText(percentage, bar.right + percentageGap, bar.top - 5.5f * scale, percentageWidth, 18.0f * scale, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, secondary.Get(), true);
         } else {
             const float segmentWidth = (bar.right - bar.left) * .28f;
             const float sweep = static_cast<float>((GetTickCount64() - modelLoadingStartedAtMs_) % kModelLoadingBarSweepDurationMs) / static_cast<float>(kModelLoadingBarSweepDurationMs);

@@ -122,7 +122,9 @@ constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kVideoFullscreenGlyphDurationMs = 140;
 constexpr ULONGLONG kStillDissolveDurationMs = 320;
 constexpr wchar_t kTopBarResolutionSeparator[] = L"\u00D7";
-constexpr float kTopBarMetadataReferenceVisualOffsetDip = -12.0f;
+constexpr int kTopBarMetadataDimensionDigits = 5;
+constexpr float kTopBarMetadataMultiplyGapDip = 4.0f;
+constexpr float kTopBarMetadataDotGapDip = 6.0f;
 constexpr UINT kStartupVideoSizingFallbackMs = 1500;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
@@ -993,7 +995,7 @@ FrameMetrics GetFrameMetrics(HWND window) {
     const int separatorHeight = MulDiv(20, dpi, 96);
     const int sectionGutter = MulDiv(14, dpi, 96);
     const int filenameLeadIn = MulDiv(14, dpi, 96);
-    // 150 DIP accommodates five-digit dimensions and a compact 1200mm secondary value at the 13-point title font.
+    // Fixed metadata area; its anchors are measured once per DPI using the title font.
     const int resolutionWidth = MulDiv(150, dpi, 96);
     const int fileSizeWidth = MulDiv(72, dpi, 96);
     RECT client{};
@@ -10202,52 +10204,117 @@ private:
         renderTarget_->DrawTextLayout(D2D1::Point2F(textLeft, top), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
-    float TitleTextWidth(const wchar_t* text) {
-        if (!text || !*text || !EnsureTitleTextFormat()) return 0.0f;
-        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+    struct TitleMetadataTextLayout {
         ComPtr<IDWriteTextLayout> layout;
-        if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), titleTextFormat_.Get(),
-                4096.0f * scale, static_cast<float>(GetFrameMetrics(window_).titleBarHeight), &layout))) return 0.0f;
+        float advanceWidth = 0.0f;
+        float inkLeft = 0.0f;
+        float inkWidth = 0.0f;
+        float height = 0.0f;
+    };
+
+    struct TitleMetadataGeometry {
+        UINT dpi = 0;
+        float regionWidth = 0.0f;
+        float dimensionWidth = 0.0f;
+        float widthRight = 0.0f;
+        float multiplyLeft = 0.0f;
+        float multiplyWidth = 0.0f;
+        float heightLeft = 0.0f;
+        float dotLeft = 0.0f;
+        float dotWidth = 0.0f;
+    };
+
+    bool CreateTitleMetadataTextLayout(const std::wstring& text, TitleMetadataTextLayout& measured) {
+        if (text.empty() || !EnsureTitleTextFormat()) return false;
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), titleTextFormat_.Get(),
+                4096.0f * scale, static_cast<float>(GetFrameMetrics(window_).titleBarHeight), &measured.layout))) return false;
         DWRITE_TEXT_METRICS metrics{};
-        return SUCCEEDED(layout->GetMetrics(&metrics)) ? metrics.widthIncludingTrailingWhitespace : 0.0f;
+        if (FAILED(measured.layout->GetMetrics(&metrics))) return false;
+        measured.advanceWidth = metrics.widthIncludingTrailingWhitespace;
+        measured.height = metrics.height;
+        if (FAILED(measured.layout->SetMaxWidth(std::max(1.0f, measured.advanceWidth)))) return false;
+        DWRITE_OVERHANG_METRICS overhang{};
+        if (FAILED(measured.layout->GetOverhangMetrics(&overhang))) return false;
+        // Negative overhangs are whitespace inside the layout, not visible glyphs.
+        measured.inkLeft = -overhang.left;
+        measured.inkWidth = measured.layout->GetMaxWidth() + overhang.right - measured.inkLeft;
+        return measured.inkWidth > 0.0f;
     }
 
-    bool EnsureTitleMetadataReferenceGeometry() {
+    bool EnsureTitleMetadataGeometry(const FrameMetrics& frame) {
         const UINT dpi = GetDpiForWindow(window_);
-        if (titleMetadataReferenceDpi_ == dpi && titleMetadataReferenceWidth_ > 0.0f) return true;
-        // The dimension lanes retain four tabular-digit positions so the × and
-        // dot anchors remain fixed when either displayed dimension changes.
-        titleMetadataReferenceWidth_ = TitleTextWidth(L"0000");
-        titleMetadataReferenceHeight_ = TitleTextWidth(L"0000");
-        titleMetadataReferenceSeparator_ = TitleTextWidth(kTopBarResolutionSeparator);
-        titleMetadataReferenceDot_ = TitleTextWidth(L"\x2022");
-        titleMetadataReferenceDetail_ = TitleTextWidth(L"24-bit");
-        if (titleMetadataReferenceWidth_ <= 0.0f || titleMetadataReferenceHeight_ <= 0.0f ||
-            titleMetadataReferenceSeparator_ <= 0.0f || titleMetadataReferenceDot_ <= 0.0f ||
-            titleMetadataReferenceDetail_ <= 0.0f) return false;
-        titleMetadataReferenceDpi_ = dpi;
+        const float regionWidth = static_cast<float>(frame.resolutionSeparator.left - frame.hamburgerSeparator.right);
+        if (titleMetadataGeometry_.dpi == dpi && titleMetadataGeometry_.regionWidth == regionWidth) return true;
+        TitleMetadataTextLayout referenceWidth, multiply, dot, referenceDetail;
+        if (!CreateTitleMetadataTextLayout(L"1920", referenceWidth) ||
+            !CreateTitleMetadataTextLayout(kTopBarResolutionSeparator, multiply) ||
+            !CreateTitleMetadataTextLayout(L"\x2022", dot) ||
+            !CreateTitleMetadataTextLayout(L"24-bit", referenceDetail)) return false;
+        float digitWidth = 0.0f;
+        for (wchar_t digit = L'0'; digit <= L'9'; ++digit) {
+            TitleMetadataTextLayout measuredDigit;
+            if (!CreateTitleMetadataTextLayout(std::wstring(1, digit), measuredDigit)) return false;
+            digitWidth = std::max(digitWidth, std::max(measuredDigit.advanceWidth, measuredDigit.inkWidth));
+        }
+        const float scale = static_cast<float>(dpi) / 96.0f;
+        const float multiplyGap = kTopBarMetadataMultiplyGapDip * scale;
+        const float dotGap = kTopBarMetadataDotGapDip * scale;
+        TitleMetadataGeometry geometry;
+        geometry.dpi = dpi;
+        geometry.regionWidth = regionWidth;
+        geometry.dimensionWidth = std::ceil(digitWidth * kTopBarMetadataDimensionDigits);
+        geometry.multiplyWidth = multiply.inkWidth;
+        geometry.dotWidth = dot.inkWidth;
+        // Include the entire five-digit height lane in the composed reference.
+        // Three equal gaps center both the reference group between the outer
+        // dividers and the secondary value between the dot and the right divider:
+        // | gap [1920] gapX [x] gapX [height lane] gapDot [dot] gap [24-bit] gap |
+        const float referenceSpan = referenceWidth.inkWidth + multiplyGap * 2.0f + geometry.multiplyWidth +
+            geometry.dimensionWidth + dotGap + geometry.dotWidth + referenceDetail.inkWidth;
+        const float outerGap = (regionWidth - referenceSpan) / 3.0f;
+        if (outerGap < dotGap) return false;
+        geometry.widthRight = outerGap + referenceWidth.inkWidth;
+        geometry.multiplyLeft = geometry.widthRight + multiplyGap;
+        geometry.heightLeft = geometry.multiplyLeft + geometry.multiplyWidth + multiplyGap;
+        geometry.dotLeft = geometry.heightLeft + geometry.dimensionWidth + dotGap;
+        titleMetadataGeometry_ = geometry;
         return true;
     }
 
+    void DrawTitleMetadataText(const std::wstring& text, float left, float right, ID2D1Brush* brush,
+            DWRITE_TEXT_ALIGNMENT alignment = DWRITE_TEXT_ALIGNMENT_LEADING) {
+        if (right <= left) return;
+        TitleMetadataTextLayout measured;
+        if (!CreateTitleMetadataTextLayout(text, measured)) return;
+        float inkLeft = left;
+        if (alignment == DWRITE_TEXT_ALIGNMENT_TRAILING) inkLeft = right - measured.inkWidth;
+        else if (alignment == DWRITE_TEXT_ALIGNMENT_CENTER) inkLeft = (left + right - measured.inkWidth) * 0.5f;
+        const float titleHeight = static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
+        const float top = std::max(0.0f, (titleHeight - measured.height) * 0.5f);
+        // Clip the fixed field, not a translated text layout; oversized values
+        // cannot cover either anchor or a neighboring field. Enclose edge pixels.
+        renderTarget_->PushAxisAlignedClip(D2D1::RectF(std::floor(left), 0.0f, std::ceil(right), titleHeight), D2D1_ANTIALIAS_MODE_ALIASED);
+        renderTarget_->DrawTextLayout(D2D1::Point2F(inkLeft - measured.inkLeft, top), measured.layout.Get(), brush);
+        renderTarget_->PopAxisAlignedClip();
+    }
+
     void DrawPresentationTitleMetadata(const FrameMetrics& frame, ID2D1Brush* brush) {
-        if (titleResolutionWidthText_.empty() || titleResolutionHeightText_.empty() || !EnsureTitleMetadataReferenceGeometry()) return;
+        if (titleResolutionWidthText_.empty() || titleResolutionHeightText_.empty() || !EnsureTitleMetadataGeometry(frame)) return;
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const float gap = 4.0f * scale;
+        const float dotGap = kTopBarMetadataDotGapDip * scale;
         const float outerLeft = static_cast<float>(frame.hamburgerSeparator.right);
         const float outerRight = static_cast<float>(frame.resolutionSeparator.left);
-        const float referenceWidth = titleMetadataReferenceWidth_ + titleMetadataReferenceSeparator_ + titleMetadataReferenceDot_ + titleMetadataReferenceDetail_ + gap * 4.0f;
-        // Center the rendered metadata glyphs visually within the fixed region.
-        const float referenceLeft = outerLeft + std::max(0.0f, (outerRight - outerLeft - referenceWidth) * 0.5f) +
-            kTopBarMetadataReferenceVisualOffsetDip * scale;
-        const float multiplyLeft = referenceLeft + titleMetadataReferenceWidth_ + gap;
-        const float dotLeft = multiplyLeft + titleMetadataReferenceSeparator_ + gap + titleMetadataReferenceHeight_ + gap;
-        const float multiplyRight = multiplyLeft + titleMetadataReferenceSeparator_;
-        const float dotRight = dotLeft + titleMetadataReferenceDot_;
-        DrawTitleText(titleResolutionWidthText_, outerLeft, multiplyLeft - outerLeft - gap, brush, true, false, true);
-        DrawTitleText(titleResolutionSeparatorText_, multiplyLeft, titleMetadataReferenceSeparator_, brush, false, true);
-        DrawTitleText(titleResolutionHeightText_, multiplyRight + gap, dotLeft - multiplyRight - gap * 2.0f, brush, true, false);
-        DrawTitleText(L"\x2022", dotLeft, titleMetadataReferenceDot_, brush, false, true);
-        DrawTitleText(titleDetailText_, dotRight + gap, outerRight - dotRight - gap, brush, true, false);
+        const TitleMetadataGeometry& geometry = titleMetadataGeometry_;
+        const float widthRight = outerLeft + geometry.widthRight;
+        const float multiplyLeft = outerLeft + geometry.multiplyLeft;
+        const float heightLeft = outerLeft + geometry.heightLeft;
+        const float dotLeft = outerLeft + geometry.dotLeft;
+        DrawTitleMetadataText(titleResolutionWidthText_, widthRight - geometry.dimensionWidth, widthRight, brush, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        DrawTitleMetadataText(titleResolutionSeparatorText_, multiplyLeft, multiplyLeft + geometry.multiplyWidth, brush);
+        DrawTitleMetadataText(titleResolutionHeightText_, heightLeft, heightLeft + geometry.dimensionWidth, brush);
+        DrawTitleMetadataText(L"\x2022", dotLeft, dotLeft + geometry.dotWidth, brush);
+        DrawTitleMetadataText(titleDetailText_, dotLeft + geometry.dotWidth + dotGap, outerRight - dotGap, brush, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
     static std::wstring FormatExactTriangleCount(uint64_t count) {
@@ -11632,12 +11699,7 @@ private:
     UINT checkerboardDpi_ = 0;
     ComPtr<IDWriteTextFormat> titleTextFormat_;
     UINT titleTextDpi_ = 0;
-    UINT titleMetadataReferenceDpi_ = 0;
-    float titleMetadataReferenceWidth_ = 0.0f;
-    float titleMetadataReferenceHeight_ = 0.0f;
-    float titleMetadataReferenceSeparator_ = 0.0f;
-    float titleMetadataReferenceDot_ = 0.0f;
-    float titleMetadataReferenceDetail_ = 0.0f;
+    TitleMetadataGeometry titleMetadataGeometry_;
     ComPtr<IDWriteTextFormat> captionIconFormat_;
     UINT captionIconDpi_ = 0;
     ComPtr<IDWriteTextFormat> zoomHudFormat_;

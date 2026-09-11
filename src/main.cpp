@@ -12025,7 +12025,7 @@ private:
     bool coldOpenFadePending_ = false;
     bool coldOpenFadeActive_ = false;
     std::wstring coldOpenFadePath_;
-    LARGE_INTEGER coldOpenFadeStartQpc_{};
+    LONGLONG coldOpenFadeStartQpc_ = 0;
     LARGE_INTEGER coldOpenFadeQpcFrequency_{};
     bool transitionOverlayHasVideoControls_ = false;
     bool transitionOverlayDefersVideoControls_ = false;

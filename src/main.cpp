@@ -2528,23 +2528,27 @@ public:
             if (distance > 0 && distance < nearest) { nearest = distance; selectedTriangle = static_cast<ptrdiff_t>(index / 3); }
         }
         if (selectedTriangle >= 0) {
-            const uint32_t triangle = static_cast<uint32_t>(selectedTriangle);
-            for (uint32_t range = 0; range < document.instanceRanges.size(); ++range) {
-                const ModelInstanceRange& candidate = document.instanceRanges[range];
-                if (triangle >= candidate.firstTriangle && triangle - candidate.firstTriangle < candidate.triangleCount) return static_cast<int>(range);
-            }
+            return ModelObjectRangeForTriangle(document, static_cast<uint32_t>(selectedTriangle));
+        }
+        return -1;
+    }
+    int ModelObjectRangeForTriangle(const ModelDocument& document, uint32_t triangle) const {
+        for (uint32_t range = 0; range < document.instanceRanges.size(); ++range) {
+            const ModelInstanceRange& candidate = document.instanceRanges[range];
+            if (triangle >= candidate.firstTriangle && triangle - candidate.firstTriangle < candidate.triangleCount) return static_cast<int>(range);
         }
         return -1;
     }
     bool SelectModelObject(POINT point) {
         const int range = ModelObjectRangeAt(point);
-        if (range >= 0 && modelViewport_.SetSelectedObjectRange(static_cast<uint32_t>(range))) { InvalidateRect(window_, nullptr, FALSE); return true; }
-        modelViewport_.ClearSelectedObjectRange(); InvalidateRect(window_, nullptr, FALSE); return false;
+        if (range >= 0 && modelViewport_.SetSelectedObjectRange(static_cast<uint32_t>(range))) { SelectComponentsPanelRange(range, true); InvalidateRect(window_, nullptr, FALSE); return true; }
+        modelViewport_.ClearSelectedObjectRange(); ClearComponentsPanelSelection(); InvalidateRect(window_, nullptr, FALSE); return false;
     }
     bool ClearModelSelectionForEscape() {
         if (!ModelActive() || (!modelFaceSelected_ && !modelViewport_.HasSelectedObjectRange())) return false;
         ClearModelFaceSelection();
         modelViewport_.ClearSelectedObjectRange();
+        ClearComponentsPanelSelection();
         InvalidateRect(window_, nullptr, FALSE);
         return true;
     }
@@ -3426,6 +3430,10 @@ public:
         componentPanelCollapsed_.clear();
         componentPanelScroll_ = 0.0f;
         componentPanelHoverRow_ = -1;
+        componentPanelSelectedRow_ = -1;
+        componentPanelRangeRows_.assign(document ? document->instanceRanges.size() : 0, -1);
+        if (document) for (const ModelComponentNode& node : document->componentTree)
+            if (node.instanceRange >= 0 && static_cast<size_t>(node.instanceRange) < componentPanelRangeRows_.size()) componentPanelRangeRows_[static_cast<size_t>(node.instanceRange)] = static_cast<int>(node.id);
     }
     void AppendVisibleComponentRows(std::vector<uint32_t>& rows) const {
         rows.clear();
@@ -3465,6 +3473,48 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ClearComponentsPanelHover() { SetComponentsPanelHover({ -1, -1 }); }
+    void ClearComponentsPanelSelection() {
+        if (componentPanelSelectedRow_ < 0) return;
+        componentPanelSelectedRow_ = -1;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ResetComponentsPanelState() {
+        componentPanelDocument_ = nullptr;
+        componentPanelCollapsed_.clear();
+        componentPanelRangeRows_.clear();
+        componentPanelScroll_ = 0.0f;
+        componentPanelHoverRow_ = -1;
+        componentPanelSelectedRow_ = -1;
+        componentPanelInteractionActive_ = false;
+    }
+    void RevealComponentsPanelRow(uint32_t id) {
+        std::vector<uint32_t> rows;
+        AppendVisibleComponentRows(rows);
+        const auto found = std::find(rows.begin(), rows.end(), id);
+        if (found == rows.end()) return;
+        const float rowHeight = ComponentsPanelRowHeight();
+        const float rowTop = static_cast<float>(std::distance(rows.begin(), found)) * rowHeight;
+        const float rowBottom = rowTop + rowHeight;
+        const RECT content = GetComponentsPanelContentBounds();
+        const float visibleBottom = componentPanelScroll_ + static_cast<float>(content.bottom - content.top);
+        if (rowTop < componentPanelScroll_) componentPanelScroll_ = rowTop;
+        else if (rowBottom > visibleBottom) componentPanelScroll_ = rowBottom - static_cast<float>(content.bottom - content.top);
+        ClampComponentsPanelScroll();
+    }
+    void SelectComponentsPanelRange(int range, bool reveal) {
+        EnsureComponentsPanelDocument();
+        const int row = range >= 0 && static_cast<size_t>(range) < componentPanelRangeRows_.size() ? componentPanelRangeRows_[static_cast<size_t>(range)] : -1;
+        componentPanelSelectedRow_ = row;
+        if (row < 0 || !modelViewport_.Document()) { InvalidateRect(window_, nullptr, FALSE); return; }
+        const auto& tree = modelViewport_.Document()->componentTree;
+        uint32_t parent = tree[static_cast<size_t>(row)].parentId;
+        for (size_t guard = 0; parent != UINT32_MAX && parent < tree.size() && guard < tree.size(); ++guard) {
+            componentPanelCollapsed_.erase(parent);
+            parent = tree[parent].parentId;
+        }
+        if (reveal) RevealComponentsPanelRow(static_cast<uint32_t>(row));
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void ClickComponentsPanel(POINT point) {
         EnsureComponentsPanelDocument();
         const int row = ComponentsPanelRowAt(point);
@@ -3474,6 +3524,9 @@ public:
                 if (componentPanelCollapsed_.contains(static_cast<uint32_t>(row))) componentPanelCollapsed_.erase(static_cast<uint32_t>(row));
                 else componentPanelCollapsed_.insert(static_cast<uint32_t>(row));
                 ClampComponentsPanelScroll();
+            } else if (node.instanceRange >= 0 && modelViewport_.SetSelectedObjectRange(static_cast<uint32_t>(node.instanceRange))) {
+                ClearModelFaceSelection();
+                SelectComponentsPanelRange(node.instanceRange, false);
             }
         }
         InvalidateRect(window_, nullptr, FALSE);
@@ -3487,11 +3540,12 @@ public:
         ClampComponentsPanelScroll();
         const RECT panel = GetComponentsPanelBounds(), content = GetComponentsPanelContentBounds();
         const float dpi = GetDpiForWindow(window_) / 96.0f, rowHeight = ComponentsPanelRowHeight();
-        ComPtr<ID2D1SolidColorBrush> surface, border, text, hover;
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, hover, selected;
         if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(36.0f / 255, 39.0f / 255, 46.0f / 255, .94f), &surface)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(76.0f / 255, 80.0f / 255, 91.0f / 255), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &text)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(55.0f / 255, 59.0f / 255, 70.0f / 255), &hover))) return;
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(55.0f / 255, 59.0f / 255, 70.0f / 255), &hover)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(64.0f / 255, 86.0f / 255, 120.0f / 255), &selected))) return;
         const D2D1_RECT_F bounds = D2D1::RectF(static_cast<float>(panel.left), static_cast<float>(panel.top), static_cast<float>(panel.right), static_cast<float>(panel.bottom));
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bounds, 6 * dpi, 6 * dpi), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(bounds, 6 * dpi, 6 * dpi), border.Get(), 1.0f);
@@ -3512,7 +3566,12 @@ public:
             }
             const float top = static_cast<float>(content.top) + index * rowHeight - componentPanelScroll_;
             const D2D1_RECT_F row = D2D1::RectF(static_cast<float>(content.left), top, static_cast<float>(content.right), top + rowHeight);
-            if (componentPanelHoverRow_ == static_cast<int>(id)) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(row, 3 * dpi, 3 * dpi), hover.Get());
+            const bool isSelected = componentPanelSelectedRow_ == static_cast<int>(id);
+            if (isSelected) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(row, 3 * dpi, 3 * dpi), selected.Get());
+            if (componentPanelHoverRow_ == static_cast<int>(id)) {
+                if (isSelected) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(row, 3 * dpi, 3 * dpi), hover.Get(), 1.0f);
+                else renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(row, 3 * dpi, 3 * dpi), hover.Get());
+            }
             const float chevronX = row.left + 10 * dpi + depth * 16 * dpi;
             if (!node.children.empty()) {
                 const float middle = top + rowHeight * .5f;
@@ -6563,7 +6622,7 @@ private:
         const LONG top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         return { 0, top, client.right, std::max(top + 1L, client.bottom) };
     }
-    void ClearModelFaceSelection() { modelFaceSelected_=false; selectedFaceNormal_={}; selectedFaceHit_={}; selectedFacePlane_=-1; modelViewport_.ClearSelectedSnapPlane(); }
+    void ClearModelFaceSelection() { modelFaceSelected_=false; selectedFaceNormal_={}; selectedFaceHit_={}; selectedFacePlane_=-1; modelViewport_.ClearSelectedSnapPlane(); if (!modelViewport_.HasSelectedObjectRange()) ClearComponentsPanelSelection(); }
     void TraceSnapView(int plane, Float3 normal, Float3 hitPoint, const OrbitCamera::State& current, Float3 forward, Float3 up, Float3 chosenAxis) const {
 #if defined(_DEBUG)
         const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const Float3 right{forward.y*up.z-forward.z*up.y,forward.z*up.x-forward.x*up.z,forward.x*up.y-forward.y*up.x};wchar_t message[640]{};swprintf_s(message,L"Viewtrious Snap request: plane=%d normal=(%.5f,%.5f,%.5f) hit=(%.5f,%.5f,%.5f) currentForward=(%.5f,%.5f,%.5f) currentUp=(%.5f,%.5f,%.5f) targetForward=(%.5f,%.5f,%.5f) targetUp=(%.5f,%.5f,%.5f) targetRight=(%.5f,%.5f,%.5f) axis=(%.0f,%.0f,%.0f) distance=%.5f normalDot=%.6f basisDots=(%.6f,%.6f,%.6f)\\n",plane,normal.x,normal.y,normal.z,hitPoint.x,hitPoint.y,hitPoint.z,current.forward.x,current.forward.y,current.forward.z,current.up.x,current.up.y,current.up.z,forward.x,forward.y,forward.z,up.x,up.y,up.z,right.x,right.y,right.z,chosenAxis.x,chosenAxis.y,chosenAxis.z,modelViewport_.Camera().Distance(),dot(forward,normal),dot(forward,right),dot(forward,up),dot(right,up));OutputDebugStringW(message);
@@ -6645,7 +6704,7 @@ private:
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
         navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; modelLoadingStartedAtMs_ = GetTickCount64(); contentKind_ = ContentKind::Model3D;
-        ClearModelFaceSelection(); modelClickCandidate_ = false;
+        ClearModelFaceSelection(); ResetComponentsPanelState(); modelClickCandidate_ = false;
         SetTimer(window_, kModelLoadingAnimationTimer, 16, nullptr);
         const HWND window = window_;
         modelLoadWorkers_.push_back({ generation, std::thread([path, generation, window, shuttingDown = &shuttingDown_] {
@@ -6672,7 +6731,7 @@ private:
     }
     void DeactivateModel() {
         CancelAnimatedModelHome();
-        StopModelLoadingAnimation(); ClearModelFaceSelection(); modelClickCandidate_ = false;
+        StopModelLoadingAnimation(); ClearModelFaceSelection(); ResetComponentsPanelState(); modelClickCandidate_ = false;
         modelViewport_.Destroy(); modelDocument_.reset(); modelLoading_ = false;
         modelTriangleCount_ = 0;
         DismissTriangleCountTooltip(false);
@@ -11515,7 +11574,9 @@ private:
     float settingsScroll_ = 0.0f;
     float componentPanelScroll_ = 0.0f;
     mutable int componentPanelHoverRow_ = -1;
+    int componentPanelSelectedRow_ = -1;
     std::unordered_set<uint32_t> componentPanelCollapsed_;
+    std::vector<int> componentPanelRangeRows_;
     const ModelDocument* componentPanelDocument_ = nullptr;
     bool componentPanelInteractionActive_ = false;
     float helpScroll_ = 0.0f;
@@ -12131,7 +12192,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->ComponentsPanelContains(point)) return 0;
         viewer->HideFilmstripHoverPreviewImmediately();
         viewer->SetFilmstripHover({ -1, -1 });
-        if (!viewer->TutorialActive()) { if (viewer->ModelActive()) viewer->SelectModelFace(point); viewer->OpenContextMenu(point); }
+        if (!viewer->TutorialActive()) { if (viewer->ModelActive() && viewer->SelectModelFace(point)) viewer->SelectComponentsPanelRange(viewer->ModelObjectRangeAt(point), true); viewer->OpenContextMenu(point); }
         return 0;
     }
     case WM_TIMER:

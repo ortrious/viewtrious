@@ -1066,8 +1066,14 @@ std::wstring FormatFileSize(const std::wstring& path) {
     int unit = 0;
     while (value >= 1024.0 && unit < 4) { value /= 1024.0; ++unit; }
     wchar_t text[32]{};
-    if (unit == 0 || value >= 10.0) swprintf_s(text, L"%.0f %cB", value, units[unit]);
-    else swprintf_s(text, L"%.1f %cB", value, units[unit]);
+    int decimals = unit == 0 || value >= 100.0 ? 0 : value >= 10.0 ? 1 : 2;
+    const auto rounded = [value](int precision) {
+        const double multiplier = precision == 2 ? 100.0 : precision == 1 ? 10.0 : 1.0;
+        return std::round(value * multiplier) / multiplier;
+    };
+    if (decimals == 2 && rounded(decimals) >= 10.0) decimals = 1;
+    if (decimals == 1 && rounded(decimals) >= 100.0) decimals = 0;
+    swprintf_s(text, L"%.*f %cB", decimals, value, units[unit]);
     return text;
 }
 

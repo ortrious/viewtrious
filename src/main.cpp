@@ -4211,10 +4211,11 @@ public:
                 DrawVideoPresentation();
                 DrawVideoAutoPlayNextCountdown();
                 DrawCanvasNavigationButtons();
+                const bool deferIncomingVideoControls = TransitionOverlayActive() || transitionOverlayDefersVideoControls_;
                 if (!TransitionOverlayActive() || !transitionOverlayHasVideoControls_) {
-                    if (!TransitionOverlayActive() || videoPlayer_.HasValidFrame()) DrawVideoPlaybackControls(!TransitionOverlayActive());
+                    if (!deferIncomingVideoControls || videoPlayer_.HasValidFrame()) DrawVideoPlaybackControls(!TransitionOverlayActive());
                 }
-                if (!TransitionOverlayActive() || (!transitionOverlayHasVideoControls_ && videoPlayer_.HasValidFrame())) DrawVideoControlsRevealAffordance();
+                if (!deferIncomingVideoControls || (!transitionOverlayHasVideoControls_ && videoPlayer_.HasValidFrame())) DrawVideoControlsRevealAffordance();
             }
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
@@ -6333,35 +6334,32 @@ public:
     }
 
     bool TransitionOverlayActive() const {
-        return transitionOverlaySnapshot_ && (dissolveAwaitingTarget_ || dissolveActive_);
+        return (transitionOverlayHasVideoControls_ || transitionOverlayHasZoomHud_) &&
+            (dissolveAwaitingTarget_ || dissolveActive_);
     }
 
     void CaptureTransitionOverlay(bool outgoingVideo) {
-        ComPtr<ID2D1Bitmap> snapshot;
-        if (!CopyCanvasPresentation(snapshot)) return;
-        transitionOverlaySnapshot_ = std::move(snapshot);
-        transitionOverlayRects_.clear();
-        transitionOverlayHasVideoControls_ = outgoingVideo;
-        if (outgoingVideo) {
-            const RECT controls = GetVideoControlsLayout().island;
-            if (controls.right > controls.left && controls.bottom > controls.top) transitionOverlayRects_.push_back(controls);
-            const RECT hud = GetVideoZoomHudLayout().combined;
-            if (hud.right > hud.left && hud.bottom > hud.top) transitionOverlayRects_.push_back(hud);
-        } else {
-            const RECT hud = GetImageZoomHudLayout().combined;
-            if (hud.right > hud.left && hud.bottom > hud.top) transitionOverlayRects_.push_back(hud);
-        }
+        // Keep presentation snapshots media-only. Replaying a crop of the composed canvas
+        // would retain whatever video pixels happened to be behind a translucent (or hidden)
+        // control island. Store only the visible overlay state and redraw it above the held media.
+        transitionOverlayHasVideoControls_ = outgoingVideo && videoControlsOpacity_ > 0.001f;
+        transitionOverlayDefersVideoControls_ = outgoingVideo;
+        transitionOverlayVideoControlsOpacity_ = videoControlsOpacity_;
+        transitionOverlayHasZoomHud_ = outgoingVideo ? videoControlsOpacity_ > 0.001f : source_ != nullptr;
+        transitionOverlayZoomHudIsVideo_ = outgoingVideo;
+        transitionOverlayZoomHudOpacity_ = outgoingVideo ? videoControlsOpacity_ : 1.0f;
+        transitionOverlayZoomHudPhysicalScale_ = outgoingVideo
+            ? VideoCurrentScale() * RenderTargetDpi() / 96.0f
+            : PhysicalPixelScale();
     }
 
     void DrawTransitionOverlay() {
         if (!TransitionOverlayActive()) return;
-        const RECT canvas = ModelCanvasBounds();
-        for (const RECT& bounds : transitionOverlayRects_) {
-            const D2D1_RECT_F destination = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top),
-                static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
-            const D2D1_RECT_F source = D2D1::RectF(static_cast<float>(bounds.left - canvas.left), static_cast<float>(bounds.top - canvas.top),
-                static_cast<float>(bounds.right - canvas.left), static_cast<float>(bounds.bottom - canvas.top));
-            renderTarget_->DrawBitmap(transitionOverlaySnapshot_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &source);
+        if (transitionOverlayHasVideoControls_)
+            DrawVideoPlaybackControls(false, transitionOverlayVideoControlsOpacity_);
+        if (transitionOverlayHasZoomHud_) {
+            const ZoomHudLayout hud = transitionOverlayZoomHudIsVideo_ ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
+            DrawZoomHud(hud, transitionOverlayZoomHudPhysicalScale_, transitionOverlayZoomHudOpacity_, true, false);
         }
     }
 
@@ -6489,9 +6487,11 @@ public:
         dissolveOldScale_ = 0.0f;
         dissolveOldTopLeft_ = D2D1::Point2F();
         dissolveTargetPath_.clear();
-        transitionOverlaySnapshot_.Reset();
-        transitionOverlayRects_.clear();
         transitionOverlayHasVideoControls_ = false;
+        transitionOverlayDefersVideoControls_ = false;
+        transitionOverlayHasZoomHud_ = false;
+        transitionOverlayVideoControlsOpacity_ = 0.0f;
+        transitionOverlayZoomHudOpacity_ = 0.0f;
     }
 
     float StillDissolveProgress() const {
@@ -9989,11 +9989,11 @@ private:
         DrawOverlayText(L"-1", static_cast<float>(layout.stepBackward.left), static_cast<float>(layout.stepBackward.top), static_cast<float>(layout.stepBackward.right - layout.stepBackward.left), static_cast<float>(layout.stepBackward.bottom - layout.stepBackward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
     }
-    void DrawVideoPlaybackControls(bool drawZoomHud = true) {
-        if (!VideoActive() || videoControlsOpacity_ <= 0.001f) return;
+    void DrawVideoPlaybackControls(bool drawZoomHud = true, float overlayOpacity = -1.0f) {
+        if ((!VideoActive() && overlayOpacity < 0.0f) || (overlayOpacity >= 0.0f ? overlayOpacity : videoControlsOpacity_) <= 0.001f) return;
         const VideoControlsLayout layout = GetVideoControlsLayout();
         if (layout.island.right <= layout.island.left) return;
-        const float opacity = videoControlsOpacity_;
+        const float opacity = overlayOpacity >= 0.0f ? overlayOpacity : videoControlsOpacity_;
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
         ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover;
@@ -11749,9 +11749,11 @@ private:
 
     void DiscardRenderResources() {
         bitmap_.Reset();
-        transitionOverlaySnapshot_.Reset();
-        transitionOverlayRects_.clear();
         transitionOverlayHasVideoControls_ = false;
+        transitionOverlayDefersVideoControls_ = false;
+        transitionOverlayHasZoomHud_ = false;
+        transitionOverlayVideoControlsOpacity_ = 0.0f;
+        transitionOverlayZoomHudOpacity_ = 0.0f;
         lanczosBitmap_.Reset();
         imageAdjustedBitmap_.Reset();
         imageAdjustmentSourceTexture_.Reset();
@@ -11960,9 +11962,13 @@ private:
     D2D1_POINT_2F dissolveOldTopLeft_ = D2D1::Point2F();
     std::wstring dissolveTargetPath_;
     ComPtr<ID2D1Bitmap> dissolveOldBitmap_;
-    ComPtr<ID2D1Bitmap> transitionOverlaySnapshot_;
-    std::vector<RECT> transitionOverlayRects_;
     bool transitionOverlayHasVideoControls_ = false;
+    bool transitionOverlayDefersVideoControls_ = false;
+    bool transitionOverlayHasZoomHud_ = false;
+    bool transitionOverlayZoomHudIsVideo_ = false;
+    float transitionOverlayVideoControlsOpacity_ = 0.0f;
+    float transitionOverlayZoomHudOpacity_ = 0.0f;
+    float transitionOverlayZoomHudPhysicalScale_ = 1.0f;
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;

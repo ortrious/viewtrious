@@ -513,7 +513,7 @@ bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
     return transferred;
 }
 
-bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas, float scale, D2D1_POINT_2F pan) {
+bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas, float scale, D2D1_POINT_2F pan, float opacity) {
     if (!context || !frameTexture_ || !videoWidth_ || !videoHeight_ || !hasValidFrame_ || failed_) return false;
     const float canvasWidth = static_cast<float>(std::max(1L, canvas.right - canvas.left));
     const float canvasHeight = static_cast<float>(std::max(1L, canvas.bottom - canvas.top));
@@ -535,6 +535,6 @@ bool VideoPlayer::Draw(ID2D1DeviceContext* context, const RECT& canvas, float sc
         const HRESULT bitmapResult = context->CreateBitmapFromDxgiSurface(surface.Get(), &properties, displayBitmap->GetAddressOf());
         if (FAILED(bitmapResult)) return false;
     }
-    context->DrawBitmap(displayBitmap->Get(), destination, 1.0f, D2D1_INTERPOLATION_MODE_LINEAR);
+    context->DrawBitmap(displayBitmap->Get(), destination, opacity, D2D1_INTERPOLATION_MODE_LINEAR);
     return true;
 }

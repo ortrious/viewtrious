@@ -121,7 +121,6 @@ constexpr ULONGLONG kVideoControlsIdleDelayMs = 1500;
 constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kVideoFullscreenGlyphDurationMs = 140;
 constexpr ULONGLONG kStillDissolveDurationMs = 320;
-constexpr ULONGLONG kStillDissolvePreviewWaitMaxMs = 450;
 constexpr UINT kStartupVideoSizingFallbackMs = 1500;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
@@ -1142,13 +1141,14 @@ public:
             else FlushImageAdjustmentPersistence();
         }
         ++aiRequestGeneration_;
-        ClearStillDissolve();
+        if (!(dissolveAwaitingTarget_ && PathsEqual(fs::path(path), fs::path(dissolveTargetPath_)))) ClearStillDissolve();
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
         if (IsVideoPath(path)) { BeginVideoLoad(path, activeOpenAttemptId_); return S_OK; }
         DeactivateVideo();
         DeactivateModel();
         contentKind_ = ContentKind::Image2D;
         const HRESULT result = LoadImage(path, resetNavigation);
+        if (FAILED(result) && dissolveAwaitingTarget_ && PathsEqual(fs::path(path), fs::path(dissolveTargetPath_))) ClearStillDissolve();
         FileOpenDiagnostics::Log(activeOpenAttemptId_, SUCCEEDED(result) ? L"nonvideo-open-complete" : L"nonvideo-open-failed", L"hr=0x" + std::to_wstring(static_cast<unsigned int>(result)));
         return result;
     }
@@ -1626,6 +1626,12 @@ public:
         const RECT reset{ right - panelPadding - resetButtonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
         return { panel, sliders, autoButton, original, reset, aboveControls };
     }
+    RECT AdjustmentPanelRevealBounds(const VideoAdjustmentsPanelLayout& panel, float reveal) const {
+        RECT bounds = panel.panel;
+        const float progress = std::clamp(reveal, 0.0f, 1.0f);
+        bounds.top = static_cast<LONG>(std::lround(bounds.bottom + (bounds.top - bounds.bottom) * progress));
+        return bounds;
+    }
     VideoAdjustmentsPanelLayout GetVideoZoomHudAdjustmentsPanelTargetLayout() const {
         const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
@@ -1816,7 +1822,7 @@ public:
     }
     bool VideoAdjustmentsPanelContains(POINT point) const {
         if (!videoAdjustmentsPanelOpen_ || !VideoControlsInteractive()) return false;
-        const RECT panel = GetVideoAdjustmentsPanelPresentedLayout().panel;
+        const RECT panel = AdjustmentPanelRevealBounds(GetVideoAdjustmentsPanelPresentedLayout(), videoAdjustmentsPanelOpacity_);
         return PtInRect(&panel, point) != FALSE;
     }
     bool VideoAdjustmentsPanelVisible() const {
@@ -1879,7 +1885,7 @@ public:
         if (!fadeActive) return false;
         const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - fadeStartedAt) /
             static_cast<float>(kVideoAdjustmentsFadeDurationMs));
-        const float eased = SmoothTransitionProgress(progress);
+        const float eased = VideoAdjustmentsPlacementProgress(progress);
         opacity = panelOpen
             ? fadeStartOpacity + (1.0f - fadeStartOpacity) * eased
             : fadeStartOpacity * (1.0f - eased);
@@ -1891,10 +1897,10 @@ public:
     }
     bool UpdateVideoAdjustmentsPanelFade() {
         if (!videoAdjustmentsPanelFadeActive_) return false;
-        const ULONGLONG duration = videoAdjustmentsPanelOpen_ ? kVideoAdjustmentsOpenDurationMs : kVideoAdjustmentsCloseDurationMs;
+        const ULONGLONG duration = kVideoAdjustmentsFadeDurationMs;
         const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - videoAdjustmentsPanelFadeStartedAt_) /
             static_cast<float>(duration));
-        const float eased = videoAdjustmentsPanelOpen_ ? VideoAdjustmentsPlacementProgress(progress) : progress;
+        const float eased = VideoAdjustmentsPlacementProgress(progress);
         videoAdjustmentsPanelOpacity_ = videoAdjustmentsPanelOpen_
             ? videoAdjustmentsPanelFadeStartOpacity_ + (1.0f - videoAdjustmentsPanelFadeStartOpacity_) * eased
             : videoAdjustmentsPanelFadeStartOpacity_ * (1.0f - eased);
@@ -1920,10 +1926,8 @@ public:
         SetAdjustmentPanelOpen(videoAdjustmentsPanelOpen_, videoAdjustmentsPanelFadeActive_,
             videoAdjustmentsPanelOpacity_, videoAdjustmentsPanelFadeStartOpacity_,
             videoAdjustmentsPanelFadeStartedAt_, open);
-        if (open)
-            BeginVideoAdjustmentsPanelOpenMotion(GetVideoAdjustmentsPanelTargetLayout(), wasMoving);
-        else
-            BeginVideoAdjustmentsPanelCloseMotion(closeTarget);
+        StopVideoAdjustmentsPanelMotion();
+        videoAdjustmentsPanelPresentedLayout_ = open ? GetVideoAdjustmentsPanelTargetLayout() : closeTarget;
         ShowVideoControls();
     }
     void UpdateAdjustmentPanelsFade() {
@@ -2090,7 +2094,7 @@ public:
     bool ImageAdjustmentsPanelOpen() const { return imageAdjustmentsPanelOpen_; }
     bool ImageAdjustmentsPanelContains(POINT point) const {
         if (!imageAdjustmentsPanelOpen_) return false;
-        const RECT panel = GetImageAdjustmentsPanelLayout().panel;
+        const RECT panel = AdjustmentPanelRevealBounds(GetImageAdjustmentsPanelLayout(), imageAdjustmentsPanelOpacity_);
         return PtInRect(&panel, point) != FALSE;
     }
     bool ImageAdjustmentsPanelVisible() const {
@@ -2112,8 +2116,8 @@ public:
             imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_,
             imageAdjustmentsPanelFadeStartedAt_, open);
         imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
-        if (open) BeginVideoAdjustmentsPanelOpenMotion(imageAdjustmentsPanelTargetLayout_, wasMoving);
-        else BeginVideoAdjustmentsPanelCloseMotion(imageAdjustmentsPanelTargetLayout_);
+        StopVideoAdjustmentsPanelMotion();
+        videoAdjustmentsPanelPresentedLayout_ = imageAdjustmentsPanelTargetLayout_;
         SynchronizeFilmstripAdjustmentAvoidance();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -2218,7 +2222,7 @@ public:
         if (!source_) return false;
         if (imageAdjustmentsPanelOpen_) {
             const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
-            if (PtInRect(&panel.panel, point)) {
+            if (ImageAdjustmentsPanelContains(point)) {
                 const int thumb = AdjustmentSliderThumbAt(panel, imageAdjustments_, point);
                 const int slider = thumb >= 0 ? thumb : AdjustmentSliderAt(panel, point);
                 if (slider >= 0) { imageAdjustmentsDragging_ = slider; imageAdjustmentThumbGrab_ = thumb >= 0; imageAdjustmentDetentIndex_ = -1; if (!imageAdjustmentThumbGrab_) UpdateImageAdjustmentSlider(slider, point); return true; }
@@ -2423,7 +2427,7 @@ public:
         }
         if (videoAdjustmentsPanelOpen_) {
             const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
-            if (PtInRect(&panel.panel, point)) {
+            if (VideoAdjustmentsPanelContains(point)) {
                 const int thumb = AdjustmentSliderThumbAt(panel, videoAdjustments_, point);
                 const int slider = thumb >= 0 ? thumb : AdjustmentSliderAt(panel, point);
                 if (slider >= 0) { videoAdjustmentsDragging_ = slider; videoAdjustmentThumbGrab_ = thumb >= 0; videoAdjustmentDetentIndex_ = -1; if (!videoAdjustmentThumbGrab_) UpdateVideoAdjustmentSlider(slider, point); return true; }
@@ -4147,7 +4151,7 @@ public:
                 // A paused scrub explicitly owns this retry; ordinary paints stay cache-only.
                 if (videoPausedSeekRefreshPending_ && videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek))
                     videoPausedSeekRefreshPending_ = false;
-                videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_);
+                DrawVideoPresentation();
                 DrawVideoAutoPlayNextCountdown();
                 DrawCanvasNavigationButtons();
                 DrawVideoPlaybackControls();
@@ -4156,7 +4160,8 @@ public:
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
                 if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); DrawGifPlaybackControls(); }
-            } else if (EmptyStatePresentationActive()) DrawEmptyState();
+            } else if (dissolveAwaitingTarget_ && dissolveOldBitmap_) DrawDissolveOldFrame();
+            else if (EmptyStatePresentationActive()) DrawEmptyState();
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); DrawComponentsPanel(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
             if (!tutorialPresentation_) DrawRevisionLabel();
@@ -5900,9 +5905,21 @@ public:
 
     void Navigate(int direction, bool immediatePaint = true) {
         CancelVideoAutoPlayNextCountdown();
-        ClearStillDissolve();
+        if (BeginStillDissolveNavigation(direction)) {
+            if (IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) {
+                LoadContent(dissolveTargetPath_, false, L"next-previous");
+                if (immediatePaint) UpdateWindow(window_);
+            } else SelectNavigationTarget(dissolveTargetPath_, direction, immediatePaint);
+            return;
+        }
         const std::optional<std::wstring> path = NavigationTargetPath(direction);
         if (!path) return;
+        if (VideoActive() && BeginVideoSiblingDissolve(*path)) {
+            LoadContent(*path, false, L"next-previous");
+            if (immediatePaint) UpdateWindow(window_);
+            return;
+        }
+        ClearStillDissolve();
         LoadContent(*path, false, L"next-previous");
         if (immediatePaint) UpdateWindow(window_);
     }
@@ -6209,7 +6226,10 @@ public:
         const LONG threshold = MulDiv(72, GetDpiForWindow(window_), 96);
         if (horizontalDistance >= threshold && horizontalDistance >= verticalDistance * 2) {
             const int direction = deltaX < 0 ? 1 : -1;
-            if (BeginStillDissolveNavigation(direction)) SelectNavigationTarget(dissolveTargetPath_, direction);
+            if (BeginStillDissolveNavigation(direction)) {
+                if (IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) LoadContent(dissolveTargetPath_, false, L"swipe-navigation");
+                else SelectNavigationTarget(dissolveTargetPath_, direction);
+            }
             else Navigate(direction);
         }
         return true;
@@ -6218,9 +6238,12 @@ public:
     void CancelSwipeNavigation() { swipeNavigationPending_ = false; }
 
     bool BeginStillDissolveNavigation(int direction) {
-        if (!source_ || gifPlaying_ || VideoActive() || ModelActive() || dissolveAwaitingTarget_ || dissolveActive_) return false;
         const std::optional<std::wstring> target = NavigationTargetPath(direction);
-        if (!target || IsGifPath(*target) || IsVideoPath(*target) || IsModelPath(*target)) return false;
+        return target && BeginStillDissolveToTarget(*target);
+    }
+
+    bool BeginStillDissolveToTarget(const std::wstring& target) {
+        if (!source_ || VideoActive() || ModelActive() || dissolveAwaitingTarget_ || dissolveActive_ || IsModelPath(target)) return false;
 
         EnsureBitmap();
         if (!bitmap_) return false;
@@ -6232,7 +6255,7 @@ public:
         dissolveOldHeight_ = imageHeight_;
         dissolveOldScale_ = CurrentScale();
         dissolveOldTopLeft_ = ImageTopLeft(dissolveOldScale_, ImageCanvasSize());
-        dissolveTargetPath_ = *target;
+        dissolveTargetPath_ = target;
         if (!QueryPerformanceFrequency(&dissolveQpcFrequency_) || dissolveQpcFrequency_.QuadPart <= 0) { ClearStillDissolve(); return false; }
         LARGE_INTEGER now{};
         QueryPerformanceCounter(&now);
@@ -6240,6 +6263,48 @@ public:
         dissolveAwaitingTarget_ = true;
         SetTimer(window_, kStillDissolveTimer, 15, nullptr);
         return true;
+    }
+
+    bool BeginVideoSiblingDissolve(const std::wstring& target) {
+        if (!VideoActive() || dissolveAwaitingTarget_ || dissolveActive_ || IsModelPath(target) || !renderTarget_) return false;
+        std::vector<unsigned char> pixels;
+        UINT width = 0, height = 0;
+        if (!videoPlayer_.CopyCurrentFrameBgra(pixels, width, height) || !width || !height) return false;
+        const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+        ComPtr<ID2D1Bitmap> frame;
+        if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(width, height), pixels.data(), width * 4, properties, &frame))) return false;
+        dissolveOldBitmap_ = frame;
+        dissolveOldWidth_ = width;
+        dissolveOldHeight_ = height;
+        dissolveOldScale_ = VideoCurrentScale();
+        const RECT canvas = ModelCanvasBounds();
+        dissolveOldTopLeft_ = D2D1::Point2F(canvas.left + (canvas.right - canvas.left - width * dissolveOldScale_) * 0.5f + videoPan_.x,
+            canvas.top + (canvas.bottom - canvas.top - height * dissolveOldScale_) * 0.5f + videoPan_.y);
+        dissolveTargetPath_ = target;
+        if (!QueryPerformanceFrequency(&dissolveQpcFrequency_) || dissolveQpcFrequency_.QuadPart <= 0) { ClearStillDissolve(); return false; }
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        dissolveStartQpc_ = now.QuadPart;
+        dissolveAwaitingTarget_ = true;
+        SetTimer(window_, kStillDissolveTimer, 15, nullptr);
+        return true;
+    }
+
+    void DrawVideoPresentation() {
+        const bool transitioning = dissolveOldBitmap_ && (dissolveAwaitingTarget_ || dissolveActive_) &&
+            PathsEqual(fs::path(currentPath_), fs::path(dissolveTargetPath_));
+        if (!transitioning) { videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_); return; }
+        const float progress = dissolveActive_ ? SmoothTransitionProgress(StillDissolveProgress()) : 0.0f;
+        DrawDissolveOldFrame(1.0f - progress);
+        if (dissolveActive_) videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, progress);
+    }
+
+    void DrawDissolveOldFrame(float opacity = 1.0f) {
+        if (!dissolveOldBitmap_) return;
+        const D2D1_RECT_F destination = D2D1::RectF(dissolveOldTopLeft_.x, dissolveOldTopLeft_.y,
+            dissolveOldTopLeft_.x + dissolveOldWidth_ * dissolveOldScale_, dissolveOldTopLeft_.y + dissolveOldHeight_ * dissolveOldScale_);
+        renderTarget_->DrawBitmap(dissolveOldBitmap_.Get(), destination, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
     void BeginStillDissolveIfReady(const std::wstring& path) {
@@ -6279,10 +6344,7 @@ public:
     }
 
     void UpdateStillDissolve() {
-        if (dissolveAwaitingTarget_) {
-            if (StillDissolveElapsedMs() >= kStillDissolvePreviewWaitMaxMs) ClearStillDissolve();
-            return;
-        }
+        if (dissolveAwaitingTarget_) return;
         if (!dissolveActive_) return;
         if (StillDissolveProgress() >= 1.0f) ClearStillDissolve();
         InvalidateRect(window_, nullptr, FALSE);
@@ -6923,6 +6985,7 @@ private:
         EnsureRenderTarget();
         std::wstring videoError;
         if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, openAttemptId, videoError)) {
+            ClearStillDissolve();
             contentKind_ = ContentKind::None;
             resolutionText_.clear();
             error_ = videoError.empty() ? L"Viewtrious could not open this video." : videoError;
@@ -6970,13 +7033,14 @@ public:
             videoPan_ = D2D1::Point2F();
         }
         if (!videoError.empty()) error_ = videoError;
-        if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (videoPlayer_.Failed()) { ClearStillDissolve(); DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
         } else if (!videoPlayer_.HasValidFrame() &&
             (event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY || event == MF_MEDIA_ENGINE_EVENT_CANPLAY)) {
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
         }
+        if (videoPlayer_.HasValidFrame()) BeginStillDissolveIfReady(currentPath_);
         if (videoSizingAppliedForCurrentVideo_ && videoPlayer_.HasValidFrame()) RevealInitialWindowAfterVideoSizing();
         if ((!wasPlaying && videoPlayer_.Playing()) ||
             (event == MF_MEDIA_ENGINE_EVENT_SEEKED && videoPlayer_.Playing())) {
@@ -8209,11 +8273,19 @@ private:
         navigationBuilt_ = true;
         for (size_t offset = 0; offset < navigationFiles_.size(); ++offset) {
             const size_t candidate = (index + offset) % navigationFiles_.size();
+            const std::wstring candidatePath = navigationFiles_[candidate].wstring();
+            const bool dissolve = BeginStillDissolveToTarget(candidatePath);
+            if (IsVideoPath(candidatePath)) {
+                LoadContent(candidatePath, false, L"delete-continuation");
+                return;
+            }
             if (IsGifPath(navigationFiles_[candidate].wstring())) {
                 if (SUCCEEDED(LoadAnimatedGif(navigationFiles_[candidate].wstring(), false))) {
                     InvalidateRect(window_, nullptr, FALSE);
                     return;
                 }
+                if (dissolve) ClearStillDissolve();
+                continue;
             }
             ComPtr<IWICBitmapSource> source;
             UINT width = 0, height = 0;
@@ -8222,6 +8294,7 @@ private:
                 InvalidateRect(window_, nullptr, FALSE);
                 return;
             }
+            if (dissolve) ClearStillDissolve();
         }
         ClearDeletedImage();
     }
@@ -9152,6 +9225,7 @@ private:
                 } else error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
             } else {
                 source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); displayedPath_.clear(); imageWidth_ = imageHeight_ = 0;
+                ClearStillDissolve();
                 error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
             }
             InvalidateRect(window_, nullptr, FALSE);
@@ -9579,7 +9653,7 @@ private:
         drawButton(panel.resetButton, L"RESET");
     }
 
-    void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float opacity, bool autoActive, bool originalActive) {
+    void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float reveal, bool autoActive, bool originalActive) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
         ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover;
@@ -9590,10 +9664,13 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 1.0f), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
-        surface->SetOpacity(opacity); border->SetOpacity(opacity); text->SetOpacity(opacity); accent->SetOpacity(opacity); track->SetOpacity(opacity); hover->SetOpacity(opacity);
+        const RECT revealed = AdjustmentPanelRevealBounds(panel, reveal);
+        if (revealed.bottom <= revealed.top) return;
+        renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), scale);
-        DrawAdjustmentPanelContent(panel, adjustments, opacity, autoActive, originalActive, text.Get(), accent.Get(), track.Get(), hover.Get());
+        DrawAdjustmentPanelContent(panel, adjustments, 1.0f, autoActive, originalActive, text.Get(), accent.Get(), track.Get(), hover.Get());
+        renderTarget_->PopAxisAlignedClip();
     }
 
     void DrawRevisionLabel() {
@@ -9769,16 +9846,24 @@ private:
         }
         if (adjustmentsPanelVisible) {
             const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
-            const float panelOpacity = videoAdjustmentsPanelOpacity_;
-            surface->SetOpacity(panelOpacity);
-            border->SetOpacity(panelOpacity);
-            text->SetOpacity(panelOpacity);
-            accent->SetOpacity(panelOpacity);
-            track->SetOpacity(panelOpacity);
-            hover->SetOpacity(panelOpacity);
+            const float panelReveal = videoAdjustmentsPanelOpacity_;
+            surface->SetOpacity(1.0f);
+            border->SetOpacity(1.0f);
+            text->SetOpacity(1.0f);
+            accent->SetOpacity(1.0f);
+            track->SetOpacity(1.0f);
+            hover->SetOpacity(1.0f);
             if (adjustmentsPanelSeparateShell) {
-                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
-                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), 1.0f * scale);
+                const RECT revealed = AdjustmentPanelRevealBounds(panel, panelReveal);
+                if (revealed.bottom > revealed.top) {
+                    renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
+                    renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), 1.0f * scale);
+                    DrawAdjustmentPanelContent(panel, videoAdjustments_, 1.0f, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
+                    renderTarget_->PopAxisAlignedClip();
+                }
+            } else {
+                DrawAdjustmentPanelContent(panel, videoAdjustments_, 1.0f, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
             }
             const bool legacyShellDisabled = false;
             if (legacyShellDisabled) {
@@ -9827,7 +9912,6 @@ private:
                 }
             }
             }
-            DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
             surface->SetOpacity(1.0f);
             border->SetOpacity(1.0f);
             text->SetOpacity(1.0f);

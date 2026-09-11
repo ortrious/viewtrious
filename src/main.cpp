@@ -1205,9 +1205,6 @@ public:
         DeactivateModel();
         contentKind_ = ContentKind::Image2D;
         const HRESULT result = LoadImage(path, resetNavigation);
-        if (FAILED(result)) {
-            if (dissolveAwaitingTarget_ && PathsEqual(fs::path(path), fs::path(dissolveTargetPath_))) ClearStillDissolve();
-        }
         FileOpenDiagnostics::Log(activeOpenAttemptId_, SUCCEEDED(result) ? L"nonvideo-open-complete" : L"nonvideo-open-failed", L"hr=0x" + std::to_wstring(static_cast<unsigned int>(result)));
         return result;
     }
@@ -5966,7 +5963,7 @@ public:
     void Navigate(int direction, bool immediatePaint = true) {
         CancelVideoAutoPlayNextCountdown();
         if (BeginStillDissolveNavigation(direction)) {
-            if (IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) {
+            if (VideoActive() || IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) {
                 LoadContent(dissolveTargetPath_, false, L"next-previous");
                 if (immediatePaint) UpdateWindow(window_);
             } else SelectNavigationTarget(dissolveTargetPath_, direction, immediatePaint);
@@ -6287,7 +6284,7 @@ public:
         if (horizontalDistance >= threshold && horizontalDistance >= verticalDistance * 2) {
             const int direction = deltaX < 0 ? 1 : -1;
             if (BeginStillDissolveNavigation(direction)) {
-                if (IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) LoadContent(dissolveTargetPath_, false, L"swipe-navigation");
+                if (VideoActive() || IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) LoadContent(dissolveTargetPath_, false, L"swipe-navigation");
                 else SelectNavigationTarget(dissolveTargetPath_, direction);
             }
             else Navigate(direction);
@@ -6302,11 +6299,61 @@ public:
         return target && BeginStillDissolveToTarget(*target);
     }
 
+    bool CaptureDissolveCanvasPresentation() {
+        if (!renderTarget_) return false;
+        const RECT canvas = ModelCanvasBounds();
+        const LONG width = canvas.right - canvas.left;
+        const LONG height = canvas.bottom - canvas.top;
+        if (width <= 0 || height <= 0) return false;
+        const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), RenderTargetDpi(), RenderTargetDpi());
+        ComPtr<ID2D1Bitmap> snapshot;
+        if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(static_cast<UINT>(width), static_cast<UINT>(height)), nullptr, 0, properties, &snapshot)))
+            return false;
+        const D2D1_RECT_U source = D2D1::RectU(static_cast<UINT>(canvas.left), static_cast<UINT>(canvas.top),
+            static_cast<UINT>(canvas.right), static_cast<UINT>(canvas.bottom));
+        if (FAILED(snapshot->CopyFromRenderTarget(nullptr, renderTarget_.Get(), &source))) return false;
+        dissolveOldBitmap_ = std::move(snapshot);
+        dissolveOldWidth_ = static_cast<UINT>(width);
+        dissolveOldHeight_ = static_cast<UINT>(height);
+        dissolveOldScale_ = 1.0f;
+        dissolveOldTopLeft_ = D2D1::Point2F(static_cast<float>(canvas.left), static_cast<float>(canvas.top));
+        return true;
+    }
+
+    bool RebaseStillDissolveToTarget(const std::wstring& target) {
+        if ((!dissolveAwaitingTarget_ && !dissolveActive_) || !dissolveOldBitmap_ || IsModelPath(target)) return false;
+        // The old snapshot is already the fully visible source while awaiting. During an
+        // active dissolve, capture the last composed canvas so a superseding request starts
+        // from exactly what was on screen rather than from a torn-down media object.
+        if (dissolveActive_) CaptureDissolveCanvasPresentation();
+        dissolveActive_ = false;
+        dissolveAwaitingTarget_ = true;
+        dissolveTargetPath_ = target;
+        return true;
+    }
+
+    bool BeginStillDissolveFromCanvas(const std::wstring& target) {
+        if (IsModelPath(target) || !CaptureDissolveCanvasPresentation()) return false;
+        dissolveTargetPath_ = target;
+        if (!QueryPerformanceFrequency(&dissolveQpcFrequency_) || dissolveQpcFrequency_.QuadPart <= 0) {
+            ClearStillDissolve();
+            return false;
+        }
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        dissolveStartQpc_ = now.QuadPart;
+        dissolveAwaitingTarget_ = true;
+        SetTimer(window_, kStillDissolveTimer, 15, nullptr);
+        return true;
+    }
+
     bool BeginStillDissolveToTarget(const std::wstring& target) {
-        if (!source_ || VideoActive() || ModelActive() || dissolveAwaitingTarget_ || dissolveActive_ || IsModelPath(target)) return false;
+        if (RebaseStillDissolveToTarget(target)) return true;
+        if (!source_ || VideoActive() || ModelActive() || IsModelPath(target)) return false;
 
         EnsureBitmap();
-        if (!bitmap_) return false;
+        if (!bitmap_) return BeginStillDissolveFromCanvas(target);
         dissolveOldBitmap_ = bitmap_;
         if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) dissolveOldBitmap_ = imageAdjustedBitmap_;
         if (!dissolveOldBitmap_) return false;
@@ -6326,14 +6373,17 @@ public:
     }
 
     bool BeginVideoSiblingDissolve(const std::wstring& target) {
-        if (!VideoActive() || dissolveAwaitingTarget_ || dissolveActive_ || IsModelPath(target) || !renderTarget_) return false;
+        if (RebaseStillDissolveToTarget(target)) return true;
+        if (!VideoActive() || IsModelPath(target) || !renderTarget_) return false;
         std::vector<unsigned char> pixels;
         UINT width = 0, height = 0;
-        if (!videoPlayer_.CopyCurrentFrameBgra(pixels, width, height) || !width || !height) return false;
+        if (!videoPlayer_.CopyCurrentFrameBgra(pixels, width, height) || !width || !height)
+            return BeginStillDissolveFromCanvas(target);
         const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
         ComPtr<ID2D1Bitmap> frame;
-        if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(width, height), pixels.data(), width * 4, properties, &frame))) return false;
+        if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(width, height), pixels.data(), width * 4, properties, &frame)))
+            return BeginStillDissolveFromCanvas(target);
         dissolveOldBitmap_ = frame;
         dissolveOldWidth_ = width;
         dissolveOldHeight_ = height;
@@ -7046,7 +7096,6 @@ private:
         EnsureRenderTarget();
         std::wstring videoError;
         if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, openAttemptId, videoError)) {
-            ClearStillDissolve();
             contentKind_ = ContentKind::None;
             resolutionText_.clear();
             error_ = videoError.empty() ? L"Viewtrious could not open this video." : videoError;
@@ -7098,7 +7147,7 @@ public:
             videoPan_ = D2D1::Point2F();
         }
         if (!videoError.empty()) error_ = videoError;
-        if (videoPlayer_.Failed()) { ClearStillDissolve(); DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
         } else if (!videoPlayer_.HasValidFrame() &&
@@ -9303,7 +9352,6 @@ private:
                 } else error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
             } else {
                 source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); displayedPath_.clear(); imageWidth_ = imageHeight_ = 0;
-                ClearStillDissolve();
                 error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
             }
             InvalidateRect(window_, nullptr, FALSE);

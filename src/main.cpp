@@ -6563,7 +6563,7 @@ public:
         const bool poster = VideoOpeningPosterBitmap() != nullptr;
         const float posterBlend = poster && videoOpeningPosterBlending_ ? SmoothTransitionProgress(VideoOpeningPosterBlendProgress()) : 0.0f;
         if (!transitioning) {
-            if (poster && !videoPlayer_.HasValidFrame()) DrawVideoOpeningPoster();
+            if (poster && !videoPlayer_.HasValidFrame()) DrawVideoOpeningPoster(1.0f);
             else if (poster && videoOpeningPosterBlending_) {
                 DrawVideoOpeningPoster(1.0f - posterBlend);
                 videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, posterBlend);

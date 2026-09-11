@@ -3425,7 +3425,7 @@ public:
     RECT GetComponentsPanelBounds() const {
         const RECT canvas = ModelCanvasBounds();
         const int dpi = GetDpiForWindow(window_), inset = MulDiv(12, dpi, 96), safeZone = MulDiv(110, dpi, 96);
-        const int top = canvas.top + safeZone, bottomLimit = std::max(top + 1, canvas.bottom - safeZone);
+        const LONG top = canvas.top + static_cast<LONG>(safeZone), bottomLimit = std::max(top + 1, canvas.bottom - static_cast<LONG>(safeZone));
         std::vector<uint32_t> rows;
         AppendVisibleComponentRows(rows);
         const int desiredHeight = ComponentsPanelHeaderHeight() + static_cast<int>(rows.size()) * static_cast<int>(ComponentsPanelRowHeight()) + ComponentsPanelBottomPadding();

@@ -121,6 +121,7 @@ constexpr ULONGLONG kVideoControlsIdleDelayMs = 1500;
 constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kVideoFullscreenGlyphDurationMs = 140;
 constexpr ULONGLONG kStillDissolveDurationMs = 320;
+constexpr wchar_t kTopBarResolutionSeparator[] = L"\u00D7";
 constexpr UINT kStartupVideoSizingFallbackMs = 1500;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
@@ -7127,7 +7128,7 @@ public:
         float framesPerSecond = 0.0f;
         std::wstring framesText;
         if (videoPlayer_.TryGetFramesPerSecond(framesPerSecond)) framesText = FormatFramesPerSecond(framesPerSecond);
-        SetPresentationTitleMetadata(std::to_wstring(width), std::to_wstring(height), L"x", std::move(framesText));
+        SetPresentationTitleMetadata(std::to_wstring(width), std::to_wstring(height), kTopBarResolutionSeparator, std::move(framesText));
     }
     void VideoPlaybackWakeMessage(uint64_t generation) {
         uint64_t expected = generation;
@@ -9322,9 +9323,9 @@ private:
         SuppressFilmstripHoverPreviewForCurrentMedia();
         displayedPath_ = path;
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
-        resolutionText_ = std::to_wstring(width) + L"\u00D7" + std::to_wstring(height);
+        resolutionText_ = std::to_wstring(width) + kTopBarResolutionSeparator + std::to_wstring(height);
         fileSizeText_ = FormatFileSize(path);
-        SetPresentationTitleMetadata(std::to_wstring(width), std::to_wstring(height), L"\u00D7", ReadImageSecondaryMetadata(path));
+        SetPresentationTitleMetadata(std::to_wstring(width), std::to_wstring(height), kTopBarResolutionSeparator, ReadImageSecondaryMetadata(path));
         filenameText_ = fs::path(path).filename().wstring();
         error_.clear();
         fitToWindow_ = true;
@@ -10215,7 +10216,7 @@ private:
         if (titleMetadataReferenceDpi_ == dpi && titleMetadataReferenceWidth_ > 0.0f) return true;
         titleMetadataReferenceWidth_ = TitleTextWidth(L"1920");
         titleMetadataReferenceHeight_ = TitleTextWidth(L"1080");
-        titleMetadataReferenceSeparator_ = TitleTextWidth(L"x");
+        titleMetadataReferenceSeparator_ = TitleTextWidth(kTopBarResolutionSeparator);
         titleMetadataReferenceDot_ = TitleTextWidth(L"\x2022");
         titleMetadataReferenceDetail_ = TitleTextWidth(L"24-bit");
         if (titleMetadataReferenceWidth_ <= 0.0f || titleMetadataReferenceHeight_ <= 0.0f ||
@@ -11525,7 +11526,7 @@ private:
         const bool tutorialMetadata = tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails;
         const bool hideTutorialMetadata = tutorialPresentation_ && !tutorialMetadata;
         ID2D1Brush* activeMetadataBrush = tutorialMetadata ? tutorialMetadataBrush.Get() : metadataBrush.Get();
-        if (tutorialMetadata) DrawTitleText(L"1920 x 1080", static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
+        if (tutorialMetadata) DrawTitleText(std::wstring(L"1920 ") + kTopBarResolutionSeparator + L" 1080", static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
         else if (!hideTutorialMetadata && (VideoActive() || contentKind_ == ContentKind::Image2D || titleMetadataHandoffActive_) && !titleResolutionWidthText_.empty()) DrawPresentationTitleMetadata(frame, activeMetadataBrush);
         else DrawTitleText(hideTutorialMetadata ? L"" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
         DrawTitleText(tutorialMetadata ? L"1.2 MB" : hideTutorialMetadata ? L"" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);

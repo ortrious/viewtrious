@@ -4310,17 +4310,17 @@ public:
         const int bottomMargin = MulDiv(16, dpi, 96);
         return { left, client.bottom - bottomMargin - height, left + width, client.bottom - bottomMargin };
     }
-    int GetFilmstripAdjustmentAvoidanceTargetRight(const RECT& normal) const {
+    LONG GetFilmstripAdjustmentAvoidanceTargetRight(const RECT& normal) const {
         if (normal.right <= normal.left || !imageAdjustmentsPanelOpen_) return normal.right;
         const RECT adjustmentPanel = GetImageAdjustmentsPanelLayout().panel;
         if (adjustmentPanel.bottom <= normal.top || adjustmentPanel.top >= normal.bottom) return normal.right;
         const int dpi = GetDpiForWindow(window_);
-        const int minimumWidth = MulDiv(180, dpi, 96);
-        const int clearance = MulDiv(14, dpi, 96);
-        const int reservedRight = adjustmentPanel.left - clearance;
+        const LONG minimumWidth = MulDiv(180, dpi, 96);
+        const LONG clearance = MulDiv(14, dpi, 96);
+        const LONG reservedRight = adjustmentPanel.left - clearance;
         if (reservedRight >= normal.right) return normal.right;
-        const int availableWidth = reservedRight - normal.left;
-        return availableWidth >= minimumWidth ? reservedRight : std::max(normal.left, reservedRight);
+        const LONG availableWidth = reservedRight - normal.left;
+        return availableWidth >= minimumWidth ? reservedRight : std::max<LONG>(normal.left, reservedRight);
     }
     void AdvanceFilmstripAdjustmentAvoidanceMotion() {
         if (!filmstripAdjustmentAvoidanceAnimating_) return;
@@ -4339,7 +4339,7 @@ public:
         AdvanceFilmstripAdjustmentAvoidanceMotion();
         const RECT normal = GetFilmstripNormalBounds();
         if (normal.right <= normal.left) return;
-        const int target = GetFilmstripAdjustmentAvoidanceTargetRight(normal);
+        const LONG target = GetFilmstripAdjustmentAvoidanceTargetRight(normal);
         if (!filmstripAdjustmentAvoidanceInitialized_) {
             filmstripAdjustmentAvoidanceInitialized_ = true;
             filmstripAdjustmentAvoidancePresentedRight_ = static_cast<float>(normal.right);
@@ -4362,7 +4362,7 @@ public:
     RECT GetFilmstripBounds() const {
         const RECT normal = GetFilmstripNormalBounds();
         if (normal.right <= normal.left || !filmstripAdjustmentAvoidanceInitialized_) return normal;
-        const int right = std::clamp(static_cast<int>(std::lround(filmstripAdjustmentAvoidancePresentedRight_)), normal.left, normal.right);
+        const LONG right = std::clamp<LONG>(static_cast<LONG>(std::lround(filmstripAdjustmentAvoidancePresentedRight_)), normal.left, normal.right);
         return { normal.left, normal.top, right, normal.bottom };
     }
     bool FilmstripContains(POINT point) const { const RECT bounds = GetFilmstripBounds(); return FilmstripVisible() && PtInRect(&bounds, point); }
@@ -11553,7 +11553,7 @@ private:
     bool filmstripAdjustmentAvoidanceAnimating_ = false;
     float filmstripAdjustmentAvoidancePresentedRight_ = 0.0f;
     float filmstripAdjustmentAvoidanceStartRight_ = 0.0f;
-    int filmstripAdjustmentAvoidanceTargetRight_ = 0;
+    LONG filmstripAdjustmentAvoidanceTargetRight_ = 0;
     ULONGLONG filmstripAdjustmentAvoidanceStartedAt_ = 0;
     double filmstripScroll_ = 0.0;
     double filmstripScrollVelocity_ = 0.0;

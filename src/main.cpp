@@ -10200,23 +10200,48 @@ private:
         renderTarget_->DrawTextLayout(D2D1::Point2F(textLeft, top), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
-    void DrawPresentationTitleMetadata(const FrameMetrics& frame, ID2D1Brush* brush) {
-        if (titleResolutionWidthText_.empty() || titleResolutionHeightText_.empty()) return;
+    float TitleTextWidth(const wchar_t* text) {
+        if (!text || !*text || !EnsureTitleTextFormat()) return 0.0f;
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const float left = static_cast<float>(frame.resolutionLeft);
-        const float width = static_cast<float>(frame.resolutionWidth);
-        const float multiplyCenter = left + 44.0f * scale;
-        const float dotCenter = left + 94.0f * scale;
-        const float multiplyWidth = 9.0f * scale;
-        const float dotWidth = 7.0f * scale;
-        const float gap = 2.0f * scale;
-        DrawTitleText(titleResolutionWidthText_, left, multiplyCenter - multiplyWidth * 0.5f - left - gap, brush, true, false, true);
-        DrawTitleText(titleResolutionSeparatorText_, multiplyCenter - multiplyWidth * 0.5f, multiplyWidth, brush, false, true);
-        DrawTitleText(titleResolutionHeightText_, multiplyCenter + multiplyWidth * 0.5f + gap,
-            dotCenter - dotWidth * 0.5f - multiplyCenter - multiplyWidth * 0.5f - gap * 2.0f, brush, true, false);
-        DrawTitleText(L"\x2022", dotCenter - dotWidth * 0.5f, dotWidth, brush, false, true);
-        DrawTitleText(titleDetailText_, dotCenter + dotWidth * 0.5f + gap,
-            left + width - dotCenter - dotWidth * 0.5f - gap, brush, true, false);
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), titleTextFormat_.Get(),
+                4096.0f * scale, static_cast<float>(GetFrameMetrics(window_).titleBarHeight), &layout))) return 0.0f;
+        DWRITE_TEXT_METRICS metrics{};
+        return SUCCEEDED(layout->GetMetrics(&metrics)) ? metrics.widthIncludingTrailingWhitespace : 0.0f;
+    }
+
+    bool EnsureTitleMetadataReferenceGeometry() {
+        const UINT dpi = GetDpiForWindow(window_);
+        if (titleMetadataReferenceDpi_ == dpi && titleMetadataReferenceWidth_ > 0.0f) return true;
+        titleMetadataReferenceWidth_ = TitleTextWidth(L"1920");
+        titleMetadataReferenceHeight_ = TitleTextWidth(L"1080");
+        titleMetadataReferenceSeparator_ = TitleTextWidth(L"x");
+        titleMetadataReferenceDot_ = TitleTextWidth(L"\x2022");
+        titleMetadataReferenceDetail_ = TitleTextWidth(L"24-bit");
+        if (titleMetadataReferenceWidth_ <= 0.0f || titleMetadataReferenceHeight_ <= 0.0f ||
+            titleMetadataReferenceSeparator_ <= 0.0f || titleMetadataReferenceDot_ <= 0.0f ||
+            titleMetadataReferenceDetail_ <= 0.0f) return false;
+        titleMetadataReferenceDpi_ = dpi;
+        return true;
+    }
+
+    void DrawPresentationTitleMetadata(const FrameMetrics& frame, ID2D1Brush* brush) {
+        if (titleResolutionWidthText_.empty() || titleResolutionHeightText_.empty() || !EnsureTitleMetadataReferenceGeometry()) return;
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const float gap = 4.0f * scale;
+        const float outerLeft = static_cast<float>(frame.hamburgerSeparator.right);
+        const float outerRight = static_cast<float>(frame.resolutionSeparator.left);
+        const float referenceWidth = titleMetadataReferenceWidth_ + titleMetadataReferenceSeparator_ + titleMetadataReferenceDot_ + titleMetadataReferenceDetail_ + gap * 4.0f;
+        const float referenceLeft = outerLeft + std::max(0.0f, (outerRight - outerLeft - referenceWidth) * 0.5f);
+        const float multiplyLeft = referenceLeft + titleMetadataReferenceWidth_ + gap;
+        const float dotLeft = multiplyLeft + titleMetadataReferenceSeparator_ + gap + titleMetadataReferenceHeight_ + gap;
+        const float multiplyRight = multiplyLeft + titleMetadataReferenceSeparator_;
+        const float dotRight = dotLeft + titleMetadataReferenceDot_;
+        DrawTitleText(titleResolutionWidthText_, outerLeft, multiplyLeft - outerLeft - gap, brush, true, false, true);
+        DrawTitleText(titleResolutionSeparatorText_, multiplyLeft, titleMetadataReferenceSeparator_, brush, false, true);
+        DrawTitleText(titleResolutionHeightText_, multiplyRight + gap, dotLeft - multiplyRight - gap * 2.0f, brush, true, false, true);
+        DrawTitleText(L"\x2022", dotLeft, titleMetadataReferenceDot_, brush, false, true);
+        DrawTitleText(titleDetailText_, dotRight + gap, outerRight - dotRight - gap, brush, true, false);
     }
 
     static std::wstring FormatExactTriangleCount(uint64_t count) {
@@ -11601,6 +11626,12 @@ private:
     UINT checkerboardDpi_ = 0;
     ComPtr<IDWriteTextFormat> titleTextFormat_;
     UINT titleTextDpi_ = 0;
+    UINT titleMetadataReferenceDpi_ = 0;
+    float titleMetadataReferenceWidth_ = 0.0f;
+    float titleMetadataReferenceHeight_ = 0.0f;
+    float titleMetadataReferenceSeparator_ = 0.0f;
+    float titleMetadataReferenceDot_ = 0.0f;
+    float titleMetadataReferenceDetail_ = 0.0f;
     ComPtr<IDWriteTextFormat> captionIconFormat_;
     UINT captionIconDpi_ = 0;
     ComPtr<IDWriteTextFormat> zoomHudFormat_;

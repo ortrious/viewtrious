@@ -997,7 +997,7 @@ FrameMetrics GetFrameMetrics(HWND window) {
     const int filenameLeadIn = MulDiv(14, dpi, 96);
     // Fixed metadata area; its anchors are measured once per DPI using the title font.
     const int resolutionWidth = MulDiv(150, dpi, 96);
-    const int fileSizeWidth = MulDiv(72, dpi, 96);
+    const int fileSizeWidth = MulDiv(58, dpi, 96);
     RECT client{};
     GetClientRect(window, &client);
     const int buttonLeft = std::max(0L, client.right - buttonWidth * 3);

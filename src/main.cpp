@@ -4211,14 +4211,17 @@ public:
                 DrawVideoPresentation();
                 DrawVideoAutoPlayNextCountdown();
                 DrawCanvasNavigationButtons();
-                DrawVideoPlaybackControls();
-                DrawVideoControlsRevealAffordance();
+                if (!TransitionOverlayActive() || !transitionOverlayHasVideoControls_) {
+                    if (!TransitionOverlayActive() || videoPlayer_.HasValidFrame()) DrawVideoPlaybackControls(!TransitionOverlayActive());
+                }
+                if (!TransitionOverlayActive() || (!transitionOverlayHasVideoControls_ && videoPlayer_.HasValidFrame())) DrawVideoControlsRevealAffordance();
             }
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
-                if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(); DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); DrawGifPlaybackControls(); }
+                if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(); if (!TransitionOverlayActive()) DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); DrawGifPlaybackControls(); }
             } else if (dissolveAwaitingTarget_ && dissolveOldBitmap_) DrawDissolveOldFrame();
             else if (EmptyStatePresentationActive()) DrawEmptyState();
+            if (!tutorialPresentation_) DrawTransitionOverlay();
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); DrawComponentsPanel(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
             if (!tutorialPresentation_) DrawRevisionLabel();
@@ -6299,7 +6302,7 @@ public:
         return target && BeginStillDissolveToTarget(*target);
     }
 
-    bool CaptureDissolveCanvasPresentation() {
+    bool CopyCanvasPresentation(ComPtr<ID2D1Bitmap>& snapshot) {
         if (!renderTarget_) return false;
         const RECT canvas = ModelCanvasBounds();
         const LONG width = canvas.right - canvas.left;
@@ -6307,18 +6310,59 @@ public:
         if (width <= 0 || height <= 0) return false;
         const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), RenderTargetDpi(), RenderTargetDpi());
-        ComPtr<ID2D1Bitmap> snapshot;
         if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(static_cast<UINT>(width), static_cast<UINT>(height)), nullptr, 0, properties, &snapshot)))
             return false;
         const D2D1_RECT_U source = D2D1::RectU(static_cast<UINT>(canvas.left), static_cast<UINT>(canvas.top),
             static_cast<UINT>(canvas.right), static_cast<UINT>(canvas.bottom));
         if (FAILED(snapshot->CopyFromRenderTarget(nullptr, renderTarget_.Get(), &source))) return false;
+        return true;
+    }
+
+    bool CaptureDissolveCanvasPresentation() {
+        ComPtr<ID2D1Bitmap> snapshot;
+        if (!CopyCanvasPresentation(snapshot)) return false;
+        const RECT canvas = ModelCanvasBounds();
+        const LONG width = canvas.right - canvas.left;
+        const LONG height = canvas.bottom - canvas.top;
         dissolveOldBitmap_ = std::move(snapshot);
         dissolveOldWidth_ = static_cast<UINT>(width);
         dissolveOldHeight_ = static_cast<UINT>(height);
         dissolveOldScale_ = 1.0f;
         dissolveOldTopLeft_ = D2D1::Point2F(static_cast<float>(canvas.left), static_cast<float>(canvas.top));
         return true;
+    }
+
+    bool TransitionOverlayActive() const {
+        return transitionOverlaySnapshot_ && (dissolveAwaitingTarget_ || dissolveActive_);
+    }
+
+    void CaptureTransitionOverlay(bool outgoingVideo) {
+        ComPtr<ID2D1Bitmap> snapshot;
+        if (!CopyCanvasPresentation(snapshot)) return;
+        transitionOverlaySnapshot_ = std::move(snapshot);
+        transitionOverlayRects_.clear();
+        transitionOverlayHasVideoControls_ = outgoingVideo;
+        if (outgoingVideo) {
+            const RECT controls = GetVideoControlsLayout().island;
+            if (controls.right > controls.left && controls.bottom > controls.top) transitionOverlayRects_.push_back(controls);
+            const RECT hud = GetVideoZoomHudLayout().combined;
+            if (hud.right > hud.left && hud.bottom > hud.top) transitionOverlayRects_.push_back(hud);
+        } else {
+            const RECT hud = GetImageZoomHudLayout().combined;
+            if (hud.right > hud.left && hud.bottom > hud.top) transitionOverlayRects_.push_back(hud);
+        }
+    }
+
+    void DrawTransitionOverlay() {
+        if (!TransitionOverlayActive()) return;
+        const RECT canvas = ModelCanvasBounds();
+        for (const RECT& bounds : transitionOverlayRects_) {
+            const D2D1_RECT_F destination = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top),
+                static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
+            const D2D1_RECT_F source = D2D1::RectF(static_cast<float>(bounds.left - canvas.left), static_cast<float>(bounds.top - canvas.top),
+                static_cast<float>(bounds.right - canvas.left), static_cast<float>(bounds.bottom - canvas.top));
+            renderTarget_->DrawBitmap(transitionOverlaySnapshot_.Get(), destination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &source);
+        }
     }
 
     bool RebaseStillDissolveToTarget(const std::wstring& target) {
@@ -6353,7 +6397,10 @@ public:
         if (!source_ || VideoActive() || ModelActive() || IsModelPath(target)) return false;
 
         EnsureBitmap();
-        if (!bitmap_) return BeginStillDissolveFromCanvas(target);
+        if (!bitmap_) {
+            if (IsVideoPath(target)) CaptureTransitionOverlay(false);
+            return BeginStillDissolveFromCanvas(target);
+        }
         dissolveOldBitmap_ = bitmap_;
         if (!imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) dissolveOldBitmap_ = imageAdjustedBitmap_;
         if (!dissolveOldBitmap_) return false;
@@ -6362,6 +6409,7 @@ public:
         dissolveOldHeight_ = imageHeight_;
         dissolveOldScale_ = CurrentScale();
         dissolveOldTopLeft_ = ImageTopLeft(dissolveOldScale_, ImageCanvasSize());
+        if (IsVideoPath(target)) CaptureTransitionOverlay(false);
         dissolveTargetPath_ = target;
         if (!QueryPerformanceFrequency(&dissolveQpcFrequency_) || dissolveQpcFrequency_.QuadPart <= 0) { ClearStillDissolve(); return false; }
         LARGE_INTEGER now{};
@@ -6377,13 +6425,17 @@ public:
         if (!VideoActive() || IsModelPath(target) || !renderTarget_) return false;
         std::vector<unsigned char> pixels;
         UINT width = 0, height = 0;
-        if (!videoPlayer_.CopyCurrentFrameBgra(pixels, width, height) || !width || !height)
+        if (!videoPlayer_.CopyCurrentFrameBgra(pixels, width, height) || !width || !height) {
+            CaptureTransitionOverlay(true);
             return BeginStillDissolveFromCanvas(target);
+        }
         const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
         ComPtr<ID2D1Bitmap> frame;
-        if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(width, height), pixels.data(), width * 4, properties, &frame)))
+        if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(width, height), pixels.data(), width * 4, properties, &frame))) {
+            CaptureTransitionOverlay(true);
             return BeginStillDissolveFromCanvas(target);
+        }
         dissolveOldBitmap_ = frame;
         dissolveOldWidth_ = width;
         dissolveOldHeight_ = height;
@@ -6391,6 +6443,7 @@ public:
         const RECT canvas = ModelCanvasBounds();
         dissolveOldTopLeft_ = D2D1::Point2F(canvas.left + (canvas.right - canvas.left - width * dissolveOldScale_) * 0.5f + videoPan_.x,
             canvas.top + (canvas.bottom - canvas.top - height * dissolveOldScale_) * 0.5f + videoPan_.y);
+        if (!IsModelPath(target)) CaptureTransitionOverlay(true);
         dissolveTargetPath_ = target;
         if (!QueryPerformanceFrequency(&dissolveQpcFrequency_) || dissolveQpcFrequency_.QuadPart <= 0) { ClearStillDissolve(); return false; }
         LARGE_INTEGER now{};
@@ -6436,6 +6489,9 @@ public:
         dissolveOldScale_ = 0.0f;
         dissolveOldTopLeft_ = D2D1::Point2F();
         dissolveTargetPath_.clear();
+        transitionOverlaySnapshot_.Reset();
+        transitionOverlayRects_.clear();
+        transitionOverlayHasVideoControls_ = false;
     }
 
     float StillDissolveProgress() const {
@@ -9933,7 +9989,7 @@ private:
         DrawOverlayText(L"-1", static_cast<float>(layout.stepBackward.left), static_cast<float>(layout.stepBackward.top), static_cast<float>(layout.stepBackward.right - layout.stepBackward.left), static_cast<float>(layout.stepBackward.bottom - layout.stepBackward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
     }
-    void DrawVideoPlaybackControls() {
+    void DrawVideoPlaybackControls(bool drawZoomHud = true) {
         if (!VideoActive() || videoControlsOpacity_ <= 0.001f) return;
         const VideoControlsLayout layout = GetVideoControlsLayout();
         if (layout.island.right <= layout.island.left) return;
@@ -10176,7 +10232,7 @@ private:
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(tooltipLeft, tooltipTop, tooltipLeft + tooltipWidth, tooltipTop + tooltipHeight), 5.0f * scale, 5.0f * scale), surface.Get());
             DrawOverlayText(L"Volume", tooltipLeft, tooltipTop, tooltipWidth, tooltipHeight, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
-        DrawZoomHud(GetVideoZoomHudLayout(), VideoCurrentScale() * RenderTargetDpi() / 96.0f, opacity, true, videoAdjustmentsPanelOpen_);
+        if (drawZoomHud) DrawZoomHud(GetVideoZoomHudLayout(), VideoCurrentScale() * RenderTargetDpi() / 96.0f, opacity, true, videoAdjustmentsPanelOpen_);
     }
 
     bool EnsureTitleTextFormat() {
@@ -11693,6 +11749,9 @@ private:
 
     void DiscardRenderResources() {
         bitmap_.Reset();
+        transitionOverlaySnapshot_.Reset();
+        transitionOverlayRects_.clear();
+        transitionOverlayHasVideoControls_ = false;
         lanczosBitmap_.Reset();
         imageAdjustedBitmap_.Reset();
         imageAdjustmentSourceTexture_.Reset();
@@ -11901,6 +11960,9 @@ private:
     D2D1_POINT_2F dissolveOldTopLeft_ = D2D1::Point2F();
     std::wstring dissolveTargetPath_;
     ComPtr<ID2D1Bitmap> dissolveOldBitmap_;
+    ComPtr<ID2D1Bitmap> transitionOverlaySnapshot_;
+    std::vector<RECT> transitionOverlayRects_;
+    bool transitionOverlayHasVideoControls_ = false;
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;

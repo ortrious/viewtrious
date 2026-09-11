@@ -3424,7 +3424,7 @@ public:
     RECT GetComponentsPanelContentBounds() const { RECT bounds = GetComponentsPanelBounds(); bounds.top += MulDiv(34, GetDpiForWindow(window_), 96); bounds.left += MulDiv(4, GetDpiForWindow(window_), 96); bounds.right -= MulDiv(4, GetDpiForWindow(window_), 96); bounds.bottom -= MulDiv(4, GetDpiForWindow(window_), 96); return bounds; }
     bool ComponentsPanelContains(POINT point) const { const RECT panel = GetComponentsPanelBounds(); return ComponentsPanelVisible() && PtInRect(&panel, point); }
     void EnsureComponentsPanelDocument() {
-        const ModelDocument* document = modelViewport_.Document().get();
+        const ModelDocument* document = modelViewport_.Document();
         if (componentPanelDocument_ == document) return;
         componentPanelDocument_ = document;
         componentPanelCollapsed_.clear();
@@ -11997,12 +11997,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (!viewer->TutorialActive() && !viewer->HasOverlay() && !viewer->DropdownOpen() && !viewer->ContextMenuOpen()) {
-            const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            const POINT clickPoint{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             if (viewer->VideoActive()) {
-                if (!viewer->VideoControlsContains(point) && viewer->VideoCanvasContains(point)) { viewer->ToggleVideoFitActualPixels(point); return 0; }
+                if (!viewer->VideoControlsContains(clickPoint) && viewer->VideoCanvasContains(clickPoint)) { viewer->ToggleVideoFitActualPixels(clickPoint); return 0; }
             }
-            if (viewer->HasImage() && viewer->ImageContains(point)) {
-                viewer->ToggleFitActualPixels(point);
+            if (viewer->HasImage() && viewer->ImageContains(clickPoint)) {
+                viewer->ToggleFitActualPixels(clickPoint);
                 return 0;
             }
         }

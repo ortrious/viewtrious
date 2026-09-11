@@ -1167,7 +1167,9 @@ public:
         DeactivateModel();
         contentKind_ = ContentKind::Image2D;
         const HRESULT result = LoadImage(path, resetNavigation);
-        if (FAILED(result) && dissolveAwaitingTarget_ && PathsEqual(fs::path(path), fs::path(dissolveTargetPath_))) ClearStillDissolve();
+        if (FAILED(result)) {
+            if (dissolveAwaitingTarget_ && PathsEqual(fs::path(path), fs::path(dissolveTargetPath_))) ClearStillDissolve();
+        }
         FileOpenDiagnostics::Log(activeOpenAttemptId_, SUCCEEDED(result) ? L"nonvideo-open-complete" : L"nonvideo-open-failed", L"hr=0x" + std::to_wstring(static_cast<unsigned int>(result)));
         return result;
     }
@@ -1215,6 +1217,7 @@ public:
             SuppressFilmstripHoverPreviewForCurrentMedia();
             displayedPath_.clear();
             resolutionText_.clear();
+            ClearPresentationTitleMetadata();
             fileSizeText_ = FormatFileSize(path);
             filenameText_ = fs::path(path).filename().wstring();
             navigationFiles_.clear();
@@ -6997,7 +7000,6 @@ private:
         videoAdjustments_ = {};
         videoAdjustmentHashResolved_ = false;
         ++videoAdjustmentMediaGeneration_;
-        if (!replacingVideo) ClearPresentationTitleMetadata();
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         fileSizeText_ = FormatFileSize(path); resolutionText_ = replacingVideo ? previousTitleMetadata : L""; error_.clear();
@@ -10148,7 +10150,7 @@ private:
         }
     }
 
-    void DrawTitleText(const std::wstring& text, float left, float width, ID2D1Brush* brush, bool trim, bool center) {
+    void DrawTitleText(const std::wstring& text, float left, float width, ID2D1Brush* brush, bool trim, bool center, bool rightAlign = false) {
         if (text.empty() || width <= 0.0f || !EnsureTitleTextFormat()) return;
         ComPtr<IDWriteTextLayout> layout;
         if (FAILED(dwriteFactory_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), titleTextFormat_.Get(),
@@ -10163,7 +10165,7 @@ private:
         DWRITE_TEXT_METRICS metrics{};
         layout->GetMetrics(&metrics);
         const float top = std::max(0.0f, (static_cast<float>(GetFrameMetrics(window_).titleBarHeight) - metrics.height) / 2.0f);
-        const float textLeft = center ? left + std::max(0.0f, (width - metrics.width) / 2.0f) : left;
+        const float textLeft = rightAlign ? left + std::max(0.0f, width - metrics.width) : center ? left + std::max(0.0f, (width - metrics.width) / 2.0f) : left;
         renderTarget_->DrawTextLayout(D2D1::Point2F(textLeft, top), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
@@ -10171,15 +10173,15 @@ private:
         if (titleResolutionWidthText_.empty() || titleResolutionHeightText_.empty()) return;
         const float left = static_cast<float>(frame.resolutionLeft);
         const float width = static_cast<float>(frame.resolutionWidth);
-        const float multiplyCenter = left + width * 0.35f;
-        const float dotCenter = left + width * 0.73f;
-        const float multiplyWidth = width * 0.075f;
-        const float dotWidth = width * 0.06f;
-        const float gap = width * 0.02f;
-        DrawTitleText(titleResolutionWidthText_, left, multiplyCenter - multiplyWidth * 0.5f - left - gap, brush, false, true);
+        const float multiplyCenter = left + width * 0.33f;
+        const float dotCenter = left + width * 0.66f;
+        const float multiplyWidth = width * 0.06f;
+        const float dotWidth = width * 0.05f;
+        const float gap = width * 0.0125f;
+        DrawTitleText(titleResolutionWidthText_, left, multiplyCenter - multiplyWidth * 0.5f - left - gap, brush, false, false, true);
         DrawTitleText(titleResolutionSeparatorText_, multiplyCenter - multiplyWidth * 0.5f, multiplyWidth, brush, false, true);
         DrawTitleText(titleResolutionHeightText_, multiplyCenter + multiplyWidth * 0.5f + gap,
-            dotCenter - dotWidth * 0.5f - multiplyCenter - multiplyWidth * 0.5f - gap * 2.0f, brush, false, true);
+            dotCenter - dotWidth * 0.5f - multiplyCenter - multiplyWidth * 0.5f - gap * 2.0f, brush, false, false);
         DrawTitleText(L"\x2022", dotCenter - dotWidth * 0.5f, dotWidth, brush, false, true);
         DrawTitleText(titleDetailText_, dotCenter + dotWidth * 0.5f + gap,
             left + width - dotCenter - dotWidth * 0.5f - gap, brush, false, true);
@@ -11467,7 +11469,7 @@ private:
         const bool hideTutorialMetadata = tutorialPresentation_ && !tutorialMetadata;
         ID2D1Brush* activeMetadataBrush = tutorialMetadata ? tutorialMetadataBrush.Get() : metadataBrush.Get();
         if (tutorialMetadata) DrawTitleText(L"1920 x 1080", static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
-        else if (!hideTutorialMetadata && (VideoActive() || source_) && !titleResolutionWidthText_.empty()) DrawPresentationTitleMetadata(frame, activeMetadataBrush);
+        else if (!hideTutorialMetadata && (VideoActive() || contentKind_ == ContentKind::Image2D) && !titleResolutionWidthText_.empty()) DrawPresentationTitleMetadata(frame, activeMetadataBrush);
         else DrawTitleText(hideTutorialMetadata ? L"" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
         DrawTitleText(tutorialMetadata ? L"1.2 MB" : hideTutorialMetadata ? L"" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);
         const float filenameWidth = static_cast<float>(std::max(0L,

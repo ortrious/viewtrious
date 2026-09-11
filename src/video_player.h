@@ -41,7 +41,7 @@ public:
     void SetDisplayAdjustments(const ImageAdjustments& adjustments);
     void SetDisplayAdjustmentsBypassed(bool bypassed) { displayAdjustmentsBypassed_ = bypassed; }
     bool CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
-    bool CopyFirstValidFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
+    bool TakeFirstValidFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height);
     bool SetPreferredPlaybackRate(double rate);
     bool PlaybackRateSupported(double rate) const;
     double EffectivePlaybackRate() const { return effectivePlaybackRate_; }

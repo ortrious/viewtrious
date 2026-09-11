@@ -489,12 +489,13 @@ bool VideoPlayer::CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT&
     context->Unmap(staging.Get(), 0); width = videoWidth_; height = videoHeight_; return true;
 }
 
-bool VideoPlayer::CopyFirstValidFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const {
+bool VideoPlayer::TakeFirstValidFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) {
     pixels.clear(); width = height = 0;
     if (firstValidFramePixels_.empty() || !firstValidFrameWidth_ || !firstValidFrameHeight_) return false;
-    pixels = firstValidFramePixels_;
+    pixels = std::move(firstValidFramePixels_);
     width = firstValidFrameWidth_;
     height = firstValidFrameHeight_;
+    firstValidFrameWidth_ = firstValidFrameHeight_ = 0;
     return true;
 }
 

@@ -3420,8 +3420,18 @@ public:
     }
     bool EmptyStatePresentationActive() const { return TutorialActive() || EmptyStateActive(); }
     bool ComponentsPanelVisible() const { return ModelActive() && modelViewport_.Document() && modelViewport_.Document()->componentTree.size() > 1; }
-    RECT GetComponentsPanelBounds() const { const RECT canvas = ModelCanvasBounds(); const int dpi = GetDpiForWindow(window_); const int inset = MulDiv(12, dpi, 96); return { canvas.left + inset, canvas.top + inset, canvas.left + inset + MulDiv(240, dpi, 96), canvas.bottom - inset }; }
-    RECT GetComponentsPanelContentBounds() const { RECT bounds = GetComponentsPanelBounds(); bounds.top += MulDiv(34, GetDpiForWindow(window_), 96); bounds.left += MulDiv(4, GetDpiForWindow(window_), 96); bounds.right -= MulDiv(4, GetDpiForWindow(window_), 96); bounds.bottom -= MulDiv(4, GetDpiForWindow(window_), 96); return bounds; }
+    int ComponentsPanelHeaderHeight() const { return MulDiv(34, GetDpiForWindow(window_), 96); }
+    int ComponentsPanelBottomPadding() const { return MulDiv(10, GetDpiForWindow(window_), 96); }
+    RECT GetComponentsPanelBounds() const {
+        const RECT canvas = ModelCanvasBounds();
+        const int dpi = GetDpiForWindow(window_), inset = MulDiv(12, dpi, 96), safeZone = MulDiv(110, dpi, 96);
+        const int top = canvas.top + safeZone, bottomLimit = std::max(top + 1, canvas.bottom - safeZone);
+        std::vector<uint32_t> rows;
+        AppendVisibleComponentRows(rows);
+        const int desiredHeight = ComponentsPanelHeaderHeight() + static_cast<int>(rows.size()) * static_cast<int>(ComponentsPanelRowHeight()) + ComponentsPanelBottomPadding();
+        return { canvas.left + inset, top, canvas.left + inset + MulDiv(240, dpi, 96), std::min(bottomLimit, top + desiredHeight) };
+    }
+    RECT GetComponentsPanelContentBounds() const { RECT bounds = GetComponentsPanelBounds(); bounds.top += ComponentsPanelHeaderHeight(); bounds.left += MulDiv(4, GetDpiForWindow(window_), 96); bounds.right -= MulDiv(4, GetDpiForWindow(window_), 96); bounds.bottom -= ComponentsPanelBottomPadding(); return bounds; }
     bool ComponentsPanelContains(POINT point) const { const RECT panel = GetComponentsPanelBounds(); return ComponentsPanelVisible() && PtInRect(&panel, point); }
     void EnsureComponentsPanelDocument() {
         const ModelDocument* document = modelViewport_.Document();
@@ -3547,8 +3557,8 @@ public:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(55.0f / 255, 59.0f / 255, 70.0f / 255), &hover)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(64.0f / 255, 86.0f / 255, 120.0f / 255), &selected))) return;
         const D2D1_RECT_F bounds = D2D1::RectF(static_cast<float>(panel.left), static_cast<float>(panel.top), static_cast<float>(panel.right), static_cast<float>(panel.bottom));
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bounds, 6 * dpi, 6 * dpi), surface.Get());
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(bounds, 6 * dpi, 6 * dpi), border.Get(), 1.0f);
+        renderTarget_->FillRectangle(bounds, surface.Get());
+        renderTarget_->DrawLine(D2D1::Point2F(bounds.right - .5f, bounds.top), D2D1::Point2F(bounds.right - .5f, bounds.bottom), border.Get(), 1.0f);
         DrawOverlayText(L"components", bounds.left + 12 * dpi, bounds.top, bounds.right - bounds.left - 24 * dpi, 32 * dpi, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true);
         renderTarget_->DrawLine(D2D1::Point2F(bounds.left, static_cast<float>(content.top)), D2D1::Point2F(bounds.right, static_cast<float>(content.top)), border.Get(), 1.0f);
         std::vector<uint32_t> rows;

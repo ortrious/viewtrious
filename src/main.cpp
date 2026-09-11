@@ -8737,6 +8737,7 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
 
+public:
     bool BeginGifControlsInteraction(POINT point) {
         if (!AnimatedGifActive() || !GifControlsContains(point)) return false;
         const GifControlsLayout layout = GetGifControlsLayout();
@@ -8786,12 +8787,14 @@ private:
     }
 
     void UpdateGifControlsMouse(POINT point) {
-        const bool hovered = AnimatedGifActive() && PtInRect(&GetGifControlsLayout().frameSlider, point);
+        const GifControlsLayout layout = GetGifControlsLayout();
+        const bool hovered = AnimatedGifActive() && PtInRect(&layout.frameSlider, point);
         if (gifScrubberHovered_ == hovered) return;
         gifScrubberHovered_ = hovered;
         InvalidateRect(window_, nullptr, FALSE);
     }
 
+private:
     void ApplyGifPreviousDisposal() {
         if (!gifCanvas_) return;
         if (gifPreviousDisposal_ == 3 && gifPreviousCanvas_) {

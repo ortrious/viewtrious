@@ -122,7 +122,7 @@ constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kVideoFullscreenGlyphDurationMs = 140;
 constexpr ULONGLONG kStillDissolveDurationMs = 320;
 constexpr wchar_t kTopBarResolutionSeparator[] = L"\u00D7";
-constexpr float kTopBarMetadataReferenceVisualOffsetDip = -8.0f;
+constexpr float kTopBarMetadataReferenceVisualOffsetDip = -12.0f;
 constexpr UINT kStartupVideoSizingFallbackMs = 1500;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
@@ -10215,8 +10215,10 @@ private:
     bool EnsureTitleMetadataReferenceGeometry() {
         const UINT dpi = GetDpiForWindow(window_);
         if (titleMetadataReferenceDpi_ == dpi && titleMetadataReferenceWidth_ > 0.0f) return true;
-        titleMetadataReferenceWidth_ = TitleTextWidth(L"1920");
-        titleMetadataReferenceHeight_ = TitleTextWidth(L"1080");
+        // The dimension lanes retain four tabular-digit positions so the × and
+        // dot anchors remain fixed when either displayed dimension changes.
+        titleMetadataReferenceWidth_ = TitleTextWidth(L"0000");
+        titleMetadataReferenceHeight_ = TitleTextWidth(L"0000");
         titleMetadataReferenceSeparator_ = TitleTextWidth(kTopBarResolutionSeparator);
         titleMetadataReferenceDot_ = TitleTextWidth(L"\x2022");
         titleMetadataReferenceDetail_ = TitleTextWidth(L"24-bit");
@@ -10243,7 +10245,7 @@ private:
         const float dotRight = dotLeft + titleMetadataReferenceDot_;
         DrawTitleText(titleResolutionWidthText_, outerLeft, multiplyLeft - outerLeft - gap, brush, true, false, true);
         DrawTitleText(titleResolutionSeparatorText_, multiplyLeft, titleMetadataReferenceSeparator_, brush, false, true);
-        DrawTitleText(titleResolutionHeightText_, multiplyRight + gap, dotLeft - multiplyRight - gap * 2.0f, brush, true, false, true);
+        DrawTitleText(titleResolutionHeightText_, multiplyRight + gap, dotLeft - multiplyRight - gap * 2.0f, brush, true, false);
         DrawTitleText(L"\x2022", dotLeft, titleMetadataReferenceDot_, brush, false, true);
         DrawTitleText(titleDetailText_, dotRight + gap, outerRight - dotRight - gap, brush, true, false);
     }

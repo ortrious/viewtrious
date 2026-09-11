@@ -553,6 +553,38 @@ std::wstring FormatFramesPerSecond(float value) {
     return text;
 }
 
+std::wstring FormatFocalLength(double value) {
+    if (!std::isfinite(value) || value <= 0.0) return {};
+    const double rounded = std::round(value * 100.0) / 100.0;
+    wchar_t text[32]{};
+    swprintf_s(text, L"%.2f", rounded);
+    std::wstring compact(text);
+    while (!compact.empty() && compact.back() == L'0') compact.pop_back();
+    if (!compact.empty() && compact.back() == L'.') compact.pop_back();
+    return compact + L"mm";
+}
+
+std::wstring ReadImageFocalLength(const std::wstring& path) {
+    ComPtr<IPropertyStore> store;
+    if (FAILED(SHGetPropertyStoreFromParsingName(path.c_str(), nullptr, GPS_DEFAULT, IID_PPV_ARGS(&store)))) return {};
+    PROPVARIANT value{};
+    PropVariantInit(&value);
+    const HRESULT result = store->GetValue(PKEY_Photo_FocalLength, &value);
+    double millimeters = 0.0;
+    if (SUCCEEDED(result)) {
+        switch (value.vt) {
+        case VT_R8: millimeters = value.dblVal; break;
+        case VT_R4: millimeters = value.fltVal; break;
+        case VT_UI8: millimeters = static_cast<double>(value.uhVal.QuadPart); break;
+        case VT_UI4: millimeters = value.ulVal; break;
+        case VT_UI2: millimeters = value.uiVal; break;
+        default: break;
+        }
+    }
+    PropVariantClear(&value);
+    return FormatFocalLength(millimeters);
+}
+
 UINT GifMetadataUInt(IWICMetadataQueryReader* reader, const wchar_t* name, UINT fallback = 0) {
     if (!reader) return fallback;
     PROPVARIANT value{};
@@ -935,7 +967,7 @@ std::wstring FormatPlaybackRate(double rate) {
     return text;
 }
 
-FrameMetrics GetFrameMetrics(HWND window, bool includeVideoMetadata = false) {
+FrameMetrics GetFrameMetrics(HWND window) {
     const UINT dpi = GetDpiForWindow(window);
     const int titleBarHeight = MulDiv(40, dpi, 96);
     const int border = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
@@ -945,7 +977,7 @@ FrameMetrics GetFrameMetrics(HWND window, bool includeVideoMetadata = false) {
     const int separatorHeight = MulDiv(20, dpi, 96);
     const int sectionGutter = MulDiv(14, dpi, 96);
     const int filenameLeadIn = MulDiv(14, dpi, 96);
-    const int resolutionWidth = MulDiv(includeVideoMetadata ? 160 : 92, dpi, 96);
+    const int resolutionWidth = MulDiv(160, dpi, 96);
     const int fileSizeWidth = MulDiv(72, dpi, 96);
     RECT client{};
     GetClientRect(window, &client);
@@ -9259,6 +9291,8 @@ private:
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         resolutionText_ = std::to_wstring(width) + L"\u00D7" + std::to_wstring(height);
         fileSizeText_ = FormatFileSize(path);
+        const std::wstring focalLength = ReadImageFocalLength(path);
+        if (!focalLength.empty()) resolutionText_ += L"  \x2022  " + focalLength;
         filenameText_ = fs::path(path).filename().wstring();
         error_.clear();
         fitToWindow_ = true;
@@ -11348,8 +11382,7 @@ private:
     void DrawTitleBar() {
         if (fullscreen_) return;
 
-        const bool showVideoMetadata = VideoActive();
-        const FrameMetrics frame = GetFrameMetrics(window_, showVideoMetadata);
+        const FrameMetrics frame = GetFrameMetrics(window_);
         const bool dark = UseDarkAppMode();
         const D2D1_COLOR_F stripColor = dark ? D2D1::ColorF(29.0f / 255.0f, 32.0f / 255.0f, 38.0f / 255.0f)
             : D2D1::ColorF(242.0f / 255.0f, 242.0f / 255.0f, 242.0f / 255.0f);

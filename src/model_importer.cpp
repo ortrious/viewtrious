@@ -65,12 +65,11 @@ std::shared_ptr<ModelDocument> LoadStepDocumentFromAddon(const std::wstring& pat
     if (!valid) { addon.api.releaseResult(&result); error = L"The optional Viewtrious STEP add-on returned invalid model data."; return nullptr; }
     auto document = std::make_shared<ModelDocument>();
     MeshGeometry mesh; mesh.positions.assign(reinterpret_cast<const Float3*>(result.positions), reinterpret_cast<const Float3*>(result.positions)+result.positionCount); mesh.normals.assign(reinterpret_cast<const Float3*>(result.normals), reinterpret_cast<const Float3*>(result.normals)+result.positionCount); mesh.indices.assign(result.indices, result.indices+result.indexCount);
+    bool hasAuthoredColor = false; for (uint32_t i = 0; i < result.vertexColorCount; ++i) if (result.vertexColorFlags[i] & kViewtriousImporterColorAuthored) { hasAuthoredColor = true; break; }
+    if (hasAuthoredColor) { mesh.colors.reserve(result.vertexColorCount); for (uint32_t i = 0; i < result.vertexColorCount; ++i) { const auto& color = result.vertexColors[i]; mesh.colors.push_back(result.vertexColorFlags[i] & kViewtriousImporterColorAuthored && std::isfinite(color.x) && std::isfinite(color.y) && std::isfinite(color.z) ? Float3{color.x, color.y, color.z} : Float3{.72f, .75f, .80f}); } }
     document->geometries.push_back(std::move(mesh)); document->instances.push_back({0,Matrix4::Identity()}); document->bounds={{result.bounds.minimum.x,result.bounds.minimum.y,result.bounds.minimum.z},{result.bounds.maximum.x,result.bounds.maximum.y,result.bounds.maximum.z}}; document->sourceFormat=ModelSourceFormat::Step; document->sourceUnit=L"STEP"; document->unitScaleMillimeters=result.metersPerUnit*1000.0; document->metersPerUnit=result.metersPerUnit; document->triangleCadFaceIds.assign(result.triangleCadFaceIds,result.triangleCadFaceIds+result.triangleCadFaceIdCount);
     for(uint32_t i=0;i<result.rangeCount;++i) { const auto& range=result.ranges[i]; document->instanceRanges.push_back({range.sourceObjectId,range.buildItemIndex,range.firstVertex,range.vertexCount,range.firstTriangle,range.triangleCount,{{range.bounds.minimum.x,range.bounds.minimum.y,range.bounds.minimum.z},{range.bounds.maximum.x,range.bounds.maximum.y,range.bounds.maximum.z}}}); }
     StepImportedMetadata metadata;
-    metadata.vertexColors.reserve(result.vertexColorCount); metadata.vertexColorAlphas.reserve(result.vertexColorCount);
-    for (uint32_t i = 0; i < result.vertexColorCount; ++i) { const auto& color = result.vertexColors[i]; metadata.vertexColors.push_back({color.x, color.y, color.z}); metadata.vertexColorAlphas.push_back(color.w); }
-    metadata.vertexColorFlags.assign(result.vertexColorFlags, result.vertexColorFlags + result.vertexColorCount);
     metadata.hierarchy.reserve(result.hierarchyNodeCount);
     for (uint32_t i = 0; i < result.hierarchyNodeCount; ++i) {
         const auto& node = result.hierarchyNodes[i];

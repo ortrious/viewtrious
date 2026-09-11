@@ -81,9 +81,6 @@ struct StepImportedHierarchyNode {
     std::wstring name;
 };
 struct StepImportedMetadata {
-    std::vector<Float3> vertexColors;
-    std::vector<float> vertexColorAlphas;
-    std::vector<uint8_t> vertexColorFlags;
     std::vector<StepImportedHierarchyNode> hierarchy;
     std::vector<uint32_t> hierarchyChildIndices;
 };

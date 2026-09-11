@@ -106,6 +106,7 @@ constexpr UINT kVideoStepHoldThresholdMs = 250;
 constexpr UINT kVideoStepHoldIntervalMs = 16;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
+constexpr size_t kDeleteUndoStackLimit = 16;
 constexpr int kApplicationIconGroupResourceId = 101;
 constexpr int kFilmstripVideoIconGroupResourceId = 104;
 constexpr int kContextMenuRowCount = 8;
@@ -261,6 +262,54 @@ constexpr std::array<HelpTopic, 7> kHelpTopics{{
     { L"third-party notices", nullptr, 0, L"3D input device development tools and related technology are provided under license from 3Dconnexion. (c) 3Dconnexion 1992 - 2025. All rights reserved." },
 }};
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
+struct DeletedMediaUndoRecord {
+    std::wstring originalPath;
+    ComPtr<IShellItem> recycledItem;
+};
+class RecycleDeleteProgressSink final : public IFileOperationProgressSink {
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** result) override {
+        if (!result) return E_POINTER;
+        *result = nullptr;
+        if (iid == IID_IUnknown || iid == __uuidof(IFileOperationProgressSink)) {
+            *result = static_cast<IFileOperationProgressSink*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG references = --references_;
+        if (!references) delete this;
+        return references;
+    }
+    HRESULT STDMETHODCALLTYPE StartOperations() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE FinishOperations(HRESULT) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE PreRenameItem(DWORD, IShellItem*, LPCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE PostRenameItem(DWORD, IShellItem*, LPCWSTR, HRESULT, IShellItem*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE PreMoveItem(DWORD, IShellItem*, IShellItem*, LPCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE PostMoveItem(DWORD, IShellItem*, IShellItem*, LPCWSTR, HRESULT, IShellItem*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE PreCopyItem(DWORD, IShellItem*, IShellItem*, LPCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE PostCopyItem(DWORD, IShellItem*, IShellItem*, LPCWSTR, HRESULT, IShellItem*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE PreDeleteItem(DWORD, IShellItem*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE PostDeleteItem(DWORD, IShellItem*, HRESULT result, IShellItem* recycledItem) override {
+        if (SUCCEEDED(result) && recycledItem) recycledItem_ = recycledItem;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE PreNewItem(DWORD, IShellItem*, LPCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE PostNewItem(DWORD, IShellItem*, LPCWSTR, LPCWSTR, DWORD, HRESULT, IShellItem*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE UpdateProgress(UINT, UINT) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE ResetTimer() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE PauseTimer() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE ResumeTimer() override { return S_OK; }
+
+    ComPtr<IShellItem> TakeRecycledItem() { return std::move(recycledItem_); }
+
+private:
+    std::atomic<ULONG> references_{ 1 };
+    ComPtr<IShellItem> recycledItem_;
+};
 struct PixelBuffer {
     UINT width = 0;
     UINT height = 0;
@@ -458,8 +507,9 @@ protected:
     long SetActiveCommand(std::string) override { return navlib::make_result_code(navlib::navlib_errc::function_not_supported); }
     long SetMotionFlag(bool motion) override { if (setMotion) setMotion(motion); return 0; }
 };
-constexpr std::array<ShortcutEntry, 12> kKeyboardShortcutEntries{{
+constexpr std::array<ShortcutEntry, 13> kKeyboardShortcutEntries{{
     { L"Ctrl + O", L"Open file" }, { L"Ctrl + C", L"Copy media" }, { L"Ctrl + P", L"Print" }, { L"Delete", L"Move media to Recycle Bin" },
+    { L"Ctrl + Z", L"Restore last deleted media" },
     { L"Esc", L"Exit fullscreen, or close Viewtrious" }, { L"Left Arrow", L"Previous media" }, { L"Right Arrow", L"Next media" }, { L"+", L"Zoom in" },
     { L"-", L"Zoom out" }, { L"0", L"Reset zoom to center" }, { L"F11", L"Fullscreen" }, { L"Space", L"Play / pause video" },
 }};
@@ -6966,6 +7016,7 @@ public:
         if (drained) UpdateWindow(window_);
     }
     void QueueDirectoryRefreshFromWatcher() { QueueDirectoryRefresh(); }
+    void UndoLastDelete() { RestoreLastDeletedMedia(); }
 
 private:
     struct OffscreenModelIndicator { bool visible=false; D2D1_POINT_2F position{}, direction{}; RECT hit{}; };
@@ -8561,6 +8612,59 @@ private:
         return files[(index + 1) % files.size()].wstring();
     }
 
+    void PushDeletedMediaUndoRecord(std::wstring originalPath, ComPtr<IShellItem> recycledItem) {
+        if (!recycledItem) return;
+        if (deleteUndoStack_.size() == kDeleteUndoStackLimit) deleteUndoStack_.pop_front();
+        deleteUndoStack_.push_back({ std::move(originalPath), std::move(recycledItem) });
+    }
+
+    void RestoreLastDeletedMedia() {
+        if (deleteUndoStack_.empty()) return;
+        DeletedMediaUndoRecord& record = deleteUndoStack_.back();
+        const fs::path original(record.originalPath);
+        const fs::path parent = original.parent_path();
+        const DWORD originalAttributes = GetFileAttributesW(original.c_str());
+        if (originalAttributes != INVALID_FILE_ATTRIBUTES) {
+            ShowActionError(L"Viewtrious couldn't restore the deleted file because its original path is in use.");
+            return;
+        }
+        const DWORD parentAttributes = GetFileAttributesW(parent.c_str());
+        if (parentAttributes == INVALID_FILE_ATTRIBUTES || !(parentAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            ShowActionError(L"Viewtrious couldn't restore the deleted file because its original folder is unavailable.");
+            return;
+        }
+        ComPtr<IShellItem> destination;
+        ComPtr<IFileOperation> operation;
+        HRESULT hr = SHCreateItemFromParsingName(parent.c_str(), nullptr, IID_PPV_ARGS(&destination));
+        if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&operation));
+        if (SUCCEEDED(hr)) hr = operation->SetOwnerWindow(window_);
+        if (SUCCEEDED(hr)) hr = operation->SetOperationFlags(FOF_SILENT | FOF_NOCONFIRMATION);
+        const std::wstring filename = original.filename().wstring();
+        if (SUCCEEDED(hr)) hr = operation->MoveItem(record.recycledItem.Get(), destination.Get(), filename.c_str(), nullptr);
+        if (SUCCEEDED(hr)) hr = operation->PerformOperations();
+        BOOL aborted = FALSE;
+        if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
+        if (FAILED(hr) || aborted) {
+            ShowActionError(L"Viewtrious couldn't restore the deleted file from the Recycle Bin.");
+            return;
+        }
+
+        const std::wstring restoredPath = record.originalPath;
+        deleteUndoStack_.pop_back();
+        const double preservedFilmstripScroll = filmstripScroll_;
+        const bool hasCurrentMedia = !currentPath_.empty();
+        if (hasCurrentMedia) {
+            BuildNavigation(true);
+            filmstripScroll_ = std::clamp(preservedFilmstripScroll, 0.0, static_cast<double>(FilmstripMaximumScroll()));
+        }
+        const bool heldPresentation = !ModelActive() &&
+            (VideoActive() ? BeginVideoSiblingDissolve(restoredPath) : BeginStillDissolveToTarget(restoredPath));
+        if (FAILED(LoadContent(restoredPath, !hasCurrentMedia, L"delete-undo"))) {
+            if (heldPresentation) ClearStillDissolve();
+            ShowActionError(L"Viewtrious restored the file but couldn't open it.");
+        }
+    }
+
     void DeleteImage() {
         if (currentPath_.empty()) return;
         BuildNavigation(true);
@@ -8572,11 +8676,13 @@ private:
             (VideoActive() ? BeginVideoSiblingDissolve(*continuation) : BeginStillDissolveToTarget(*continuation));
         ComPtr<IShellItem> item;
         ComPtr<IFileOperation> operation;
+        ComPtr<RecycleDeleteProgressSink> progressSink;
+        progressSink.Attach(new RecycleDeleteProgressSink());
         HRESULT hr = SHCreateItemFromParsingName(currentPath_.c_str(), nullptr, IID_PPV_ARGS(&item));
         if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&operation));
         if (SUCCEEDED(hr)) hr = operation->SetOwnerWindow(window_);
         if (SUCCEEDED(hr)) hr = operation->SetOperationFlags(FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE);
-        if (SUCCEEDED(hr)) hr = operation->DeleteItem(item.Get(), nullptr);
+        if (SUCCEEDED(hr)) hr = operation->DeleteItem(item.Get(), progressSink.Get());
         if (SUCCEEDED(hr)) hr = operation->PerformOperations();
         BOOL aborted = FALSE;
         if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
@@ -8585,7 +8691,10 @@ private:
             ShowActionError(L"Windows could not move this image to the Recycle Bin.");
             return;
         }
-        if (!aborted) ShowImageAfterDelete(filesBeforeDelete, deleted);
+        if (!aborted) {
+            PushDeletedMediaUndoRecord(deleted.wstring(), progressSink->TakeRecycledItem());
+            ShowImageAfterDelete(filesBeforeDelete, deleted);
+        }
         else if (heldPresentation) ClearStillDissolve();
     }
 
@@ -12249,6 +12358,7 @@ private:
     bool confirmBeforeDeleting_ = true;
     bool swipeToNavigateWhenFit_ = false;
     bool deleteWarningSuppressOnConfirm_ = false;
+    std::deque<DeletedMediaUndoRecord> deleteUndoStack_;
     bool showZoomPercentage_ = true;
     ZoomHudPosition zoomHudPosition_ = ZoomHudPosition::BottomRight;
     bool animationsEnabled_ = true;
@@ -13027,6 +13137,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (wParam == VK_ESCAPE && !viewer->WelcomeOpen()) viewer->DismissOverlay();
             return 0;
         }
+        if (viewer->BuildPlateSizePopupOpen()) return 0;
+        if (GetKeyState(VK_CONTROL) < 0 && wParam == L'Z') { viewer->UndoLastDelete(); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'O') { viewer->OpenFile(); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'C') { viewer->InvokeContextAction(ContextAction::Copy); return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && wParam == L'P') { viewer->InvokeContextAction(ContextAction::Print); return 0; }

@@ -20,7 +20,7 @@ HRESULT VideoHoverFrameStream::Open(const VideoHoverPreviewRequest& r, const std
     ComPtr<IMFAttributes> a; if (SUCCEEDED(hr)) hr = MFCreateAttributes(&a, 1); if (SUCCEEDED(hr)) hr = a->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE); if (SUCCEEDED(hr)) hr = MFCreateSourceReaderFromURL(r.path.c_str(), a.Get(), &p->reader);
     const DWORD s = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM); if (SUCCEEDED(hr)) hr = p->reader->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE); if (SUCCEEDED(hr)) hr = p->reader->SetStreamSelection(s, TRUE); if (SUCCEEDED(hr)) hr = MFCreateMediaType(&p->type); if (SUCCEEDED(hr)) hr = p->type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); if (SUCCEEDED(hr)) hr = p->type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32); if (SUCCEEDED(hr)) hr = p->reader->SetCurrentMediaType(s, nullptr, p->type.Get()); if (SUCCEEDED(hr)) hr = p->reader->GetCurrentMediaType(s, &p->type);
     PROPVARIANT d{}; PropVariantInit(&d); if (SUCCEEDED(hr) && SUCCEEDED(p->reader->GetPresentationAttribute(static_cast<DWORD>(MF_SOURCE_READER_MEDIASOURCE), MF_PD_DURATION, &d)) && d.vt == VT_UI8) durationSeconds_ = d.uhVal.QuadPart / 10000000.0; PropVariantClear(&d);
-    if (!r.earliestFrame && std::isfinite(durationSeconds_) && durationSeconds_ > 0.0) {
+    if (std::isfinite(durationSeconds_) && durationSeconds_ > 0.0) {
         if (durationSeconds_ <= 4.0) startSeconds_ = 0.0;
         else if (durationSeconds_ <= 10.0) startSeconds_ = 1.0;
         else if (durationSeconds_ <= 10.0 * 60.0) startSeconds_ = 5.0;

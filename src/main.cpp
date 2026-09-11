@@ -6548,6 +6548,15 @@ public:
             videoOpeningPosterBlending_ = false;
             videoOpeningPosterShowing_ = false;
             KillTimer(window_, kVideoOpeningPosterBlendTimer);
+            std::wstring videoError;
+            if (!videoPlayer_.StartDeferredOpeningPlayback(videoError)) {
+                error_ = videoError.empty() ? L"Viewtrious could not start video playback." : videoError;
+                ClearStillDissolve();
+                DeactivateVideo();
+                InvalidateRect(window_, nullptr, FALSE);
+                return;
+            }
+            ScheduleVideoPlaybackTimer(true);
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -6572,8 +6581,8 @@ public:
         if (!transitioning) {
             if (holdPoster) DrawVideoOpeningPoster(1.0f);
             else if (poster && videoOpeningPosterBlending_) {
-                videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_);
-                DrawVideoOpeningPoster(1.0f - posterBlend);
+                DrawVideoOpeningPoster(1.0f);
+                videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, posterBlend);
             } else videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_);
             return;
         }
@@ -7279,7 +7288,7 @@ private:
         ResetVideoControls();
         EnsureRenderTarget();
         std::wstring videoError;
-        if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, openAttemptId, videoError)) {
+        if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, openAttemptId, openingPosterAvailable, videoError)) {
             ClearStillDissolve();
             ClearVideoOpeningPosterPresentation();
             contentKind_ = ContentKind::None;

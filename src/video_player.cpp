@@ -169,9 +169,10 @@ void VideoPlayer::RecordFramePacingEvent(FramePacingEvent, LONGLONG, HRESULT, do
 void VideoPlayer::RecordFramePacingEventAtQpc(FramePacingEvent, LONGLONG, LONGLONG, HRESULT, double, double) {}
 #endif
 
-bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, std::wstring& error) {
+bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, bool deferPlaybackForOpeningPoster, std::wstring& error) {
     Shutdown();
     openAttemptId_ = openAttemptId;
+    deferPlaybackForOpeningPoster_ = deferPlaybackForOpeningPoster;
     openStartedAtMs_ = GetTickCount64();
     lastMediaEvent_ = 0;
     lastSuccessfulLifecycleEvent_ = 0;
@@ -214,6 +215,7 @@ void VideoPlayer::Shutdown() {
     if (openAttemptId_) FileOpenDiagnostics::Log(openAttemptId_, L"video-shutdown-begin");
     FlushFramePacingDiagnostics();
     playing_ = ended_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
+    deferPlaybackForOpeningPoster_ = false;
     displayAdjustmentsBypassed_ = false;
     lastTransferredPts_ = 0;
     framesPerSecond_ = 0.0f;
@@ -314,6 +316,10 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
         }
     } else if (event == MF_MEDIA_ENGINE_EVENT_CANPLAY && !failed_) {
         ApplyPreferredPlaybackRate();
+        if (deferPlaybackForOpeningPoster_) {
+            FileOpenDiagnostics::Log(openAttemptId_, L"video-open-ready", L"elapsed-ms=" + std::to_wstring(elapsed) + L" deferred=opening-poster");
+            return true;
+        }
         const HRESULT play = engine_->Play();
         if (FAILED(play)) { error = L"Viewtrious could not start video playback."; FileOpenDiagnostics::Log(openAttemptId_, L"video-open-failed", L"stage=play " + HresultDetail(play)); failed_ = true; }
         else { playing_ = true; FileOpenDiagnostics::Log(openAttemptId_, L"video-open-ready", L"elapsed-ms=" + std::to_wstring(elapsed)); RecordFramePacingEvent(FramePacingEvent::PlaybackBegin); }
@@ -336,8 +342,27 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
     return true;
 }
 
+bool VideoPlayer::StartDeferredOpeningPlayback(std::wstring& error) {
+    if (!deferPlaybackForOpeningPoster_) return true;
+    deferPlaybackForOpeningPoster_ = false;
+    if (!engine_ || failed_) return false;
+    const HRESULT play = engine_->Play();
+    if (FAILED(play)) {
+        error = L"Viewtrious could not start video playback.";
+        FileOpenDiagnostics::Log(openAttemptId_, L"video-open-failed", L"stage=deferred-play " + HresultDetail(play));
+        failed_ = true;
+        return false;
+    }
+    playing_ = true;
+    const ULONGLONG elapsed = openStartedAtMs_ ? GetTickCount64() - openStartedAtMs_ : 0;
+    FileOpenDiagnostics::Log(openAttemptId_, L"video-playback-start", L"elapsed-ms=" + std::to_wstring(elapsed) + L" source=opening-poster");
+    RecordFramePacingEvent(FramePacingEvent::PlaybackBegin);
+    return true;
+}
+
 HRESULT VideoPlayer::TogglePlayPause() {
     if (!engine_ || failed_) return E_FAIL;
+    if (deferPlaybackForOpeningPoster_) return S_FALSE;
     if (playing_) {
         const HRESULT pause = engine_->Pause();
         if (SUCCEEDED(pause)) { playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackPause); }

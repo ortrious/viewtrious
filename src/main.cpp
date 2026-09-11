@@ -553,14 +553,41 @@ std::wstring FormatFramesPerSecond(float value) {
     return text;
 }
 
-std::wstring ReadImageBitDepth(const std::wstring& path) {
+std::wstring FormatFocalLength(double value) {
+    if (!std::isfinite(value) || value <= 0.0 || value > 10000.0) return {};
+    const double rounded = std::round(value * 100.0) / 100.0;
+    wchar_t text[32]{};
+    swprintf_s(text, L"%.2f", rounded);
+    std::wstring compact(text);
+    while (!compact.empty() && compact.back() == L'0') compact.pop_back();
+    if (!compact.empty() && compact.back() == L'.') compact.pop_back();
+    return compact + L"mm";
+}
+
+std::wstring ReadImageSecondaryMetadata(const std::wstring& path) {
     ComPtr<IPropertyStore> store;
     if (FAILED(SHGetPropertyStoreFromParsingName(path.c_str(), nullptr, GPS_DEFAULT, IID_PPV_ARGS(&store)))) return {};
     PROPVARIANT value{};
     PropVariantInit(&value);
-    const HRESULT result = store->GetValue(PKEY_Image_BitDepth, &value);
+    const HRESULT focalLengthResult = store->GetValue(PKEY_Photo_FocalLength, &value);
+    double focalLength = 0.0;
+    if (SUCCEEDED(focalLengthResult)) {
+        switch (value.vt) {
+        case VT_R8: focalLength = value.dblVal; break;
+        case VT_R4: focalLength = value.fltVal; break;
+        case VT_UI8: focalLength = static_cast<double>(value.uhVal.QuadPart); break;
+        case VT_UI4: focalLength = value.ulVal; break;
+        case VT_UI2: focalLength = value.uiVal; break;
+        default: break;
+        }
+    }
+    PropVariantClear(&value);
+    if (const std::wstring formatted = FormatFocalLength(focalLength); !formatted.empty()) return formatted;
+
+    PropVariantInit(&value);
+    const HRESULT bitDepthResult = store->GetValue(PKEY_Image_BitDepth, &value);
     UINT bitDepth = 0;
-    if (SUCCEEDED(result)) {
+    if (SUCCEEDED(bitDepthResult)) {
         switch (value.vt) {
         case VT_UI4: bitDepth = value.ulVal; break;
         case VT_UI2: bitDepth = value.uiVal; break;
@@ -964,7 +991,8 @@ FrameMetrics GetFrameMetrics(HWND window) {
     const int separatorHeight = MulDiv(20, dpi, 96);
     const int sectionGutter = MulDiv(14, dpi, 96);
     const int filenameLeadIn = MulDiv(14, dpi, 96);
-    const int resolutionWidth = MulDiv(160, dpi, 96);
+    // 150 DIP accommodates five-digit dimensions and a compact 1200mm secondary value at the 13-point title font.
+    const int resolutionWidth = MulDiv(150, dpi, 96);
     const int fileSizeWidth = MulDiv(72, dpi, 96);
     RECT client{};
     GetClientRect(window, &client);
@@ -7080,7 +7108,7 @@ public:
         titleResolutionWidthText_ = std::move(width);
         titleResolutionHeightText_ = std::move(height);
         titleResolutionSeparatorText_ = std::move(separator);
-        titleDetailText_ = detail.empty() ? L"-" : std::move(detail);
+        titleDetailText_ = std::move(detail);
         titleMetadataHandoffActive_ = false;
     }
 
@@ -9296,7 +9324,7 @@ private:
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         resolutionText_ = std::to_wstring(width) + L"\u00D7" + std::to_wstring(height);
         fileSizeText_ = FormatFileSize(path);
-        SetPresentationTitleMetadata(std::to_wstring(width), std::to_wstring(height), L"\u00D7", ReadImageBitDepth(path));
+        SetPresentationTitleMetadata(std::to_wstring(width), std::to_wstring(height), L"\u00D7", ReadImageSecondaryMetadata(path));
         filenameText_ = fs::path(path).filename().wstring();
         error_.clear();
         fitToWindow_ = true;
@@ -10174,20 +10202,21 @@ private:
 
     void DrawPresentationTitleMetadata(const FrameMetrics& frame, ID2D1Brush* brush) {
         if (titleResolutionWidthText_.empty() || titleResolutionHeightText_.empty()) return;
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float left = static_cast<float>(frame.resolutionLeft);
         const float width = static_cast<float>(frame.resolutionWidth);
-        const float multiplyCenter = left + width * 0.27f;
-        const float dotCenter = left + width * 0.66f;
-        const float multiplyWidth = width * 0.06f;
-        const float dotWidth = width * 0.05f;
-        const float gap = width * 0.0125f;
-        DrawTitleText(titleResolutionWidthText_, left, multiplyCenter - multiplyWidth * 0.5f - left - gap, brush, false, false, true);
+        const float multiplyCenter = left + 44.0f * scale;
+        const float dotCenter = left + 94.0f * scale;
+        const float multiplyWidth = 9.0f * scale;
+        const float dotWidth = 7.0f * scale;
+        const float gap = 2.0f * scale;
+        DrawTitleText(titleResolutionWidthText_, left, multiplyCenter - multiplyWidth * 0.5f - left - gap, brush, true, false, true);
         DrawTitleText(titleResolutionSeparatorText_, multiplyCenter - multiplyWidth * 0.5f, multiplyWidth, brush, false, true);
         DrawTitleText(titleResolutionHeightText_, multiplyCenter + multiplyWidth * 0.5f + gap,
-            dotCenter - dotWidth * 0.5f - multiplyCenter - multiplyWidth * 0.5f - gap * 2.0f, brush, false, false);
+            dotCenter - dotWidth * 0.5f - multiplyCenter - multiplyWidth * 0.5f - gap * 2.0f, brush, true, false);
         DrawTitleText(L"\x2022", dotCenter - dotWidth * 0.5f, dotWidth, brush, false, true);
         DrawTitleText(titleDetailText_, dotCenter + dotWidth * 0.5f + gap,
-            static_cast<float>(frame.resolutionSeparator.left) - dotCenter - dotWidth * 0.5f - gap, brush, false, true);
+            left + width - dotCenter - dotWidth * 0.5f - gap, brush, true, false);
     }
 
     static std::wstring FormatExactTriangleCount(uint64_t count) {

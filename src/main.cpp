@@ -6603,7 +6603,7 @@ private:
         const D2D1_ROUNDED_RECT bounds = D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 8.0f * scale, 8.0f * scale);
         renderTarget_->FillRoundedRectangle(bounds, panel.Get());
         renderTarget_->DrawRoundedRectangle(bounds, border.Get(), 1.0f);
-        DrawOverlayText(L"opening model...", left + 20.0f * scale, top + 40.0f * scale, width - 40.0f * scale, 20.0f * scale, 18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primary.Get(), true, false, true);
+        DrawOverlayText(L"opening model...", left + 20.0f * scale, top + 36.0f * scale, width - 40.0f * scale, 28.0f * scale, 18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primary.Get(), true, false, true);
         const bool determinate = modelLoadingProgressMode_ == LoadingProgressMode::Determinate;
         const float percentageWidth = 40.0f * scale, percentageGap = 8.0f * scale, trackHeight = 7.0f * scale;
         const float trackWidth = std::min(240.0f * scale, width - 40.0f * scale - (determinate ? percentageGap + percentageWidth : 0.0f));

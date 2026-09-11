@@ -122,6 +122,7 @@ constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kVideoFullscreenGlyphDurationMs = 140;
 constexpr ULONGLONG kStillDissolveDurationMs = 320;
 constexpr wchar_t kTopBarResolutionSeparator[] = L"\u00D7";
+constexpr float kTopBarMetadataReferenceVisualOffsetDip = -8.0f;
 constexpr UINT kStartupVideoSizingFallbackMs = 1500;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
@@ -10233,7 +10234,9 @@ private:
         const float outerLeft = static_cast<float>(frame.hamburgerSeparator.right);
         const float outerRight = static_cast<float>(frame.resolutionSeparator.left);
         const float referenceWidth = titleMetadataReferenceWidth_ + titleMetadataReferenceSeparator_ + titleMetadataReferenceDot_ + titleMetadataReferenceDetail_ + gap * 4.0f;
-        const float referenceLeft = outerLeft + std::max(0.0f, (outerRight - outerLeft - referenceWidth) * 0.5f);
+        // Center the rendered metadata glyphs visually within the fixed region.
+        const float referenceLeft = outerLeft + std::max(0.0f, (outerRight - outerLeft - referenceWidth) * 0.5f) +
+            kTopBarMetadataReferenceVisualOffsetDip * scale;
         const float multiplyLeft = referenceLeft + titleMetadataReferenceWidth_ + gap;
         const float dotLeft = multiplyLeft + titleMetadataReferenceSeparator_ + gap + titleMetadataReferenceHeight_ + gap;
         const float multiplyRight = multiplyLeft + titleMetadataReferenceSeparator_;

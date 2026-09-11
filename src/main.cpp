@@ -131,12 +131,14 @@ constexpr UINT_PTR kFilmstripVideoHoverFadeTimer = 20;
 constexpr UINT_PTR kImageAdjustmentPersistenceTimer = 21;
 constexpr UINT_PTR kVideoAdjustmentPersistenceTimer = 26;
 
-D2D1_COLOR_F OverlaySurfaceFill(float opacity = 1.0f) {
-    return D2D1::ColorF(15.0f / 255.0f, 17.0f / 255.0f, 21.0f / 255.0f, 0.78f * opacity);
+D2D1_COLOR_F AdjustmentSurfaceFill(bool dark, float opacity = 1.0f) {
+    return D2D1::ColorF(dark ? 35.0f / 255.0f : 246.0f / 255.0f, dark ? 38.0f / 255.0f : 246.0f / 255.0f,
+        dark ? 45.0f / 255.0f : 246.0f / 255.0f, 0.94f * opacity);
 }
 
-D2D1_COLOR_F OverlaySurfaceBorder(float opacity = 1.0f) {
-    return D2D1::ColorF(91.0f / 255.0f, 102.0f / 255.0f, 120.0f / 255.0f, 0.70f * opacity);
+D2D1_COLOR_F AdjustmentSurfaceBorder(bool dark, float opacity = 1.0f) {
+    return D2D1::ColorF(dark ? 78.0f / 255.0f : 180.0f / 255.0f, dark ? 82.0f / 255.0f : 180.0f / 255.0f,
+        dark ? 92.0f / 255.0f : 180.0f / 255.0f, 0.55f * opacity);
 }
 constexpr UINT_PTR kFilmstripHoverPreviewFadeTimer = 22;
 constexpr UINT_PTR kVideoAdjustmentsFadeTimer = 24;
@@ -5780,14 +5782,15 @@ public:
         const RECT strip = GetFilmstripBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float opacity = filmstripOpacity_;
+        const bool dark = UseDarkAppMode();
         const bool drawPreviewShell = FilmstripHoverPreviewEligible(filmstripPreviewIndex_) && !filmstripDragging_ && !filmstripScrollAnimating_ &&
             filmstripHoverPreviewOpacity_ > 0.001f;
         if (drawPreviewShell && !filmstripPreviewGeometryValid_) SetFilmstripHoverPreviewGeometry(static_cast<size_t>(filmstripPreviewIndex_));
         ComPtr<ID2D1SolidColorBrush> surface, border, previewSurface, previewBorder, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, placeholderText;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(OverlaySurfaceFill(opacity), &surface)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(OverlaySurfaceBorder(opacity), &border)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(OverlaySurfaceFill(opacity * filmstripHoverPreviewOpacity_), &previewSurface)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(OverlaySurfaceBorder(opacity * filmstripHoverPreviewOpacity_), &previewBorder)) ||
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, opacity), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, opacity), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, opacity * filmstripHoverPreviewOpacity_), &previewSurface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, opacity * filmstripHoverPreviewOpacity_), &previewBorder)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 90.f / 255, 160.f / 255, 0.22f * opacity), &selectedBacking)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255, 0.25f * opacity), &selectedGlow)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 150.f / 255, 255.f / 255, opacity), &selectedOutline)) ||
@@ -9580,8 +9583,8 @@ private:
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
         ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(OverlaySurfaceFill(), &surface)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(OverlaySurfaceBorder(), &border)) ||
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 1.0f), &text)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, 1.0f), &accent)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f), &track)) ||
@@ -9734,15 +9737,13 @@ private:
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
         ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(OverlaySurfaceFill(), &surface)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(OverlaySurfaceBorder(), &border)) ||
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, opacity), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, opacity), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, opacity), &text)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, opacity), &accent)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * opacity), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, opacity), &hover))) return;
 
-        surface->SetOpacity(opacity);
-        border->SetOpacity(opacity);
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         if (videoPlaybackSpeedPanelOpen_) {
             const VideoPlaybackSpeedPanelLayout panel = GetVideoPlaybackSpeedPanelLayout();
@@ -9827,8 +9828,8 @@ private:
             }
             }
             DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
-            surface->SetOpacity(opacity);
-            border->SetOpacity(opacity);
+            surface->SetOpacity(1.0f);
+            border->SetOpacity(1.0f);
             text->SetOpacity(1.0f);
             accent->SetOpacity(1.0f);
             track->SetOpacity(1.0f);

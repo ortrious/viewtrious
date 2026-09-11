@@ -1965,16 +1965,44 @@ public:
         } else {
             videoAdjustmentDetentIndex_ = -1;
         }
-        const float normalizedValue = static_cast<float>(value) / 100.0f;
-        if (index == 0) videoAdjustments_.exposure = normalizedValue * 2.0f;
-        else if (index == 1) videoAdjustments_.brightness = normalizedValue;
-        else if (index == 2) videoAdjustments_.contrast = normalizedValue;
-        else if (index == 3) videoAdjustments_.shadows = normalizedValue;
-        else if (index == 4) videoAdjustments_.highlights = normalizedValue;
-        else if (index == 5) videoAdjustments_.saturation = normalizedValue;
-        else videoAdjustments_.sharpness = normalizedValue * kSharpnessSliderMaximum;
+        SetAdjustmentSliderIntegerValue(videoAdjustments_, index, value);
         ApplyVideoAdjustments();
         QueueVideoAdjustmentPersistence();
+    }
+    int AdjustmentSliderIntegerValue(const ImageAdjustments& adjustments, int index) const {
+        if (index == 0) return std::clamp(static_cast<int>(std::lround(adjustments.exposure * 50.0f)), -100, 100);
+        if (index == 1) return std::clamp(static_cast<int>(std::lround(adjustments.brightness * 100.0f)), -100, 100);
+        if (index == 2) return std::clamp(static_cast<int>(std::lround(adjustments.contrast * 100.0f)), -100, 100);
+        if (index == 3) return std::clamp(static_cast<int>(std::lround(adjustments.shadows * 100.0f)), -100, 100);
+        if (index == 4) return std::clamp(static_cast<int>(std::lround(adjustments.highlights * 100.0f)), -100, 100);
+        if (index == 5) return std::clamp(static_cast<int>(std::lround(adjustments.saturation * 100.0f)), -100, 100);
+        return std::clamp(static_cast<int>(std::lround(adjustments.sharpness / kSharpnessSliderMaximum * 100.0f)), 0, 100);
+    }
+    void SetAdjustmentSliderIntegerValue(ImageAdjustments& adjustments, int index, int value) {
+        const float normalizedValue = static_cast<float>(std::clamp(value, index == 6 ? 0 : -100, 100)) / 100.0f;
+        if (index == 0) adjustments.exposure = normalizedValue * 2.0f;
+        else if (index == 1) adjustments.brightness = normalizedValue;
+        else if (index == 2) adjustments.contrast = normalizedValue;
+        else if (index == 3) adjustments.shadows = normalizedValue;
+        else if (index == 4) adjustments.highlights = normalizedValue;
+        else if (index == 5) adjustments.saturation = normalizedValue;
+        else adjustments.sharpness = normalizedValue * kSharpnessSliderMaximum;
+    }
+    int AdjustmentSliderAt(const VideoAdjustmentsPanelLayout& panel, POINT point) const {
+        const LONG verticalPadding = MulDiv(6, GetDpiForWindow(window_), 96);
+        for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
+            const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - verticalPadding,
+                panel.sliders[index].right, panel.sliders[index].bottom + verticalPadding };
+            if (PtInRect(&hit, point)) return index;
+        }
+        return -1;
+    }
+    int ConsumeAdjustmentWheelSteps(int index, int rawWheelDelta, int& hoveredIndex, int& remainder) {
+        if (hoveredIndex != index) { hoveredIndex = index; remainder = 0; }
+        remainder += rawWheelDelta;
+        const int steps = remainder / WHEEL_DELTA;
+        remainder %= WHEEL_DELTA;
+        return steps;
     }
     ZoomHudLayout GetZoomHudLayout(const RECT& canvas, bool includeAdjustmentButton) const {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
@@ -2041,6 +2069,9 @@ public:
         const bool wasMoving = VideoAdjustmentsPanelMotionActive();
         if (wasMoving) UpdateVideoAdjustmentsPanelPlacementMotion();
         imageAdjustmentsDragging_ = -1;
+        imageAdjustmentWheelRow_ = -1;
+        imageAdjustmentWheelRemainder_ = 0;
+        filmstripPreviewGeometryValid_ = false;
         if (!open && imageAdjustmentsOriginalPreviewActive_) {
             SetImageAdjustmentsOriginalPreview(false);
             if (GetCapture() == window_) ReleaseCapture();
@@ -2069,16 +2100,42 @@ public:
         if (imageAdjustmentDetentIndex_ == index && std::abs(continuous - imageAdjustmentDetentValue_) <= (zeroDetent ? 3.25f : 1.10f)) integer = imageAdjustmentDetentValue_;
         else if (std::abs(continuous - detent) <= (zeroDetent ? 1.75f : 0.30f)) { integer = detent; imageAdjustmentDetentIndex_ = index; imageAdjustmentDetentValue_ = detent; }
         else imageAdjustmentDetentIndex_ = -1;
-        const float value = static_cast<float>(integer) / 100.0f;
-        if (index == 0) imageAdjustments_.exposure = value * 2.0f;
-        else if (index == 1) imageAdjustments_.brightness = value;
-        else if (index == 2) imageAdjustments_.contrast = value;
-        else if (index == 3) imageAdjustments_.shadows = value;
-        else if (index == 4) imageAdjustments_.highlights = value;
-        else if (index == 5) imageAdjustments_.saturation = value;
-        else imageAdjustments_.sharpness = value * kSharpnessSliderMaximum;
+        SetAdjustmentSliderIntegerValue(imageAdjustments_, index, integer);
         ApplyImageAdjustments();
         QueueImageAdjustmentPersistence();
+    }
+    bool HandleAdjustmentPanelWheel(POINT point, int rawWheelDelta) {
+        if (ImageAdjustmentsPanelContains(point)) {
+            const int index = AdjustmentSliderAt(GetImageAdjustmentsPanelLayout(), point);
+            if (index < 0) { imageAdjustmentWheelRow_ = -1; imageAdjustmentWheelRemainder_ = 0; return true; }
+            const int steps = ConsumeAdjustmentWheelSteps(index, rawWheelDelta, imageAdjustmentWheelRow_, imageAdjustmentWheelRemainder_);
+            if (!steps) return true;
+            const int value = AdjustmentSliderIntegerValue(imageAdjustments_, index);
+            const int adjusted = std::clamp(value + steps, index == 6 ? 0 : -100, 100);
+            if (adjusted == value) return true;
+            SetAdjustmentSliderIntegerValue(imageAdjustments_, index, adjusted);
+            ApplyImageAdjustments();
+            QueueImageAdjustmentPersistence();
+            return true;
+        }
+        if (VideoAdjustmentsPanelContains(point)) {
+            const int index = AdjustmentSliderAt(GetVideoAdjustmentsPanelPresentedLayout(), point);
+            if (index < 0) { videoAdjustmentWheelRow_ = -1; videoAdjustmentWheelRemainder_ = 0; return true; }
+            const int steps = ConsumeAdjustmentWheelSteps(index, rawWheelDelta, videoAdjustmentWheelRow_, videoAdjustmentWheelRemainder_);
+            if (!steps) return true;
+            const int value = AdjustmentSliderIntegerValue(videoAdjustments_, index);
+            const int adjusted = std::clamp(value + steps, index == 6 ? 0 : -100, 100);
+            if (adjusted == value) return true;
+            SetAdjustmentSliderIntegerValue(videoAdjustments_, index, adjusted);
+            ApplyVideoAdjustments();
+            QueueVideoAdjustmentPersistence();
+            return true;
+        }
+        imageAdjustmentWheelRow_ = -1;
+        imageAdjustmentWheelRemainder_ = 0;
+        videoAdjustmentWheelRow_ = -1;
+        videoAdjustmentWheelRemainder_ = 0;
+        return false;
     }
     bool BuildAiImage(AiImageBuffer& image) {
         if (!source_ || !wicFactory_) return false;
@@ -2129,10 +2186,8 @@ public:
         if (imageAdjustmentsPanelOpen_) {
             const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
             if (PtInRect(&panel.panel, point)) {
-                for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
-                    const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
-                    if (PtInRect(&hit, point)) { imageAdjustmentsDragging_ = index; imageAdjustmentDetentIndex_ = -1; UpdateImageAdjustmentSlider(index, point); return true; }
-                }
+                const int slider = AdjustmentSliderAt(panel, point);
+                if (slider >= 0) { imageAdjustmentsDragging_ = slider; imageAdjustmentDetentIndex_ = -1; UpdateImageAdjustmentSlider(slider, point); return true; }
                 if (PtInRect(&panel.autoButton, point)) { StartAiAnalysis(); return true; }
                 if (PtInRect(&panel.originalButton, point)) { SetImageAdjustmentsOriginalPreview(true); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetImageAdjustments(); return true; }
@@ -2312,10 +2367,8 @@ public:
         if (videoAdjustmentsPanelOpen_) {
             const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
             if (PtInRect(&panel.panel, point)) {
-                for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
-                    const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - MulDiv(6, GetDpiForWindow(window_), 96), panel.sliders[index].right, panel.sliders[index].bottom + MulDiv(6, GetDpiForWindow(window_), 96) };
-                    if (PtInRect(&hit, point)) { videoAdjustmentsDragging_ = index; videoAdjustmentDetentIndex_ = -1; UpdateVideoAdjustmentSlider(index, point); return true; }
-                }
+                const int slider = AdjustmentSliderAt(panel, point);
+                if (slider >= 0) { videoAdjustmentsDragging_ = slider; videoAdjustmentDetentIndex_ = -1; UpdateVideoAdjustmentSlider(slider, point); return true; }
                 if (PtInRect(&panel.autoButton, point)) { AutoVideoAdjustments(); return true; }
                 if (PtInRect(&panel.originalButton, point)) { SetVideoAdjustmentsOriginalPreview(true); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetVideoAdjustments(); return true; }
@@ -4199,7 +4252,7 @@ public:
     bool FilmstripEligible() const {
         return source_ && navigationBuilt_ && navigationFiles_.size() > 1 && !HasOverlay() && !TutorialActive() && !tutorialPresentation_;
     }
-    bool FilmstripVisible() const { return FilmstripEligible() && filmstripOpacity_ > 0.001f; }
+    bool FilmstripVisible() const { const RECT bounds = GetFilmstripBounds(); return FilmstripEligible() && filmstripOpacity_ > 0.001f && bounds.right > bounds.left; }
     int FilmstripHeight() const {
         if (!FilmstripEligible()) return 0;
         RECT client{};
@@ -4250,7 +4303,18 @@ public:
         const int width = std::min(maximumWidth, std::max(minimumWidth, static_cast<int>(std::ceil(contentWidth))));
         const int left = (client.right - width) / 2;
         const int bottomMargin = MulDiv(16, dpi, 96);
-        return { left, client.bottom - bottomMargin - height, left + width, client.bottom - bottomMargin };
+        const int top = client.bottom - bottomMargin - height;
+        const int right = left + width;
+        if (!ImageAdjustmentsPanelVisible()) return { left, top, right, client.bottom - bottomMargin };
+        const RECT adjustmentPanel = GetImageAdjustmentsPanelLayout().panel;
+        if (adjustmentPanel.bottom <= top || adjustmentPanel.top >= client.bottom - bottomMargin)
+            return { left, top, right, client.bottom - bottomMargin };
+        const int clearance = MulDiv(14, dpi, 96);
+        const int reservedRight = adjustmentPanel.left - clearance;
+        if (reservedRight >= right) return { left, top, right, client.bottom - bottomMargin };
+        const int availableWidth = reservedRight - left;
+        const int shortenedRight = availableWidth >= minimumWidth ? reservedRight : std::max(left, reservedRight);
+        return { left, top, shortenedRight, client.bottom - bottomMargin };
     }
     bool FilmstripContains(POINT point) const { const RECT bounds = GetFilmstripBounds(); return FilmstripVisible() && PtInRect(&bounds, point); }
     RECT GetFilmstripHoverDelaySliderBounds() const {
@@ -11386,6 +11450,8 @@ private:
     bool imageAdjustmentsOriginalPreviewActive_ = false;
     int imageAdjustmentDetentIndex_ = -1;
     int imageAdjustmentDetentValue_ = 0;
+    int imageAdjustmentWheelRow_ = -1;
+    int imageAdjustmentWheelRemainder_ = 0;
     bool videoAdjustmentsPanelOpen_ = false;
     bool videoAdjustmentsPanelFadeActive_ = false;
     float videoAdjustmentsPanelOpacity_ = 0.0f;
@@ -11400,6 +11466,8 @@ private:
     bool videoAdjustmentsOriginalPreviewActive_ = false;
     int videoAdjustmentDetentIndex_ = -1;
     int videoAdjustmentDetentValue_ = 0;
+    int videoAdjustmentWheelRow_ = -1;
+    int videoAdjustmentWheelRemainder_ = 0;
     DWORD videoPreferredPlaybackRatePercent_ = 100;
     double videoEffectivePlaybackRate_ = 1.0;
     bool videoPlaybackSpeedPanelOpen_ = false;
@@ -11796,6 +11864,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->ComponentsPanelContains(point)) { viewer->ScrollComponentsPanel(-static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA * MulDiv(54, GetDpiForWindow(window), 96)); return 0; }
+        if (viewer->HandleAdjustmentPanelWheel(point, GET_WHEEL_DELTA_WPARAM(wParam))) return 0;
         if (viewer->FilmstripContains(point)) {
             viewer->ScrollFilmstrip(GET_WHEEL_DELTA_WPARAM(wParam));
             return 0;

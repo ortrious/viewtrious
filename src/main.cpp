@@ -1218,13 +1218,15 @@ public:
         videoWindowSizing_ = videoWindowSizing == static_cast<DWORD>(VideoWindowSizing::ResizeWindowToVideo) ? VideoWindowSizing::ResizeWindowToVideo : VideoWindowSizing::FitToWindow;
         DWORD videoMuted = 0;
         ReadSetting(L"VideoMuted", videoMuted);
-        videoMuted_ = videoMuted != 0;
         DWORD videoAutoPlayNext = 0;
         ReadSetting(L"VideoAutoPlayNext", videoAutoPlayNext);
         videoAutoPlayNext_ = videoAutoPlayNext != 0;
         DWORD videoVolumeMilli = 1000;
         ReadSetting(L"VideoVolumeMilli", videoVolumeMilli);
         videoVolume_ = videoVolumeMilli <= 1000 ? static_cast<double>(videoVolumeMilli) / 1000.0 : 1.0;
+        videoLastNonZeroVolume_ = videoVolume_ > 0.0 ? videoVolume_ : 1.0;
+        videoMuted_ = videoMuted != 0 || videoVolume_ <= 0.0;
+        if (videoMuted_) videoVolume_ = 0.0;
         reuseImageWindow_ = ReadExternalOpenBehavior(L"ImageExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
         reuseVideoWindow_ = ReadExternalOpenBehavior(L"VideoExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
         DWORD onboardingVersion = 0;
@@ -1640,14 +1642,18 @@ public:
         const int playLeft = left + padding;
         const int stepBackwardLeft = playLeft + buttonWidth + gap;
         const int stepForwardLeft = stepBackwardLeft + buttonWidth + gap;
-        const int muteLeft = stepForwardLeft + buttonWidth + gap;
         const int speedWidth = std::min(MulDiv(46, dpi, 96), std::max(MulDiv(34, dpi, 96), buttonWidth + gap));
         const int fullscreenLeft = left + width - padding - buttonWidth;
         const int speedLeft = fullscreenLeft - gap - speedWidth;
         const int autoPlayNextLeft = speedLeft - gap - buttonWidth;
+        const int volumeGroupLeftLimit = stepForwardLeft + buttonWidth + gap;
+        const int volumeGroupRightLimit = autoPlayNextLeft - gap;
+        const int volumeWidth = std::min(MulDiv(90, dpi, 96), std::max(1, volumeGroupRightLimit - volumeGroupLeftLimit - buttonWidth - gap));
+        const int volumeGroupWidth = buttonWidth + gap + volumeWidth;
+        const int centeredVolumeGroupLeft = left + (width - volumeGroupWidth) / 2;
+        const int muteLeft = std::clamp(centeredVolumeGroupLeft, volumeGroupLeftLimit,
+            std::max(volumeGroupLeftLimit, volumeGroupRightLimit - volumeGroupWidth));
         const int volumeLeft = muteLeft + buttonWidth + gap;
-        const int volumeAvailable = std::max(1, autoPlayNextLeft - gap - volumeLeft);
-        const int volumeWidth = std::min(MulDiv(90, dpi, 96), std::max(MulDiv(44, dpi, 96), volumeAvailable));
         return { { left, top, left + width, top + height },
             { currentLeft, top + padding, currentLeft + timeWidth, top + padding + timelineHeight },
             { scrubberLeft, top + padding, scrubberRight, top + padding + timelineHeight },
@@ -6277,10 +6283,17 @@ public:
         lastDragPoint_ = point;
         SetCapture(window_);
     }
-    void SetVideoVolume(double volume) {
+    void SetVideoVolume(double volume, bool persist = true) {
         videoVolume_ = std::clamp(volume, 0.0, 1.0);
-        if (VideoActive()) videoPlayer_.SetVolume(videoVolume_);
+        videoMuted_ = videoVolume_ <= 0.0;
+        if (!videoMuted_) videoLastNonZeroVolume_ = videoVolume_;
+        if (VideoActive()) {
+            videoPlayer_.SetVolume(videoVolume_);
+            videoPlayer_.SetMuted(videoMuted_);
+        }
+        if (!persist) return;
         WriteSetting(L"VideoVolumeMilli", static_cast<DWORD>(std::lround(videoVolume_ * 1000.0)));
+        WriteSetting(L"VideoMuted", videoMuted_ ? 1 : 0);
     }
     void UpdateVideoVolume(POINT point) {
         const RECT volume = GetVideoControlsLayout().volume;
@@ -6293,9 +6306,7 @@ public:
     }
     void ToggleVideoMute() {
         if (!VideoActive()) return;
-        videoMuted_ = !videoMuted_;
-        videoPlayer_.SetMuted(videoMuted_);
-        WriteSetting(L"VideoMuted", videoMuted_ ? 1 : 0);
+        SetVideoVolume(videoMuted_ ? videoLastNonZeroVolume_ : 0.0);
     }
     void ToggleVideoAutoPlayNext() {
         videoAutoPlayNext_ = !videoAutoPlayNext_;
@@ -7276,8 +7287,7 @@ private:
             FileOpenDiagnostics::Log(openAttemptId, L"video-load-failed", L"message=\"" + error_ + L"\"");
             RestoreVideoWindowBounds();
         } else {
-            videoPlayer_.SetMuted(videoMuted_);
-            videoPlayer_.SetVolume(videoVolume_);
+            SetVideoVolume(videoVolume_, false);
             videoPlayer_.SetDisplayAdjustments(videoAdjustments_);
             videoPlayer_.SetPreferredPlaybackRate(PlaybackRateFromPercent(videoPreferredPlaybackRatePercent_));
             videoEffectivePlaybackRate_ = videoPlayer_.EffectivePlaybackRate();
@@ -10384,7 +10394,7 @@ private:
         if (videoControlsHovered_ == ButtonKind::VideoPlayPause) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playPause), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
-        if (videoControlsHovered_ == ButtonKind::VideoMute) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), hover.Get());
+        if (videoControlsHovered_ == ButtonKind::VideoMute || videoMuted_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), videoMuted_ ? accent.Get() : hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext || videoAutoPlayNext_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.autoPlayNext), 5.0f * scale, 5.0f * scale), videoAutoPlayNext_ ? accent.Get() : hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoPlaybackSpeed || videoPlaybackSpeedPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playbackSpeed), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoFullscreen) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.fullscreen), 5.0f * scale, 5.0f * scale), hover.Get());
@@ -10485,12 +10495,12 @@ private:
         const float muteCenterX = (layout.mute.left + layout.mute.right) * 0.5f;
         const float muteCenterY = (layout.mute.top + layout.mute.bottom) * 0.5f;
         const float speaker = 5.0f * scale;
-        const float muteGlyphCenterX = muteCenterX - (videoPlayer_.Muted() ? 2.5f : 1.4f) * scale;
+        const float muteGlyphCenterX = muteCenterX - (videoMuted_ ? 2.5f : 1.4f) * scale;
         renderTarget_->FillRectangle(D2D1::RectF(muteGlyphCenterX - speaker, muteCenterY - speaker * 0.45f, muteGlyphCenterX - speaker * 0.35f, muteCenterY + speaker * 0.45f), text.Get());
         renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX - speaker * 0.35f, muteCenterY - speaker * 0.45f), D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY - speaker), text.Get(), 1.6f * scale);
         renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY + speaker), text.Get(), 1.6f * scale);
         renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 0.55f, muteCenterY + speaker), D2D1::Point2F(muteGlyphCenterX - speaker * 0.35f, muteCenterY + speaker * 0.45f), text.Get(), 1.6f * scale);
-        if (videoPlayer_.Muted()) {
+        if (videoMuted_) {
             renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker * 2.0f, muteCenterY + speaker), accent.Get(), 1.8f * scale);
             renderTarget_->DrawLine(D2D1::Point2F(muteGlyphCenterX + speaker * 2.0f, muteCenterY - speaker), D2D1::Point2F(muteGlyphCenterX + speaker, muteCenterY + speaker), accent.Get(), 1.8f * scale);
         } else {
@@ -12146,6 +12156,7 @@ private:
     std::wstring videoAutoPlayNextCountdownSourcePath_;
     std::wstring videoAutoPlayNextCountdownTargetPath_;
     double videoVolume_ = 1.0;
+    double videoLastNonZeroVolume_ = 1.0;
     VideoWindowSizing videoWindowSizing_ = VideoWindowSizing::FitToWindow;
     bool videoSizingAppliedForCurrentVideo_ = false;
     bool videoInitialZoomApplied_ = false;

@@ -218,7 +218,7 @@ constexpr std::array<HelpSection, 3> kSpaceMouseSections{{
 constexpr std::array<HelpSection, 3> kSupportedFileTypeSections{{
     { L"images", L"PNG, JPEG, BMP, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF" },
     { L"video", L"MP4, MOV, MKV, GIF" },
-    { L"3D", L"STL, 3MF; STEP and STP when the optional Open CASCADE Technology add-on is installed." },
+    { L"3D", L"STL and 3MF, with 3MF colors, slicer multimaterial, and Components hierarchy support." },
 }};
 constexpr std::array<HelpSection, 4> kSettingsSections{{
     { L"general", L"application-wide behavior." },
@@ -244,7 +244,7 @@ constexpr std::array<HelpTopic, 7> kHelpTopics{{
     { L"settings", kSettingsSections.data(), kSettingsSections.size(), L"" },
     { L"troubleshooting", kTroubleshootingSections.data(), kTroubleshootingSections.size(), L"" },
     { L"feedback and about", kFeedbackAndAboutSections.data(), kFeedbackAndAboutSections.size(), L"" },
-    { L"third-party notices", nullptr, 0, L"3D input device development tools and related technology are provided under license from 3Dconnexion. (c) 3Dconnexion 1992 - 2025. All rights reserved.\n\nOpen CASCADE Technology support is provided by the optional STEP add-on under GNU LGPL version 2.1 with the Open CASCADE exception." },
+    { L"third-party notices", nullptr, 0, L"3D input device development tools and related technology are provided under license from 3Dconnexion. (c) 3Dconnexion 1992 - 2025. All rights reserved." },
 }};
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
 struct PixelBuffer {
@@ -493,7 +493,7 @@ bool IsSupportedExtension(const fs::path& path) {
         extension == L".tiff" || extension == L".ico" || extension == L".webp" ||
         extension == L".heic" || extension == L".heif" || extension == L".avif" ||
         extension == L".dng" || extension == L".cr2" || extension == L".cr3" ||
-        extension == L".nef" || extension == L".arw" || extension == L".raf" || extension == L".mp4" || extension == L".mov" || extension == L".mkv" || extension == L".stl" || extension == L".3mf" || extension == L".step" || extension == L".stp";
+        extension == L".nef" || extension == L".arw" || extension == L".raf" || extension == L".mp4" || extension == L".mov" || extension == L".mkv" || extension == L".stl" || extension == L".3mf";
 }
 
 
@@ -742,6 +742,21 @@ bool DeleteRegistryTreeIfPresent(HKEY root, const wchar_t* path) {
     const LONG result = RegDeleteTreeW(root, path);
     if (result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return true;
     TraceRegistryFailure(L"delete", path, L"", result);
+    return false;
+}
+
+bool DeleteRegistryValueIfPresent(HKEY root, const wchar_t* path, const wchar_t* name) {
+    HKEY key = nullptr;
+    const LONG openResult = RegOpenKeyExW(root, path, 0, KEY_SET_VALUE, &key);
+    if (openResult == ERROR_FILE_NOT_FOUND || openResult == ERROR_PATH_NOT_FOUND) return true;
+    if (openResult != ERROR_SUCCESS) {
+        TraceRegistryFailure(L"open for delete", path, name, openResult);
+        return false;
+    }
+    const LONG deleteResult = RegDeleteValueW(key, name);
+    RegCloseKey(key);
+    if (deleteResult == ERROR_SUCCESS || deleteResult == ERROR_FILE_NOT_FOUND) return true;
+    TraceRegistryFailure(L"delete", path, name, deleteResult);
     return false;
 }
 
@@ -1362,7 +1377,7 @@ public:
         ComPtr<IFileOpenDialog> dialog;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
         static const COMDLG_FILTERSPEC filters[] = {
-            { L"Supported files", StepAddonPresent() ? L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.mp4;*.mov;*.mkv;*.stl;*.3mf;*.step;*.stp" : L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.mp4;*.mov;*.mkv;*.stl;*.3mf" },
+            { L"Supported files", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.mp4;*.mov;*.mkv;*.stl;*.3mf" },
             { L"All files", L"*.*" },
         };
         dialog->SetFileTypes(ARRAYSIZE(filters), filters);
@@ -7117,10 +7132,13 @@ private:
             return success;
         };
         bool success = true;
-        if (StepAddonPresent()) {
-            const Association stepAssociations[] = { { L".step", L"Viewtrious.step", L"STEP File", 105 }, { L".stp", L"Viewtrious.stp", L"STP File", 105 } };
-            for (const Association& association : stepAssociations) success &= registerAssociation(association);
-        }
+        const std::wstring capabilitiesAssociationsPath = std::wstring(kCapabilitiesPath) + L"\\FileAssociations";
+        success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\Viewtrious.step");
+        success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\Viewtrious.stp");
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, capabilitiesAssociationsPath.c_str(), L".step");
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, capabilitiesAssociationsPath.c_str(), L".stp");
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\.step\\OpenWithProgids", L"Viewtrious.step");
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\.stp\\OpenWithProgids", L"Viewtrious.stp");
         for (const Association& association : associations) success &= registerAssociation(association);
         success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
         success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"Viewtrious image viewer");
@@ -7133,10 +7151,6 @@ private:
         bool autoProgIdChanged = false;
         success &= Reconcile3DAutoProgId(L".stl", executable, autoProgIdChanged);
         success &= Reconcile3DAutoProgId(L".3mf", executable, autoProgIdChanged);
-        if (StepAddonPresent()) {
-            success &= Reconcile3DAutoProgId(L".step", executable, autoProgIdChanged);
-            success &= Reconcile3DAutoProgId(L".stp", executable, autoProgIdChanged);
-        }
         if (success) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
         return success;
     }
@@ -10285,14 +10299,11 @@ private:
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             constexpr float formatPanelTop = 102.0f, formatPanelHeight = 200.0f, formatPanelPadding = 12.0f;
-            constexpr float categoryLineHeight = 20.0f, formatLineHeight = 18.0f, labelToFormatsGap = 6.0f, familyGap = 12.0f, noteGap = 4.0f, closingTop = 318.0f;
-            ComPtr<ID2D1SolidColorBrush> formatPanelBrush, formatNoteBrush;
+            constexpr float categoryLineHeight = 20.0f, formatLineHeight = 18.0f, labelToFormatsGap = 6.0f, familyGap = 12.0f, closingTop = 318.0f;
+            ComPtr<ID2D1SolidColorBrush> formatPanelBrush;
             const D2D1_COLOR_F formatPanelColor = dark ? D2D1::ColorF(34.0f / 255.0f, 37.0f / 255.0f, 44.0f / 255.0f)
                 : D2D1::ColorF(242.0f / 255.0f, 242.0f / 255.0f, 242.0f / 255.0f);
-            const D2D1_COLOR_F formatNoteColor = dark ? D2D1::ColorF(155.0f / 255.0f, 158.0f / 255.0f, 166.0f / 255.0f)
-                : D2D1::ColorF(112.0f / 255.0f, 112.0f / 255.0f, 112.0f / 255.0f);
-            if (FAILED(renderTarget_->CreateSolidColorBrush(formatPanelColor, &formatPanelBrush)) ||
-                FAILED(renderTarget_->CreateSolidColorBrush(formatNoteColor, &formatNoteBrush))) return;
+            if (FAILED(renderTarget_->CreateSolidColorBrush(formatPanelColor, &formatPanelBrush))) return;
             const D2D1_RECT_F formatPanel = D2D1::RectF(left, static_cast<float>(bounds.top) + formatPanelTop * dpiScale,
                 left + contentWidth, static_cast<float>(bounds.top) + (formatPanelTop + formatPanelHeight) * dpiScale);
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(formatPanel, 6.0f * dpiScale, 6.0f * dpiScale), formatPanelBrush.Get());
@@ -10311,10 +10322,7 @@ private:
             const float modelsTop = videoTop + familyHeight + familyGap;
             drawFormatFamily(L"images", L"JPG, JPEG, PNG, BMP, GIF, HEIC, HEIF, DNG", imagesTop);
             drawFormatFamily(L"video", L"MP4, MOV, MKV", videoTop);
-            drawFormatFamily(L"3D", StepAddonPresent() ? L"STL, 3MF, STEP, STP" : L"STL, 3MF", modelsTop);
-            DrawOverlayText(L"STEP/STP require the optional add-on", formatLeft,
-                static_cast<float>(bounds.top) + (modelsTop + familyHeight + noteGap) * dpiScale, formatWidth, 16.0f * dpiScale,
-                13.0f, DWRITE_FONT_WEIGHT_NORMAL, formatNoteBrush.Get());
+            drawFormatFamily(L"3D", L"STL, 3MF", modelsTop);
             DrawOverlayText(L"close Windows Settings when you are finished.", left,
                 static_cast<float>(bounds.top) + closingTop * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());

@@ -10173,7 +10173,7 @@ private:
         if (titleResolutionWidthText_.empty() || titleResolutionHeightText_.empty()) return;
         const float left = static_cast<float>(frame.resolutionLeft);
         const float width = static_cast<float>(frame.resolutionWidth);
-        const float multiplyCenter = left + width * 0.33f;
+        const float multiplyCenter = left + width * 0.27f;
         const float dotCenter = left + width * 0.66f;
         const float multiplyWidth = width * 0.06f;
         const float dotWidth = width * 0.05f;
@@ -10184,7 +10184,7 @@ private:
             dotCenter - dotWidth * 0.5f - multiplyCenter - multiplyWidth * 0.5f - gap * 2.0f, brush, false, false);
         DrawTitleText(L"\x2022", dotCenter - dotWidth * 0.5f, dotWidth, brush, false, true);
         DrawTitleText(titleDetailText_, dotCenter + dotWidth * 0.5f + gap,
-            left + width - dotCenter - dotWidth * 0.5f - gap, brush, false, true);
+            static_cast<float>(frame.resolutionSeparator.left) - dotCenter - dotWidth * 0.5f - gap, brush, false, true);
     }
 
     static std::wstring FormatExactTriangleCount(uint64_t count) {

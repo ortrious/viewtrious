@@ -1183,6 +1183,8 @@ public:
         tourPending_ = tourPending != 0;
         aiAddon_.Initialize();
         startupPath_ = path;
+        coldOpenFadePending_ = !path.empty() && !IsModelPath(path);
+        coldOpenFadePath_ = path;
         startupVideoSizingRequested_ = videoWindowSizing_ == VideoWindowSizing::ResizeWindowToVideo && IsVideoPath(path);
         return S_OK;
     }
@@ -1198,6 +1200,11 @@ public:
         }
         ++aiRequestGeneration_;
         titleMetadataHandoffActive_ = !IsModelPath(path) && !titleResolutionWidthText_.empty();
+        if ((!coldOpenFadePending_ && !coldOpenFadeActive_) || !PathsEqual(fs::path(path), fs::path(coldOpenFadePath_))) {
+            coldOpenFadePending_ = false;
+            coldOpenFadeActive_ = false;
+            coldOpenFadePath_.clear();
+        }
         if (!(dissolveAwaitingTarget_ && PathsEqual(fs::path(path), fs::path(dissolveTargetPath_)))) ClearStillDissolve();
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
         if (IsVideoPath(path)) { BeginVideoLoad(path, activeOpenAttemptId_); return S_OK; }
@@ -4219,7 +4226,7 @@ public:
             }
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
-                if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(); if (!TransitionOverlayActive()) DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); DrawGifPlaybackControls(); }
+                if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(ColdOpenFadeOpacity()); if (!TransitionOverlayActive()) DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); DrawGifPlaybackControls(); }
             } else if (dissolveAwaitingTarget_ && dissolveOldBitmap_) DrawDissolveOldFrame();
             else if (EmptyStatePresentationActive()) DrawEmptyState();
             if (!tutorialPresentation_) DrawTransitionOverlay();
@@ -6453,9 +6460,10 @@ public:
     }
 
     void DrawVideoPresentation() {
+        const float presentationOpacity = ColdOpenFadeOpacity();
         const bool transitioning = dissolveOldBitmap_ && (dissolveAwaitingTarget_ || dissolveActive_) &&
             PathsEqual(fs::path(currentPath_), fs::path(dissolveTargetPath_));
-        if (!transitioning) { videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_); return; }
+        if (!transitioning) { videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, presentationOpacity); return; }
         const float progress = dissolveActive_ ? SmoothTransitionProgress(StillDissolveProgress()) : 0.0f;
         DrawDissolveOldFrame(1.0f - progress);
         if (dissolveActive_) videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, progress);
@@ -6476,6 +6484,27 @@ public:
         dissolveStartQpc_ = now.QuadPart;
         dissolveActive_ = true;
         InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void BeginColdOpenFadeIfReady(const std::wstring& path) {
+        if (!coldOpenFadePending_ || !PathsEqual(fs::path(path), fs::path(coldOpenFadePath_))) return;
+        coldOpenFadePending_ = false;
+        if (!QueryPerformanceFrequency(&coldOpenFadeQpcFrequency_) || coldOpenFadeQpcFrequency_.QuadPart <= 0) return;
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        coldOpenFadeStartQpc_ = now.QuadPart;
+        coldOpenFadeActive_ = true;
+        SetTimer(window_, kStillDissolveTimer, 15, nullptr);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    float ColdOpenFadeOpacity() const {
+        if (!coldOpenFadeActive_) return coldOpenFadePending_ ? 0.0f : 1.0f;
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        const double elapsedMs = static_cast<double>(now.QuadPart - coldOpenFadeStartQpc_) * 1000.0 /
+            static_cast<double>(coldOpenFadeQpcFrequency_.QuadPart);
+        return SmoothTransitionProgress(std::clamp(static_cast<float>(elapsedMs / kStillDissolveDurationMs), 0.0f, 1.0f));
     }
 
     void ClearStillDissolve() {
@@ -6510,6 +6539,14 @@ public:
     }
 
     void UpdateStillDissolve() {
+        if (coldOpenFadeActive_) {
+            if (ColdOpenFadeOpacity() >= 1.0f) {
+                coldOpenFadeActive_ = false;
+                KillTimer(window_, kStillDissolveTimer);
+            }
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
         if (dissolveAwaitingTarget_) return;
         if (!dissolveActive_) return;
         if (StillDissolveProgress() >= 1.0f) ClearStillDissolve();
@@ -7210,7 +7247,10 @@ public:
             (event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY || event == MF_MEDIA_ENGINE_EVENT_CANPLAY)) {
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
         }
-        if (videoPlayer_.HasValidFrame()) BeginStillDissolveIfReady(currentPath_);
+        if (videoPlayer_.HasValidFrame()) {
+            BeginStillDissolveIfReady(currentPath_);
+            BeginColdOpenFadeIfReady(currentPath_);
+        }
         if (videoSizingAppliedForCurrentVideo_ && videoPlayer_.HasValidFrame()) RevealInitialWindowAfterVideoSizing();
         if ((!wasPlaying && videoPlayer_.Playing()) ||
             (event == MF_MEDIA_ENGINE_EVENT_SEEKED && videoPlayer_.Playing())) {
@@ -8482,12 +8522,24 @@ private:
         ClearDeletedImage();
     }
 
+    std::optional<std::wstring> DeleteContinuationTargetPath(const std::vector<fs::path>& files, const fs::path& deleted) const {
+        const auto current = std::find_if(files.begin(), files.end(), [&deleted](const fs::path& path) {
+            return PathsEqual(path, deleted);
+        });
+        if (current == files.end() || files.size() < 2) return std::nullopt;
+        const size_t index = static_cast<size_t>(std::distance(files.begin(), current));
+        return files[(index + 1) % files.size()].wstring();
+    }
+
     void DeleteImage() {
         if (currentPath_.empty()) return;
         BuildNavigation(true);
         if (currentPath_.empty()) return;
         const fs::path deleted(currentPath_);
         const std::vector<fs::path> filesBeforeDelete = navigationFiles_;
+        const std::optional<std::wstring> continuation = DeleteContinuationTargetPath(filesBeforeDelete, deleted);
+        const bool heldPresentation = continuation && !ModelActive() &&
+            (VideoActive() ? BeginVideoSiblingDissolve(*continuation) : BeginStillDissolveToTarget(*continuation));
         ComPtr<IShellItem> item;
         ComPtr<IFileOperation> operation;
         HRESULT hr = SHCreateItemFromParsingName(currentPath_.c_str(), nullptr, IID_PPV_ARGS(&item));
@@ -8498,8 +8550,13 @@ private:
         if (SUCCEEDED(hr)) hr = operation->PerformOperations();
         BOOL aborted = FALSE;
         if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
-        if (FAILED(hr)) { ShowActionError(L"Windows could not move this image to the Recycle Bin."); return; }
+        if (FAILED(hr)) {
+            if (heldPresentation) ClearStillDissolve();
+            ShowActionError(L"Windows could not move this image to the Recycle Bin.");
+            return;
+        }
         if (!aborted) ShowImageAfterDelete(filesBeforeDelete, deleted);
+        else if (heldPresentation) ClearStillDissolve();
     }
 
     RECT GetDropdownBounds() const {
@@ -9477,6 +9534,7 @@ private:
             RevealClickedFilmstripItem();
         }
         BeginStillDissolveIfReady(path);
+        BeginColdOpenFadeIfReady(path);
         adjustmentPersistence_.Resolve(path, imageAdjustmentMediaGeneration_, imageAdjustmentEditGeneration_);
     }
 
@@ -9684,17 +9742,19 @@ private:
                 D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR), &checkerboardBrush_));
     }
 
-    void DrawCheckerboard(const D2D1_RECT_F& bounds) {
+    void DrawCheckerboard(const D2D1_RECT_F& bounds, float opacity = 1.0f) {
         if (!EnsureCheckerboardBrush()) return;
         const D2D1_RECT_F canvas = ImageCanvasBounds();
         const D2D1_RECT_F visible = D2D1::RectF(std::max(bounds.left, canvas.left), std::max(bounds.top, canvas.top),
             std::min(bounds.right, canvas.right), std::min(bounds.bottom, canvas.bottom));
         if (visible.right <= visible.left || visible.bottom <= visible.top) return;
         renderTarget_->PushAxisAlignedClip(visible, D2D1_ANTIALIAS_MODE_ALIASED);
+        checkerboardBrush_->SetOpacity(opacity);
         renderTarget_->FillRectangle(visible, checkerboardBrush_.Get());
+        checkerboardBrush_->SetOpacity(1.0f);
         renderTarget_->PopAxisAlignedClip();
     }
-    void DrawImage() {
+    void DrawImage(float opacity = 1.0f) {
         const D2D1_SIZE_F target = ImageCanvasSize();
         const D2D1_RECT_F canvas = ImageCanvasBounds();
         const float scale = CurrentScale();
@@ -9702,14 +9762,14 @@ private:
         const D2D1_RECT_F destination = D2D1::RectF(topLeft.x, topLeft.y,
             topLeft.x + imageWidth_ * scale, topLeft.y + imageHeight_ * scale);
         renderTarget_->PushAxisAlignedClip(canvas, D2D1_ANTIALIAS_MODE_ALIASED);
-        if (imageHasTransparency_) DrawCheckerboard(destination);
+        if (imageHasTransparency_) DrawCheckerboard(destination, opacity);
         if ((imageAdjustments_.IsNeutral() || imageAdjustmentsOriginalPreviewActive_) && !gifPlaying_ && !spaceMouseMotionActive_ && lanczosSelected_ && LanczosVariantMatchesCurrent() && EnsureLanczosBitmap())
-            renderTarget_->DrawBitmap(lanczosBitmap_.Get(), lanczosDestination_, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            renderTarget_->DrawBitmap(lanczosBitmap_.Get(), lanczosDestination_, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         else {
             ID2D1Bitmap* displayed = bitmap_.Get();
             D2D1_RECT_F adjustedDestination = destination;
             if (!imageAdjustmentsOriginalPreviewActive_ && !imageAdjustments_.IsNeutral() && EnsureImageAdjustedBitmap()) { displayed = imageAdjustedBitmap_.Get(); if (imageAdjustmentUsesLanczos_) adjustedDestination = lanczosDestination_; }
-            renderTarget_->DrawBitmap(displayed, adjustedDestination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            renderTarget_->DrawBitmap(displayed, adjustedDestination, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         }
         renderTarget_->PopAxisAlignedClip();
     }
@@ -11962,6 +12022,11 @@ private:
     D2D1_POINT_2F dissolveOldTopLeft_ = D2D1::Point2F();
     std::wstring dissolveTargetPath_;
     ComPtr<ID2D1Bitmap> dissolveOldBitmap_;
+    bool coldOpenFadePending_ = false;
+    bool coldOpenFadeActive_ = false;
+    std::wstring coldOpenFadePath_;
+    LARGE_INTEGER coldOpenFadeStartQpc_{};
+    LARGE_INTEGER coldOpenFadeQpcFrequency_{};
     bool transitionOverlayHasVideoControls_ = false;
     bool transitionOverlayDefersVideoControls_ = false;
     bool transitionOverlayHasZoomHud_ = false;

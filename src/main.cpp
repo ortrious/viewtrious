@@ -121,8 +121,6 @@ constexpr ULONGLONG kVideoControlsIdleDelayMs = 1500;
 constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
 constexpr ULONGLONG kVideoFullscreenGlyphDurationMs = 140;
 constexpr ULONGLONG kStillDissolveDurationMs = 320;
-constexpr ULONGLONG kVideoOpeningPosterBlendDurationMs = 200;
-constexpr UINT_PTR kVideoOpeningPosterBlendTimer = 29;
 constexpr UINT kVideoOpeningPosterMaximumLongEdge = 1280;
 constexpr size_t kVideoOpeningPosterCacheBudget = 48u * 1024u * 1024u;
 constexpr wchar_t kTopBarResolutionSeparator[] = L"\u00D7";
@@ -6557,56 +6555,32 @@ public:
     void DrawVideoOpeningPoster(float opacity) { DrawVideoOpeningBitmap(VideoOpeningPosterBitmap(), opacity); }
     void DrawVideoOpeningFirstFrame(float opacity) { DrawVideoOpeningBitmap(VideoOpeningFirstFrameBitmap(), opacity); }
 
-    void BeginVideoOpeningPosterBlend() {
-        if (!videoOpeningPosterShowing_ || !videoPlayer_.HasValidFrame()) return;
-        if (!QueryPerformanceFrequency(&videoOpeningPosterBlendFrequency_) || videoOpeningPosterBlendFrequency_.QuadPart <= 0) {
-            videoOpeningPosterShowing_ = false;
+    void StartOpeningPlaybackAfterFramePresentation(bool presentBeforeStarting) {
+        if (!VideoActive() || !videoPlayer_.HasValidFrame() || videoPlayer_.Playing()) return;
+        videoOpeningFirstFrameFallbackShowing_ = VideoOpeningFirstFrameBitmap() != nullptr;
+        if (videoOpeningFirstFrameFallbackShowing_) videoOpeningPosterShowing_ = false;
+
+        // A direct open has no dissolve to present the paused frame. Paint it once before
+        // Play(), so the first visible video frame is the exact MediaEngine transfer.
+        if (presentBeforeStarting) {
+            InvalidateRect(window_, nullptr, FALSE);
+            UpdateWindow(window_);
+        }
+
+        videoOpeningAwaitingLiveFrame_ = true;
+        std::wstring videoError;
+        if (!videoPlayer_.StartDeferredOpeningPlayback(videoError)) {
+            error_ = videoError.empty() ? L"Viewtrious could not start video playback." : videoError;
+            ClearStillDissolve();
+            DeactivateVideo();
+            InvalidateRect(window_, nullptr, FALSE);
             return;
         }
-        QueryPerformanceCounter(&videoOpeningPosterBlendStart_);
-        videoOpeningPosterBlending_ = true;
-        SetTimer(window_, kVideoOpeningPosterBlendTimer, 15, nullptr);
-    }
-
-    void BeginVideoOpeningPosterBlendIfReady() {
-        if (!videoOpeningPosterFrameReady_ || dissolveAwaitingTarget_ || dissolveActive_) return;
-        BeginVideoOpeningPosterBlend();
-    }
-
-    float VideoOpeningPosterBlendProgress() const {
-        if (!videoOpeningPosterBlending_ || videoOpeningPosterBlendFrequency_.QuadPart <= 0) return 1.0f;
-        LARGE_INTEGER now{};
-        QueryPerformanceCounter(&now);
-        const double elapsedMs = static_cast<double>(now.QuadPart - videoOpeningPosterBlendStart_.QuadPart) * 1000.0 /
-            static_cast<double>(videoOpeningPosterBlendFrequency_.QuadPart);
-        return std::clamp(static_cast<float>(elapsedMs / kVideoOpeningPosterBlendDurationMs), 0.0f, 1.0f);
-    }
-
-    void UpdateVideoOpeningPosterBlend() {
-        if (!videoOpeningPosterBlending_) return;
-        if (VideoOpeningPosterBlendProgress() >= 1.0f) {
-            videoOpeningPosterBlending_ = false;
-            KillTimer(window_, kVideoOpeningPosterBlendTimer);
-            videoOpeningAwaitingLiveFrame_ = true;
-            videoOpeningFirstFrameFallbackShowing_ = VideoOpeningFirstFrameBitmap() != nullptr;
-            if (videoOpeningFirstFrameFallbackShowing_) videoOpeningPosterShowing_ = false;
-            std::wstring videoError;
-            if (!videoPlayer_.StartDeferredOpeningPlayback(videoError)) {
-                error_ = videoError.empty() ? L"Viewtrious could not start video playback." : videoError;
-                ClearStillDissolve();
-                DeactivateVideo();
-                InvalidateRect(window_, nullptr, FALSE);
-                return;
-            }
-            ScheduleVideoPlaybackTimer(true);
-        }
-        InvalidateRect(window_, nullptr, FALSE);
+        ScheduleVideoPlaybackTimer(true);
     }
 
     void ClearVideoOpeningPosterPresentation() {
-        KillTimer(window_, kVideoOpeningPosterBlendTimer);
         videoOpeningPosterShowing_ = false;
-        videoOpeningPosterBlending_ = false;
         videoOpeningPosterFrameCaptured_ = false;
         videoOpeningPosterFrameReady_ = false;
         videoOpeningFirstFrameFallbackShowing_ = false;
@@ -6632,28 +6606,22 @@ public:
         const bool transitioning = dissolveOldBitmap_ && (dissolveAwaitingTarget_ || dissolveActive_) &&
             PathsEqual(fs::path(currentPath_), fs::path(dissolveTargetPath_));
         const bool poster = VideoOpeningPosterBitmap() != nullptr;
-        const bool firstFrame = (videoOpeningPosterBlending_ || videoOpeningFirstFrameFallbackShowing_) && VideoOpeningFirstFrameBitmap() != nullptr;
-        const bool holdPoster = poster && (!videoPlayer_.HasValidFrame() || !videoOpeningPosterBlending_ || !firstFrame);
-        const float posterBlend = poster && videoOpeningPosterBlending_ ? SmoothTransitionProgress(VideoOpeningPosterBlendProgress()) : 0.0f;
+        const bool firstFrame = videoOpeningPosterFrameReady_ && VideoOpeningFirstFrameBitmap() != nullptr;
         if (!transitioning) {
-            if (holdPoster) DrawVideoOpeningPoster(1.0f);
-            else if (poster && videoOpeningPosterBlending_ && firstFrame) {
-                DrawVideoOpeningPoster(1.0f);
-                DrawVideoOpeningFirstFrame(posterBlend);
-            } else if (videoOpeningFirstFrameFallbackShowing_ && firstFrame) {
+            if (videoOpeningFirstFrameFallbackShowing_ && firstFrame) {
                 DrawVideoOpeningFirstFrame(1.0f);
+            } else if (poster && !videoPlayer_.HasValidFrame()) {
+                DrawVideoOpeningPoster(1.0f);
             } else videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_);
             return;
         }
         const float progress = dissolveActive_ ? SmoothTransitionProgress(StillDissolveProgress()) : 0.0f;
         DrawDissolveOldFrame(1.0f - progress);
         if (!dissolveActive_) return;
-        if (holdPoster) DrawVideoOpeningPoster(progress);
-        else if (poster && videoOpeningPosterBlending_ && firstFrame) {
-            DrawVideoOpeningPoster(progress);
-            DrawVideoOpeningFirstFrame(progress * posterBlend);
-        } else if (videoOpeningFirstFrameFallbackShowing_ && firstFrame) {
+        if (firstFrame) {
             DrawVideoOpeningFirstFrame(progress);
+        } else if (poster) {
+            DrawVideoOpeningPoster(progress);
         } else videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, progress);
     }
 
@@ -6705,7 +6673,7 @@ public:
         if (!dissolveActive_) return;
         if (StillDissolveProgress() >= 1.0f) {
             ClearStillDissolve();
-            BeginVideoOpeningPosterBlendIfReady();
+            StartOpeningPlaybackAfterFramePresentation(true);
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -7349,7 +7317,7 @@ private:
         ResetVideoControls();
         EnsureRenderTarget();
         std::wstring videoError;
-        if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, openAttemptId, openingPosterAvailable, videoError)) {
+        if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, openAttemptId, true, videoError)) {
             ClearStillDissolve();
             ClearVideoOpeningPosterPresentation();
             contentKind_ = ContentKind::None;
@@ -7364,7 +7332,6 @@ private:
             videoPlayer_.SetPreferredPlaybackRate(PlaybackRateFromPercent(videoPreferredPlaybackRatePercent_));
             videoEffectivePlaybackRate_ = videoPlayer_.EffectivePlaybackRate();
             adjustmentPersistence_.Resolve(path, videoAdjustmentMediaGeneration_, videoAdjustmentEditGeneration_, AdjustmentMediaKind::Video);
-            if (openingPosterAvailable) BeginStillDissolveIfReady(path);
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -7416,8 +7383,9 @@ public:
         if (videoPlayer_.HasValidFrame()) {
             CaptureVideoOpeningPoster();
             videoOpeningPosterFrameReady_ = true;
-            BeginVideoOpeningPosterBlendIfReady();
             BeginStillDissolveIfReady(currentPath_);
+            if (!dissolveAwaitingTarget_ && !dissolveActive_)
+                StartOpeningPlaybackAfterFramePresentation(true);
         }
         if (videoSizingAppliedForCurrentVideo_ && videoPlayer_.HasValidFrame()) RevealInitialWindowAfterVideoSizing();
         if ((!wasPlaying && videoPlayer_.Playing()) ||
@@ -12176,13 +12144,10 @@ private:
     PixelBuffer videoOpeningFirstFramePresentation_;
     ComPtr<ID2D1Bitmap> videoOpeningFirstFramePresentationBitmap_;
     bool videoOpeningPosterShowing_ = false;
-    bool videoOpeningPosterBlending_ = false;
     bool videoOpeningPosterFrameCaptured_ = false;
     bool videoOpeningPosterFrameReady_ = false;
     bool videoOpeningFirstFrameFallbackShowing_ = false;
     bool videoOpeningAwaitingLiveFrame_ = false;
-    LARGE_INTEGER videoOpeningPosterBlendStart_{};
-    LARGE_INTEGER videoOpeningPosterBlendFrequency_{};
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
@@ -12985,7 +12950,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
         if (wParam == kVideoAutoPlayNextCountdownTimer) { viewer->UpdateVideoAutoPlayNextCountdown(); return 0; }
         if (wParam == kVideoFullscreenGlyphTimer) { viewer->UpdateVideoFullscreenGlyphHover(); return 0; }
-        if (wParam == kVideoOpeningPosterBlendTimer) { viewer->UpdateVideoOpeningPosterBlend(); return 0; }
         if (wParam == kVideoAdjustmentsFadeTimer) { viewer->UpdateAdjustmentPanelsFade(); return 0; }
         if (wParam == kVideoAdjustmentsPlacementTimer) { viewer->UpdateVideoAdjustmentsPanelPlacementMotion(); return 0; }
         if (wParam == kStillDissolveTimer) { viewer->UpdateStillDissolve(); return 0; }

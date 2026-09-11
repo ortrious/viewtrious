@@ -22,7 +22,7 @@ class VideoPlayer {
 public:
     enum class FrameAcquisitionReason : unsigned char { Scheduler, InitialLoad, Seek };
 
-    bool Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, bool deferPlaybackForOpeningPoster, std::wstring& error);
+    bool Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, bool deferPlaybackUntilOpeningFrame, std::wstring& error);
     void Shutdown();
     bool RebindDevice(ID3D11Device* device, std::wstring& error);
     void HandleRenderTargetResize();
@@ -96,7 +96,7 @@ private:
     bool hasFramesPerSecond_ = false;
     bool firstFrameLogged_ = false;
     bool firstValidFrameCaptureAttempted_ = false;
-    bool deferPlaybackForOpeningPoster_ = false;
+    bool deferPlaybackUntilOpeningFrame_ = false;
     float framesPerSecond_ = 0.0f;
     LONGLONG lastTransferredPts_ = 0;
     UINT firstValidFrameWidth_ = 0;

@@ -169,10 +169,10 @@ void VideoPlayer::RecordFramePacingEvent(FramePacingEvent, LONGLONG, HRESULT, do
 void VideoPlayer::RecordFramePacingEventAtQpc(FramePacingEvent, LONGLONG, LONGLONG, HRESULT, double, double) {}
 #endif
 
-bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, bool deferPlaybackForOpeningPoster, std::wstring& error) {
+bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, bool deferPlaybackUntilOpeningFrame, std::wstring& error) {
     Shutdown();
     openAttemptId_ = openAttemptId;
-    deferPlaybackForOpeningPoster_ = deferPlaybackForOpeningPoster;
+    deferPlaybackUntilOpeningFrame_ = deferPlaybackUntilOpeningFrame;
     openStartedAtMs_ = GetTickCount64();
     lastMediaEvent_ = 0;
     lastSuccessfulLifecycleEvent_ = 0;
@@ -216,7 +216,7 @@ void VideoPlayer::Shutdown() {
     FlushFramePacingDiagnostics();
     playing_ = ended_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
     firstValidFrameCaptureAttempted_ = false;
-    deferPlaybackForOpeningPoster_ = false;
+    deferPlaybackUntilOpeningFrame_ = false;
     displayAdjustmentsBypassed_ = false;
     lastTransferredPts_ = 0;
     firstValidFrameWidth_ = firstValidFrameHeight_ = 0;
@@ -319,8 +319,8 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
         }
     } else if (event == MF_MEDIA_ENGINE_EVENT_CANPLAY && !failed_) {
         ApplyPreferredPlaybackRate();
-        if (deferPlaybackForOpeningPoster_) {
-            FileOpenDiagnostics::Log(openAttemptId_, L"video-open-ready", L"elapsed-ms=" + std::to_wstring(elapsed) + L" deferred=opening-poster");
+        if (deferPlaybackUntilOpeningFrame_) {
+            FileOpenDiagnostics::Log(openAttemptId_, L"video-open-ready", L"elapsed-ms=" + std::to_wstring(elapsed) + L" deferred=opening-frame");
             return true;
         }
         const HRESULT play = engine_->Play();
@@ -346,8 +346,8 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
 }
 
 bool VideoPlayer::StartDeferredOpeningPlayback(std::wstring& error) {
-    if (!deferPlaybackForOpeningPoster_) return true;
-    deferPlaybackForOpeningPoster_ = false;
+    if (!deferPlaybackUntilOpeningFrame_) return true;
+    deferPlaybackUntilOpeningFrame_ = false;
     if (!engine_ || failed_) return false;
     const HRESULT play = engine_->Play();
     if (FAILED(play)) {
@@ -358,14 +358,14 @@ bool VideoPlayer::StartDeferredOpeningPlayback(std::wstring& error) {
     }
     playing_ = true;
     const ULONGLONG elapsed = openStartedAtMs_ ? GetTickCount64() - openStartedAtMs_ : 0;
-    FileOpenDiagnostics::Log(openAttemptId_, L"video-playback-start", L"elapsed-ms=" + std::to_wstring(elapsed) + L" source=opening-poster");
+    FileOpenDiagnostics::Log(openAttemptId_, L"video-playback-start", L"elapsed-ms=" + std::to_wstring(elapsed) + L" source=opening-frame");
     RecordFramePacingEvent(FramePacingEvent::PlaybackBegin);
     return true;
 }
 
 HRESULT VideoPlayer::TogglePlayPause() {
     if (!engine_ || failed_) return E_FAIL;
-    if (deferPlaybackForOpeningPoster_) return S_FALSE;
+    if (deferPlaybackUntilOpeningFrame_) return S_FALSE;
     if (playing_) {
         const HRESULT pause = engine_->Pause();
         if (SUCCEEDED(pause)) { playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackPause); }

@@ -215,9 +215,12 @@ void VideoPlayer::Shutdown() {
     if (openAttemptId_) FileOpenDiagnostics::Log(openAttemptId_, L"video-shutdown-begin");
     FlushFramePacingDiagnostics();
     playing_ = ended_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
+    firstValidFrameCaptureAttempted_ = false;
     deferPlaybackForOpeningPoster_ = false;
     displayAdjustmentsBypassed_ = false;
     lastTransferredPts_ = 0;
+    firstValidFrameWidth_ = firstValidFrameHeight_ = 0;
+    firstValidFramePixels_.clear();
     framesPerSecond_ = 0.0f;
     effectivePlaybackRate_ = 1.0;
     adjustedFrameBitmap_.Reset(); frameBitmap_.Reset(); frameTexture_.Reset(); adjustmentProcessor_.Reset(); engineEx_.Reset();
@@ -486,6 +489,15 @@ bool VideoPlayer::CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT&
     context->Unmap(staging.Get(), 0); width = videoWidth_; height = videoHeight_; return true;
 }
 
+bool VideoPlayer::CopyFirstValidFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const {
+    pixels.clear(); width = height = 0;
+    if (firstValidFramePixels_.empty() || !firstValidFrameWidth_ || !firstValidFrameHeight_) return false;
+    pixels = firstValidFramePixels_;
+    width = firstValidFrameWidth_;
+    height = firstValidFrameHeight_;
+    return true;
+}
+
 bool VideoPlayer::PlaybackRateSupported(double rate) const {
     if (std::abs(rate - 1.0) < 0.001) return true;
     if (!engineEx_) return true;
@@ -525,6 +537,16 @@ bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
             RecordFramePacingEvent(FramePacingEvent::Transfer, pts, transfer);
             hasValidFrame_ = hasTransferredPts_ = true;
             lastTransferredPts_ = pts;
+            if (!firstValidFrameCaptureAttempted_) {
+                firstValidFrameCaptureAttempted_ = true;
+                if (CopyCurrentFrameBgra(firstValidFramePixels_, firstValidFrameWidth_, firstValidFrameHeight_)) {
+                    FileOpenDiagnostics::Log(openAttemptId_, L"video-first-frame-snapshot",
+                        L"source=mediaengine-first-frame size=" + std::to_wstring(firstValidFrameWidth_) + L"x" + std::to_wstring(firstValidFrameHeight_));
+                } else {
+                    firstValidFrameWidth_ = firstValidFrameHeight_ = 0;
+                    FileOpenDiagnostics::Log(openAttemptId_, L"video-first-frame-snapshot", L"source=mediaengine-first-frame result=unavailable");
+                }
+            }
             adjustedFrameBitmap_.Reset();
             adjustedFrameValid_ = !displayAdjustments_.IsNeutral() && adjustmentProcessor_.ProcessImage(frameTexture_.Get(), videoWidth_, videoHeight_, displayAdjustments_);
             RecordFramePacingEvent(FramePacingEvent::CachePublish, pts);

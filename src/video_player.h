@@ -41,6 +41,7 @@ public:
     void SetDisplayAdjustments(const ImageAdjustments& adjustments);
     void SetDisplayAdjustmentsBypassed(bool bypassed) { displayAdjustmentsBypassed_ = bypassed; }
     bool CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
+    bool CopyFirstValidFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
     bool SetPreferredPlaybackRate(double rate);
     bool PlaybackRateSupported(double rate) const;
     double EffectivePlaybackRate() const { return effectivePlaybackRate_; }
@@ -94,9 +95,13 @@ private:
     bool hasTransferredPts_ = false;
     bool hasFramesPerSecond_ = false;
     bool firstFrameLogged_ = false;
+    bool firstValidFrameCaptureAttempted_ = false;
     bool deferPlaybackForOpeningPoster_ = false;
     float framesPerSecond_ = 0.0f;
     LONGLONG lastTransferredPts_ = 0;
+    UINT firstValidFrameWidth_ = 0;
+    UINT firstValidFrameHeight_ = 0;
+    std::vector<unsigned char> firstValidFramePixels_;
     uint64_t openAttemptId_ = 0;
     ULONGLONG openStartedAtMs_ = 0;
     DWORD lastMediaEvent_ = 0;

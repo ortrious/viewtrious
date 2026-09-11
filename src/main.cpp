@@ -278,10 +278,16 @@ struct VideoOpeningPosterKey {
     FILETIME lastWrite{};
     bool valid = false;
 };
+enum class VideoOpeningPosterSource : unsigned char { Shell, MediaEngineFirstFrame };
 struct VideoOpeningPosterEntry : PixelBuffer {
     VideoOpeningPosterKey key;
+    VideoOpeningPosterSource source = VideoOpeningPosterSource::Shell;
     uint64_t lastUse = 0;
 };
+
+const wchar_t* VideoOpeningPosterSourceName(VideoOpeningPosterSource source) {
+    return source == VideoOpeningPosterSource::MediaEngineFirstFrame ? L"mediaengine-first-frame" : L"shell";
+}
 
 bool PixelsHaveTransparency(const std::vector<BYTE>& pixels) {
     for (size_t offset = 3; offset < pixels.size(); offset += 4) {
@@ -6406,8 +6412,13 @@ public:
         }
     }
 
-    void StoreVideoOpeningPoster(const VideoOpeningPosterKey& key, PixelBuffer poster) {
+    void StoreVideoOpeningPoster(const VideoOpeningPosterKey& key, PixelBuffer poster, VideoOpeningPosterSource source) {
         if (!key.valid || !poster.pixels || !poster.width || !poster.height || !poster.stride) return;
+        const auto existing = std::find_if(videoOpeningPosters_.begin(), videoOpeningPosters_.end(), [&](const VideoOpeningPosterEntry& entry) {
+            return SameVideoOpeningPosterKey(entry.key, key);
+        });
+        const bool upgraded = existing != videoOpeningPosters_.end() && existing->source != source &&
+            source == VideoOpeningPosterSource::MediaEngineFirstFrame;
         videoOpeningPosters_.erase(std::remove_if(videoOpeningPosters_.begin(), videoOpeningPosters_.end(), [&](const VideoOpeningPosterEntry& entry) {
             return SameVideoOpeningPosterKey(entry.key, key);
         }), videoOpeningPosters_.end());
@@ -6417,8 +6428,11 @@ public:
         entry.height = poster.height;
         entry.stride = poster.stride;
         entry.pixels = std::move(poster.pixels);
+        entry.source = source;
         entry.lastUse = ++videoOpeningPosterUseSeed_;
         videoOpeningPosters_.push_back(std::move(entry));
+        FileOpenDiagnostics::Log(activeOpenAttemptId_, upgraded ? L"video-opening-poster-cache-upgrade" : L"video-opening-poster-cache-store",
+            upgraded ? L"from=shell to=mediaengine-first-frame" : L"source=" + std::wstring(VideoOpeningPosterSourceName(source)));
         PruneVideoOpeningPosters();
     }
 
@@ -6453,7 +6467,7 @@ public:
         poster.height = thumbnail->height;
         poster.stride = thumbnail->stride;
         poster.pixels = thumbnail->pixels;
-        StoreVideoOpeningPoster(key, std::move(poster));
+        StoreVideoOpeningPoster(key, std::move(poster), VideoOpeningPosterSource::Shell);
         return FindVideoOpeningPoster(key) != nullptr;
     }
 
@@ -6466,6 +6480,7 @@ public:
         videoOpeningPosterPresentation_.pixels = entry->pixels;
         videoOpeningPosterPresentationBitmap_.Reset();
         videoOpeningPosterShowing_ = true;
+        FileOpenDiagnostics::Log(activeOpenAttemptId_, L"video-opening-poster-show", L"source=" + std::wstring(VideoOpeningPosterSourceName(entry->source)));
         return true;
     }
 
@@ -6476,8 +6491,11 @@ public:
         if (!SameVideoOpeningPosterKey(current, videoOpeningPosterKey_)) return;
         std::vector<unsigned char> pixels;
         UINT width = 0, height = 0;
-        if (!videoPlayer_.CopyCurrentFrameBgra(pixels, width, height)) return;
-        StoreVideoOpeningPoster(current, DownscaleVideoOpeningPoster(pixels, width, height));
+        if (!videoPlayer_.CopyFirstValidFrameBgra(pixels, width, height)) {
+            FileOpenDiagnostics::Log(activeOpenAttemptId_, L"video-opening-poster-cache-skip", L"reason=no-mediaengine-first-frame-snapshot");
+            return;
+        }
+        StoreVideoOpeningPoster(current, DownscaleVideoOpeningPoster(pixels, width, height), VideoOpeningPosterSource::MediaEngineFirstFrame);
     }
 
     ID2D1Bitmap* VideoOpeningPosterBitmap() {

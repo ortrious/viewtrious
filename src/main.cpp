@@ -1160,6 +1160,7 @@ public:
             else FlushImageAdjustmentPersistence();
         }
         ++aiRequestGeneration_;
+        titleMetadataHandoffActive_ = !IsModelPath(path) && !titleResolutionWidthText_.empty();
         if (!(dissolveAwaitingTarget_ && PathsEqual(fs::path(path), fs::path(dissolveTargetPath_)))) ClearStillDissolve();
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
         if (IsVideoPath(path)) { BeginVideoLoad(path, activeOpenAttemptId_); return S_OK; }
@@ -7080,6 +7081,7 @@ public:
         titleResolutionHeightText_ = std::move(height);
         titleResolutionSeparatorText_ = std::move(separator);
         titleDetailText_ = detail.empty() ? L"-" : std::move(detail);
+        titleMetadataHandoffActive_ = false;
     }
 
     void ClearPresentationTitleMetadata() {
@@ -7087,6 +7089,7 @@ public:
         titleResolutionHeightText_.clear();
         titleResolutionSeparatorText_.clear();
         titleDetailText_.clear();
+        titleMetadataHandoffActive_ = false;
     }
 
     void UpdateVideoTitleMetadata() {
@@ -11469,7 +11472,7 @@ private:
         const bool hideTutorialMetadata = tutorialPresentation_ && !tutorialMetadata;
         ID2D1Brush* activeMetadataBrush = tutorialMetadata ? tutorialMetadataBrush.Get() : metadataBrush.Get();
         if (tutorialMetadata) DrawTitleText(L"1920 x 1080", static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
-        else if (!hideTutorialMetadata && (VideoActive() || contentKind_ == ContentKind::Image2D) && !titleResolutionWidthText_.empty()) DrawPresentationTitleMetadata(frame, activeMetadataBrush);
+        else if (!hideTutorialMetadata && (VideoActive() || contentKind_ == ContentKind::Image2D || titleMetadataHandoffActive_) && !titleResolutionWidthText_.empty()) DrawPresentationTitleMetadata(frame, activeMetadataBrush);
         else DrawTitleText(hideTutorialMetadata ? L"" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
         DrawTitleText(tutorialMetadata ? L"1.2 MB" : hideTutorialMetadata ? L"" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);
         const float filenameWidth = static_cast<float>(std::max(0L,
@@ -11595,6 +11598,7 @@ private:
     std::wstring titleResolutionHeightText_;
     std::wstring titleResolutionSeparatorText_;
     std::wstring titleDetailText_;
+    bool titleMetadataHandoffActive_ = false;
     uint64_t modelTriangleCount_ = 0;
     std::wstring fileSizeText_;
     std::wstring filenameText_;

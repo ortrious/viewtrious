@@ -6528,6 +6528,11 @@ public:
         SetTimer(window_, kVideoOpeningPosterBlendTimer, 15, nullptr);
     }
 
+    void BeginVideoOpeningPosterBlendIfReady() {
+        if (!videoOpeningPosterFrameReady_ || dissolveAwaitingTarget_ || dissolveActive_) return;
+        BeginVideoOpeningPosterBlend();
+    }
+
     float VideoOpeningPosterBlendProgress() const {
         if (!videoOpeningPosterBlending_ || videoOpeningPosterBlendFrequency_.QuadPart <= 0) return 1.0f;
         LARGE_INTEGER now{};
@@ -6552,6 +6557,7 @@ public:
         videoOpeningPosterShowing_ = false;
         videoOpeningPosterBlending_ = false;
         videoOpeningPosterFrameCaptured_ = false;
+        videoOpeningPosterFrameReady_ = false;
         videoOpeningPosterKey_ = {};
         videoOpeningPosterPresentation_ = {};
         videoOpeningPosterPresentationBitmap_.Reset();
@@ -6561,9 +6567,10 @@ public:
         const bool transitioning = dissolveOldBitmap_ && (dissolveAwaitingTarget_ || dissolveActive_) &&
             PathsEqual(fs::path(currentPath_), fs::path(dissolveTargetPath_));
         const bool poster = VideoOpeningPosterBitmap() != nullptr;
+        const bool holdPoster = poster && (!videoPlayer_.HasValidFrame() || !videoOpeningPosterBlending_);
         const float posterBlend = poster && videoOpeningPosterBlending_ ? SmoothTransitionProgress(VideoOpeningPosterBlendProgress()) : 0.0f;
         if (!transitioning) {
-            if (poster && !videoPlayer_.HasValidFrame()) DrawVideoOpeningPoster(1.0f);
+            if (holdPoster) DrawVideoOpeningPoster(1.0f);
             else if (poster && videoOpeningPosterBlending_) {
                 DrawVideoOpeningPoster(1.0f - posterBlend);
                 videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, posterBlend);
@@ -6573,7 +6580,7 @@ public:
         const float progress = dissolveActive_ ? SmoothTransitionProgress(StillDissolveProgress()) : 0.0f;
         DrawDissolveOldFrame(1.0f - progress);
         if (!dissolveActive_) return;
-        if (poster && !videoPlayer_.HasValidFrame()) DrawVideoOpeningPoster(progress);
+        if (holdPoster) DrawVideoOpeningPoster(progress);
         else if (poster && videoOpeningPosterBlending_) {
             DrawVideoOpeningPoster(progress * (1.0f - posterBlend));
             videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, progress * posterBlend);
@@ -6626,7 +6633,10 @@ public:
     void UpdateStillDissolve() {
         if (dissolveAwaitingTarget_) return;
         if (!dissolveActive_) return;
-        if (StillDissolveProgress() >= 1.0f) ClearStillDissolve();
+        if (StillDissolveProgress() >= 1.0f) {
+            ClearStillDissolve();
+            BeginVideoOpeningPosterBlendIfReady();
+        }
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -7330,7 +7340,8 @@ public:
         }
         if (videoPlayer_.HasValidFrame()) {
             CaptureVideoOpeningPoster();
-            if (videoOpeningPosterShowing_ && !videoOpeningPosterBlending_) BeginVideoOpeningPosterBlend();
+            videoOpeningPosterFrameReady_ = true;
+            BeginVideoOpeningPosterBlendIfReady();
             BeginStillDissolveIfReady(currentPath_);
         }
         if (videoSizingAppliedForCurrentVideo_ && videoPlayer_.HasValidFrame()) RevealInitialWindowAfterVideoSizing();
@@ -12089,6 +12100,7 @@ private:
     bool videoOpeningPosterShowing_ = false;
     bool videoOpeningPosterBlending_ = false;
     bool videoOpeningPosterFrameCaptured_ = false;
+    bool videoOpeningPosterFrameReady_ = false;
     LARGE_INTEGER videoOpeningPosterBlendStart_{};
     LARGE_INTEGER videoOpeningPosterBlendFrequency_{};
     bool presented_ = false;

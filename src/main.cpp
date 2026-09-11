@@ -116,6 +116,7 @@ constexpr float kMaximumZoom = 16.0f;
 constexpr float kWheelZoomStep = 1.11f;
 constexpr ULONGLONG kModelHomeAnimationDurationMs = 240;
 constexpr ULONGLONG kModelLoadingOverlayDelayMs = 150;
+constexpr ULONGLONG kModelLoadingBarSweepDurationMs = 1400;
 constexpr UINT kTriangleCountTooltipDelayMs = 450;
 constexpr ULONGLONG kVideoControlsIdleDelayMs = 1500;
 constexpr ULONGLONG kVideoControlsFadeDurationMs = 500;
@@ -199,6 +200,7 @@ enum class AxisIndicatorPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopL
 enum class ZoomHudPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
 enum class SettingsPage { General, Image2D, Video2D, Model3D };
 enum class ContentKind { None, Image2D, Model3D, Video2D };
+enum class LoadingProgressMode { Indeterminate, Determinate };
 enum class ExternalOpenBehavior : DWORD { NewWindow = 0, SameWindow = 1 };
 enum class FilmstripVisibilityState { Hidden, Revealing, Holding, Fading };
 
@@ -6564,27 +6566,32 @@ private:
         const float left = (canvas.left + canvas.right - width) * 0.5f;
         const float top = (canvas.top + canvas.bottom - height) * 0.5f;
         const bool dark = UseDarkAppMode();
-        ComPtr<ID2D1SolidColorBrush> panel, border, primary, secondary, spinner;
+        ComPtr<ID2D1SolidColorBrush> panel, border, primary, secondary, track, progress;
         if (FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(41.f / 255, 44.f / 255, 52.f / 255, .97f) : D2D1::ColorF(250.f / 255, 250.f / 255, 250.f / 255, .97f), &panel)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(83.f / 255, 88.f / 255, 102.f / 255) : D2D1::ColorF(190.f / 255, 190.f / 255, 190.f / 255), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(.95f, .96f, .98f) : D2D1::ColorF(.12f, .12f, .12f), &primary)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(.70f, .73f, .79f) : D2D1::ColorF(.36f, .36f, .36f), &secondary)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &spinner))) return;
+            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(.08f, .09f, .11f, .85f) : D2D1::ColorF(.78f, .79f, .82f), &track)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &progress))) return;
         const D2D1_ROUNDED_RECT bounds = D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 8.0f * scale, 8.0f * scale);
         renderTarget_->FillRoundedRectangle(bounds, panel.Get());
         renderTarget_->DrawRoundedRectangle(bounds, border.Get(), 1.0f);
         DrawOverlayText(L"Opening model...", left + 20.0f * scale, top + 20.0f * scale, width - 40.0f * scale, 28.0f * scale, 18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primary.Get(), true);
         DrawOverlayText(filenameText_.c_str(), left + 20.0f * scale, top + 51.0f * scale, width - 40.0f * scale, 24.0f * scale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true);
-        const D2D1_POINT_2F center = D2D1::Point2F(left + width * .5f, top + 113.0f * scale);
-        const unsigned phase = static_cast<unsigned>((GetTickCount64() - modelLoadingStartedAtMs_) / 80) % 12;
-        for (unsigned index = 0; index < 12; ++index) {
-            const float angle = (static_cast<float>(index) / 12.0f) * 6.2831853f - 1.5707963f;
-            const unsigned distance = (index + 12 - phase) % 12;
-            const float opacity = .20f + .80f * (1.0f - static_cast<float>(distance) / 12.0f);
-            spinner->SetOpacity(opacity);
-            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(center.x + std::cos(angle) * 16.0f * scale, center.y + std::sin(angle) * 16.0f * scale), 3.0f * scale, 3.0f * scale), spinner.Get());
+        const float trackWidth = std::min(240.0f * scale, width - 40.0f * scale), trackHeight = 7.0f * scale;
+        const D2D1_RECT_F bar = D2D1::RectF(left + (width - trackWidth) * .5f, top + 105.0f * scale, left + (width + trackWidth) * .5f, top + 105.0f * scale + trackHeight);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bar, trackHeight * .5f, trackHeight * .5f), track.Get());
+        if (modelLoadingProgressMode_ == LoadingProgressMode::Determinate) {
+            const float filledRight = bar.left + (bar.right - bar.left) * std::clamp(modelLoadingProgress_, 0.0f, 1.0f);
+            if (filledRight > bar.left) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(bar.left, bar.top, filledRight, bar.bottom), trackHeight * .5f, trackHeight * .5f), progress.Get());
+        } else {
+            const float segmentWidth = (bar.right - bar.left) * .28f;
+            const float sweep = static_cast<float>((GetTickCount64() - modelLoadingStartedAtMs_) % kModelLoadingBarSweepDurationMs) / static_cast<float>(kModelLoadingBarSweepDurationMs);
+            const float segmentLeft = bar.left - segmentWidth + sweep * ((bar.right - bar.left) + segmentWidth);
+            renderTarget_->PushAxisAlignedClip(bar, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(segmentLeft, bar.top, segmentLeft + segmentWidth, bar.bottom), trackHeight * .5f, trackHeight * .5f), progress.Get());
+            renderTarget_->PopAxisAlignedClip();
         }
-        spinner->SetOpacity(1.0f);
     }
     void DrawModelAxisIndicator() {
         const RECT canvas = ModelCanvasBounds(); const float dpi = GetDpiForWindow(window_) / 96.0f;
@@ -6700,7 +6707,12 @@ private:
         if (worker->thread.joinable()) worker->thread.join();
         modelLoadWorkers_.erase(worker);
     }
-    void StopModelLoadingAnimation() { KillTimer(window_, kModelLoadingAnimationTimer); }
+    void SetModelLoadingProgress(float progress) {
+        modelLoadingProgressMode_ = LoadingProgressMode::Determinate;
+        modelLoadingProgress_ = std::clamp(progress, 0.0f, 1.0f);
+        if (ModelLoadingOverlayVisible()) InvalidateRect(window_, nullptr, FALSE);
+    }
+    void StopModelLoadingAnimation() { KillTimer(window_, kModelLoadingAnimationTimer); modelLoadingProgressMode_ = LoadingProgressMode::Indeterminate; modelLoadingProgress_ = 0.0f; }
     bool ModelLoadingOverlayVisible() const {
         return modelLoading_ && GetTickCount64() - modelLoadingStartedAtMs_ >= kModelLoadingOverlayDelayMs;
     }
@@ -6713,7 +6725,7 @@ private:
         ++decodeRequestGeneration_; ++modelLoadGeneration_; const uint64_t generation = modelLoadGeneration_;
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
-        navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; modelLoadingStartedAtMs_ = GetTickCount64(); contentKind_ = ContentKind::Model3D;
+        navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; modelLoadingStartedAtMs_ = GetTickCount64(); modelLoadingProgressMode_ = LoadingProgressMode::Indeterminate; modelLoadingProgress_ = 0.0f; contentKind_ = ContentKind::Model3D;
         ClearModelFaceSelection(); ResetComponentsPanelState(); modelClickCandidate_ = false;
         SetTimer(window_, kModelLoadingAnimationTimer, 16, nullptr);
         const HWND window = window_;
@@ -11551,6 +11563,8 @@ private:
     std::atomic<bool> shuttingDown_{ false };
     bool modelLoading_ = false;
     ULONGLONG modelLoadingStartedAtMs_ = 0;
+    LoadingProgressMode modelLoadingProgressMode_ = LoadingProgressMode::Indeterminate;
+    float modelLoadingProgress_ = 0.0f;
 #if defined(_DEBUG)
     bool offscreenIndicatorWasVisible_ = false;
     int offscreenIndicatorSector_ = -1;

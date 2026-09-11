@@ -994,7 +994,7 @@ FrameMetrics GetFrameMetrics(HWND window) {
     const int separatorWidth = MulDiv(1, dpi, 96);
     const int separatorHeight = MulDiv(20, dpi, 96);
     const int sectionGutter = MulDiv(14, dpi, 96);
-    const int filenameLeadIn = MulDiv(14, dpi, 96);
+    const int filenameLeadIn = MulDiv(7, dpi, 96);
     // Fixed metadata area; its anchors are measured once per DPI using the title font.
     const int resolutionWidth = MulDiv(150, dpi, 96);
     const int fileSizeWidth = MulDiv(58, dpi, 96);

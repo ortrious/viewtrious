@@ -1723,6 +1723,9 @@ public:
         bounds.top = static_cast<LONG>(std::lround(bounds.bottom + (bounds.top - bounds.bottom) * progress));
         return bounds;
     }
+    float AdjustmentPanelPresentationOpacity(float reveal) const {
+        return 0.25f + 0.75f * std::clamp(reveal, 0.0f, 1.0f);
+    }
     VideoAdjustmentsPanelLayout GetVideoZoomHudAdjustmentsPanelTargetLayout() const {
         const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
@@ -9989,20 +9992,21 @@ private:
     void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float reveal, bool autoActive, bool originalActive) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
+        const float panelOpacity = AdjustmentPanelPresentationOpacity(reveal);
         ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark), &surface)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark), &border)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 1.0f), &text)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, 1.0f), &accent)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f), &track)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 1.0f), &hover))) return;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, panelOpacity), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, panelOpacity), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, panelOpacity), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, panelOpacity), &accent)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * panelOpacity), &track)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, panelOpacity), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         const RECT revealed = AdjustmentPanelRevealBounds(panel, reveal);
         if (revealed.bottom <= revealed.top) return;
         renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), scale);
-        DrawAdjustmentPanelContent(panel, adjustments, 1.0f, autoActive, originalActive, text.Get(), accent.Get(), track.Get(), hover.Get());
+        DrawAdjustmentPanelContent(panel, adjustments, panelOpacity, autoActive, originalActive, text.Get(), accent.Get(), track.Get(), hover.Get());
         renderTarget_->PopAxisAlignedClip();
     }
 
@@ -10192,23 +10196,24 @@ private:
         if (adjustmentsPanelVisible) {
             const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
             const float panelReveal = videoAdjustmentsPanelOpacity_;
-            surface->SetOpacity(1.0f);
-            border->SetOpacity(1.0f);
-            text->SetOpacity(1.0f);
-            accent->SetOpacity(1.0f);
-            track->SetOpacity(1.0f);
-            hover->SetOpacity(1.0f);
+            const float panelOpacity = AdjustmentPanelPresentationOpacity(panelReveal);
+            surface->SetOpacity(panelOpacity);
+            border->SetOpacity(panelOpacity);
+            text->SetOpacity(panelOpacity);
+            accent->SetOpacity(panelOpacity);
+            track->SetOpacity(0.75f * panelOpacity);
+            hover->SetOpacity(panelOpacity);
             if (adjustmentsPanelSeparateShell) {
                 const RECT revealed = AdjustmentPanelRevealBounds(panel, panelReveal);
                 if (revealed.bottom > revealed.top) {
                     renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                     renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
                     renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), 1.0f * scale);
-                    DrawAdjustmentPanelContent(panel, videoAdjustments_, 1.0f, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
+                    DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
                     renderTarget_->PopAxisAlignedClip();
                 }
             } else {
-                DrawAdjustmentPanelContent(panel, videoAdjustments_, 1.0f, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
+                DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
             }
             const bool legacyShellDisabled = false;
             if (legacyShellDisabled) {

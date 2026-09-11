@@ -935,6 +935,7 @@ struct GifControlsLayout {
     RECT island;
     RECT playPause;
     RECT stepBackward;
+    RECT frameSlider;
     RECT stepForward;
 };
 
@@ -1616,8 +1617,11 @@ public:
         const D2D1_RECT_F imageCanvas = ImageCanvasBounds();
         const RECT canvas{ static_cast<LONG>(imageCanvas.left), static_cast<LONG>(imageCanvas.top), static_cast<LONG>(imageCanvas.right), static_cast<LONG>(imageCanvas.bottom) };
         const UINT dpi = GetDpiForWindow(window_);
-        const LONG button = MulDiv(36, dpi, 96), gap = MulDiv(4, dpi, 96), padding = MulDiv(6, dpi, 96);
-        const LONG width = button * 3 + gap * 2 + padding * 2;
+        const LONG button = MulDiv(34, dpi, 96), gap = MulDiv(6, dpi, 96), padding = MulDiv(8, dpi, 96);
+        const LONG minimumSlider = MulDiv(96, dpi, 96), preferredSlider = MulDiv(156, dpi, 96);
+        const LONG availableSlider = std::max(minimumSlider, canvas.right - canvas.left - button * 3 - gap * 3 - padding * 2);
+        const LONG sliderWidth = std::min(preferredSlider, availableSlider);
+        const LONG width = button * 3 + gap * 3 + sliderWidth + padding * 2;
         const LONG canvasBottomMargin = MulDiv(16, dpi, 96);
         const LONG filmstripClearance = MulDiv(24, dpi, 96);
         // Reserve the filmstrip's canvas space whether it is currently faded in or hidden, so the
@@ -1629,7 +1633,30 @@ public:
         const LONG buttonTop = island.top + padding;
         return { island, { left + padding, buttonTop, left + padding + button, buttonTop + button },
             { left + padding + button + gap, buttonTop, left + padding + button * 2 + gap, buttonTop + button },
-            { left + padding + button * 2 + gap * 2, buttonTop, left + padding + button * 3 + gap * 2, buttonTop + button } };
+            { left + padding + button * 2 + gap * 2, buttonTop, left + padding + button * 2 + gap * 2 + sliderWidth, buttonTop + button },
+            { left + padding + button * 2 + gap * 3 + sliderWidth, buttonTop, left + padding + button * 3 + gap * 3 + sliderWidth, buttonTop + button } };
+    }
+    float GifFrameSliderThumbX(const GifControlsLayout& layout) const {
+        const float radius = static_cast<float>(MulDiv(12, GetDpiForWindow(window_), 96));
+        const float left = static_cast<float>(layout.frameSlider.left) + radius;
+        const float right = static_cast<float>(layout.frameSlider.right) - radius;
+        if (gifFrameCount_ < 2 || right <= left) return (left + right) * 0.5f;
+        return left + (right - left) * static_cast<float>(gifFrameIndex_) / static_cast<float>(gifFrameCount_ - 1);
+    }
+    bool GifFrameSliderThumbContains(const GifControlsLayout& layout, POINT point) const {
+        const float radius = static_cast<float>(MulDiv(12, GetDpiForWindow(window_), 96));
+        const float dx = static_cast<float>(point.x) - GifFrameSliderThumbX(layout);
+        const float dy = static_cast<float>(point.y) - (layout.frameSlider.top + layout.frameSlider.bottom) * 0.5f;
+        return dx * dx + dy * dy <= radius * radius;
+    }
+    UINT GifFrameSliderIndexAt(const GifControlsLayout& layout, POINT point) const {
+        if (gifFrameCount_ < 2) return 0;
+        const float radius = static_cast<float>(MulDiv(12, GetDpiForWindow(window_), 96));
+        const float left = static_cast<float>(layout.frameSlider.left) + radius;
+        const float right = static_cast<float>(layout.frameSlider.right) - radius;
+        if (right <= left) return 0;
+        const float fraction = std::clamp((static_cast<float>(point.x) - left) / (right - left), 0.0f, 1.0f);
+        return static_cast<UINT>(std::lround(fraction * static_cast<float>(gifFrameCount_ - 1)));
     }
     ButtonKind GifControlAt(POINT point) const {
         if (!AnimatedGifActive()) return ButtonKind::None;
@@ -8634,6 +8661,7 @@ private:
         gifCompletedLoops_ = 0;
         gifLoopCount_ = 0; gifHasLoopExtension_ = false;
         gifPlaying_ = gifPaused_ = gifUserPaused_ = gifPlaybackTimerActive_ = false;
+        gifScrubbing_ = gifScrubberThumbGrab_ = gifWasPlayingBeforeScrub_ = gifScrubberHovered_ = false;
     }
 
     void FinishGifPlayback() {
@@ -8697,6 +8725,68 @@ private:
             ++gifCompletedLoops_;
         }
         if (!RebuildGifFrame(target)) StopGifPlayback();
+    }
+
+    void UpdateGifFrameScrub(POINT point) {
+        if (!AnimatedGifActive()) return;
+        const UINT target = GifFrameSliderIndexAt(GetGifControlsLayout(), point);
+        if (target != gifFrameIndex_ && !RebuildGifFrame(target)) StopGifPlayback();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    bool BeginGifControlsInteraction(POINT point) {
+        if (!AnimatedGifActive() || !GifControlsContains(point)) return false;
+        const GifControlsLayout layout = GetGifControlsLayout();
+        if (!PtInRect(&layout.frameSlider, point)) return false;
+        gifWasPlayingBeforeScrub_ = gifPlaying_ && !gifPaused_;
+        if (gifWasPlayingBeforeScrub_) PauseGifPlayback(false);
+        gifScrubbing_ = true;
+        gifScrubberThumbGrab_ = GifFrameSliderThumbContains(layout, point);
+        if (!gifScrubberThumbGrab_) UpdateGifFrameScrub(point);
+        return true;
+    }
+
+    bool ContinueGifControlsInteraction(POINT point) {
+        if (!gifScrubbing_) return false;
+        UpdateGifFrameScrub(point);
+        return true;
+    }
+
+    bool EndGifControlsInteraction(POINT point) {
+        if (!gifScrubbing_) return false;
+        UpdateGifFrameScrub(point);
+        gifScrubbing_ = false;
+        gifScrubberThumbGrab_ = false;
+        const bool resume = gifWasPlayingBeforeScrub_;
+        gifWasPlayingBeforeScrub_ = false;
+        if (resume && AnimatedGifActive() && gifPaused_) {
+            gifPaused_ = false;
+            gifUserPaused_ = false;
+            ActivateGifPlayback();
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+        return true;
+    }
+
+    void CancelGifControlsInteraction() {
+        if (!gifScrubbing_) return;
+        gifScrubbing_ = false;
+        gifScrubberThumbGrab_ = false;
+        const bool resume = gifWasPlayingBeforeScrub_;
+        gifWasPlayingBeforeScrub_ = false;
+        if (resume && AnimatedGifActive() && gifPaused_) {
+            gifPaused_ = false;
+            gifUserPaused_ = false;
+            ActivateGifPlayback();
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void UpdateGifControlsMouse(POINT point) {
+        const bool hovered = AnimatedGifActive() && PtInRect(&GetGifControlsLayout().frameSlider, point);
+        if (gifScrubberHovered_ == hovered) return;
+        gifScrubberHovered_ = hovered;
+        InvalidateRect(window_, nullptr, FALSE);
     }
 
     void ApplyGifPreviousDisposal() {
@@ -10016,10 +10106,12 @@ private:
         const GifControlsLayout layout = GetGifControlsLayout();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
-        ComPtr<ID2D1SolidColorBrush> surface, border, text, hover;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 35.0f / 255.0f : 246.0f / 255.0f, dark ? 38.0f / 255.0f : 246.0f / 255.0f, dark ? 45.0f / 255.0f : 246.0f / 255.0f, 0.94f), &surface)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, 0.14f), &border)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, 0.92f), &text)) ||
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, hover, track, accent;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, 0.94f), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, 0.94f), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 0.92f), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 0.88f), &track)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, 1.0f), &accent)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, 0.12f), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.island), 9.0f * scale, 9.0f * scale), surface.Get());
@@ -10031,6 +10123,16 @@ private:
         drawHover(layout.playPause, ButtonKind::GifPlayPause);
         drawHover(layout.stepBackward, ButtonKind::GifStepBackward);
         drawHover(layout.stepForward, ButtonKind::GifStepForward);
+        const float trackHeight = 4.0f * scale;
+        const float trackLeft = static_cast<float>(layout.frameSlider.left) + 12.0f * scale;
+        const float trackRight = static_cast<float>(layout.frameSlider.right) - 12.0f * scale;
+        const float trackCenterY = (layout.frameSlider.top + layout.frameSlider.bottom) * 0.5f;
+        const D2D1_RECT_F trackBounds = D2D1::RectF(trackLeft, trackCenterY - trackHeight * 0.5f, trackRight, trackCenterY + trackHeight * 0.5f);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(trackBounds, trackHeight * 0.5f, trackHeight * 0.5f), track.Get());
+        const float thumbX = GifFrameSliderThumbX(layout);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(trackLeft, trackBounds.top, thumbX, trackBounds.bottom), trackHeight * 0.5f, trackHeight * 0.5f), accent.Get());
+        const float thumbRadius = (gifScrubbing_ || gifScrubberHovered_) ? 6.0f * scale : 5.0f * scale;
+        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, trackCenterY), thumbRadius, thumbRadius), accent.Get());
         const float centerX = (layout.playPause.left + layout.playPause.right) * 0.5f;
         const float centerY = (layout.playPause.top + layout.playPause.bottom) * 0.5f;
         if (!gifPaused_) {
@@ -11937,6 +12039,10 @@ private:
     bool gifPaused_ = false;
     bool gifUserPaused_ = false;
     bool gifPlaybackTimerActive_ = false;
+    bool gifScrubbing_ = false;
+    bool gifScrubberThumbGrab_ = false;
+    bool gifWasPlayingBeforeScrub_ = false;
+    bool gifScrubberHovered_ = false;
     HANDLE videoPlaybackTimer_ = nullptr;
     HANDLE videoPlaybackStopEvent_ = nullptr;
     std::thread videoPlaybackSchedulerThread_;
@@ -12432,6 +12538,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->ImageAdjustmentsPanelContains(point)) return 0;
+        if (viewer->BeginGifControlsInteraction(point)) {
+            SetCapture(window);
+            return 0;
+        }
         if (viewer->GifControlsContains(point)) {
             viewer->SetButtonPressed(viewer->ButtonAt(point));
             SetCapture(window);
@@ -12574,6 +12684,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetCapture(window);
             return 0;
         }
+        if (viewer->BeginGifControlsInteraction(point)) {
+            SetCapture(window);
+            return 0;
+        }
         if (viewer->GifControlsContains(point)) {
             viewer->SetButtonPressed(viewer->ButtonAt(point));
             SetCapture(window);
@@ -12696,6 +12810,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->SetFilmstripPointerState(point);
         viewer->SetFilmstripHover(point);
         if (viewer->ContinueFilmstripInteraction(point)) return 0;
+        if (viewer->ContinueGifControlsInteraction(point)) return 0;
+        viewer->UpdateGifControlsMouse(point);
         viewer->SetButtonHover(viewer->ButtonAt(point));
         viewer->SetCanvasNavigationHover(viewer->CanvasNavigationZoneAt(point));
         viewer->SetHamburgerHover(!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point));
@@ -12715,7 +12831,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         return 0;
     }
-    case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->ClearComponentsPanelHover(); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->VideoControlsMouseLeave(); return 0;
+    case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->ClearComponentsPanelHover(); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->UpdateGifControlsMouse({ -1, -1 }); viewer->VideoControlsMouseLeave(); return 0;
     case WM_LBUTTONUP: {
         if (viewer->ComponentsPanelInteractionActive()) {
             viewer->EndComponentsPanelInteraction();
@@ -12724,6 +12840,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (viewer->FilmstripInteractionActive()) {
             viewer->EndFilmstripInteraction({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+            if (GetCapture() == window) ReleaseCapture();
+            return 0;
+        }
+        if (viewer->EndGifControlsInteraction({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) })) {
             if (GetCapture() == window) ReleaseCapture();
             return 0;
         }
@@ -12807,7 +12927,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         break;
     }
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->EndModelDrag(); viewer->EndComponentsPanelInteraction(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->CancelImageAdjustmentsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->EndModelDrag(); viewer->EndComponentsPanelInteraction(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelGifControlsInteraction(); viewer->CancelVideoControlsInteraction(); viewer->CancelImageAdjustmentsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (viewer->ComponentsPanelContains(point)) return 0;

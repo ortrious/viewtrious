@@ -47,11 +47,11 @@ void BuildSnapPlanes(ModelDocument& document) {
 
 bool StepAddonPresent() { return std::filesystem::exists(AddonPath()); }
 
-std::shared_ptr<ModelDocument> LoadStepDocumentFromAddon(const std::wstring& path, std::wstring& error) {
+std::shared_ptr<ModelDocument> LoadStepDocumentFromAddon(const std::wstring& path, std::wstring& error, StepLoadProgressCallback progress, void* progressContext) {
     StepAddon& addon = Addon();
     if (!addon.module || addon.error.size()) { error = addon.error; return nullptr; }
     ViewtriousImporterResult result{}; result.structSize = sizeof(result); result.apiVersion = kViewtriousModelImporterApiVersion;
-    if (!addon.api.loadStep(path.c_str(), &result)) { error = result.error ? result.error : L"The STEP file could not be loaded."; addon.api.releaseResult(&result); return nullptr; }
+    if (!addon.api.loadStep(path.c_str(), progress, progressContext, &result)) { error = result.error ? result.error : L"The STEP file could not be loaded."; addon.api.releaseResult(&result); return nullptr; }
     const bool valid = result.structSize == sizeof(result) && result.apiVersion == kViewtriousModelImporterApiVersion && result.positions && result.normals && result.indices && result.ranges && result.positionCount == result.indexCount && result.indexCount % 3 == 0 && result.rangeCount && result.triangleCadFaceIdCount == result.indexCount/3;
     if (!valid) { addon.api.releaseResult(&result); error = L"The optional Viewtrious STEP add-on returned invalid model data."; return nullptr; }
     auto document = std::make_shared<ModelDocument>();

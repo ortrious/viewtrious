@@ -3,7 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 
-constexpr uint32_t kViewtriousModelImporterApiVersion = 1;
+constexpr uint32_t kViewtriousModelImporterApiVersion = 2;
+
+using ViewtriousImporterProgressCallback = void (*)(void* context, float normalizedProgress);
 
 struct ViewtriousImporterFloat3 { float x; float y; float z; };
 struct ViewtriousImporterBounds { ViewtriousImporterFloat3 minimum; ViewtriousImporterFloat3 maximum; };
@@ -29,7 +31,7 @@ struct ViewtriousImporterResult {
 struct ViewtriousModelImporterApi {
     uint32_t structSize;
     uint32_t apiVersion;
-    bool (*loadStep)(const wchar_t* path, ViewtriousImporterResult* result);
+    bool (*loadStep)(const wchar_t* path, ViewtriousImporterProgressCallback progress, void* progressContext, ViewtriousImporterResult* result);
     void (*releaseResult)(ViewtriousImporterResult* result);
     void (*releaseDocumentContext)(void* context);
 };

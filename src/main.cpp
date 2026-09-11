@@ -9292,7 +9292,7 @@ private:
         resolutionText_ = std::to_wstring(width) + L"\u00D7" + std::to_wstring(height);
         fileSizeText_ = FormatFileSize(path);
         const std::wstring focalLength = ReadImageFocalLength(path);
-        if (!focalLength.empty()) resolutionText_ += L"  \x2022  " + focalLength;
+        resolutionText_ += L"  \x2022  " + (focalLength.empty() ? L"-" : focalLength);
         filenameText_ = fs::path(path).filename().wstring();
         error_.clear();
         fitToWindow_ = true;

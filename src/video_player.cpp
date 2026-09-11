@@ -169,10 +169,9 @@ void VideoPlayer::RecordFramePacingEvent(FramePacingEvent, LONGLONG, HRESULT, do
 void VideoPlayer::RecordFramePacingEventAtQpc(FramePacingEvent, LONGLONG, LONGLONG, HRESULT, double, double) {}
 #endif
 
-bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, bool deferPlaybackUntilOpeningFrame, std::wstring& error) {
+bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, std::wstring& error) {
     Shutdown();
     openAttemptId_ = openAttemptId;
-    deferPlaybackUntilOpeningFrame_ = deferPlaybackUntilOpeningFrame;
     openStartedAtMs_ = GetTickCount64();
     lastMediaEvent_ = 0;
     lastSuccessfulLifecycleEvent_ = 0;
@@ -215,12 +214,8 @@ void VideoPlayer::Shutdown() {
     if (openAttemptId_) FileOpenDiagnostics::Log(openAttemptId_, L"video-shutdown-begin");
     FlushFramePacingDiagnostics();
     playing_ = ended_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
-    firstValidFrameCaptureAttempted_ = false;
-    deferPlaybackUntilOpeningFrame_ = false;
     displayAdjustmentsBypassed_ = false;
     lastTransferredPts_ = 0;
-    firstValidFrameWidth_ = firstValidFrameHeight_ = 0;
-    firstValidFramePixels_.clear();
     framesPerSecond_ = 0.0f;
     effectivePlaybackRate_ = 1.0;
     adjustedFrameBitmap_.Reset(); frameBitmap_.Reset(); frameTexture_.Reset(); adjustmentProcessor_.Reset(); engineEx_.Reset();
@@ -319,10 +314,6 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
         }
     } else if (event == MF_MEDIA_ENGINE_EVENT_CANPLAY && !failed_) {
         ApplyPreferredPlaybackRate();
-        if (deferPlaybackUntilOpeningFrame_) {
-            FileOpenDiagnostics::Log(openAttemptId_, L"video-open-ready", L"elapsed-ms=" + std::to_wstring(elapsed) + L" deferred=opening-frame");
-            return true;
-        }
         const HRESULT play = engine_->Play();
         if (FAILED(play)) { error = L"Viewtrious could not start video playback."; FileOpenDiagnostics::Log(openAttemptId_, L"video-open-failed", L"stage=play " + HresultDetail(play)); failed_ = true; }
         else { playing_ = true; FileOpenDiagnostics::Log(openAttemptId_, L"video-open-ready", L"elapsed-ms=" + std::to_wstring(elapsed)); RecordFramePacingEvent(FramePacingEvent::PlaybackBegin); }
@@ -345,27 +336,8 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
     return true;
 }
 
-bool VideoPlayer::StartDeferredOpeningPlayback(std::wstring& error) {
-    if (!deferPlaybackUntilOpeningFrame_) return true;
-    deferPlaybackUntilOpeningFrame_ = false;
-    if (!engine_ || failed_) return false;
-    const HRESULT play = engine_->Play();
-    if (FAILED(play)) {
-        error = L"Viewtrious could not start video playback.";
-        FileOpenDiagnostics::Log(openAttemptId_, L"video-open-failed", L"stage=deferred-play " + HresultDetail(play));
-        failed_ = true;
-        return false;
-    }
-    playing_ = true;
-    const ULONGLONG elapsed = openStartedAtMs_ ? GetTickCount64() - openStartedAtMs_ : 0;
-    FileOpenDiagnostics::Log(openAttemptId_, L"video-playback-start", L"elapsed-ms=" + std::to_wstring(elapsed) + L" source=opening-frame");
-    RecordFramePacingEvent(FramePacingEvent::PlaybackBegin);
-    return true;
-}
-
 HRESULT VideoPlayer::TogglePlayPause() {
     if (!engine_ || failed_) return E_FAIL;
-    if (deferPlaybackUntilOpeningFrame_) return S_FALSE;
     if (playing_) {
         const HRESULT pause = engine_->Pause();
         if (SUCCEEDED(pause)) { playing_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackPause); }
@@ -489,16 +461,6 @@ bool VideoPlayer::CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT&
     context->Unmap(staging.Get(), 0); width = videoWidth_; height = videoHeight_; return true;
 }
 
-bool VideoPlayer::TakeFirstValidFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) {
-    pixels.clear(); width = height = 0;
-    if (firstValidFramePixels_.empty() || !firstValidFrameWidth_ || !firstValidFrameHeight_) return false;
-    pixels = std::move(firstValidFramePixels_);
-    width = firstValidFrameWidth_;
-    height = firstValidFrameHeight_;
-    firstValidFrameWidth_ = firstValidFrameHeight_ = 0;
-    return true;
-}
-
 bool VideoPlayer::PlaybackRateSupported(double rate) const {
     if (std::abs(rate - 1.0) < 0.001) return true;
     if (!engineEx_) return true;
@@ -538,16 +500,6 @@ bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
             RecordFramePacingEvent(FramePacingEvent::Transfer, pts, transfer);
             hasValidFrame_ = hasTransferredPts_ = true;
             lastTransferredPts_ = pts;
-            if (!firstValidFrameCaptureAttempted_) {
-                firstValidFrameCaptureAttempted_ = true;
-                if (CopyCurrentFrameBgra(firstValidFramePixels_, firstValidFrameWidth_, firstValidFrameHeight_)) {
-                    FileOpenDiagnostics::Log(openAttemptId_, L"video-first-frame-snapshot",
-                        L"source=mediaengine-first-frame size=" + std::to_wstring(firstValidFrameWidth_) + L"x" + std::to_wstring(firstValidFrameHeight_));
-                } else {
-                    firstValidFrameWidth_ = firstValidFrameHeight_ = 0;
-                    FileOpenDiagnostics::Log(openAttemptId_, L"video-first-frame-snapshot", L"source=mediaengine-first-frame result=unavailable");
-                }
-            }
             adjustedFrameBitmap_.Reset();
             adjustedFrameValid_ = !displayAdjustments_.IsNeutral() && adjustmentProcessor_.ProcessImage(frameTexture_.Get(), videoWidth_, videoHeight_, displayAdjustments_);
             RecordFramePacingEvent(FramePacingEvent::CachePublish, pts);

@@ -22,12 +22,11 @@ class VideoPlayer {
 public:
     enum class FrameAcquisitionReason : unsigned char { Scheduler, InitialLoad, Seek };
 
-    bool Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, bool deferPlaybackUntilOpeningFrame, std::wstring& error);
+    bool Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, std::wstring& error);
     void Shutdown();
     bool RebindDevice(ID3D11Device* device, std::wstring& error);
     void HandleRenderTargetResize();
     bool HandleMediaEvent(DWORD event, std::wstring& error);
-    bool StartDeferredOpeningPlayback(std::wstring& error);
     bool UpdateFrame(FrameAcquisitionReason reason);
     bool Draw(ID2D1DeviceContext* context, const RECT& canvas, float scale, D2D1_POINT_2F pan, float opacity = 1.0f);
     HRESULT TogglePlayPause();
@@ -41,7 +40,6 @@ public:
     void SetDisplayAdjustments(const ImageAdjustments& adjustments);
     void SetDisplayAdjustmentsBypassed(bool bypassed) { displayAdjustmentsBypassed_ = bypassed; }
     bool CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
-    bool TakeFirstValidFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height);
     bool SetPreferredPlaybackRate(double rate);
     bool PlaybackRateSupported(double rate) const;
     double EffectivePlaybackRate() const { return effectivePlaybackRate_; }
@@ -95,13 +93,8 @@ private:
     bool hasTransferredPts_ = false;
     bool hasFramesPerSecond_ = false;
     bool firstFrameLogged_ = false;
-    bool firstValidFrameCaptureAttempted_ = false;
-    bool deferPlaybackUntilOpeningFrame_ = false;
     float framesPerSecond_ = 0.0f;
     LONGLONG lastTransferredPts_ = 0;
-    UINT firstValidFrameWidth_ = 0;
-    UINT firstValidFrameHeight_ = 0;
-    std::vector<unsigned char> firstValidFramePixels_;
     uint64_t openAttemptId_ = 0;
     ULONGLONG openStartedAtMs_ = 0;
     DWORD lastMediaEvent_ = 0;

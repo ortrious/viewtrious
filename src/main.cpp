@@ -278,7 +278,7 @@ struct VideoOpeningPosterKey {
     FILETIME lastWrite{};
     bool valid = false;
 };
-enum class VideoOpeningPosterSource : unsigned char { Shell, MediaEngineFirstFrame };
+enum class VideoOpeningPosterSource : unsigned char { Shell, SourceReaderFirstFrame, MediaEngineFirstFrame };
 struct VideoOpeningPosterEntry : PixelBuffer {
     VideoOpeningPosterKey key;
     VideoOpeningPosterSource source = VideoOpeningPosterSource::Shell;
@@ -286,7 +286,8 @@ struct VideoOpeningPosterEntry : PixelBuffer {
 };
 
 const wchar_t* VideoOpeningPosterSourceName(VideoOpeningPosterSource source) {
-    return source == VideoOpeningPosterSource::MediaEngineFirstFrame ? L"mediaengine-first-frame" : L"shell";
+    if (source == VideoOpeningPosterSource::MediaEngineFirstFrame) return L"mediaengine-first-frame";
+    return source == VideoOpeningPosterSource::SourceReaderFirstFrame ? L"source-reader-first-frame" : L"shell";
 }
 
 bool PixelsHaveTransparency(const std::vector<BYTE>& pixels) {
@@ -380,14 +381,17 @@ struct FilmstripThumbnailRequest {
     uint64_t itemGeneration = 0;
     UINT targetHeight = 0;
 };
+enum class FilmstripThumbnailSource : unsigned char { Image, Shell, SourceReaderFirstFrame };
 struct FilmstripThumbnailResult : PixelBuffer {
     FilmstripThumbnailRequest request;
+    FilmstripThumbnailSource source = FilmstripThumbnailSource::Image;
     float aspect = 1.0f;
     HRESULT result = E_FAIL;
 };
 struct FilmstripThumbnailEntry : PixelBuffer {
     std::wstring path;
     uint64_t itemGeneration = 0;
+    FilmstripThumbnailSource source = FilmstripThumbnailSource::Image;
     float aspect = 1.0f;
     // Derived solely from pixels; it cannot retain the source file or WIC objects.
     ComPtr<ID2D1Bitmap> bitmap;
@@ -4731,25 +4735,51 @@ public:
                     if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) continue;
                     if (request.folderGeneration != filmstripThumbnailFolderGeneration_.load(std::memory_order_acquire)) continue;
                     TraceFilmstripThumbnailJob(L"THUMB_JOB_DEQUEUED", request);
-                    auto* result = new FilmstripThumbnailResult{};
-                    result->request = request;
+                    const auto publish = [&](FilmstripThumbnailResult* result) {
+                        TraceFilmstripThumbnailJob(SUCCEEDED(result->result) ? L"THUMB_JOB_SUCCESS" : L"THUMB_JOB_FAILED", request, result->result);
+                        if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) delete result;
+                        else if (PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result)))
+                            TraceFilmstripThumbnailJob(L"THUMB_RAM_PUBLISHED", request, result->result);
+                        else delete result;
+                    };
                     if (IsVideoPath(request.path)) {
+                        auto* result = new FilmstripThumbnailResult{};
+                        result->request = request;
+                        result->source = FilmstripThumbnailSource::Shell;
                         ShellThumbnailPixels decoded;
                         result->result = DecodeShellVideoThumbnailPixels(request.path, 256, decoded, result->aspect);
                         result->width = decoded.width;
                         result->height = decoded.height;
                         result->stride = decoded.stride;
                         result->pixels = std::move(decoded.pixels);
+                        publish(result);
+                        if (filmstripThumbnailStopping_.load(std::memory_order_acquire) ||
+                            request.folderGeneration != filmstripThumbnailFolderGeneration_.load(std::memory_order_acquire)) continue;
+                        result = new FilmstripThumbnailResult{};
+                        result->request = request;
+                        result->source = FilmstripThumbnailSource::SourceReaderFirstFrame;
+                        VideoHoverFrameStream stream;
+                        result->result = stream.Open({ request.path, request.folderGeneration, 256, true }, &filmstripThumbnailFolderGeneration_);
+                        VideoHoverPreviewFrame frame;
+                        if (SUCCEEDED(result->result)) result->result = stream.ReadNext(frame);
+                        stream.Close();
+                        if (SUCCEEDED(result->result)) {
+                            result->width = frame.width;
+                            result->height = frame.height;
+                            result->stride = frame.stride;
+                            result->pixels = std::move(frame.pixels);
+                            result->aspect = static_cast<float>(result->width) / std::max(1u, result->height);
+                        }
+                        publish(result);
+                        continue;
                     } else {
+                        auto* result = new FilmstripThumbnailResult{};
+                        result->request = request;
                         result->result = DecodeFilmstripThumbnailPixels(request.path, request.targetHeight, *result, result->aspect);
+                        // Both decode paths release all source objects before returning, so only copied
+                        // Viewtrious-owned RAM pixels can cross onto the UI thread.
+                        publish(result);
                     }
-                    // Both decode paths release all source objects before returning, so only copied
-                    // Viewtrious-owned RAM pixels can cross onto the UI thread.
-                    TraceFilmstripThumbnailJob(SUCCEEDED(result->result) ? L"THUMB_JOB_SUCCESS" : L"THUMB_JOB_FAILED", request, result->result);
-                    if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) delete result;
-                    else if (PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result)))
-                        TraceFilmstripThumbnailJob(L"THUMB_RAM_PUBLISHED", request, result->result);
-                    else delete result;
                 }
                 if (SUCCEEDED(apartment)) CoUninitialize();
             });
@@ -5211,12 +5241,23 @@ public:
             filmstripThumbnailGenerations_[index] == result->request.itemGeneration;
         const bool succeeded = current && SUCCEEDED(result->result) && result->pixels && result->width && result->height;
         if (succeeded) {
+            if (result->source == FilmstripThumbnailSource::SourceReaderFirstFrame) {
+                VideoOpeningPosterKey key = ReadVideoOpeningPosterKey(result->request.path);
+                PixelBuffer poster;
+                poster.width = result->width;
+                poster.height = result->height;
+                poster.stride = result->stride;
+                poster.pixels = result->pixels;
+                StoreVideoOpeningPoster(key, std::move(poster), VideoOpeningPosterSource::SourceReaderFirstFrame);
+                FileOpenDiagnostics::Log(activeOpenAttemptId_, L"filmstrip-video-thumbnail-upgrade", L"source=source-reader-first-frame");
+            }
             filmstripThumbnails_.erase(std::remove_if(filmstripThumbnails_.begin(), filmstripThumbnails_.end(), [&](const FilmstripThumbnailEntry& entry) {
                 return PathsEqual(fs::path(entry.path), fs::path(result->request.path));
             }), filmstripThumbnails_.end());
             FilmstripThumbnailEntry entry{};
             entry.path = result->request.path;
             entry.itemGeneration = result->request.itemGeneration;
+            entry.source = result->source;
             entry.aspect = result->aspect;
             entry.width = result->width;
             entry.height = result->height;
@@ -6419,8 +6460,12 @@ public:
         const auto existing = std::find_if(videoOpeningPosters_.begin(), videoOpeningPosters_.end(), [&](const VideoOpeningPosterEntry& entry) {
             return SameVideoOpeningPosterKey(entry.key, key);
         });
-        const bool upgraded = existing != videoOpeningPosters_.end() && existing->source != source &&
-            source == VideoOpeningPosterSource::MediaEngineFirstFrame;
+        const VideoOpeningPosterSource existingSource = existing == videoOpeningPosters_.end() ? VideoOpeningPosterSource::Shell : existing->source;
+        if (existing != videoOpeningPosters_.end() &&
+            ((existing->source == VideoOpeningPosterSource::MediaEngineFirstFrame && source != VideoOpeningPosterSource::MediaEngineFirstFrame) ||
+             (existing->source == VideoOpeningPosterSource::SourceReaderFirstFrame && source == VideoOpeningPosterSource::Shell)))
+            return;
+        const bool upgraded = existing != videoOpeningPosters_.end() && existing->source != source;
         videoOpeningPosters_.erase(std::remove_if(videoOpeningPosters_.begin(), videoOpeningPosters_.end(), [&](const VideoOpeningPosterEntry& entry) {
             return SameVideoOpeningPosterKey(entry.key, key);
         }), videoOpeningPosters_.end());
@@ -6434,7 +6479,8 @@ public:
         entry.lastUse = ++videoOpeningPosterUseSeed_;
         videoOpeningPosters_.push_back(std::move(entry));
         FileOpenDiagnostics::Log(activeOpenAttemptId_, upgraded ? L"video-opening-poster-cache-upgrade" : L"video-opening-poster-cache-store",
-            upgraded ? L"from=shell to=mediaengine-first-frame" : L"source=" + std::wstring(VideoOpeningPosterSourceName(source)));
+            upgraded ? L"from=" + std::wstring(VideoOpeningPosterSourceName(existingSource)) + L" to=" + VideoOpeningPosterSourceName(source) :
+                L"source=" + std::wstring(VideoOpeningPosterSourceName(source)));
         PruneVideoOpeningPosters();
     }
 

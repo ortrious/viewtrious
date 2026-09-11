@@ -126,6 +126,7 @@ constexpr UINT kStartupVideoSizingFallbackMs = 1500;
 constexpr UINT_PTR kFilmstripVisibilityTimer = 3;
 constexpr UINT_PTR kFilmstripHoverPreviewTimer = 18;
 constexpr UINT_PTR kFilmstripHoverPreviewDwellTimer = 19;
+constexpr UINT kFilmstripHoverPreviewDelayMs = 100;
 constexpr UINT_PTR kFilmstripVideoHoverFadeTimer = 20;
 constexpr UINT_PTR kImageAdjustmentPersistenceTimer = 21;
 constexpr UINT_PTR kVideoAdjustmentPersistenceTimer = 26;
@@ -1900,6 +1901,7 @@ public:
         const VideoAdjustmentsPanelLayout closeTarget = !open ? GetVideoAdjustmentsPanelTargetLayout() : VideoAdjustmentsPanelLayout{};
         if (open) videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
+        videoAdjustmentThumbGrab_ = false;
         if (!open && videoAdjustmentsOriginalPreviewActive_) {
             SetVideoAdjustmentsOriginalPreview(false);
             if (GetCapture() == window_) ReleaseCapture();
@@ -2000,6 +2002,22 @@ public:
         }
         return -1;
     }
+    bool CircularSliderThumbContains(POINT point, float centerX, float centerY) const {
+        const float halfExtent = static_cast<float>(MulDiv(12, GetDpiForWindow(window_), 96));
+        return point.x >= centerX - halfExtent && point.x <= centerX + halfExtent &&
+            point.y >= centerY - halfExtent && point.y <= centerY + halfExtent;
+    }
+    int AdjustmentSliderThumbAt(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, POINT point) const {
+        for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
+            const int value = AdjustmentSliderIntegerValue(adjustments, index);
+            const float normalized = index == 6 ? static_cast<float>(value) / 100.0f : static_cast<float>(value + 100) / 200.0f;
+            const RECT slider = panel.sliders[index];
+            const float centerX = slider.left + (slider.right - slider.left) * normalized;
+            const float centerY = (slider.top + slider.bottom) * 0.5f;
+            if (CircularSliderThumbContains(point, centerX, centerY)) return index;
+        }
+        return -1;
+    }
     int ConsumeAdjustmentWheelSteps(int index, int rawWheelDelta, int& hoveredIndex, int& remainder) {
         if (hoveredIndex != index) { hoveredIndex = index; remainder = 0; }
         remainder += rawWheelDelta;
@@ -2072,6 +2090,7 @@ public:
         const bool wasMoving = VideoAdjustmentsPanelMotionActive();
         if (wasMoving) UpdateVideoAdjustmentsPanelPlacementMotion();
         imageAdjustmentsDragging_ = -1;
+        imageAdjustmentThumbGrab_ = false;
         imageAdjustmentWheelRow_ = -1;
         imageAdjustmentWheelRemainder_ = 0;
         filmstripPreviewGeometryValid_ = false;
@@ -2115,7 +2134,7 @@ public:
             const int steps = ConsumeAdjustmentWheelSteps(index, rawWheelDelta, imageAdjustmentWheelRow_, imageAdjustmentWheelRemainder_);
             if (!steps) return true;
             const int value = AdjustmentSliderIntegerValue(imageAdjustments_, index);
-            const int adjusted = std::clamp(value + steps, index == 6 ? 0 : -100, 100);
+            const int adjusted = std::clamp(value - steps, index == 6 ? 0 : -100, 100);
             if (adjusted == value) return true;
             SetAdjustmentSliderIntegerValue(imageAdjustments_, index, adjusted);
             ApplyImageAdjustments();
@@ -2128,7 +2147,7 @@ public:
             const int steps = ConsumeAdjustmentWheelSteps(index, rawWheelDelta, videoAdjustmentWheelRow_, videoAdjustmentWheelRemainder_);
             if (!steps) return true;
             const int value = AdjustmentSliderIntegerValue(videoAdjustments_, index);
-            const int adjusted = std::clamp(value + steps, index == 6 ? 0 : -100, 100);
+            const int adjusted = std::clamp(value - steps, index == 6 ? 0 : -100, 100);
             if (adjusted == value) return true;
             SetAdjustmentSliderIntegerValue(videoAdjustments_, index, adjusted);
             ApplyVideoAdjustments();
@@ -2190,8 +2209,9 @@ public:
         if (imageAdjustmentsPanelOpen_) {
             const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
             if (PtInRect(&panel.panel, point)) {
-                const int slider = AdjustmentSliderAt(panel, point);
-                if (slider >= 0) { imageAdjustmentsDragging_ = slider; imageAdjustmentDetentIndex_ = -1; UpdateImageAdjustmentSlider(slider, point); return true; }
+                const int thumb = AdjustmentSliderThumbAt(panel, imageAdjustments_, point);
+                const int slider = thumb >= 0 ? thumb : AdjustmentSliderAt(panel, point);
+                if (slider >= 0) { imageAdjustmentsDragging_ = slider; imageAdjustmentThumbGrab_ = thumb >= 0; imageAdjustmentDetentIndex_ = -1; if (!imageAdjustmentThumbGrab_) UpdateImageAdjustmentSlider(slider, point); return true; }
                 if (PtInRect(&panel.autoButton, point)) { StartAiAnalysis(); return true; }
                 if (PtInRect(&panel.originalButton, point)) { SetImageAdjustmentsOriginalPreview(true); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetImageAdjustments(); return true; }
@@ -2208,14 +2228,16 @@ public:
     bool EndImageAdjustmentsInteraction(POINT point) {
         if (imageAdjustmentsOriginalPreviewActive_) { SetImageAdjustmentsOriginalPreview(false); return true; }
         if (imageAdjustmentsDragging_ < 0) return false;
-        UpdateImageAdjustmentSlider(imageAdjustmentsDragging_, point);
+        if (!imageAdjustmentThumbGrab_) UpdateImageAdjustmentSlider(imageAdjustmentsDragging_, point);
         imageAdjustmentsDragging_ = -1;
+        imageAdjustmentThumbGrab_ = false;
         imageAdjustmentDetentIndex_ = -1;
         FlushImageAdjustmentPersistence();
         return true;
     }
     void CancelImageAdjustmentsInteraction() {
         imageAdjustmentsDragging_ = -1;
+        imageAdjustmentThumbGrab_ = false;
         SetImageAdjustmentsOriginalPreview(false);
     }
     bool VideoControlsInteractive() const { return VideoActive() && videoControlsOpacity_ > 0.05f; }
@@ -2236,14 +2258,29 @@ public:
         const VideoControlsLayout layout = GetVideoControlsLayout();
         const RECT hit{ layout.scrubber.left, layout.scrubber.top + (layout.scrubber.bottom - layout.scrubber.top) / 2 - MulDiv(12, GetDpiForWindow(window_), 96),
             layout.scrubber.right, layout.scrubber.top + (layout.scrubber.bottom - layout.scrubber.top) / 2 + MulDiv(12, GetDpiForWindow(window_), 96) };
-        return hit.right > hit.left && PtInRect(&hit, point);
+        return (hit.right > hit.left && PtInRect(&hit, point)) || VideoScrubberThumbContains(point);
+    }
+    bool VideoScrubberThumbContains(POINT point) const {
+        if (!VideoControlsInteractive()) return false;
+        double current = 0.0, duration = 0.0;
+        if (!videoPlayer_.GetPlaybackTimes(current, duration)) return false;
+        const RECT scrubber = GetVideoControlsLayout().scrubber;
+        const float progress = duration > 0.0 ? std::clamp(static_cast<float>(current / duration), 0.0f, 1.0f) : 0.0f;
+        return CircularSliderThumbContains(point, scrubber.left + (scrubber.right - scrubber.left) * progress,
+            (scrubber.top + scrubber.bottom) * 0.5f);
     }
     bool VideoVolumeContains(POINT point) const {
         if (!VideoControlsInteractive()) return false;
         const RECT volume = GetVideoControlsLayout().volume;
         const int padding = MulDiv(6, GetDpiForWindow(window_), 96);
         const RECT hit{ volume.left, volume.top - padding, volume.right, volume.bottom + padding };
-        return hit.right > hit.left && PtInRect(&hit, point);
+        return (hit.right > hit.left && PtInRect(&hit, point)) || VideoVolumeThumbContains(point);
+    }
+    bool VideoVolumeThumbContains(POINT point) const {
+        if (!VideoControlsInteractive()) return false;
+        const RECT volume = GetVideoControlsLayout().volume;
+        return CircularSliderThumbContains(point, volume.left + (volume.right - volume.left) * static_cast<float>(videoVolume_),
+            (volume.top + volume.bottom) * 0.5f);
     }
     bool VideoCanvasContains(POINT point) const {
         if (!VideoActive()) return false;
@@ -2300,13 +2337,16 @@ public:
         videoControlsFadeActive_ = false;
         videoControlsPointerOver_ = false;
         videoScrubbing_ = false;
+        videoScrubberThumbGrab_ = false;
         videoVolumeDragging_ = false;
+        videoVolumeThumbGrab_ = false;
         videoWasPlayingBeforeScrub_ = false;
         videoAdjustmentsPanelOpen_ = false;
         videoAdjustmentsPanelFadeActive_ = false;
         videoAdjustmentsPanelOpacity_ = 0.0f;
         videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
+        videoAdjustmentThumbGrab_ = false;
         videoControlsHovered_ = ButtonKind::None;
         videoControlsLastActivity_ = GetTickCount64();
         RestoreVideoCursor();
@@ -2319,13 +2359,16 @@ public:
         StopVideoStepHold();
         SetVideoAdjustmentsOriginalPreview(false);
         videoScrubbing_ = false;
+        videoScrubberThumbGrab_ = false;
         videoVolumeDragging_ = false;
+        videoVolumeThumbGrab_ = false;
         videoWasPlayingBeforeScrub_ = false;
         videoAdjustmentsPanelOpen_ = false;
         videoAdjustmentsPanelFadeActive_ = false;
         videoAdjustmentsPanelOpacity_ = 0.0f;
         videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
+        videoAdjustmentThumbGrab_ = false;
         videoControlsFadeActive_ = false;
         videoControlsOpacity_ = 0.0f;
         videoControlsHovered_ = ButtonKind::None;
@@ -2371,8 +2414,9 @@ public:
         if (videoAdjustmentsPanelOpen_) {
             const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
             if (PtInRect(&panel.panel, point)) {
-                const int slider = AdjustmentSliderAt(panel, point);
-                if (slider >= 0) { videoAdjustmentsDragging_ = slider; videoAdjustmentDetentIndex_ = -1; UpdateVideoAdjustmentSlider(slider, point); return true; }
+                const int thumb = AdjustmentSliderThumbAt(panel, videoAdjustments_, point);
+                const int slider = thumb >= 0 ? thumb : AdjustmentSliderAt(panel, point);
+                if (slider >= 0) { videoAdjustmentsDragging_ = slider; videoAdjustmentThumbGrab_ = thumb >= 0; videoAdjustmentDetentIndex_ = -1; if (!videoAdjustmentThumbGrab_) UpdateVideoAdjustmentSlider(slider, point); return true; }
                 if (PtInRect(&panel.autoButton, point)) { AutoVideoAdjustments(); return true; }
                 if (PtInRect(&panel.originalButton, point)) { SetVideoAdjustmentsOriginalPreview(true); return true; }
                 if (PtInRect(&panel.resetButton, point)) { ResetVideoAdjustments(); return true; }
@@ -2388,12 +2432,14 @@ public:
             videoWasPlayingBeforeScrub_ = videoPlayer_.Playing();
             if (videoWasPlayingBeforeScrub_) ToggleVideoPlayPause();
             videoScrubbing_ = true;
-            UpdateVideoScrub(point);
+            videoScrubberThumbGrab_ = VideoScrubberThumbContains(point);
+            if (!videoScrubberThumbGrab_) UpdateVideoScrub(point);
             return true;
         }
         if (VideoVolumeContains(point)) {
             videoVolumeDragging_ = true;
-            UpdateVideoVolume(point);
+            videoVolumeThumbGrab_ = VideoVolumeThumbContains(point);
+            if (!videoVolumeThumbGrab_) UpdateVideoVolume(point);
             return true;
         }
         const ButtonKind control = VideoControlAt(point);
@@ -2417,16 +2463,17 @@ public:
     }
     bool EndVideoControlsInteraction(POINT point) {
         if (videoAdjustmentsOriginalPreviewActive_) { SetVideoAdjustmentsOriginalPreview(false); return true; }
-        if (videoAdjustmentsDragging_ >= 0) { UpdateVideoAdjustmentSlider(videoAdjustmentsDragging_, point); videoAdjustmentsDragging_ = -1; videoAdjustmentDetentIndex_ = -1; FlushVideoAdjustmentPersistence(); return true; }
+        if (videoAdjustmentsDragging_ >= 0) { if (!videoAdjustmentThumbGrab_) UpdateVideoAdjustmentSlider(videoAdjustmentsDragging_, point); videoAdjustmentsDragging_ = -1; videoAdjustmentThumbGrab_ = false; videoAdjustmentDetentIndex_ = -1; FlushVideoAdjustmentPersistence(); return true; }
         if (videoStepHoldDirection_) {
             StopVideoStepHold();
             ShowVideoControls();
             return true;
         }
-        if (videoVolumeDragging_) { UpdateVideoVolume(point); videoVolumeDragging_ = false; return true; }
+        if (videoVolumeDragging_) { if (!videoVolumeThumbGrab_) UpdateVideoVolume(point); videoVolumeDragging_ = false; videoVolumeThumbGrab_ = false; return true; }
         if (!videoScrubbing_) return false;
-        UpdateVideoScrub(point);
+        if (!videoScrubberThumbGrab_) UpdateVideoScrub(point);
         videoScrubbing_ = false;
+        videoScrubberThumbGrab_ = false;
         const bool resumePlayback = videoWasPlayingBeforeScrub_;
         videoWasPlayingBeforeScrub_ = false;
         if (resumePlayback && VideoActive() && !videoPlayer_.Playing()) ToggleVideoPlayPause();
@@ -2472,7 +2519,10 @@ public:
     void CancelVideoControlsInteraction() {
         StopVideoStepHold();
         videoAdjustmentsDragging_ = -1;
+        videoAdjustmentThumbGrab_ = false;
         videoVolumeDragging_ = false;
+        videoVolumeThumbGrab_ = false;
+        videoScrubberThumbGrab_ = false;
         SetVideoAdjustmentsOriginalPreview(false);
         if (!videoScrubbing_) return;
         videoScrubbing_ = false;
@@ -4366,33 +4416,6 @@ public:
         return { normal.left, normal.top, right, normal.bottom };
     }
     bool FilmstripContains(POINT point) const { const RECT bounds = GetFilmstripBounds(); return FilmstripVisible() && PtInRect(&bounds, point); }
-    RECT GetFilmstripHoverDelaySliderBounds() const {
-        RECT client{};
-        GetClientRect(window_, &client);
-        const int dpi = GetDpiForWindow(window_);
-        const int width = MulDiv(280, dpi, 96), height = MulDiv(24, dpi, 96);
-        const int top = (fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight) + MulDiv(10, dpi, 96);
-        return { (client.right - width) / 2, top, (client.right + width) / 2, top + height };
-    }
-    bool BeginFilmstripHoverDelaySlider(POINT point) {
-        const RECT bounds = GetFilmstripHoverDelaySliderBounds();
-        if (!FilmstripEligible() || !PtInRect(&bounds, point)) return false;
-        filmstripHoverDelaySliderDragging_ = true;
-        UpdateFilmstripHoverDelaySlider(point);
-        return true;
-    }
-    bool FilmstripHoverDelaySliderDragging() const { return filmstripHoverDelaySliderDragging_; }
-    void UpdateFilmstripHoverDelaySlider(POINT point) {
-        if (!filmstripHoverDelaySliderDragging_) return;
-        const RECT bounds = GetFilmstripHoverDelaySliderBounds();
-        const int dpi = GetDpiForWindow(window_);
-        const float trackLeft = static_cast<float>(bounds.left + MulDiv(112, dpi, 96));
-        const float trackRight = static_cast<float>(bounds.right - MulDiv(12, dpi, 96));
-        const float position = std::clamp((point.x - trackLeft) / std::max(1.0f, trackRight - trackLeft), 0.0f, 1.0f);
-        filmstripHoverPreviewDelayMs_ = static_cast<UINT>(std::lround(100.0f + position * 900.0f));
-        InvalidateRect(window_, nullptr, FALSE);
-    }
-    void EndFilmstripHoverDelaySlider() { filmstripHoverDelaySliderDragging_ = false; }
     float FilmstripThumbnailWidth(size_t index) const { return filmstripItemWidths_[index]; }
     float FilmstripMaximumScroll() const {
         const RECT bounds = GetFilmstripBounds();
@@ -5516,12 +5539,12 @@ public:
         if (filmstripPreviewIndex_ >= 0) StartFilmstripHoverPreviewFadeOut();
         if (FilmstripHoverPreviewEligible(index) && !filmstripDragging_ && !filmstripScrollAnimating_) {
             SetTimer(window_, kFilmstripHoverPreviewDwellTimer, 100, nullptr);
-            const UINT_PTR timer = SetTimer(window_, kFilmstripHoverPreviewTimer, filmstripHoverPreviewDelayMs_, nullptr);
+            const UINT_PTR timer = SetTimer(window_, kFilmstripHoverPreviewTimer, kFilmstripHoverPreviewDelayMs, nullptr);
             (void)timer;
 #ifdef _DEBUG
             wchar_t timerMessage[256]{};
             swprintf_s(timerMessage, L"[Viewtrious] FILMSTRIP_HOVER_SETTIMER hwnd=%p requested=%zu returned=%zu delay=%u error=%lu\n",
-                window_, static_cast<size_t>(kFilmstripHoverPreviewTimer), static_cast<size_t>(timer), filmstripHoverPreviewDelayMs_, timer ? ERROR_SUCCESS : GetLastError());
+                window_, static_cast<size_t>(kFilmstripHoverPreviewTimer), static_cast<size_t>(timer), kFilmstripHoverPreviewDelayMs, timer ? ERROR_SUCCESS : GetLastError());
             OutputDebugStringW(timerMessage);
 #endif
         }
@@ -5803,16 +5826,6 @@ public:
             if (index == current) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), selectedOutline.Get(), 2.0f * scale);
         }
         renderTarget_->PopAxisAlignedClip();
-        const RECT delaySlider = GetFilmstripHoverDelaySliderBounds();
-        const float delayProgress = (filmstripHoverPreviewDelayMs_ - 100.0f) / 900.0f;
-        const D2D1_RECT_F slider = D2D1::RectF(static_cast<float>(delaySlider.left), static_cast<float>(delaySlider.top), static_cast<float>(delaySlider.right), static_cast<float>(delaySlider.bottom));
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(slider, 6.0f * scale, 6.0f * scale), surface.Get());
-        const float trackLeft = slider.left + 112.0f * scale, trackRight = slider.right - 12.0f * scale, trackY = (slider.top + slider.bottom) * 0.5f;
-        renderTarget_->DrawLine(D2D1::Point2F(trackLeft, trackY), D2D1::Point2F(trackRight, trackY), border.Get(), 2.0f * scale);
-        const float thumbX = trackLeft + (trackRight - trackLeft) * delayProgress;
-        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, trackY), 4.5f * scale, 4.5f * scale), selectedOutline.Get());
-        const std::wstring delayLabel = L"TEST hover " + std::to_wstring(filmstripHoverPreviewDelayMs_) + L" ms";
-        DrawOverlayText(delayLabel.c_str(), slider.left + 8.0f * scale, slider.top, 100.0f * scale, slider.bottom - slider.top, 9.5f, DWRITE_FONT_WEIGHT_NORMAL, placeholderText.Get(), false, false, true);
         if (FilmstripHoverPreviewEligible(filmstripPreviewIndex_) && !filmstripDragging_ && !filmstripScrollAnimating_) {
 #ifdef _DEBUG
             OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_PREVIEW_PAINT_ENTER clip=popped\n");
@@ -11496,6 +11509,7 @@ private:
     ULONGLONG imageAdjustmentsPanelFadeStartedAt_ = 0;
     ImageAdjustmentsPanelLayout imageAdjustmentsPanelTargetLayout_{};
     int imageAdjustmentsDragging_ = -1;
+    bool imageAdjustmentThumbGrab_ = false;
     bool imageAdjustmentsOriginalPreviewActive_ = false;
     int imageAdjustmentDetentIndex_ = -1;
     int imageAdjustmentDetentValue_ = 0;
@@ -11512,6 +11526,7 @@ private:
     VideoAdjustmentsPanelLayout videoAdjustmentsPanelPlacementStartLayout_{};
     VideoAdjustmentsPanelLayout videoAdjustmentsPanelPlacementTargetLayout_{};
     int videoAdjustmentsDragging_ = -1;
+    bool videoAdjustmentThumbGrab_ = false;
     bool videoAdjustmentsOriginalPreviewActive_ = false;
     int videoAdjustmentDetentIndex_ = -1;
     int videoAdjustmentDetentValue_ = 0;
@@ -11585,14 +11600,12 @@ private:
     FilmstripVisibilityState filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
     int filmstripHoveredIndex_ = -1;
     int filmstripPreviewIndex_ = -1;
-    UINT filmstripHoverPreviewDelayMs_ = 250;
     float filmstripHoverPreviewOpacity_ = 0.0f;
     float filmstripHoverPreviewFadeStartOpacity_ = 0.0f;
     ULONGLONG filmstripHoverPreviewFadeStartedAtMs_ = 0;
     bool filmstripHoverPreviewFadeActive_ = false;
     bool filmstripHoverPreviewFadeOut_ = false;
     bool filmstripVideoHoverLoading_ = false;
-    bool filmstripHoverDelaySliderDragging_ = false;
     uint64_t filmstripHoverPreviewGeneration_ = 0;
     std::atomic<uint64_t> videoHoverPreviewGeneration_{ 0 };
     uint64_t filmstripHoverPreviewUseSeed_ = 0;
@@ -11791,7 +11804,9 @@ private:
     ButtonKind videoControlsHovered_ = ButtonKind::None;
     bool videoControlsPointerOver_ = false;
     bool videoScrubbing_ = false;
+    bool videoScrubberThumbGrab_ = false;
     bool videoVolumeDragging_ = false;
+    bool videoVolumeThumbGrab_ = false;
     bool videoWasPlayingBeforeScrub_ = false;
     bool videoCursorHidden_ = false;
     float videoControlsOpacity_ = 0.0f;
@@ -12075,10 +12090,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         viewer->SetFilmstripHover({ -1, -1 });
-        if (viewer->BeginFilmstripHoverDelaySlider(point)) {
-            SetCapture(window);
-            return 0;
-        }
         if (viewer->BeginFilmstripInteraction(point)) {
             SetCapture(window);
             return 0;
@@ -12207,7 +12218,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->SetComponentsPanelHover(point);
             return 0;
         }
-        if (viewer->FilmstripHoverDelaySliderDragging()) viewer->UpdateFilmstripHoverDelaySlider(point);
         viewer->SetFilmstripPointerState(point);
         viewer->SetFilmstripHover(point);
         if (viewer->ContinueFilmstripInteraction(point)) return 0;
@@ -12234,11 +12244,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_LBUTTONUP: {
         if (viewer->ComponentsPanelInteractionActive()) {
             viewer->EndComponentsPanelInteraction();
-            if (GetCapture() == window) ReleaseCapture();
-            return 0;
-        }
-        if (viewer->FilmstripHoverDelaySliderDragging()) {
-            viewer->EndFilmstripHoverDelaySlider();
             if (GetCapture() == window) ReleaseCapture();
             return 0;
         }
@@ -12327,7 +12332,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         break;
     }
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->EndModelDrag(); viewer->EndComponentsPanelInteraction(); viewer->EndFilmstripHoverDelaySlider(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->CancelImageAdjustmentsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->EndPan(); viewer->EndModelDrag(); viewer->EndComponentsPanelInteraction(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelVideoControlsInteraction(); viewer->CancelImageAdjustmentsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (viewer->ComponentsPanelContains(point)) return 0;

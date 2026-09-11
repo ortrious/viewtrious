@@ -1733,6 +1733,7 @@ public:
                 videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Placement ? VideoAdjustmentsPanelMotionRect(progress) :
                 VideoAdjustmentsPanelOpenCloseMotionRect(progress), videoAdjustmentsPanelPlacementTargetLayout_.aboveControls);
         }
+        if (!VideoActive() && ImageAdjustmentsPanelVisible()) SynchronizeFilmstripAdjustmentAvoidance();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void BeginVideoAdjustmentsPanelPlacementMotion(const VideoAdjustmentsPanelLayout& target) {
@@ -1917,8 +1918,10 @@ public:
         const bool imageActive = UpdateAdjustmentPanelFade(imageAdjustmentsPanelOpen_, imageAdjustmentsPanelFadeActive_,
             imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_, imageAdjustmentsPanelFadeStartedAt_);
         const bool videoActive = UpdateVideoAdjustmentsPanelFade();
+        SynchronizeFilmstripAdjustmentAvoidance();
+        const bool filmstripActive = filmstripAdjustmentAvoidanceAnimating_;
         InvalidateRect(window_, nullptr, FALSE);
-        if (imageActive || videoActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+        if (imageActive || videoActive || filmstripActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
         else KillTimer(window_, kVideoAdjustmentsFadeTimer);
     }
     void QueueVideoAdjustmentPersistence() {
@@ -2082,6 +2085,7 @@ public:
         imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
         if (open) BeginVideoAdjustmentsPanelOpenMotion(imageAdjustmentsPanelTargetLayout_, wasMoving);
         else BeginVideoAdjustmentsPanelCloseMotion(imageAdjustmentsPanelTargetLayout_);
+        SynchronizeFilmstripAdjustmentAvoidance();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleAdjustments() {
@@ -4138,6 +4142,7 @@ public:
         else if (ImageAdjustmentsPanelVisible()) {
             imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
             videoAdjustmentsPanelPresentedLayout_ = imageAdjustmentsPanelTargetLayout_;
+            SynchronizeFilmstripAdjustmentAvoidance();
         }
         if (imageScaling_ != ImageScaling::Performance && source_) RefreshLanczosForImageViewChange();
         InvalidateRect(window_, nullptr, FALSE);
@@ -4288,7 +4293,7 @@ public:
         if (index < filmstripLayoutAspects_.size()) return filmstripLayoutAspects_[index];
         return index < navigationFiles_.size() && IsVideoPath(navigationFiles_[index].wstring()) ? 16.0f / 9.0f : 1.0f;
     }
-    RECT GetFilmstripBounds() const {
+    RECT GetFilmstripNormalBounds() const {
         RECT client{};
         GetClientRect(window_, &client);
         const int height = FilmstripHeight();
@@ -4303,18 +4308,62 @@ public:
         const int width = std::min(maximumWidth, std::max(minimumWidth, static_cast<int>(std::ceil(contentWidth))));
         const int left = (client.right - width) / 2;
         const int bottomMargin = MulDiv(16, dpi, 96);
-        const int top = client.bottom - bottomMargin - height;
-        const int right = left + width;
-        if (!ImageAdjustmentsPanelVisible()) return { left, top, right, client.bottom - bottomMargin };
+        return { left, client.bottom - bottomMargin - height, left + width, client.bottom - bottomMargin };
+    }
+    int GetFilmstripAdjustmentAvoidanceTargetRight(const RECT& normal) const {
+        if (normal.right <= normal.left || !imageAdjustmentsPanelOpen_) return normal.right;
         const RECT adjustmentPanel = GetImageAdjustmentsPanelLayout().panel;
-        if (adjustmentPanel.bottom <= top || adjustmentPanel.top >= client.bottom - bottomMargin)
-            return { left, top, right, client.bottom - bottomMargin };
+        if (adjustmentPanel.bottom <= normal.top || adjustmentPanel.top >= normal.bottom) return normal.right;
+        const int dpi = GetDpiForWindow(window_);
+        const int minimumWidth = MulDiv(180, dpi, 96);
         const int clearance = MulDiv(14, dpi, 96);
         const int reservedRight = adjustmentPanel.left - clearance;
-        if (reservedRight >= right) return { left, top, right, client.bottom - bottomMargin };
-        const int availableWidth = reservedRight - left;
-        const int shortenedRight = availableWidth >= minimumWidth ? reservedRight : std::max(left, reservedRight);
-        return { left, top, shortenedRight, client.bottom - bottomMargin };
+        if (reservedRight >= normal.right) return normal.right;
+        const int availableWidth = reservedRight - normal.left;
+        return availableWidth >= minimumWidth ? reservedRight : std::max(normal.left, reservedRight);
+    }
+    void AdvanceFilmstripAdjustmentAvoidanceMotion() {
+        if (!filmstripAdjustmentAvoidanceAnimating_) return;
+        const float progress = std::min(1.0f, static_cast<float>(GetTickCount64() - filmstripAdjustmentAvoidanceStartedAt_) /
+            static_cast<float>(kVideoAdjustmentsFadeDurationMs));
+        const float eased = VideoAdjustmentsPlacementProgress(progress);
+        filmstripAdjustmentAvoidancePresentedRight_ = filmstripAdjustmentAvoidanceStartRight_ +
+            (filmstripAdjustmentAvoidanceTargetRight_ - filmstripAdjustmentAvoidanceStartRight_) * eased;
+        if (progress >= 1.0f) {
+            filmstripAdjustmentAvoidancePresentedRight_ = static_cast<float>(filmstripAdjustmentAvoidanceTargetRight_);
+            filmstripAdjustmentAvoidanceAnimating_ = false;
+        }
+        filmstripPreviewGeometryValid_ = false;
+    }
+    void SynchronizeFilmstripAdjustmentAvoidance() {
+        AdvanceFilmstripAdjustmentAvoidanceMotion();
+        const RECT normal = GetFilmstripNormalBounds();
+        if (normal.right <= normal.left) return;
+        const int target = GetFilmstripAdjustmentAvoidanceTargetRight(normal);
+        if (!filmstripAdjustmentAvoidanceInitialized_) {
+            filmstripAdjustmentAvoidanceInitialized_ = true;
+            filmstripAdjustmentAvoidancePresentedRight_ = static_cast<float>(normal.right);
+            filmstripAdjustmentAvoidanceTargetRight_ = normal.right;
+        }
+        const float presented = std::clamp(filmstripAdjustmentAvoidancePresentedRight_, static_cast<float>(normal.left), static_cast<float>(normal.right));
+        if (target == filmstripAdjustmentAvoidanceTargetRight_) {
+            filmstripAdjustmentAvoidancePresentedRight_ = presented;
+            return;
+        }
+        filmstripAdjustmentAvoidanceStartRight_ = presented;
+        filmstripAdjustmentAvoidancePresentedRight_ = presented;
+        filmstripAdjustmentAvoidanceTargetRight_ = target;
+        filmstripAdjustmentAvoidanceStartedAt_ = GetTickCount64();
+        filmstripAdjustmentAvoidanceAnimating_ = animationsEnabled_ && std::abs(presented - static_cast<float>(target)) > 0.5f;
+        if (!filmstripAdjustmentAvoidanceAnimating_) filmstripAdjustmentAvoidancePresentedRight_ = static_cast<float>(target);
+        filmstripPreviewGeometryValid_ = false;
+        if (filmstripAdjustmentAvoidanceAnimating_) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+    }
+    RECT GetFilmstripBounds() const {
+        const RECT normal = GetFilmstripNormalBounds();
+        if (normal.right <= normal.left || !filmstripAdjustmentAvoidanceInitialized_) return normal;
+        const int right = std::clamp(static_cast<int>(std::lround(filmstripAdjustmentAvoidancePresentedRight_)), normal.left, normal.right);
+        return { normal.left, normal.top, right, normal.bottom };
     }
     bool FilmstripContains(POINT point) const { const RECT bounds = GetFilmstripBounds(); return FilmstripVisible() && PtInRect(&bounds, point); }
     RECT GetFilmstripHoverDelaySliderBounds() const {
@@ -11500,6 +11549,12 @@ private:
     bool navigationBuildQueued_ = false;
     std::vector<float> filmstripItemWidths_;
     std::vector<float> filmstripItemOffsets_;
+    bool filmstripAdjustmentAvoidanceInitialized_ = false;
+    bool filmstripAdjustmentAvoidanceAnimating_ = false;
+    float filmstripAdjustmentAvoidancePresentedRight_ = 0.0f;
+    float filmstripAdjustmentAvoidanceStartRight_ = 0.0f;
+    int filmstripAdjustmentAvoidanceTargetRight_ = 0;
+    ULONGLONG filmstripAdjustmentAvoidanceStartedAt_ = 0;
     double filmstripScroll_ = 0.0;
     double filmstripScrollVelocity_ = 0.0;
     LONGLONG filmstripScrollLastQpc_ = 0;

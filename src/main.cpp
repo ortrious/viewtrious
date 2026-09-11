@@ -24,7 +24,6 @@
 #include "video_hover_frame_stream.h"
 #include "stl_loader.h"
 #include "three_mf_loader.h"
-#include "model_importer.h"
 #include "ai_addon_loader.h"
 #include "adjustment_persistence.h"
 
@@ -78,7 +77,6 @@ constexpr UINT kVideoMediaEngineEventMessage = WM_APP + 9;
 constexpr UINT kVideoPlaybackWakeMessage = WM_APP + 10;
 constexpr UINT kAiAnalysisCompleteMessage = WM_APP + 11;
 constexpr UINT kImageAdjustmentPersistenceCompleteMessage = WM_APP + 15;
-constexpr UINT kModelLoadProgressMessage = WM_APP + 17;
 constexpr UINT kFilmstripThumbnailCompleteMessage = WM_APP + 12;
 constexpr UINT kFilmstripScrollWakeMessage = WM_APP + 13;
 constexpr UINT kFilmstripHoverPreviewCompleteMessage = WM_APP + 14;
@@ -201,7 +199,6 @@ enum class AxisIndicatorPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopL
 enum class ZoomHudPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
 enum class SettingsPage { General, Image2D, Video2D, Model3D };
 enum class ContentKind { None, Image2D, Model3D, Video2D };
-enum class LoadingProgressMode { Indeterminate, Determinate };
 enum class ExternalOpenBehavior : DWORD { NewWindow = 0, SameWindow = 1 };
 enum class FilmstripVisibilityState { Hidden, Revealing, Holding, Fading };
 
@@ -329,25 +326,6 @@ bool ComputeAutoImageAdjustments(const AiImageBuffer& image, ImageAdjustments& a
 struct DecodeWorkerFinished { std::thread::id workerId{}; };
 struct ModelLoadResult { std::wstring path; uint64_t generation = 0; std::shared_ptr<ModelDocument> document; std::wstring error; bool IsSuccess() const { return document != nullptr; } };
 struct ModelLoadWorker { uint64_t generation = 0; std::thread thread; };
-struct ModelLoadProgress { uint64_t generation = 0; float value = 0.0f; };
-struct ModelLoadProgressPublisher {
-    HWND window = nullptr;
-    uint64_t generation = 0;
-    std::atomic<bool>* shuttingDown = nullptr;
-    float lastValue = 0.0f;
-    ULONGLONG lastPublicationMs = 0;
-    void Report(float value) {
-        value = std::clamp(value, lastValue, 1.0f);
-        const ULONGLONG now = GetTickCount64();
-        if (value == lastValue || (value < 1.0f && value - lastValue < .005f && now - lastPublicationMs < 80)) return;
-        lastValue = value;
-        lastPublicationMs = now;
-        if (!shuttingDown || shuttingDown->load()) return;
-        auto* progress = new ModelLoadProgress{ generation, value };
-        if (!PostMessageW(window, kModelLoadProgressMessage, 0, reinterpret_cast<LPARAM>(progress))) delete progress;
-    }
-};
-void ReportModelLoadProgress(void* context, float value) { if (context) static_cast<ModelLoadProgressPublisher*>(context)->Report(value); }
 struct LanczosRequest {
     std::shared_ptr<std::vector<BYTE>> sourcePixels;
     UINT sourceWidth = 0, sourceHeight = 0, targetWidth = 0, targetHeight = 0;
@@ -528,8 +506,7 @@ std::wstring LowercaseExtension(const std::wstring& path) {
 
 bool IsStlPath(const std::wstring& path) { return LowercaseExtension(path) == L".stl"; }
 bool IsThreeMfPath(const std::wstring& path) { return LowercaseExtension(path) == L".3mf"; }
-bool IsStepPath(const std::wstring& path) { const std::wstring extension=LowercaseExtension(path); return extension == L".step" || extension == L".stp"; }
-bool IsModelPath(const std::wstring& path) { return IsStlPath(path) || IsThreeMfPath(path) || IsStepPath(path); }
+bool IsModelPath(const std::wstring& path) { return IsStlPath(path) || IsThreeMfPath(path); }
 bool IsVideoPath(const std::wstring& path) { const std::wstring extension = LowercaseExtension(path); return extension == L".mp4" || extension == L".mov" || extension == L".mkv"; }
 bool IsTwoDimensionalMediaPath(const fs::path& path) { return IsSupportedExtension(path) && !IsModelPath(path.wstring()); }
 
@@ -1742,11 +1719,6 @@ public:
                 VideoAdjustmentsPanelOpenCloseMotionRect(progress), videoAdjustmentsPanelPlacementTargetLayout_.aboveControls);
         }
         InvalidateRect(window_, nullptr, FALSE);
-    }
-    void ModelLoadProgressMessage(ModelLoadProgress* progress) {
-        std::unique_ptr<ModelLoadProgress> owned(progress);
-        if (!progress || shuttingDown_ || !modelLoading_ || progress->generation != modelLoadGeneration_) return;
-        SetModelLoadingProgress(progress->value);
     }
     void BeginVideoAdjustmentsPanelPlacementMotion(const VideoAdjustmentsPanelLayout& target) {
         videoAdjustmentsPanelPlacementStartLayout_ = videoAdjustmentsPanelPresentedLayout_;
@@ -6433,8 +6405,6 @@ public:
         MSG modelLoadMessage{};
         while (PeekMessageW(&modelLoadMessage, window_, kModelLoadCompleteMessage, kModelLoadCompleteMessage, PM_REMOVE))
             delete reinterpret_cast<ModelLoadResult*>(modelLoadMessage.lParam);
-        while (PeekMessageW(&modelLoadMessage, window_, kModelLoadProgressMessage, kModelLoadProgressMessage, PM_REMOVE))
-            delete reinterpret_cast<ModelLoadProgress*>(modelLoadMessage.lParam);
         DeactivateModel();
         DeactivateVideo();
         graphicsHost_.Destroy();
@@ -6604,28 +6574,18 @@ private:
         renderTarget_->FillRoundedRectangle(bounds, panel.Get());
         renderTarget_->DrawRoundedRectangle(bounds, border.Get(), 1.0f);
         DrawOverlayText(L"opening model...", left + 20.0f * scale, top + 36.0f * scale, width - 40.0f * scale, 28.0f * scale, 18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primary.Get(), true, false, true);
-        const bool determinate = modelLoadingProgressMode_ == LoadingProgressMode::Determinate;
-        const float percentageWidth = 40.0f * scale, percentageGap = 8.0f * scale, trackHeight = 7.0f * scale;
-        const float trackWidth = std::min(240.0f * scale, width - 40.0f * scale - (determinate ? percentageGap + percentageWidth : 0.0f));
-        const float groupWidth = trackWidth + (determinate ? percentageGap + percentageWidth : 0.0f);
-        const float groupLeft = left + (width - groupWidth) * .5f;
+        const float trackHeight = 7.0f * scale;
+        const float trackWidth = std::min(240.0f * scale, width - 40.0f * scale);
+        const float groupLeft = left + (width - trackWidth) * .5f;
         const D2D1_RECT_F bar = D2D1::RectF(groupLeft, top + 105.0f * scale, groupLeft + trackWidth, top + 105.0f * scale + trackHeight);
         DrawOverlayText(filenameText_.c_str(), bar.left, bar.top - 27.0f * scale, trackWidth, 18.0f * scale, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(bar, trackHeight * .5f, trackHeight * .5f), track.Get());
-        if (determinate) {
-            const float filledRight = bar.left + (bar.right - bar.left) * std::clamp(modelLoadingProgress_, 0.0f, 1.0f);
-            if (filledRight > bar.left) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(bar.left, bar.top, filledRight, bar.bottom), trackHeight * .5f, trackHeight * .5f), progress.Get());
-            wchar_t percentage[8]{};
-            swprintf_s(percentage, L"%d%%", static_cast<int>(std::lround(std::clamp(modelLoadingProgress_, 0.0f, 1.0f) * 100.0f)));
-            DrawOverlayText(percentage, bar.right + percentageGap, bar.top - 5.5f * scale, percentageWidth, 18.0f * scale, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, secondary.Get(), true);
-        } else {
-            const float segmentWidth = (bar.right - bar.left) * .28f;
-            const float sweep = static_cast<float>((GetTickCount64() - modelLoadingStartedAtMs_) % kModelLoadingBarSweepDurationMs) / static_cast<float>(kModelLoadingBarSweepDurationMs);
-            const float segmentLeft = bar.left - segmentWidth + sweep * ((bar.right - bar.left) + segmentWidth);
-            renderTarget_->PushAxisAlignedClip(bar, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(segmentLeft, bar.top, segmentLeft + segmentWidth, bar.bottom), trackHeight * .5f, trackHeight * .5f), progress.Get());
-            renderTarget_->PopAxisAlignedClip();
-        }
+        const float segmentWidth = (bar.right - bar.left) * .28f;
+        const float sweep = static_cast<float>((GetTickCount64() - modelLoadingStartedAtMs_) % kModelLoadingBarSweepDurationMs) / static_cast<float>(kModelLoadingBarSweepDurationMs);
+        const float segmentLeft = bar.left - segmentWidth + sweep * ((bar.right - bar.left) + segmentWidth);
+        renderTarget_->PushAxisAlignedClip(bar, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(segmentLeft, bar.top, segmentLeft + segmentWidth, bar.bottom), trackHeight * .5f, trackHeight * .5f), progress.Get());
+        renderTarget_->PopAxisAlignedClip();
     }
     void DrawModelAxisIndicator() {
         const RECT canvas = ModelCanvasBounds(); const float dpi = GetDpiForWindow(window_) / 96.0f;
@@ -6741,14 +6701,7 @@ private:
         if (worker->thread.joinable()) worker->thread.join();
         modelLoadWorkers_.erase(worker);
     }
-    void SetModelLoadingProgress(float progress) {
-        progress = std::clamp(progress, 0.0f, 1.0f);
-        if (modelLoadingProgressMode_ == LoadingProgressMode::Determinate) progress = std::max(progress, modelLoadingProgress_);
-        modelLoadingProgressMode_ = LoadingProgressMode::Determinate;
-        modelLoadingProgress_ = progress;
-        if (ModelLoadingOverlayVisible()) InvalidateRect(window_, nullptr, FALSE);
-    }
-    void StopModelLoadingAnimation() { KillTimer(window_, kModelLoadingAnimationTimer); modelLoadingProgressMode_ = LoadingProgressMode::Indeterminate; modelLoadingProgress_ = 0.0f; }
+    void StopModelLoadingAnimation() { KillTimer(window_, kModelLoadingAnimationTimer); }
     bool ModelLoadingOverlayVisible() const {
         return modelLoading_ && GetTickCount64() - modelLoadingStartedAtMs_ >= kModelLoadingOverlayDelayMs;
     }
@@ -6761,20 +6714,17 @@ private:
         ++decodeRequestGeneration_; ++modelLoadGeneration_; const uint64_t generation = modelLoadGeneration_;
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
-        navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; modelLoadingStartedAtMs_ = GetTickCount64(); modelLoadingProgressMode_ = LoadingProgressMode::Indeterminate; modelLoadingProgress_ = 0.0f; contentKind_ = ContentKind::Model3D;
+        navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; modelLoadingStartedAtMs_ = GetTickCount64(); contentKind_ = ContentKind::Model3D;
         ClearModelFaceSelection(); ResetComponentsPanelState(); modelClickCandidate_ = false;
         SetTimer(window_, kModelLoadingAnimationTimer, 16, nullptr);
         const HWND window = window_;
         modelLoadWorkers_.push_back({ generation, std::thread([path, generation, window, shuttingDown = &shuttingDown_] {
             const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
             ModelLoadResult loaded{ path, generation };
-            ModelLoadProgressPublisher progress{ window, generation, shuttingDown };
             if (SUCCEEDED(com) || com == RPC_E_CHANGED_MODE) {
                 if (IsThreeMfPath(path)) {
                     ThreeMfLoadResult result = LoadThreeMfDocument(path);
                     loaded.document = std::move(result.document); loaded.error = std::move(result.error);
-                } else if (IsStepPath(path)) {
-                    loaded.document = LoadStepDocumentFromAddon(path, loaded.error, &ReportModelLoadProgress, &progress);
                 } else {
                     StlLoadResult result = LoadStlDocument(path);
                     loaded.document = std::move(result.document); loaded.error = std::move(result.error);
@@ -11600,8 +11550,6 @@ private:
     std::atomic<bool> shuttingDown_{ false };
     bool modelLoading_ = false;
     ULONGLONG modelLoadingStartedAtMs_ = 0;
-    LoadingProgressMode modelLoadingProgressMode_ = LoadingProgressMode::Indeterminate;
-    float modelLoadingProgress_ = 0.0f;
 #if defined(_DEBUG)
     bool offscreenIndicatorWasVisible_ = false;
     int offscreenIndicatorSector_ = -1;
@@ -12308,7 +12256,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kLanczosCompleteMessage: viewer->LanczosCompleteMessage(reinterpret_cast<LanczosResult*>(lParam)); return 0;
     case kDecodeWorkerFinishedMessage: viewer->DecodeWorkerFinishedMessage(reinterpret_cast<DecodeWorkerFinished*>(lParam)); return 0;
     case kModelLoadCompleteMessage: viewer->ModelLoadCompleteMessage(reinterpret_cast<ModelLoadResult*>(lParam)); return 0;
-    case kModelLoadProgressMessage: viewer->ModelLoadProgressMessage(reinterpret_cast<ModelLoadProgress*>(lParam)); return 0;
     case kVideoMediaEngineEventMessage: viewer->VideoMediaEngineEvent(static_cast<DWORD>(wParam), static_cast<uint64_t>(lParam)); return 0;
     case kVideoPlaybackWakeMessage: viewer->VideoPlaybackWakeMessage(static_cast<uint64_t>(wParam)); return 0;
     case kAiAnalysisCompleteMessage: viewer->AiAnalysisCompleteMessage(reinterpret_cast<AiAnalysisResult*>(lParam)); return 0;

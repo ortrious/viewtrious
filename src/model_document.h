@@ -48,7 +48,7 @@ struct SnapPlane {
     std::vector<uint32_t> triangles;
 };
 
-enum class ModelSourceFormat : uint32_t { Stl, ThreeMf, Step };
+enum class ModelSourceFormat : uint32_t { Stl, ThreeMf };
 
 struct ModelInstanceRange {
     uint32_t sourceObjectId = 0;
@@ -69,22 +69,6 @@ struct ModelComponentNode {
     uint32_t sourceObjectId = 0;
 };
 
-// Raw optional-STEP metadata is deliberately kept separate from the generic
-// Components tree until the STEP presentation pass consumes it.
-struct StepImportedHierarchyNode {
-    uint32_t parentIndex = UINT32_MAX;
-    uint32_t firstChildIndex = 0;
-    uint32_t childCount = 0;
-    uint32_t firstRangeIndex = UINT32_MAX;
-    uint32_t rangeCount = 0;
-    uint32_t flags = 0;
-    std::wstring name;
-};
-struct StepImportedMetadata {
-    std::vector<StepImportedHierarchyNode> hierarchy;
-    std::vector<uint32_t> hierarchyChildIndices;
-};
-
 struct ModelDocument {
     std::vector<MeshGeometry> geometries;
     std::vector<MeshInstance> instances;
@@ -96,10 +80,5 @@ struct ModelDocument {
     double unitScaleMillimeters = 1.0;
     std::vector<ModelInstanceRange> instanceRanges;
     std::vector<ModelComponentNode> componentTree;
-    std::optional<StepImportedMetadata> stepImportedMetadata;
     std::optional<double> metersPerUnit; // STL does not define units.
-    // STEP retains the XDE document behind this opaque owner so future CAD-aware
-    // inspection can resolve triangleCadFaceIds back to B-Rep topology.
-    std::shared_ptr<void> cadTopology;
-    std::vector<uint32_t> triangleCadFaceIds;
 };

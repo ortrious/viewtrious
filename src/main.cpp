@@ -10560,14 +10560,20 @@ private:
                 const D2D1_POINT_2F arcEnd = ringPoint(endAngle);
                 const D2D1_POINT_2F tangent = point(-std::sin(endAngle), std::cos(endAngle));
                 const D2D1_POINT_2F outward = point(std::cos(endAngle), std::sin(endAngle));
-                // Keep the previous compact head, shifted one DIP left and two DIP down
-                // to align it optically with the terminal arc stroke.
-                const D2D1_POINT_2F arrowheadOrigin = point(arcEnd.x - 1.0f * scale, arcEnd.y + 2.0f * scale);
-                const D2D1_POINT_2F arrowTip = point(arrowheadOrigin.x + tangent.x * 4.0f * scale, arrowheadOrigin.y + tangent.y * 4.0f * scale);
-                const D2D1_POINT_2F arrowBaseOuter = point(arrowheadOrigin.x - tangent.x * 1.6f * scale + outward.x * 4.0f * scale,
-                    arrowheadOrigin.y - tangent.y * 1.6f * scale + outward.y * 4.0f * scale);
-                const D2D1_POINT_2F arrowBaseInner = point(arrowheadOrigin.x - tangent.x * 1.6f * scale + outward.x * 0.5f * scale,
-                    arrowheadOrigin.y - tangent.y * 1.6f * scale + outward.y * 0.5f * scale);
+                // Construct a single regular triangle in tangent/normal local space,
+                // then rigidly rotate and translate it from the terminal arc endpoint.
+                const float arrowheadSide = 6.0f * scale;
+                const float arrowheadHeight = 0.8660254037844386f * arrowheadSide;
+                const float outsideClearance = arrowheadSide * 0.5f + arrowStroke * 0.5f;
+                const D2D1_POINT_2F arrowheadCenter = point(
+                    arcEnd.x + outward.x * outsideClearance, arcEnd.y + outward.y * outsideClearance);
+                const auto transformArrowheadPoint = [&](float forward, float normal) {
+                    return point(arrowheadCenter.x + tangent.x * forward + outward.x * normal,
+                        arrowheadCenter.y + tangent.y * forward + outward.y * normal);
+                };
+                const D2D1_POINT_2F arrowTip = transformArrowheadPoint(arrowheadHeight * (2.0f / 3.0f), 0.0f);
+                const D2D1_POINT_2F arrowBaseOuter = transformArrowheadPoint(-arrowheadHeight / 3.0f, arrowheadSide * 0.5f);
+                const D2D1_POINT_2F arrowBaseInner = transformArrowheadPoint(-arrowheadHeight / 3.0f, -arrowheadSide * 0.5f);
                 ComPtr<ID2D1PathGeometry> arrowhead;
                 ComPtr<ID2D1GeometrySink> arrowheadSink;
                 if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&arrowhead)) && SUCCEEDED(arrowhead->Open(&arrowheadSink))) {

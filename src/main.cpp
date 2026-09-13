@@ -5680,7 +5680,8 @@ public:
         filmstripRevealHovered_ = false;
         filmstripHintHovered_ = false;
         if (filmstripPreviewIndex_ >= 0) StartFilmstripHoverPreviewFadeOut();
-        if (wasHeld) BeginFilmstripFadeSequence();
+        if (wasHeld && !alwaysShowFilmstrip_ && filmstripVisibilityState_ != FilmstripVisibilityState::Hidden)
+            SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void SetFilmstripPointerState(POINT point) {

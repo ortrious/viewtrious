@@ -10508,6 +10508,42 @@ private:
         DrawOverlayText(L"-1", static_cast<float>(layout.stepBackward.left), static_cast<float>(layout.stepBackward.top), static_cast<float>(layout.stepBackward.right - layout.stepBackward.left), static_cast<float>(layout.stepBackward.bottom - layout.stepBackward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
     }
+    void DrawVideoAutoPlayNextGlyph(const RECT& bounds, ID2D1Brush* brush, float scale) {
+        if (!brush) return;
+        const float centerX = (bounds.left + bounds.right) * 0.5f;
+        const float centerY = (bounds.top + bounds.bottom) * 0.5f;
+        const float ringRadius = 10.0f * scale;
+        const float arrowStroke = 2.1f * scale;
+        const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
+
+        ComPtr<ID2D1PathGeometry> triangle, arrow;
+        ComPtr<ID2D1GeometrySink> sink;
+        if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&triangle)) && SUCCEEDED(triangle->Open(&sink))) {
+            const float triangleLeft = centerX - 3.2f * scale;
+            const float triangleTip = centerX + 5.4f * scale;
+            const float triangleHalfHeight = 4.4f * scale;
+            sink->BeginFigure(point(triangleLeft, centerY - triangleHalfHeight), D2D1_FIGURE_BEGIN_FILLED);
+            sink->AddLine(point(triangleLeft, centerY + triangleHalfHeight));
+            sink->AddLine(point(triangleTip, centerY));
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            if (SUCCEEDED(sink->Close())) renderTarget_->FillGeometry(triangle.Get(), brush);
+        }
+        sink.Reset();
+        if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&arrow)) && SUCCEEDED(arrow->Open(&sink))) {
+            // A 270-degree circular arc leaves one clean upper-right gap for the arrowhead.
+            const D2D1_POINT_2F arcStart = point(centerX, centerY - ringRadius);
+            const D2D1_POINT_2F arrowTip = point(centerX + ringRadius, centerY);
+            sink->BeginFigure(arcStart, D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddArc(D2D1::ArcSegment(arrowTip, D2D1::SizeF(ringRadius, ringRadius), 0.0f,
+                D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            if (SUCCEEDED(sink->Close())) {
+                renderTarget_->DrawGeometry(arrow.Get(), brush, arrowStroke);
+                renderTarget_->DrawLine(arrowTip, point(arrowTip.x - 5.0f * scale, arrowTip.y - 1.9f * scale), brush, arrowStroke);
+                renderTarget_->DrawLine(arrowTip, point(arrowTip.x - 1.9f * scale, arrowTip.y - 5.0f * scale), brush, arrowStroke);
+            }
+        }
+    }
     void DrawVideoPlaybackControls(bool drawZoomHud = true, float overlayOpacity = -1.0f) {
         if ((!VideoActive() && overlayOpacity < 0.0f) || (overlayOpacity >= 0.0f ? overlayOpacity : videoControlsOpacity_) <= 0.001f) return;
         const VideoControlsLayout layout = GetVideoControlsLayout();
@@ -10659,35 +10695,7 @@ private:
 
         DrawOverlayText(L"-1", static_cast<float>(layout.stepBackward.left), static_cast<float>(layout.stepBackward.top), static_cast<float>(layout.stepBackward.right - layout.stepBackward.left), static_cast<float>(layout.stepBackward.bottom - layout.stepBackward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
-        const float autoPlayCenterX = (layout.autoPlayNext.left + layout.autoPlayNext.right) * 0.5f;
-        const float autoPlayCenterY = (layout.autoPlayNext.top + layout.autoPlayNext.bottom) * 0.5f;
-        ComPtr<ID2D1PathGeometry> autoPlayTriangle, autoPlayArrow;
-        ComPtr<ID2D1GeometrySink> autoPlaySink;
-        if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&autoPlayTriangle)) && SUCCEEDED(autoPlayTriangle->Open(&autoPlaySink))) {
-            // Keep the play mark optically centered inside the circular arrow with an even, visible gap.
-            const float triangleLeft = autoPlayCenterX - 3.6f * scale;
-            const float triangleTip = autoPlayCenterX + 3.8f * scale;
-            const float triangleHalfHeight = 4.6f * scale;
-            autoPlaySink->BeginFigure(D2D1::Point2F(triangleLeft, autoPlayCenterY - triangleHalfHeight), D2D1_FIGURE_BEGIN_FILLED);
-            autoPlaySink->AddLine(D2D1::Point2F(triangleLeft, autoPlayCenterY + triangleHalfHeight));
-            autoPlaySink->AddLine(D2D1::Point2F(triangleTip, autoPlayCenterY));
-            autoPlaySink->EndFigure(D2D1_FIGURE_END_CLOSED);
-            if (SUCCEEDED(autoPlaySink->Close())) renderTarget_->FillGeometry(autoPlayTriangle.Get(), autoPlayIcon.Get());
-        }
-        autoPlaySink.Reset();
-        if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&autoPlayArrow)) && SUCCEEDED(autoPlayArrow->Open(&autoPlaySink))) {
-            const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
-            const float radius = 9.8f * scale;
-            const D2D1_POINT_2F arrowTip = point(autoPlayCenterX - 8.0f * scale, autoPlayCenterY + 5.4f * scale);
-            autoPlaySink->BeginFigure(point(autoPlayCenterX + 5.5f * scale, autoPlayCenterY - 8.0f * scale), D2D1_FIGURE_BEGIN_HOLLOW);
-            autoPlaySink->AddArc(D2D1::ArcSegment(arrowTip, D2D1::SizeF(radius, radius), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
-            autoPlaySink->EndFigure(D2D1_FIGURE_END_OPEN);
-            if (SUCCEEDED(autoPlaySink->Close())) {
-                renderTarget_->DrawGeometry(autoPlayArrow.Get(), autoPlayIcon.Get(), 1.85f * scale);
-                renderTarget_->DrawLine(arrowTip, point(arrowTip.x + 5.6f * scale, arrowTip.y - 0.5f * scale), autoPlayIcon.Get(), 1.85f * scale);
-                renderTarget_->DrawLine(arrowTip, point(arrowTip.x + 1.1f * scale, arrowTip.y - 5.1f * scale), autoPlayIcon.Get(), 1.85f * scale);
-            }
-        }
+        DrawVideoAutoPlayNextGlyph(layout.autoPlayNext, autoPlayIcon.Get(), scale);
         if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext) {
             const float tooltipWidth = 124.0f * scale, tooltipHeight = 24.0f * scale;
             const float tooltipLeft = (layout.autoPlayNext.left + layout.autoPlayNext.right) * 0.5f - tooltipWidth * 0.5f;

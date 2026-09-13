@@ -4359,6 +4359,7 @@ public:
         ClampVideoPan();
         filmstripPreviewGeometryValid_ = false;
         RebuildFilmstripLayout();
+        SynchronizeFilmstripHoverPreviewAvailability();
         if (VideoActive()) SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
         else if (ImageAdjustmentsPanelVisible()) {
             imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
@@ -4478,6 +4479,11 @@ public:
     bool FilmstripEligible() const {
         return source_ && navigationBuilt_ && navigationFiles_.size() > 1 && !HasOverlay() && !TutorialActive() && !tutorialPresentation_;
     }
+    bool FilmstripHoverPreviewsFitWindow() const {
+        RECT client{};
+        GetClientRect(window_, &client);
+        return client.right - client.left >= 1200 && client.bottom - client.top >= 900;
+    }
     bool FilmstripVisible() const { const RECT bounds = GetFilmstripBounds(); return FilmstripEligible() && !filmstripAdjustmentSuppressed_ && filmstripOpacity_ > 0.001f && bounds.right > bounds.left; }
     int FilmstripHeight() const {
         if (!FilmstripEligible()) return 0;
@@ -4595,6 +4601,7 @@ public:
         const float presented = std::clamp(filmstripAdjustmentAvoidancePresentedRight_, static_cast<float>(normal.left), static_cast<float>(normal.right));
         if (target == filmstripAdjustmentAvoidanceTargetRight_) {
             filmstripAdjustmentAvoidancePresentedRight_ = presented;
+            ClampFilmstripScrollToViewport();
             return;
         }
         filmstripAdjustmentAvoidanceStartRight_ = presented;
@@ -4604,6 +4611,7 @@ public:
         filmstripAdjustmentAvoidanceAnimating_ = animationsEnabled_ && std::abs(presented - static_cast<float>(target)) > 0.5f;
         if (!filmstripAdjustmentAvoidanceAnimating_) filmstripAdjustmentAvoidancePresentedRight_ = static_cast<float>(target);
         filmstripPreviewGeometryValid_ = false;
+        ClampFilmstripScrollToViewport();
         if (filmstripAdjustmentAvoidanceAnimating_) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
     }
     RECT GetFilmstripBounds() const {
@@ -4618,6 +4626,13 @@ public:
         const RECT bounds = GetFilmstripBounds();
         const float contentWidth = filmstripItemOffsets_.empty() ? 0.0f : filmstripItemOffsets_.back() - FilmstripGap() + FilmstripPadding();
         return std::max(0.0f, contentWidth - static_cast<float>(bounds.right - bounds.left));
+    }
+    void ClampFilmstripScrollToViewport() {
+        filmstripScroll_ = std::clamp(filmstripScroll_, 0.0, static_cast<double>(FilmstripMaximumScroll()));
+        if ((filmstripScroll_ <= 0.0 && filmstripScrollVelocity_ < 0.0) ||
+            (filmstripScroll_ >= FilmstripMaximumScroll() && filmstripScrollVelocity_ > 0.0)) {
+            filmstripScrollVelocity_ = 0.0;
+        }
     }
     size_t CurrentNavigationIndex() const {
         const fs::path current(currentPath_);
@@ -4638,13 +4653,7 @@ public:
             offset += filmstripItemWidths_[index] + FilmstripGap();
         }
         if (!filmstripItemOffsets_.empty()) filmstripItemOffsets_.back() = offset;
-        if (clampScroll) {
-            filmstripScroll_ = std::clamp(filmstripScroll_, 0.0, static_cast<double>(FilmstripMaximumScroll()));
-            if ((filmstripScroll_ <= 0.0 && filmstripScrollVelocity_ < 0.0) ||
-                (filmstripScroll_ >= FilmstripMaximumScroll() && filmstripScrollVelocity_ > 0.0)) {
-                filmstripScrollVelocity_ = 0.0;
-            }
-        }
+        if (clampScroll) ClampFilmstripScrollToViewport();
         if (queueThumbnails) QueueFilmstripThumbnails();
     }
     struct FilmstripLayoutAnchor {
@@ -5794,8 +5803,23 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool FilmstripHoverPreviewEligible(int index) const {
-        return !filmstripAdjustmentSuppressed_ && !FilmstripHoverSuppressedForImagePan() && index >= 0 && index < static_cast<int>(navigationFiles_.size()) && !currentPath_.empty() &&
+        return FilmstripHoverPreviewsFitWindow() && !filmstripAdjustmentSuppressed_ && !FilmstripHoverSuppressedForImagePan() && index >= 0 && index < static_cast<int>(navigationFiles_.size()) && !currentPath_.empty() &&
             !PathsEqual(navigationFiles_[static_cast<size_t>(index)], fs::path(currentPath_));
+    }
+    bool FilmstripHoverPreviewDrawable() const {
+        return filmstripPreviewIndex_ >= 0 && !filmstripDragging_ && !filmstripScrollAnimating_ &&
+            (FilmstripHoverPreviewEligible(filmstripPreviewIndex_) || (filmstripHoverPreviewFadeActive_ && filmstripHoverPreviewFadeOut_));
+    }
+    void SynchronizeFilmstripHoverPreviewAvailability() {
+        if (FilmstripHoverPreviewsFitWindow()) return;
+        ++filmstripHoverPreviewGeneration_;
+        videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
+        CancelFilmstripVideoHoverFade();
+        KillTimer(window_, kFilmstripHoverPreviewTimer);
+        KillTimer(window_, kFilmstripHoverPreviewDwellTimer);
+        CancelQueuedFilmstripHoverPreviews();
+        if (filmstripPreviewIndex_ >= 0 && (!filmstripHoverPreviewFadeActive_ || !filmstripHoverPreviewFadeOut_))
+            StartFilmstripHoverPreviewFadeOut();
     }
     void SuppressFilmstripHoverPreviewForCurrentMedia() {
         if (FilmstripHoverPreviewEligible(filmstripHoveredIndex_) && (filmstripPreviewIndex_ < 0 || FilmstripHoverPreviewEligible(filmstripPreviewIndex_))) return;
@@ -6016,8 +6040,7 @@ public:
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float opacity = filmstripOpacity_;
         const bool dark = UseDarkAppMode();
-        const bool drawPreviewShell = FilmstripHoverPreviewEligible(filmstripPreviewIndex_) && !filmstripDragging_ && !filmstripScrollAnimating_ &&
-            filmstripHoverPreviewOpacity_ > 0.001f;
+        const bool drawPreviewShell = FilmstripHoverPreviewDrawable() && filmstripHoverPreviewOpacity_ > 0.001f;
         if (drawPreviewShell && !filmstripPreviewGeometryValid_) SetFilmstripHoverPreviewGeometry(static_cast<size_t>(filmstripPreviewIndex_));
         ComPtr<ID2D1SolidColorBrush> surface, border, previewSurface, previewBorder, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, placeholderText;
         if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, opacity), &surface)) ||
@@ -6070,7 +6093,7 @@ public:
             if (index == current) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), selectedOutline.Get(), 2.0f * scale);
         }
         renderTarget_->PopAxisAlignedClip();
-        if (FilmstripHoverPreviewEligible(filmstripPreviewIndex_) && !filmstripDragging_ && !filmstripScrollAnimating_) {
+        if (FilmstripHoverPreviewDrawable()) {
 #ifdef _DEBUG
             OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_PREVIEW_PAINT_ENTER clip=popped\n");
 #endif

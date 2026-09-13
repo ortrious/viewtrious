@@ -10428,10 +10428,8 @@ private:
         const RECT canvas = ModelCanvasBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float numberHeight = std::min(176.0f * scale, std::max(72.0f * scale, static_cast<float>(canvas.bottom - canvas.top) * 0.27f));
-        const float labelHeight = 34.0f * scale;
-        const float spacing = 6.0f * scale;
         const float width = std::max(150.0f * scale, numberHeight * 0.95f);
-        const float height = labelHeight + spacing + numberHeight;
+        const float height = numberHeight;
         const float left = (canvas.left + canvas.right - width) * 0.5f;
         const float top = (canvas.top + canvas.bottom - height) * 0.5f;
         const bool dark = UseDarkAppMode();
@@ -10444,8 +10442,7 @@ private:
         renderTarget_->FillRoundedRectangle(bounds, surface.Get());
         renderTarget_->DrawRoundedRectangle(bounds, border.Get(), scale);
         const std::wstring label = std::to_wstring(remaining);
-        DrawOverlayText(L"auto-play enabled", left, top, width, labelHeight, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
-        DrawOverlayText(label.c_str(), left, top + labelHeight + spacing, width, numberHeight, 152.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        DrawOverlayText(label.c_str(), left, top, width, height, 152.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
     }
     void DrawVideoAutoPlayNextCountdownHelper() {
         if (!videoAutoPlayNextCountdownActive_) return;
@@ -10559,11 +10556,12 @@ private:
                 const D2D1_POINT_2F arcEnd = ringPoint(endAngle);
                 const D2D1_POINT_2F tangent = point(-std::sin(endAngle), std::cos(endAngle));
                 const D2D1_POINT_2F outward = point(std::cos(endAngle), std::sin(endAngle));
-                const D2D1_POINT_2F arrowTip = point(arcEnd.x + tangent.x * 3.0f * scale, arcEnd.y + tangent.y * 3.0f * scale);
-                const D2D1_POINT_2F arrowBaseOuter = point(arcEnd.x - tangent.x * 1.2f * scale + outward.x * 3.0f * scale,
-                    arcEnd.y - tangent.y * 1.2f * scale + outward.y * 3.0f * scale);
-                const D2D1_POINT_2F arrowBaseInner = point(arcEnd.x - tangent.x * 1.2f * scale + outward.x * 1.1f * scale,
-                    arcEnd.y - tangent.y * 1.2f * scale + outward.y * 1.1f * scale);
+                // Keep the larger arrowhead outside the ring, with its tip tangent to the arc.
+                const D2D1_POINT_2F arrowTip = point(arcEnd.x + tangent.x * 4.0f * scale, arcEnd.y + tangent.y * 4.0f * scale);
+                const D2D1_POINT_2F arrowBaseOuter = point(arcEnd.x - tangent.x * 1.6f * scale + outward.x * 4.0f * scale,
+                    arcEnd.y - tangent.y * 1.6f * scale + outward.y * 4.0f * scale);
+                const D2D1_POINT_2F arrowBaseInner = point(arcEnd.x - tangent.x * 1.6f * scale + outward.x * 0.5f * scale,
+                    arcEnd.y - tangent.y * 1.6f * scale + outward.y * 0.5f * scale);
                 ComPtr<ID2D1PathGeometry> arrowhead;
                 ComPtr<ID2D1GeometrySink> arrowheadSink;
                 if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&arrowhead)) && SUCCEEDED(arrowhead->Open(&arrowheadSink))) {

@@ -1551,10 +1551,28 @@ public:
     bool IssueVideoStepHoldSeek() {
         if (!videoStepHoldDirection_ || videoStepHoldSeekInFlight_ || !VideoActive() || videoPlayer_.Playing()) return false;
         const double target = std::clamp(videoStepHoldDesiredSeconds_, 0.0, videoStepHoldDurationSeconds_);
+        double current = 0.0, duration = 0.0;
+        float framesPerSecond = 0.0f;
+        const bool canFrameStep = videoPlayer_.GetPlaybackTimes(current, duration) &&
+            videoPlayer_.TryGetFramesPerSecond(framesPerSecond) && std::isfinite(framesPerSecond) &&
+            framesPerSecond >= 1.0f && framesPerSecond <= 240.0f;
+        if (canFrameStep) {
+            const double frameSeconds = 1.0 / static_cast<double>(framesPerSecond);
+            const double distanceToTarget = videoStepHoldDirection_ * (target - current);
+            if (distanceToTarget < frameSeconds * 0.5) return false;
+            if (videoPlayer_.FrameStep(videoStepHoldDirection_ > 0)) {
+                videoStepHoldSeekInFlight_ = true;
+                videoStepHoldFrameAwaitingPresentation_ = false;
+                videoScrubSeconds_ = std::clamp(current + videoStepHoldDirection_ * frameSeconds, 0.0, duration);
+                videoPausedSeekRefreshPending_ = true;
+                return true;
+            }
+        }
         if (std::abs(target - videoStepHoldLastIssuedSeconds_) < 0.0005) return false;
         if (!videoPlayer_.Seek(target)) return false;
         videoStepHoldLastIssuedSeconds_ = target;
         videoStepHoldSeekInFlight_ = true;
+        videoStepHoldFrameAwaitingPresentation_ = false;
         videoScrubSeconds_ = target;
         videoPausedSeekRefreshPending_ = true;
         return true;
@@ -1562,9 +1580,13 @@ public:
     void CompleteVideoStepHoldSeek() {
         if (!videoStepHoldSeekInFlight_) return;
         videoStepHoldSeekInFlight_ = false;
+        videoStepHoldFrameAwaitingPresentation_ = true;
         videoPausedSeekRefreshPending_ = true;
-        videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
-        if (videoStepHoldDirection_) IssueVideoStepHoldSeek();
+        if (videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek)) {
+            videoPausedSeekRefreshPending_ = false;
+            videoStepHoldFrameAwaitingPresentation_ = false;
+            if (videoStepHoldDirection_) IssueVideoStepHoldSeek();
+        }
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool BeginVideoStepHold(int direction) {
@@ -1582,6 +1604,7 @@ public:
         videoStepHoldDesiredSeconds_ = videoStepHoldAnchorSeconds_;
         videoStepHoldLastIssuedSeconds_ = videoStepHoldAnchorSeconds_;
         videoStepHoldSeekInFlight_ = initialSeekInFlight;
+        videoStepHoldFrameAwaitingPresentation_ = false;
         videoStepHoldQpcFrequency_ = frequency.QuadPart;
         SetTimer(window_, kVideoStepHoldTimer, kVideoStepHoldThresholdMs, nullptr);
         ShowVideoControls();
@@ -1601,7 +1624,7 @@ public:
         videoStepHoldDesiredSeconds_ = target;
         IssueVideoStepHoldSeek();
         InvalidateRect(window_, nullptr, FALSE);
-        if (target > 0.0 && target < videoStepHoldDurationSeconds_)
+        if (target > 0.0 && target < videoStepHoldDurationSeconds_ || videoStepHoldFrameAwaitingPresentation_)
             SetTimer(window_, kVideoStepHoldTimer, kVideoStepHoldIntervalMs, nullptr);
     }
     bool NudgeVideoPosition(int direction) {
@@ -4340,8 +4363,13 @@ public:
             if (contentKind_ != ContentKind::Model3D || !ModelActive() || TutorialActive()) renderTarget_->Clear(kViewerBackground);
             if (VideoActive() && !tutorialPresentation_) {
                 // A paused scrub explicitly owns this retry; ordinary paints stay cache-only.
-                if (videoPausedSeekRefreshPending_ && videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek))
+                if (videoPausedSeekRefreshPending_ && videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek)) {
                     videoPausedSeekRefreshPending_ = false;
+                    if (videoStepHoldFrameAwaitingPresentation_) {
+                        videoStepHoldFrameAwaitingPresentation_ = false;
+                        if (videoStepHoldDirection_) IssueVideoStepHoldSeek();
+                    }
+                }
                 DrawVideoPresentation();
                 DrawVideoAutoPlayNextCountdown();
                 DrawVideoAutoPlayNextCountdownHelper();
@@ -7464,6 +7492,7 @@ private:
         StopVideoControls();
         videoPlayer_.Shutdown();
         videoStepHoldSeekInFlight_ = false;
+        videoStepHoldFrameAwaitingPresentation_ = false;
         if (contentKind_ == ContentKind::Video2D) { resolutionText_.clear(); contentKind_ = ContentKind::None; }
         if (restoreWindowBounds) RestoreVideoWindowBounds();
         if (!VideoActive()) RevealInitialWindowAfterVideoSizing();
@@ -7494,7 +7523,7 @@ public:
         }
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
-        if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
+        if (event == MF_MEDIA_ENGINE_EVENT_SEEKED || event == MF_MEDIA_ENGINE_EVENT_FRAMESTEPCOMPLETED) {
             if (videoStepHoldSeekInFlight_) CompleteVideoStepHoldSeek();
             else if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
         } else if (!videoPlayer_.HasValidFrame() &&
@@ -12443,6 +12472,7 @@ private:
     int videoStepHoldDirection_ = 0;
     bool videoStepHoldActive_ = false;
     bool videoStepHoldSeekInFlight_ = false;
+    bool videoStepHoldFrameAwaitingPresentation_ = false;
     double videoStepHoldAnchorSeconds_ = 0.0;
     double videoStepHoldDurationSeconds_ = 0.0;
     double videoStepHoldDesiredSeconds_ = 0.0;

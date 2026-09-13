@@ -376,6 +376,13 @@ bool VideoPlayer::Seek(double seconds) {
     return SUCCEEDED(result);
 }
 
+bool VideoPlayer::FrameStep(bool forward) {
+    if (!engineEx_ || failed_) return false;
+    const HRESULT result = engineEx_->FrameStep(forward ? TRUE : FALSE);
+    RecordFramePacingEvent(FramePacingEvent::PlaybackSeek, 0, result);
+    return SUCCEEDED(result);
+}
+
 bool VideoPlayer::SetMuted(bool muted) {
     return engine_ && SUCCEEDED(engine_->SetMuted(muted ? TRUE : FALSE));
 }

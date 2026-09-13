@@ -32,6 +32,7 @@ public:
     HRESULT TogglePlayPause();
     bool GetPlaybackTimes(double& currentSeconds, double& durationSeconds) const;
     bool Seek(double seconds);
+    bool FrameStep(bool forward);
     bool SetMuted(bool muted);
     bool Muted() const;
     bool SetVolume(double volume);

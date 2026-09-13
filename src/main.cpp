@@ -100,10 +100,12 @@ constexpr UINT_PTR kVideoControlsTimer = 15;
 constexpr UINT_PTR kVideoStepHoldTimer = 16;
 constexpr UINT_PTR kVideoAutoPlayNextCountdownTimer = 27;
 constexpr UINT_PTR kVideoFullscreenGlyphTimer = 28;
+constexpr UINT_PTR kVideoPlaybackSpeedHoverTimer = 29;
 constexpr UINT_PTR kStillDissolveTimer = 17;
 constexpr UINT_PTR kStartupVideoSizingFallbackTimer = 23;
 constexpr UINT kVideoStepHoldThresholdMs = 250;
 constexpr UINT kVideoStepHoldIntervalMs = 16;
+constexpr ULONGLONG kVideoPlaybackSpeedHoverDurationMs = 120;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr size_t kDeleteUndoStackLimit = 16;
@@ -1546,10 +1548,29 @@ public:
         videoStepHoldStartQpc_ = 0;
         videoStepHoldQpcFrequency_ = 0;
     }
+    bool IssueVideoStepHoldSeek() {
+        if (!videoStepHoldDirection_ || videoStepHoldSeekInFlight_ || !VideoActive() || videoPlayer_.Playing()) return false;
+        const double target = std::clamp(videoStepHoldDesiredSeconds_, 0.0, videoStepHoldDurationSeconds_);
+        if (std::abs(target - videoStepHoldLastIssuedSeconds_) < 0.0005) return false;
+        if (!videoPlayer_.Seek(target)) return false;
+        videoStepHoldLastIssuedSeconds_ = target;
+        videoStepHoldSeekInFlight_ = true;
+        videoScrubSeconds_ = target;
+        videoPausedSeekRefreshPending_ = true;
+        return true;
+    }
+    void CompleteVideoStepHoldSeek() {
+        if (!videoStepHoldSeekInFlight_) return;
+        videoStepHoldSeekInFlight_ = false;
+        videoPausedSeekRefreshPending_ = true;
+        videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
+        if (videoStepHoldDirection_) IssueVideoStepHoldSeek();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     bool BeginVideoStepHold(int direction) {
         if (!VideoActive() || !direction) return false;
         StopVideoStepHold();
-        NudgeVideoPosition(direction);
+        const bool initialSeekInFlight = NudgeVideoPosition(direction);
         if (!VideoActive() || videoPlayer_.Playing()) return false;
         double current = 0.0, duration = 0.0;
         if (!videoPlayer_.GetPlaybackTimes(current, duration)) return false;
@@ -1558,6 +1579,9 @@ public:
         videoStepHoldDirection_ = direction < 0 ? -1 : 1;
         videoStepHoldAnchorSeconds_ = videoPausedSeekRefreshPending_ ? videoScrubSeconds_ : current;
         videoStepHoldDurationSeconds_ = duration;
+        videoStepHoldDesiredSeconds_ = videoStepHoldAnchorSeconds_;
+        videoStepHoldLastIssuedSeconds_ = videoStepHoldAnchorSeconds_;
+        videoStepHoldSeekInFlight_ = initialSeekInFlight;
         videoStepHoldQpcFrequency_ = frequency.QuadPart;
         SetTimer(window_, kVideoStepHoldTimer, kVideoStepHoldThresholdMs, nullptr);
         ShowVideoControls();
@@ -1574,30 +1598,32 @@ public:
         }
         const double elapsedSeconds = static_cast<double>(now.QuadPart - videoStepHoldStartQpc_) / static_cast<double>(videoStepHoldQpcFrequency_);
         const double target = std::clamp(videoStepHoldAnchorSeconds_ + videoStepHoldDirection_ * elapsedSeconds, 0.0, videoStepHoldDurationSeconds_);
-        videoScrubSeconds_ = target;
-        if (videoPlayer_.Seek(target) && !videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = true;
+        videoStepHoldDesiredSeconds_ = target;
+        IssueVideoStepHoldSeek();
         InvalidateRect(window_, nullptr, FALSE);
         if (target > 0.0 && target < videoStepHoldDurationSeconds_)
             SetTimer(window_, kVideoStepHoldTimer, kVideoStepHoldIntervalMs, nullptr);
     }
-    void NudgeVideoPosition(int direction) {
-        if (!VideoActive() || !direction) return;
+    bool NudgeVideoPosition(int direction) {
+        if (!VideoActive() || !direction) return false;
         CancelVideoAutoPlayNextCountdown();
         if (videoPlayer_.Playing()) {
             ToggleVideoPlayPause();
             videoPausedSeekRefreshPending_ = false;
-            if (videoPlayer_.Playing()) return;
+            if (videoPlayer_.Playing()) return false;
         }
         double current = 0.0, duration = 0.0;
-        if (!videoPlayer_.GetPlaybackTimes(current, duration)) return;
+        if (!videoPlayer_.GetPlaybackTimes(current, duration)) return false;
         float framesPerSecond = 0.0f;
         const double stepSeconds = videoPlayer_.TryGetFramesPerSecond(framesPerSecond) && std::isfinite(framesPerSecond) && framesPerSecond >= 1.0f && framesPerSecond <= 240.0f
             ? 1.0 / static_cast<double>(framesPerSecond) : 1.0 / 30.0;
         const double anchor = videoPausedSeekRefreshPending_ ? videoScrubSeconds_ : current;
         videoScrubSeconds_ = std::clamp(anchor + direction * stepSeconds, 0.0, duration);
-        if (videoPlayer_.Seek(videoScrubSeconds_) && !videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = true;
+        const bool seekStarted = videoPlayer_.Seek(videoScrubSeconds_);
+        if (seekStarted && !videoPlayer_.Playing()) videoPausedSeekRefreshPending_ = true;
         ShowVideoControls();
         InvalidateRect(window_, nullptr, FALSE);
+        return seekStarted && !videoPlayer_.Playing();
     }
     bool VideoAdjustmentsPanelAboveControls() const {
         if (!VideoAdjustmentsPanelVisible()) return false;
@@ -1989,7 +2015,10 @@ public:
     void SetVideoPlaybackSpeedPanelOpen(bool open) {
         videoPlaybackSpeedPanelOpen_ = open;
         if (open) SetVideoAdjustmentsPanelOpen(false);
-        if (!open) videoControlsPointerOver_ = false;
+        if (!open) {
+            videoControlsPointerOver_ = false;
+            SetVideoPlaybackSpeedHover(-1);
+        } else SetVideoPlaybackSpeedHover(VideoPlaybackSpeedRateAt(lastMousePoint_));
         ShowVideoControls();
     }
     void SelectVideoPlaybackRate(DWORD percent) {
@@ -2495,6 +2524,7 @@ public:
     }
     void ResetVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
+        KillTimer(window_, kVideoPlaybackSpeedHoverTimer);
         if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
@@ -2511,6 +2541,9 @@ public:
         videoAdjustmentsPanelFadeActive_ = false;
         videoAdjustmentsPanelOpacity_ = 0.0f;
         videoPlaybackSpeedPanelOpen_ = false;
+        videoPlaybackSpeedHovered_ = -1;
+        videoPlaybackSpeedHoverAnimating_ = false;
+        videoPlaybackSpeedHoverProgress_.fill(0.0f);
         videoAdjustmentsDragging_ = -1;
         videoAdjustmentThumbGrab_ = false;
         videoControlsHovered_ = ButtonKind::None;
@@ -2520,6 +2553,7 @@ public:
     void StopVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
         KillTimer(window_, kVideoFullscreenGlyphTimer);
+        KillTimer(window_, kVideoPlaybackSpeedHoverTimer);
         if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
@@ -2533,6 +2567,9 @@ public:
         videoAdjustmentsPanelFadeActive_ = false;
         videoAdjustmentsPanelOpacity_ = 0.0f;
         videoPlaybackSpeedPanelOpen_ = false;
+        videoPlaybackSpeedHovered_ = -1;
+        videoPlaybackSpeedHoverAnimating_ = false;
+        videoPlaybackSpeedHoverProgress_.fill(0.0f);
         videoAdjustmentsDragging_ = -1;
         videoAdjustmentThumbGrab_ = false;
         videoControlsFadeActive_ = false;
@@ -2658,6 +2695,7 @@ public:
         if (!videoPlayer_.Playing() || revealZone || activeInteraction) ShowVideoControls(false);
         videoControlsPointerOver_ = VideoControlsContains(point) || revealZone || activeInteraction;
         videoControlsHovered_ = VideoControlAt(point);
+        SetVideoPlaybackSpeedHover(VideoPlaybackSpeedRateAt(point));
         SetVideoFullscreenGlyphHover(videoControlsHovered_ == ButtonKind::VideoFullscreen);
         if (videoControlsPointerOver_) KillTimer(window_, kVideoControlsTimer);
         else if (wasPointerOver && videoPlayer_.Playing()) {
@@ -2675,6 +2713,7 @@ public:
         if (!VideoActive()) return;
         videoControlsPointerOver_ = false;
         videoControlsHovered_ = ButtonKind::None;
+        SetVideoPlaybackSpeedHover(-1);
         SetVideoFullscreenGlyphHover(false);
         if (videoPlayer_.Playing() && !videoScrubbing_ && !videoVolumeDragging_ && !videoAdjustmentsOriginalPreviewActive_ && !videoPlaybackSpeedPanelOpen_) {
             videoControlsFadeActive_ = false;
@@ -5685,6 +5724,43 @@ public:
             SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
         InvalidateRect(window_, nullptr, FALSE);
     }
+    int VideoPlaybackSpeedRateAt(POINT point) const {
+        if (!videoPlaybackSpeedPanelOpen_) return -1;
+        const VideoPlaybackSpeedPanelLayout panel = GetVideoPlaybackSpeedPanelLayout();
+        for (size_t index = 0; index < panel.rates.size(); ++index)
+            if (PtInRect(&panel.rates[index], point)) return static_cast<int>(index);
+        return -1;
+    }
+    void SetVideoPlaybackSpeedHover(int hovered) {
+        hovered = std::clamp(hovered, -1, static_cast<int>(kVideoPlaybackRatePercents.size()) - 1);
+        if (hovered == videoPlaybackSpeedHovered_) return;
+        UpdateVideoPlaybackSpeedHover();
+        videoPlaybackSpeedHovered_ = hovered;
+        videoPlaybackSpeedHoverStartedAt_ = GetTickCount64();
+        videoPlaybackSpeedHoverAnimating_ = false;
+        for (size_t index = 0; index < videoPlaybackSpeedHoverProgress_.size(); ++index) {
+            videoPlaybackSpeedHoverStart_[index] = videoPlaybackSpeedHoverProgress_[index];
+            videoPlaybackSpeedHoverTarget_[index] = static_cast<int>(index) == hovered ? 1.0f : 0.0f;
+            videoPlaybackSpeedHoverAnimating_ |= std::abs(videoPlaybackSpeedHoverStart_[index] - videoPlaybackSpeedHoverTarget_[index]) >= 0.001f;
+        }
+        if (videoPlaybackSpeedHoverAnimating_) SetTimer(window_, kVideoPlaybackSpeedHoverTimer, 16, nullptr);
+        else KillTimer(window_, kVideoPlaybackSpeedHoverTimer);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void UpdateVideoPlaybackSpeedHover() {
+        if (!videoPlaybackSpeedHoverAnimating_) { KillTimer(window_, kVideoPlaybackSpeedHoverTimer); return; }
+        const float progress = std::clamp(static_cast<float>(GetTickCount64() - videoPlaybackSpeedHoverStartedAt_) /
+            static_cast<float>(kVideoPlaybackSpeedHoverDurationMs), 0.0f, 1.0f);
+        const float eased = SmoothTransitionProgress(progress);
+        for (size_t index = 0; index < videoPlaybackSpeedHoverProgress_.size(); ++index)
+            videoPlaybackSpeedHoverProgress_[index] = videoPlaybackSpeedHoverStart_[index] +
+                (videoPlaybackSpeedHoverTarget_[index] - videoPlaybackSpeedHoverStart_[index]) * eased;
+        if (progress >= 1.0f) {
+            videoPlaybackSpeedHoverAnimating_ = false;
+            KillTimer(window_, kVideoPlaybackSpeedHoverTimer);
+        } else SetTimer(window_, kVideoPlaybackSpeedHoverTimer, 16, nullptr);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void SetFilmstripPointerState(POINT point) {
         if (FilmstripHoverSuppressedForImagePan()) {
             SuppressFilmstripHoverForImagePan();
@@ -7387,6 +7463,7 @@ private:
         StopVideoPlaybackScheduler();
         StopVideoControls();
         videoPlayer_.Shutdown();
+        videoStepHoldSeekInFlight_ = false;
         if (contentKind_ == ContentKind::Video2D) { resolutionText_.clear(); contentKind_ = ContentKind::None; }
         if (restoreWindowBounds) RestoreVideoWindowBounds();
         if (!VideoActive()) RevealInitialWindowAfterVideoSizing();
@@ -7418,7 +7495,8 @@ public:
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
-            if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
+            if (videoStepHoldSeekInFlight_) CompleteVideoStepHoldSeek();
+            else if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
         } else if (!videoPlayer_.HasValidFrame() &&
             (event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY || event == MF_MEDIA_ENGINE_EVENT_CANPLAY)) {
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
@@ -10391,7 +10469,7 @@ private:
         const float opacity = overlayOpacity >= 0.0f ? overlayOpacity : videoControlsOpacity_;
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
-        ComPtr<ID2D1SolidColorBrush> surface, border, text, autoPlayIcon, accent, track, hover, muted;
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, autoPlayIcon, accent, track, hover, speedHover, muted;
         if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, opacity), &surface)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, opacity), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, opacity), &text)) ||
@@ -10399,6 +10477,7 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, opacity), &accent)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * opacity), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, opacity), &hover)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 0.82f * opacity), &speedHover)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(196.0f / 255.0f, 43.0f / 255.0f, 28.0f / 255.0f, opacity), &muted))) return;
 
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
@@ -10411,6 +10490,10 @@ private:
                 const bool selected = std::abs(rate - videoEffectivePlaybackRate_) < 0.001;
                 const bool supported = videoPlayer_.PlaybackRateSupported(rate);
                 if (selected) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.rates[index]), 5.0f * scale, 5.0f * scale), hover.Get());
+                if (videoPlaybackSpeedHoverProgress_[index] > 0.001f) {
+                    speedHover->SetOpacity(videoPlaybackSpeedHoverProgress_[index]);
+                    renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.rates[index]), 5.0f * scale, 5.0f * scale), speedHover.Get());
+                }
                 const std::wstring label = FormatPlaybackRate(rate);
                 DrawOverlayText(label.c_str(), static_cast<float>(panel.rates[index].left), static_cast<float>(panel.rates[index].top), static_cast<float>(panel.rates[index].right - panel.rates[index].left), static_cast<float>(panel.rates[index].bottom - panel.rates[index].top), 12.0f, selected ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL, supported ? text.Get() : border.Get(), true, false, true);
             }
@@ -10535,9 +10618,9 @@ private:
         ComPtr<ID2D1PathGeometry> autoPlayTriangle, autoPlayArrow;
         ComPtr<ID2D1GeometrySink> autoPlaySink;
         if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&autoPlayTriangle)) && SUCCEEDED(autoPlayTriangle->Open(&autoPlaySink))) {
-            const float triangleLeft = autoPlayCenterX - 4.5f * scale;
-            const float triangleTip = autoPlayCenterX + 4.5f * scale;
-            const float triangleHalfHeight = 5.5f * scale;
+            const float triangleLeft = autoPlayCenterX - 4.2f * scale;
+            const float triangleTip = autoPlayCenterX + 5.0f * scale;
+            const float triangleHalfHeight = 6.0f * scale;
             autoPlaySink->BeginFigure(D2D1::Point2F(triangleLeft, autoPlayCenterY - triangleHalfHeight), D2D1_FIGURE_BEGIN_FILLED);
             autoPlaySink->AddLine(D2D1::Point2F(triangleLeft, autoPlayCenterY + triangleHalfHeight));
             autoPlaySink->AddLine(D2D1::Point2F(triangleTip, autoPlayCenterY));
@@ -10547,15 +10630,15 @@ private:
         autoPlaySink.Reset();
         if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&autoPlayArrow)) && SUCCEEDED(autoPlayArrow->Open(&autoPlaySink))) {
             const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
-            const float radius = 9.0f * scale;
-            const D2D1_POINT_2F arrowTip = point(autoPlayCenterX - 7.5f * scale, autoPlayCenterY + 5.0f * scale);
-            autoPlaySink->BeginFigure(point(autoPlayCenterX + 4.5f * scale, autoPlayCenterY - 7.5f * scale), D2D1_FIGURE_BEGIN_HOLLOW);
+            const float radius = 9.8f * scale;
+            const D2D1_POINT_2F arrowTip = point(autoPlayCenterX - 8.0f * scale, autoPlayCenterY + 5.4f * scale);
+            autoPlaySink->BeginFigure(point(autoPlayCenterX + 5.5f * scale, autoPlayCenterY - 8.0f * scale), D2D1_FIGURE_BEGIN_HOLLOW);
             autoPlaySink->AddArc(D2D1::ArcSegment(arrowTip, D2D1::SizeF(radius, radius), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
             autoPlaySink->EndFigure(D2D1_FIGURE_END_OPEN);
             if (SUCCEEDED(autoPlaySink->Close())) {
-                renderTarget_->DrawGeometry(autoPlayArrow.Get(), autoPlayIcon.Get(), 1.5f * scale);
-                renderTarget_->DrawLine(arrowTip, point(arrowTip.x + 5.0f * scale, arrowTip.y - 0.5f * scale), autoPlayIcon.Get(), 1.5f * scale);
-                renderTarget_->DrawLine(arrowTip, point(arrowTip.x + 1.0f * scale, arrowTip.y - 4.5f * scale), autoPlayIcon.Get(), 1.5f * scale);
+                renderTarget_->DrawGeometry(autoPlayArrow.Get(), autoPlayIcon.Get(), 1.85f * scale);
+                renderTarget_->DrawLine(arrowTip, point(arrowTip.x + 5.6f * scale, arrowTip.y - 0.5f * scale), autoPlayIcon.Get(), 1.85f * scale);
+                renderTarget_->DrawLine(arrowTip, point(arrowTip.x + 1.1f * scale, arrowTip.y - 5.1f * scale), autoPlayIcon.Get(), 1.85f * scale);
             }
         }
         if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext) {
@@ -12351,10 +12434,19 @@ private:
     DWORD videoPreferredPlaybackRatePercent_ = 100;
     double videoEffectivePlaybackRate_ = 1.0;
     bool videoPlaybackSpeedPanelOpen_ = false;
+    int videoPlaybackSpeedHovered_ = -1;
+    bool videoPlaybackSpeedHoverAnimating_ = false;
+    ULONGLONG videoPlaybackSpeedHoverStartedAt_ = 0;
+    std::array<float, kVideoPlaybackRatePercents.size()> videoPlaybackSpeedHoverProgress_{};
+    std::array<float, kVideoPlaybackRatePercents.size()> videoPlaybackSpeedHoverStart_{};
+    std::array<float, kVideoPlaybackRatePercents.size()> videoPlaybackSpeedHoverTarget_{};
     int videoStepHoldDirection_ = 0;
     bool videoStepHoldActive_ = false;
+    bool videoStepHoldSeekInFlight_ = false;
     double videoStepHoldAnchorSeconds_ = 0.0;
     double videoStepHoldDurationSeconds_ = 0.0;
+    double videoStepHoldDesiredSeconds_ = 0.0;
+    double videoStepHoldLastIssuedSeconds_ = 0.0;
     LONGLONG videoStepHoldStartQpc_ = 0;
     LONGLONG videoStepHoldQpcFrequency_ = 0;
     bool videoPlaybackSchedulerRunning_ = false;
@@ -13206,6 +13298,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kTriangleCountTooltipTimer) { viewer->TriangleCountTooltipTimerMessage(); return 0; }
         if (wParam == kVideoControlsTimer) { viewer->UpdateVideoControlsFade(); return 0; }
         if (wParam == kVideoStepHoldTimer) { viewer->UpdateVideoStepHold(); return 0; }
+        if (wParam == kVideoPlaybackSpeedHoverTimer) { viewer->UpdateVideoPlaybackSpeedHover(); return 0; }
         if (wParam == kVideoAutoPlayNextCountdownTimer) { viewer->UpdateVideoAutoPlayNextCountdown(); return 0; }
         if (wParam == kVideoFullscreenGlyphTimer) { viewer->UpdateVideoFullscreenGlyphHover(); return 0; }
         if (wParam == kVideoAdjustmentsFadeTimer) { viewer->UpdateAdjustmentPanelsFade(); return 0; }

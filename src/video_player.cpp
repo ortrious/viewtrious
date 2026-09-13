@@ -469,8 +469,7 @@ bool VideoPlayer::PlaybackRateSupported(double rate) const {
 
 bool VideoPlayer::ApplyPreferredPlaybackRate() {
     if (!engine_ || !PlaybackRateSupported(preferredPlaybackRate_)) return false;
-    const HRESULT defaultResult = engine_->SetDefaultPlaybackRate(preferredPlaybackRate_);
-    const HRESULT currentResult = SUCCEEDED(defaultResult) ? engine_->SetPlaybackRate(preferredPlaybackRate_) : defaultResult;
+    const HRESULT currentResult = engine_->SetPlaybackRate(preferredPlaybackRate_);
     if (FAILED(currentResult)) return false;
     effectivePlaybackRate_ = preferredPlaybackRate_;
     return true;

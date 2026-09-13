@@ -202,6 +202,8 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
         Shutdown();
         return false;
     }
+    negativePlaybackRateSupported_ = engineEx_ && engineEx_->IsPlaybackRateSupported(-1.0) != FALSE;
+    FileOpenDiagnostics::Log(openAttemptId_, L"video-negative-rate-support", L"rate=-1 supported=" + std::to_wstring(negativePlaybackRateSupported_ ? 1 : 0));
     if (!SetSourceFromPath(path, error)) {
         Shutdown();
         return false;
@@ -213,7 +215,7 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
 void VideoPlayer::Shutdown() {
     if (openAttemptId_) FileOpenDiagnostics::Log(openAttemptId_, L"video-shutdown-begin");
     FlushFramePacingDiagnostics();
-    playing_ = ended_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = false;
+    playing_ = ended_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = negativePlaybackRateSupported_ = false;
     displayAdjustmentsBypassed_ = false;
     lastTransferredPts_ = 0;
     framesPerSecond_ = 0.0f;
@@ -479,6 +481,34 @@ bool VideoPlayer::SetPreferredPlaybackRate(double rate) {
     preferredPlaybackRate_ = rate;
     if (!ready_) return true;
     return ApplyPreferredPlaybackRate();
+}
+
+bool VideoPlayer::BeginTemporaryPlayback(double rate) {
+    if (!engine_ || failed_ || playing_ || !std::isfinite(rate) || std::abs(rate) < 0.001) return false;
+    if (rate < 0.0 && !negativePlaybackRateSupported_) return false;
+    const HRESULT setRate = engine_->SetPlaybackRate(rate);
+    if (FAILED(setRate)) return false;
+    const HRESULT play = engine_->Play();
+    if (FAILED(play)) {
+        ApplyPreferredPlaybackRate();
+        return false;
+    }
+    effectivePlaybackRate_ = rate;
+    playing_ = true;
+    ended_ = false;
+    RecordFramePacingEvent(FramePacingEvent::PlaybackResume);
+    return true;
+}
+
+bool VideoPlayer::EndTemporaryPlayback() {
+    if (!engine_) return false;
+    const HRESULT pause = engine_->Pause();
+    if (SUCCEEDED(pause)) {
+        playing_ = false;
+        RecordFramePacingEvent(FramePacingEvent::PlaybackPause);
+    }
+    const bool restoredRate = ApplyPreferredPlaybackRate();
+    return SUCCEEDED(pause) && restoredRate;
 }
 
 bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {

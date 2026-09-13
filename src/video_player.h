@@ -42,6 +42,9 @@ public:
     bool CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
     bool SetPreferredPlaybackRate(double rate);
     bool PlaybackRateSupported(double rate) const;
+    bool SupportsNegativePlaybackRate() const { return negativePlaybackRateSupported_; }
+    bool BeginTemporaryPlayback(double rate);
+    bool EndTemporaryPlayback();
     double EffectivePlaybackRate() const { return effectivePlaybackRate_; }
     void RecordFramePacingSchedule(double intervalMs, LONGLONG deadlineQpc);
     void RecordFramePacingTimer(LONGLONG wakeQpc, LONGLONG deadlineQpc);
@@ -92,6 +95,7 @@ private:
     bool adjustedFrameValid_ = false;
     bool hasTransferredPts_ = false;
     bool hasFramesPerSecond_ = false;
+    bool negativePlaybackRateSupported_ = false;
     bool firstFrameLogged_ = false;
     float framesPerSecond_ = 0.0f;
     LONGLONG lastTransferredPts_ = 0;

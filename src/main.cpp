@@ -104,7 +104,7 @@ constexpr UINT_PTR kVideoPlaybackSpeedHoverTimer = 29;
 constexpr UINT_PTR kStillDissolveTimer = 17;
 constexpr UINT_PTR kStartupVideoSizingFallbackTimer = 23;
 constexpr UINT kVideoStepHoldThresholdMs = 250;
-constexpr UINT kVideoStepHoldIntervalMs = 16;
+constexpr UINT kVideoStepHoldIntervalMs = 16; // Unsupported reverse-hold seek fallback only.
 constexpr ULONGLONG kVideoPlaybackSpeedHoverDurationMs = 120;
 constexpr UINT kShellRotationCheckIntervalMs = 100;
 constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
@@ -1528,6 +1528,7 @@ public:
     bool HasImage() const { return source_ != nullptr; }
     bool ModelActive() const { return contentKind_ == ContentKind::Model3D && modelViewport_.Active(); }
     bool VideoActive() const { return contentKind_ == ContentKind::Video2D && videoPlayer_.Active(); }
+    bool VideoUserPlaybackActive() const { return videoPlayer_.Playing() && !videoStepHoldTransportActive_; }
     void ToggleVideoPlayPause() {
         if (!VideoActive()) return;
         CancelVideoAutoPlayNextCountdown();
@@ -1541,12 +1542,47 @@ public:
     }
     void StopVideoStepHold() {
         KillTimer(window_, kVideoStepHoldTimer);
+        const bool temporaryTransport = videoStepHoldTransportActive_;
+        videoStepHoldTransportActive_ = false;
+        videoStepHoldTransportPending_ = false;
+        if (temporaryTransport && videoPlayer_.Active()) {
+            StopVideoPlaybackScheduler();
+            videoPlayer_.EndTemporaryPlayback();
+        }
+        if (videoStepHoldAudioSuppressed_ && videoPlayer_.Active()) videoPlayer_.SetMuted(videoMuted_);
+        videoStepHoldAudioSuppressed_ = false;
         videoStepHoldDirection_ = 0;
         videoStepHoldActive_ = false;
+        videoStepHoldSeekInFlight_ = false;
         videoStepHoldAnchorSeconds_ = 0.0;
         videoStepHoldDurationSeconds_ = 0.0;
         videoStepHoldStartQpc_ = 0;
         videoStepHoldQpcFrequency_ = 0;
+    }
+    bool BeginVideoStepHoldTransport() {
+        if (!videoStepHoldDirection_ || !VideoActive() || videoPlayer_.Playing()) return false;
+        const double rate = videoStepHoldDirection_ < 0 ? -1.0 : 1.0;
+        if (rate < 0.0 && !videoPlayer_.SupportsNegativePlaybackRate()) return false;
+        if (!videoPlayer_.SetMuted(true)) return false;
+        videoStepHoldAudioSuppressed_ = true;
+        if (!videoPlayer_.BeginTemporaryPlayback(rate)) {
+            videoPlayer_.SetMuted(videoMuted_);
+            videoStepHoldAudioSuppressed_ = false;
+            return false;
+        }
+        videoStepHoldTransportActive_ = true;
+        videoStepHoldTransportPending_ = false;
+        videoPausedSeekRefreshPending_ = false;
+        ScheduleVideoPlaybackTimer(true);
+        return true;
+    }
+    void BeginReverseVideoStepHoldSeekFallback() {
+        LARGE_INTEGER now{};
+        if (!QueryPerformanceCounter(&now) || videoStepHoldQpcFrequency_ <= 0) { StopVideoStepHold(); return; }
+        videoStepHoldTransportPending_ = false;
+        videoStepHoldActive_ = true;
+        videoStepHoldStartQpc_ = now.QuadPart;
+        SetTimer(window_, kVideoStepHoldTimer, kVideoStepHoldIntervalMs, nullptr);
     }
     bool IssueVideoStepHoldSeek() {
         if (!videoStepHoldDirection_ || videoStepHoldSeekInFlight_ || !VideoActive() || videoPlayer_.Playing()) return false;
@@ -1564,7 +1600,14 @@ public:
         videoStepHoldSeekInFlight_ = false;
         videoPausedSeekRefreshPending_ = true;
         videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
-        if (videoStepHoldDirection_) IssueVideoStepHoldSeek();
+        if (videoStepHoldTransportPending_) {
+            if (!BeginVideoStepHoldTransport()) {
+                if (videoStepHoldDirection_ < 0) BeginReverseVideoStepHoldSeekFallback();
+                else StopVideoStepHold();
+            }
+        } else if (videoStepHoldDirection_ < 0 && !videoStepHoldTransportActive_) {
+            IssueVideoStepHoldSeek();
+        }
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool BeginVideoStepHold(int direction) {
@@ -1589,13 +1632,26 @@ public:
     }
     void UpdateVideoStepHold() {
         KillTimer(window_, kVideoStepHoldTimer);
-        if (!videoStepHoldDirection_ || !VideoActive() || videoPlayer_.Playing()) { StopVideoStepHold(); return; }
-        LARGE_INTEGER now{};
-        if (!QueryPerformanceCounter(&now) || videoStepHoldQpcFrequency_ <= 0) { StopVideoStepHold(); return; }
+        if (!videoStepHoldDirection_ || !VideoActive()) { StopVideoStepHold(); return; }
         if (!videoStepHoldActive_) {
             videoStepHoldActive_ = true;
-            videoStepHoldStartQpc_ = now.QuadPart;
+            if (videoStepHoldDirection_ > 0 || videoPlayer_.SupportsNegativePlaybackRate()) {
+                videoStepHoldTransportPending_ = true;
+                if (!videoStepHoldSeekInFlight_) {
+                    if (!BeginVideoStepHoldTransport()) {
+                        if (videoStepHoldDirection_ < 0) BeginReverseVideoStepHoldSeekFallback();
+                        else StopVideoStepHold();
+                    }
+                }
+                return;
+            }
+            BeginReverseVideoStepHoldSeekFallback();
+            return;
         }
+        if (videoStepHoldTransportActive_) return;
+        if (videoPlayer_.Playing()) { StopVideoStepHold(); return; }
+        LARGE_INTEGER now{};
+        if (!QueryPerformanceCounter(&now) || videoStepHoldQpcFrequency_ <= 0) { StopVideoStepHold(); return; }
         const double elapsedSeconds = static_cast<double>(now.QuadPart - videoStepHoldStartQpc_) / static_cast<double>(videoStepHoldQpcFrequency_);
         const double target = std::clamp(videoStepHoldAnchorSeconds_ + videoStepHoldDirection_ * elapsedSeconds, 0.0, videoStepHoldDurationSeconds_);
         videoStepHoldDesiredSeconds_ = target;
@@ -2518,7 +2574,7 @@ public:
         videoControlsFadeActive_ = false;
         videoControlsLastActivity_ = GetTickCount64();
         KillTimer(window_, kVideoControlsTimer);
-        if (videoPlayer_.Playing() && !videoControlsPointerOver_ && !videoScrubbing_ && !videoVolumeDragging_ && !videoPlaybackSpeedPanelOpen_)
+        if (VideoUserPlaybackActive() && !videoControlsPointerOver_ && !videoScrubbing_ && !videoVolumeDragging_ && !videoPlaybackSpeedPanelOpen_)
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
         if (invalidate || visibilityChanged) InvalidateRect(window_, nullptr, FALSE);
     }
@@ -2692,13 +2748,13 @@ public:
         const bool wasPointerOver = videoControlsPointerOver_;
         const bool revealZone = VideoControlsRevealZoneContains(point);
         const bool activeInteraction = videoScrubbing_ || videoVolumeDragging_ || videoAdjustmentsDragging_ >= 0 || videoAdjustmentsOriginalPreviewActive_ || videoPlaybackSpeedPanelOpen_;
-        if (!videoPlayer_.Playing() || revealZone || activeInteraction) ShowVideoControls(false);
+        if (!VideoUserPlaybackActive() || revealZone || activeInteraction) ShowVideoControls(false);
         videoControlsPointerOver_ = VideoControlsContains(point) || revealZone || activeInteraction;
         videoControlsHovered_ = VideoControlAt(point);
         SetVideoPlaybackSpeedHover(VideoPlaybackSpeedRateAt(point));
         SetVideoFullscreenGlyphHover(videoControlsHovered_ == ButtonKind::VideoFullscreen);
         if (videoControlsPointerOver_) KillTimer(window_, kVideoControlsTimer);
-        else if (wasPointerOver && videoPlayer_.Playing()) {
+        else if (wasPointerOver && VideoUserPlaybackActive()) {
             videoControlsFadeActive_ = false;
             videoControlsLastActivity_ = GetTickCount64();
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
@@ -2715,7 +2771,7 @@ public:
         videoControlsHovered_ = ButtonKind::None;
         SetVideoPlaybackSpeedHover(-1);
         SetVideoFullscreenGlyphHover(false);
-        if (videoPlayer_.Playing() && !videoScrubbing_ && !videoVolumeDragging_ && !videoAdjustmentsOriginalPreviewActive_ && !videoPlaybackSpeedPanelOpen_) {
+        if (VideoUserPlaybackActive() && !videoScrubbing_ && !videoVolumeDragging_ && !videoAdjustmentsOriginalPreviewActive_ && !videoPlaybackSpeedPanelOpen_) {
             videoControlsFadeActive_ = false;
             videoControlsLastActivity_ = GetTickCount64();
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
@@ -2760,7 +2816,7 @@ public:
     }
     void UpdateVideoControlsFade() {
         if (!VideoActive()) { StopVideoControls(); return; }
-        if (!videoPlayer_.Playing() || videoControlsPointerOver_ || videoScrubbing_ || videoVolumeDragging_ || videoAdjustmentsOriginalPreviewActive_ || videoPlaybackSpeedPanelOpen_) { KillTimer(window_, kVideoControlsTimer); return; }
+        if (!VideoUserPlaybackActive() || videoControlsPointerOver_ || videoScrubbing_ || videoVolumeDragging_ || videoAdjustmentsOriginalPreviewActive_ || videoPlaybackSpeedPanelOpen_) { KillTimer(window_, kVideoControlsTimer); return; }
         const ULONGLONG elapsed = GetTickCount64() - videoControlsLastActivity_;
         if (!videoControlsFadeActive_) {
             if (elapsed < kVideoControlsIdleDelayMs) {
@@ -7480,7 +7536,7 @@ public:
         const bool wasPlaying = videoPlayer_.Playing();
         std::wstring videoError;
         videoPlayer_.HandleMediaEvent(event, videoError);
-        videoEffectivePlaybackRate_ = videoPlayer_.EffectivePlaybackRate();
+        if (!videoStepHoldTransportActive_) videoEffectivePlaybackRate_ = videoPlayer_.EffectivePlaybackRate();
         UpdateVideoTitleMetadata();
         if (videoWindowSizing_ == VideoWindowSizing::ResizeWindowToVideo && !videoSizingAppliedForCurrentVideo_ &&
             (event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA || event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY) && ResizeWindowToVideo())
@@ -7494,6 +7550,7 @@ public:
         }
         if (!videoError.empty()) error_ = videoError;
         if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (videoStepHoldTransportActive_ && !videoPlayer_.Playing()) StopVideoStepHold();
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoStepHoldSeekInFlight_) CompleteVideoStepHoldSeek();
             else if (videoPlayer_.Playing()) videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
@@ -7583,7 +7640,7 @@ private:
         LARGE_INTEGER now{}, frequency{};
         QueryPerformanceCounter(&now);
         QueryPerformanceFrequency(&frequency);
-        const double rate = std::clamp(videoPlayer_.EffectivePlaybackRate(), 0.25, 2.0);
+        const double rate = std::clamp(std::abs(videoPlayer_.EffectivePlaybackRate()), 0.25, 2.0);
         videoPlaybackFramePeriodQpc_ = framePeriodSeconds * static_cast<double>(frequency.QuadPart) / rate;
         videoPlaybackDeadlineQpc_ = static_cast<double>(now.QuadPart) + videoPlaybackFramePeriodQpc_;
         ++videoPlaybackSchedulerGeneration_;
@@ -10593,7 +10650,7 @@ private:
 
         const float playCenterX = (layout.playPause.left + layout.playPause.right) * 0.5f;
         const float playCenterY = (layout.playPause.top + layout.playPause.bottom) * 0.5f;
-        if (videoPlayer_.Playing()) {
+        if (VideoUserPlaybackActive()) {
             const float barWidth = 3.0f * scale, barHeight = 13.0f * scale, gap = 3.0f * scale;
             renderTarget_->FillRectangle(D2D1::RectF(playCenterX - gap - barWidth, playCenterY - barHeight * 0.5f, playCenterX - gap, playCenterY + barHeight * 0.5f), text.Get());
             renderTarget_->FillRectangle(D2D1::RectF(playCenterX + gap, playCenterY - barHeight * 0.5f, playCenterX + gap + barWidth, playCenterY + barHeight * 0.5f), text.Get());
@@ -12442,6 +12499,9 @@ private:
     std::array<float, kVideoPlaybackRatePercents.size()> videoPlaybackSpeedHoverTarget_{};
     int videoStepHoldDirection_ = 0;
     bool videoStepHoldActive_ = false;
+    bool videoStepHoldTransportPending_ = false;
+    bool videoStepHoldTransportActive_ = false;
+    bool videoStepHoldAudioSuppressed_ = false;
     bool videoStepHoldSeekInFlight_ = false;
     double videoStepHoldAnchorSeconds_ = 0.0;
     double videoStepHoldDurationSeconds_ = 0.0;

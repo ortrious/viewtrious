@@ -1544,7 +1544,6 @@ public:
         KillTimer(window_, kVideoStepHoldTimer);
         const bool temporaryTransport = videoStepHoldTransportActive_;
         videoStepHoldTransportActive_ = false;
-        videoStepHoldTransportPending_ = false;
         if (temporaryTransport && videoPlayer_.Active()) {
             StopVideoPlaybackScheduler();
             videoPlayer_.EndTemporaryPlayback();
@@ -1571,7 +1570,6 @@ public:
             return false;
         }
         videoStepHoldTransportActive_ = true;
-        videoStepHoldTransportPending_ = false;
         videoPausedSeekRefreshPending_ = false;
         ScheduleVideoPlaybackTimer(true);
         return true;
@@ -1579,7 +1577,6 @@ public:
     void BeginReverseVideoStepHoldSeekFallback() {
         LARGE_INTEGER now{};
         if (!QueryPerformanceCounter(&now) || videoStepHoldQpcFrequency_ <= 0) { StopVideoStepHold(); return; }
-        videoStepHoldTransportPending_ = false;
         videoStepHoldActive_ = true;
         videoStepHoldStartQpc_ = now.QuadPart;
         SetTimer(window_, kVideoStepHoldTimer, kVideoStepHoldIntervalMs, nullptr);
@@ -1600,12 +1597,7 @@ public:
         videoStepHoldSeekInFlight_ = false;
         videoPausedSeekRefreshPending_ = true;
         videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek);
-        if (videoStepHoldTransportPending_) {
-            if (!BeginVideoStepHoldTransport()) {
-                if (videoStepHoldDirection_ < 0) BeginReverseVideoStepHoldSeekFallback();
-                else StopVideoStepHold();
-            }
-        } else if (videoStepHoldDirection_ < 0 && !videoStepHoldTransportActive_) {
+        if (videoStepHoldDirection_ < 0 && !videoStepHoldTransportActive_) {
             IssueVideoStepHoldSeek();
         }
         InvalidateRect(window_, nullptr, FALSE);
@@ -1636,12 +1628,9 @@ public:
         if (!videoStepHoldActive_) {
             videoStepHoldActive_ = true;
             if (videoStepHoldDirection_ > 0 || videoPlayer_.SupportsNegativePlaybackRate()) {
-                videoStepHoldTransportPending_ = true;
-                if (!videoStepHoldSeekInFlight_) {
-                    if (!BeginVideoStepHoldTransport()) {
-                        if (videoStepHoldDirection_ < 0) BeginReverseVideoStepHoldSeekFallback();
-                        else StopVideoStepHold();
-                    }
+                if (!BeginVideoStepHoldTransport()) {
+                    if (videoStepHoldDirection_ < 0) BeginReverseVideoStepHoldSeekFallback();
+                    else StopVideoStepHold();
                 }
                 return;
             }
@@ -12499,7 +12488,6 @@ private:
     std::array<float, kVideoPlaybackRatePercents.size()> videoPlaybackSpeedHoverTarget_{};
     int videoStepHoldDirection_ = 0;
     bool videoStepHoldActive_ = false;
-    bool videoStepHoldTransportPending_ = false;
     bool videoStepHoldTransportActive_ = false;
     bool videoStepHoldAudioSuppressed_ = false;
     bool videoStepHoldSeekInFlight_ = false;

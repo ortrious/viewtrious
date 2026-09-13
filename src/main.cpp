@@ -10442,7 +10442,9 @@ private:
         renderTarget_->FillRoundedRectangle(bounds, surface.Get());
         renderTarget_->DrawRoundedRectangle(bounds, border.Get(), scale);
         const std::wstring label = std::to_wstring(remaining);
-        DrawOverlayText(label.c_str(), left, top, width, height, 152.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        // Paragraph centering retains Segoe UI's descender reserve, which places a
+        // one-digit numeral visibly low. Offset its line box by the measured 9 DIP.
+        DrawOverlayText(label.c_str(), left, top - 9.0f * scale, width, height, 152.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
     }
     void DrawVideoAutoPlayNextCountdownHelper() {
         if (!videoAutoPlayNextCountdownActive_) return;

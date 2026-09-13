@@ -10556,12 +10556,15 @@ private:
                 const D2D1_POINT_2F arcEnd = ringPoint(endAngle);
                 const D2D1_POINT_2F tangent = point(-std::sin(endAngle), std::cos(endAngle));
                 const D2D1_POINT_2F outward = point(std::cos(endAngle), std::sin(endAngle));
-                // Keep the larger arrowhead outside the ring, with its tip tangent to the arc.
-                const D2D1_POINT_2F arrowTip = point(arcEnd.x + tangent.x * 4.0f * scale, arcEnd.y + tangent.y * 4.0f * scale);
-                const D2D1_POINT_2F arrowBaseOuter = point(arcEnd.x - tangent.x * 1.6f * scale + outward.x * 4.0f * scale,
-                    arcEnd.y - tangent.y * 1.6f * scale + outward.y * 4.0f * scale);
-                const D2D1_POINT_2F arrowBaseInner = point(arcEnd.x - tangent.x * 1.6f * scale + outward.x * 0.5f * scale,
-                    arcEnd.y - tangent.y * 1.6f * scale + outward.y * 0.5f * scale);
+                // Double the visible arrowhead while retaining the tangent direction. The
+                // one-left/two-down DIP origin correction aligns its attachment optically
+                // with the terminal arc stroke at normal control-bar scale.
+                const D2D1_POINT_2F arrowheadOrigin = point(arcEnd.x - 1.0f * scale, arcEnd.y + 2.0f * scale);
+                const D2D1_POINT_2F arrowTip = point(arrowheadOrigin.x + tangent.x * 8.0f * scale, arrowheadOrigin.y + tangent.y * 8.0f * scale);
+                const D2D1_POINT_2F arrowBaseOuter = point(arrowheadOrigin.x - tangent.x * 3.2f * scale + outward.x * 8.0f * scale,
+                    arrowheadOrigin.y - tangent.y * 3.2f * scale + outward.y * 8.0f * scale);
+                const D2D1_POINT_2F arrowBaseInner = point(arrowheadOrigin.x - tangent.x * 3.2f * scale + outward.x * 1.0f * scale,
+                    arrowheadOrigin.y - tangent.y * 3.2f * scale + outward.y * 1.0f * scale);
                 ComPtr<ID2D1PathGeometry> arrowhead;
                 ComPtr<ID2D1GeometrySink> arrowheadSink;
                 if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&arrowhead)) && SUCCEEDED(arrowhead->Open(&arrowheadSink))) {

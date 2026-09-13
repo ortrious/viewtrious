@@ -5637,7 +5637,7 @@ public:
     bool FilmstripInteractionActive() const { return filmstripDragCandidate_; }
     void StopFilmstripVisibilityTimer() { KillTimer(window_, kFilmstripVisibilityTimer); }
     void StartFilmstripHold(UINT holdDurationMs = 2000) {
-        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_ || filmstripVisibilityFrozenForImagePan_) return;
+        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) return;
         filmstripOpacity_ = 1.0f;
         filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
         filmstripHoldDurationMs_ = holdDurationMs;
@@ -5647,7 +5647,7 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void StartFilmstripReveal() {
-        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_ || filmstripVisibilityFrozenForImagePan_) return;
+        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) return;
         if (!animationsEnabled_) { StartFilmstripHold(); return; }
         filmstripRevealStartOpacity_ = filmstripOpacity_;
         filmstripVisibilityState_ = FilmstripVisibilityState::Revealing;
@@ -5656,28 +5656,11 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void BeginFilmstripFadeSequence() {
-        if (filmstripOpacity_ <= 0.001f || filmstripVisibilityState_ == FilmstripVisibilityState::Revealing || alwaysShowFilmstrip_ || filmstripVisibilityFrozenForImagePan_) return;
+        if (filmstripOpacity_ <= 0.001f || filmstripVisibilityState_ == FilmstripVisibilityState::Revealing || alwaysShowFilmstrip_) return;
         filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
         filmstripHoldDurationMs_ = 2000;
         filmstripVisibilityStart_ = GetTickCount64();
         SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
-    }
-    void FreezeFilmstripVisibilityForImagePan() {
-        if (filmstripVisibilityFrozenForImagePan_) return;
-        filmstripVisibilityFrozenForImagePan_ = true;
-        if (!alwaysShowFilmstrip_) {
-            if (filmstripOpacity_ <= 0.001f) filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
-            filmstripVisibilityFrozenAtMs_ = GetTickCount64();
-            StopFilmstripVisibilityTimer();
-        }
-    }
-    void ResumeFilmstripVisibilityAfterImagePan() {
-        if (!filmstripVisibilityFrozenForImagePan_) return;
-        filmstripVisibilityFrozenForImagePan_ = false;
-        if (!alwaysShowFilmstrip_ && FilmstripEligible() && !filmstripAdjustmentSuppressed_ && filmstripVisibilityState_ != FilmstripVisibilityState::Hidden) {
-            filmstripVisibilityStart_ += GetTickCount64() - filmstripVisibilityFrozenAtMs_;
-            SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
-        }
     }
     bool FilmstripHoverSuppressedForImagePan() const {
         return dragging_ && source_ && !VideoActive() && !AnimatedGifActive() && !ModelActive();
@@ -5685,7 +5668,7 @@ public:
     void SuppressFilmstripHoverForImagePan() {
         if (filmstripHoverSuppressedForImagePan_) return;
         filmstripHoverSuppressedForImagePan_ = true;
-        FreezeFilmstripVisibilityForImagePan();
+        const bool wasHeld = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
         ++filmstripHoverPreviewGeneration_;
         videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
         CancelFilmstripVideoHoverFade();
@@ -5697,6 +5680,7 @@ public:
         filmstripRevealHovered_ = false;
         filmstripHintHovered_ = false;
         if (filmstripPreviewIndex_ >= 0) StartFilmstripHoverPreviewFadeOut();
+        if (wasHeld) BeginFilmstripFadeSequence();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void SetFilmstripPointerState(POINT point) {
@@ -5715,7 +5699,6 @@ public:
         else if (wasHeld) BeginFilmstripFadeSequence();
     }
     void UpdateFilmstripVisibility() {
-        if (filmstripVisibilityFrozenForImagePan_) return;
         if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) { CancelFilmstripVideoHoverFade(); HideFilmstripHoverPreviewImmediately(); filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); return; }
         if (alwaysShowFilmstrip_) { filmstripOpacity_ = 1.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Holding; StopFilmstripVisibilityTimer(); return; }
         const bool held = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
@@ -6777,7 +6760,6 @@ public:
         if (!dragging_) return;
         dragging_ = false;
         filmstripHoverSuppressedForImagePan_ = false;
-        ResumeFilmstripVisibilityAfterImagePan();
         if (GetCapture() == window_) ReleaseCapture();
     }
 
@@ -12438,8 +12420,6 @@ private:
     bool filmstripRevealHovered_ = false;
     bool filmstripHintHovered_ = false;
     bool filmstripHoverSuppressedForImagePan_ = false;
-    bool filmstripVisibilityFrozenForImagePan_ = false;
-    ULONGLONG filmstripVisibilityFrozenAtMs_ = 0;
     uint64_t filmstripThumbnailGenerationSeed_ = 0;
     std::vector<uint64_t> filmstripThumbnailGenerations_;
     std::vector<FilmstripThumbnailEntry> filmstripThumbnails_;

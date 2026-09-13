@@ -10512,16 +10512,16 @@ private:
         if (!brush) return;
         const float centerX = (bounds.left + bounds.right) * 0.5f;
         const float centerY = (bounds.top + bounds.bottom) * 0.5f;
-        const float ringRadius = 10.0f * scale;
-        const float arrowStroke = 2.1f * scale;
+        const float ringRadius = 7.5f * scale;
+        const float arrowStroke = 1.5f * scale;
         const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
 
         ComPtr<ID2D1PathGeometry> triangle, arrow;
         ComPtr<ID2D1GeometrySink> sink;
         if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&triangle)) && SUCCEEDED(triangle->Open(&sink))) {
-            const float triangleLeft = centerX - 3.2f * scale;
-            const float triangleTip = centerX + 5.4f * scale;
-            const float triangleHalfHeight = 4.4f * scale;
+            const float triangleLeft = centerX - 2.4f * scale;
+            const float triangleTip = centerX + 3.6f * scale;
+            const float triangleHalfHeight = 4.0f * scale;
             sink->BeginFigure(point(triangleLeft, centerY - triangleHalfHeight), D2D1_FIGURE_BEGIN_FILLED);
             sink->AddLine(point(triangleLeft, centerY + triangleHalfHeight));
             sink->AddLine(point(triangleTip, centerY));
@@ -10530,17 +10530,38 @@ private:
         }
         sink.Reset();
         if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&arrow)) && SUCCEEDED(arrow->Open(&sink))) {
-            // A 270-degree circular arc leaves one clean upper-right gap for the arrowhead.
-            const D2D1_POINT_2F arcStart = point(centerX, centerY - ringRadius);
-            const D2D1_POINT_2F arrowTip = point(centerX + ringRadius, centerY);
-            sink->BeginFigure(arcStart, D2D1_FIGURE_BEGIN_HOLLOW);
-            sink->AddArc(D2D1::ArcSegment(arrowTip, D2D1::SizeF(ringRadius, ringRadius), 0.0f,
-                D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+            constexpr float kPi = 3.14159265358979323846f;
+            constexpr int kArcSegments = 18;
+            // A 270-degree clockwise arc leaves a right-side opening for a tangent arrowhead.
+            const float startAngle = 45.0f * kPi / 180.0f;
+            const float sweep = 270.0f * kPi / 180.0f;
+            const auto ringPoint = [&](float angle) {
+                return point(centerX + std::cos(angle) * ringRadius, centerY + std::sin(angle) * ringRadius);
+            };
+            sink->BeginFigure(ringPoint(startAngle), D2D1_FIGURE_BEGIN_HOLLOW);
+            for (int segment = 1; segment <= kArcSegments; ++segment)
+                sink->AddLine(ringPoint(startAngle + sweep * static_cast<float>(segment) / static_cast<float>(kArcSegments)));
             sink->EndFigure(D2D1_FIGURE_END_OPEN);
             if (SUCCEEDED(sink->Close())) {
                 renderTarget_->DrawGeometry(arrow.Get(), brush, arrowStroke);
-                renderTarget_->DrawLine(arrowTip, point(arrowTip.x - 5.0f * scale, arrowTip.y - 1.9f * scale), brush, arrowStroke);
-                renderTarget_->DrawLine(arrowTip, point(arrowTip.x - 1.9f * scale, arrowTip.y - 5.0f * scale), brush, arrowStroke);
+                const float endAngle = startAngle + sweep;
+                const D2D1_POINT_2F arcEnd = ringPoint(endAngle);
+                const D2D1_POINT_2F tangent = point(-std::sin(endAngle), std::cos(endAngle));
+                const D2D1_POINT_2F outward = point(std::cos(endAngle), std::sin(endAngle));
+                const D2D1_POINT_2F arrowTip = point(arcEnd.x + tangent.x * 2.4f * scale, arcEnd.y + tangent.y * 2.4f * scale);
+                const D2D1_POINT_2F arrowBaseOuter = point(arcEnd.x - tangent.x * 0.8f * scale + outward.x * 2.6f * scale,
+                    arcEnd.y - tangent.y * 0.8f * scale + outward.y * 2.6f * scale);
+                const D2D1_POINT_2F arrowBaseInner = point(arcEnd.x - tangent.x * 0.8f * scale + outward.x * 0.8f * scale,
+                    arcEnd.y - tangent.y * 0.8f * scale + outward.y * 0.8f * scale);
+                ComPtr<ID2D1PathGeometry> arrowhead;
+                ComPtr<ID2D1GeometrySink> arrowheadSink;
+                if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&arrowhead)) && SUCCEEDED(arrowhead->Open(&arrowheadSink))) {
+                    arrowheadSink->BeginFigure(arrowTip, D2D1_FIGURE_BEGIN_FILLED);
+                    arrowheadSink->AddLine(arrowBaseOuter);
+                    arrowheadSink->AddLine(arrowBaseInner);
+                    arrowheadSink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                    if (SUCCEEDED(arrowheadSink->Close())) renderTarget_->FillGeometry(arrowhead.Get(), brush);
+                }
             }
         }
     }

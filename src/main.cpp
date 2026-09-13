@@ -4305,6 +4305,7 @@ public:
                     videoPausedSeekRefreshPending_ = false;
                 DrawVideoPresentation();
                 DrawVideoAutoPlayNextCountdown();
+                DrawVideoAutoPlayNextCountdownHelper();
                 DrawCanvasNavigationButtons();
                 const bool deferIncomingVideoControls = TransitionOverlayActive() || transitionOverlayDefersVideoControls_;
                 if (!TransitionOverlayActive() || !transitionOverlayHasVideoControls_) {
@@ -10302,14 +10303,36 @@ private:
         const int remaining = std::max(1, 5 - static_cast<int>(elapsed / 1000));
         const RECT canvas = ModelCanvasBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const float size = 42.0f * scale;
-        const float left = (canvas.left + canvas.right - size) * 0.5f;
-        const float top = (canvas.top + canvas.bottom - size) * 0.5f;
+        const float numberHeight = std::min(176.0f * scale, std::max(72.0f * scale, static_cast<float>(canvas.bottom - canvas.top) * 0.27f));
+        const float labelHeight = 22.0f * scale;
+        const float spacing = 4.0f * scale;
+        const float width = std::max(150.0f * scale, numberHeight * 0.95f);
+        const float height = labelHeight + spacing + numberHeight;
+        const float left = (canvas.left + canvas.right - width) * 0.5f;
+        const float top = (canvas.top + canvas.bottom - height) * 0.5f;
         ComPtr<ID2D1SolidColorBrush> backing, text;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, .42f), &backing)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, .90f), &text))) return;
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, top, left + size, top + size), 8.0f * scale, 8.0f * scale), backing.Get());
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, .30f), &backing)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, .94f), &text))) return;
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 12.0f * scale, 12.0f * scale), backing.Get());
         const std::wstring label = std::to_wstring(remaining);
-        DrawOverlayText(label.c_str(), left, top, size, size, 20.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        DrawOverlayText(L"auto-play enabled", left, top, width, labelHeight, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        DrawOverlayText(label.c_str(), left, top + labelHeight + spacing, width, numberHeight, 152.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+    }
+    void DrawVideoAutoPlayNextCountdownHelper() {
+        if (!videoAutoPlayNextCountdownActive_) return;
+        const VideoControlsLayout controls = GetVideoControlsLayout();
+        const RECT canvas = ModelCanvasBounds();
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const float width = 190.0f * scale;
+        const float height = 24.0f * scale;
+        const float gap = 10.0f * scale;
+        const float left = std::clamp((controls.island.left + controls.island.right - width) * 0.5f,
+            static_cast<float>(canvas.left) + 8.0f * scale, static_cast<float>(canvas.right) - 8.0f * scale - width);
+        const float top = std::max(static_cast<float>(canvas.top) + 8.0f * scale, static_cast<float>(controls.island.top) - gap - height);
+        ComPtr<ID2D1SolidColorBrush> backing, text;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, .42f), &backing)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, .86f), &text))) return;
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 6.0f * scale, 6.0f * scale), backing.Get());
+        DrawOverlayText(L"press Space to cancel auto-play", left, top, width, height, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
     }
     void DrawGifPlaybackControls() {
         if (!AnimatedGifActive()) return;
@@ -10368,10 +10391,11 @@ private:
         const float opacity = overlayOpacity >= 0.0f ? overlayOpacity : videoControlsOpacity_;
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
-        ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover, muted;
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, autoPlayIcon, accent, track, hover, muted;
         if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, opacity), &surface)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, opacity), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, opacity), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, (videoAutoPlayNext_ ? 0.94f : 0.42f) * opacity), &autoPlayIcon)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, opacity), &accent)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * opacity), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, opacity), &hover)) ||
@@ -10480,7 +10504,7 @@ private:
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoMute) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.mute), 5.0f * scale, 5.0f * scale), hover.Get());
-        if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext || videoAutoPlayNext_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.autoPlayNext), 5.0f * scale, 5.0f * scale), hover.Get());
+        if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.autoPlayNext), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoPlaybackSpeed || videoPlaybackSpeedPanelOpen_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playbackSpeed), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoFullscreen) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.fullscreen), 5.0f * scale, 5.0f * scale), hover.Get());
 
@@ -10508,20 +10532,30 @@ private:
         DrawOverlayText(L"+1", static_cast<float>(layout.stepForward.left), static_cast<float>(layout.stepForward.top), static_cast<float>(layout.stepForward.right - layout.stepForward.left), static_cast<float>(layout.stepForward.bottom - layout.stepForward.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         const float autoPlayCenterX = (layout.autoPlayNext.left + layout.autoPlayNext.right) * 0.5f;
         const float autoPlayCenterY = (layout.autoPlayNext.top + layout.autoPlayNext.bottom) * 0.5f;
-        ComPtr<ID2D1PathGeometry> autoPlayTriangle;
+        ComPtr<ID2D1PathGeometry> autoPlayTriangle, autoPlayArrow;
         ComPtr<ID2D1GeometrySink> autoPlaySink;
         if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&autoPlayTriangle)) && SUCCEEDED(autoPlayTriangle->Open(&autoPlaySink))) {
-            const float triangleLeft = autoPlayCenterX - 6.0f * scale;
-            const float triangleTip = autoPlayCenterX + 2.0f * scale;
-            const float triangleHalfHeight = 5.0f * scale;
+            const float triangleLeft = autoPlayCenterX - 4.5f * scale;
+            const float triangleTip = autoPlayCenterX + 4.5f * scale;
+            const float triangleHalfHeight = 5.5f * scale;
             autoPlaySink->BeginFigure(D2D1::Point2F(triangleLeft, autoPlayCenterY - triangleHalfHeight), D2D1_FIGURE_BEGIN_FILLED);
             autoPlaySink->AddLine(D2D1::Point2F(triangleLeft, autoPlayCenterY + triangleHalfHeight));
             autoPlaySink->AddLine(D2D1::Point2F(triangleTip, autoPlayCenterY));
             autoPlaySink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            if (SUCCEEDED(autoPlaySink->Close())) renderTarget_->FillGeometry(autoPlayTriangle.Get(), autoPlayIcon.Get());
+        }
+        autoPlaySink.Reset();
+        if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&autoPlayArrow)) && SUCCEEDED(autoPlayArrow->Open(&autoPlaySink))) {
+            const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
+            const float radius = 9.0f * scale;
+            const D2D1_POINT_2F arrowTip = point(autoPlayCenterX - 7.5f * scale, autoPlayCenterY + 5.0f * scale);
+            autoPlaySink->BeginFigure(point(autoPlayCenterX + 4.5f * scale, autoPlayCenterY - 7.5f * scale), D2D1_FIGURE_BEGIN_HOLLOW);
+            autoPlaySink->AddArc(D2D1::ArcSegment(arrowTip, D2D1::SizeF(radius, radius), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+            autoPlaySink->EndFigure(D2D1_FIGURE_END_OPEN);
             if (SUCCEEDED(autoPlaySink->Close())) {
-                renderTarget_->FillGeometry(autoPlayTriangle.Get(), text.Get());
-                const float barLeft = triangleTip + 2.5f * scale;
-                renderTarget_->DrawLine(D2D1::Point2F(barLeft, autoPlayCenterY - 5.5f * scale), D2D1::Point2F(barLeft, autoPlayCenterY + 5.5f * scale), text.Get(), 1.75f * scale);
+                renderTarget_->DrawGeometry(autoPlayArrow.Get(), autoPlayIcon.Get(), 1.5f * scale);
+                renderTarget_->DrawLine(arrowTip, point(arrowTip.x + 5.0f * scale, arrowTip.y - 0.5f * scale), autoPlayIcon.Get(), 1.5f * scale);
+                renderTarget_->DrawLine(arrowTip, point(arrowTip.x + 1.0f * scale, arrowTip.y - 4.5f * scale), autoPlayIcon.Get(), 1.5f * scale);
             }
         }
         if (videoControlsHovered_ == ButtonKind::VideoAutoPlayNext) {

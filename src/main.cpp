@@ -10428,17 +10428,23 @@ private:
         const RECT canvas = ModelCanvasBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float numberHeight = std::min(176.0f * scale, std::max(72.0f * scale, static_cast<float>(canvas.bottom - canvas.top) * 0.27f));
-        const float labelHeight = 22.0f * scale;
-        const float spacing = 4.0f * scale;
+        const float labelHeight = 34.0f * scale;
+        const float spacing = 6.0f * scale;
         const float width = std::max(150.0f * scale, numberHeight * 0.95f);
         const float height = labelHeight + spacing + numberHeight;
         const float left = (canvas.left + canvas.right - width) * 0.5f;
         const float top = (canvas.top + canvas.bottom - height) * 0.5f;
-        ComPtr<ID2D1SolidColorBrush> backing, text;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, .30f), &backing)) || FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, .94f), &text))) return;
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 12.0f * scale, 12.0f * scale), backing.Get());
+        const bool dark = UseDarkAppMode();
+        const float surfaceOpacity = videoControlsOpacity_;
+        ComPtr<ID2D1SolidColorBrush> surface, border, text;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, surfaceOpacity), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, surfaceOpacity), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 0.94f * surfaceOpacity), &text))) return;
+        const D2D1_ROUNDED_RECT bounds = D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 11.0f * scale, 11.0f * scale);
+        renderTarget_->FillRoundedRectangle(bounds, surface.Get());
+        renderTarget_->DrawRoundedRectangle(bounds, border.Get(), scale);
         const std::wstring label = std::to_wstring(remaining);
-        DrawOverlayText(L"auto-play enabled", left, top, width, labelHeight, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
+        DrawOverlayText(L"auto-play enabled", left, top, width, labelHeight, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
         DrawOverlayText(label.c_str(), left, top + labelHeight + spacing, width, numberHeight, 152.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true, false, true);
     }
     void DrawVideoAutoPlayNextCountdownHelper() {
@@ -10452,10 +10458,15 @@ private:
         const float left = std::clamp((controls.island.left + controls.island.right - width) * 0.5f,
             static_cast<float>(canvas.left) + 8.0f * scale, static_cast<float>(canvas.right) - 8.0f * scale - width);
         const float top = std::max(static_cast<float>(canvas.top) + 8.0f * scale, static_cast<float>(controls.island.top) - gap - height);
-        ComPtr<ID2D1SolidColorBrush> backing, text;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, .42f), &backing)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, .86f), &text))) return;
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 6.0f * scale, 6.0f * scale), backing.Get());
+        const bool dark = UseDarkAppMode();
+        const float surfaceOpacity = videoControlsOpacity_;
+        ComPtr<ID2D1SolidColorBrush> surface, border, text;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, surfaceOpacity), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, surfaceOpacity), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 0.92f * surfaceOpacity), &text))) return;
+        const D2D1_ROUNDED_RECT bounds = D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 11.0f * scale, 11.0f * scale);
+        renderTarget_->FillRoundedRectangle(bounds, surface.Get());
+        renderTarget_->DrawRoundedRectangle(bounds, border.Get(), scale);
         DrawOverlayText(L"press Space to cancel auto-play", left, top, width, height, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
     }
     void DrawGifPlaybackControls() {
@@ -10548,11 +10559,11 @@ private:
                 const D2D1_POINT_2F arcEnd = ringPoint(endAngle);
                 const D2D1_POINT_2F tangent = point(-std::sin(endAngle), std::cos(endAngle));
                 const D2D1_POINT_2F outward = point(std::cos(endAngle), std::sin(endAngle));
-                const D2D1_POINT_2F arrowTip = point(arcEnd.x + tangent.x * 2.4f * scale, arcEnd.y + tangent.y * 2.4f * scale);
-                const D2D1_POINT_2F arrowBaseOuter = point(arcEnd.x - tangent.x * 0.8f * scale + outward.x * 2.6f * scale,
-                    arcEnd.y - tangent.y * 0.8f * scale + outward.y * 2.6f * scale);
-                const D2D1_POINT_2F arrowBaseInner = point(arcEnd.x - tangent.x * 0.8f * scale + outward.x * 0.8f * scale,
-                    arcEnd.y - tangent.y * 0.8f * scale + outward.y * 0.8f * scale);
+                const D2D1_POINT_2F arrowTip = point(arcEnd.x + tangent.x * 3.0f * scale, arcEnd.y + tangent.y * 3.0f * scale);
+                const D2D1_POINT_2F arrowBaseOuter = point(arcEnd.x - tangent.x * 1.2f * scale + outward.x * 3.0f * scale,
+                    arcEnd.y - tangent.y * 1.2f * scale + outward.y * 3.0f * scale);
+                const D2D1_POINT_2F arrowBaseInner = point(arcEnd.x - tangent.x * 1.2f * scale + outward.x * 1.1f * scale,
+                    arcEnd.y - tangent.y * 1.2f * scale + outward.y * 1.1f * scale);
                 ComPtr<ID2D1PathGeometry> arrowhead;
                 ComPtr<ID2D1GeometrySink> arrowheadSink;
                 if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&arrowhead)) && SUCCEEDED(arrowhead->Open(&arrowheadSink))) {
@@ -10572,11 +10583,14 @@ private:
         const float opacity = overlayOpacity >= 0.0f ? overlayOpacity : videoControlsOpacity_;
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
+        const D2D1_COLOR_F autoPlayGlyphColor = videoAutoPlayNext_
+            ? D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, opacity)
+            : D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 0.42f * opacity);
         ComPtr<ID2D1SolidColorBrush> surface, border, text, autoPlayIcon, accent, track, hover, speedHover, muted;
         if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, opacity), &surface)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, opacity), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, opacity), &text)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, (videoAutoPlayNext_ ? 0.94f : 0.42f) * opacity), &autoPlayIcon)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(autoPlayGlyphColor, &autoPlayIcon)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, opacity), &accent)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * opacity), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, opacity), &hover)) ||

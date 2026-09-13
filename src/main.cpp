@@ -10664,9 +10664,10 @@ private:
         ComPtr<ID2D1PathGeometry> autoPlayTriangle, autoPlayArrow;
         ComPtr<ID2D1GeometrySink> autoPlaySink;
         if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&autoPlayTriangle)) && SUCCEEDED(autoPlayTriangle->Open(&autoPlaySink))) {
-            const float triangleLeft = autoPlayCenterX - 4.2f * scale;
-            const float triangleTip = autoPlayCenterX + 5.0f * scale;
-            const float triangleHalfHeight = 6.0f * scale;
+            // Keep the play mark optically centered inside the circular arrow with an even, visible gap.
+            const float triangleLeft = autoPlayCenterX - 3.6f * scale;
+            const float triangleTip = autoPlayCenterX + 3.8f * scale;
+            const float triangleHalfHeight = 4.6f * scale;
             autoPlaySink->BeginFigure(D2D1::Point2F(triangleLeft, autoPlayCenterY - triangleHalfHeight), D2D1_FIGURE_BEGIN_FILLED);
             autoPlaySink->AddLine(D2D1::Point2F(triangleLeft, autoPlayCenterY + triangleHalfHeight));
             autoPlaySink->AddLine(D2D1::Point2F(triangleTip, autoPlayCenterY));

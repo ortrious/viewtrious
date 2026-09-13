@@ -907,12 +907,14 @@ bool LoadPlacement(SavedPlacement& placement) {
 }
 
 void MakePlacementVisible(RECT& rect) {
-    if (MonitorFromRect(&rect, MONITOR_DEFAULTTONULL)) return;
     MONITORINFO monitor{ sizeof(monitor) };
     GetMonitorInfoW(MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST), &monitor);
     const RECT work = monitor.rcWork;
-    const LONG width = std::min(rect.right - rect.left, work.right - work.left);
-    const LONG height = std::min(rect.bottom - rect.top, work.bottom - work.top);
+    const UINT dpi = GetDpiForSystem();
+    const LONG minimumWidth = MulDiv(800, dpi, 96);
+    const LONG minimumHeight = MulDiv(600, dpi, 96);
+    const LONG width = std::min(std::max(minimumWidth, rect.right - rect.left), work.right - work.left);
+    const LONG height = std::min(std::max(minimumHeight, rect.bottom - rect.top), work.bottom - work.top);
     rect.left = std::clamp(rect.left, work.left, work.right - width);
     rect.top = std::clamp(rect.top, work.top, work.bottom - height);
     rect.right = rect.left + width;
@@ -4368,7 +4370,7 @@ public:
     }
 
     SIZE SuggestedClientSize() const {
-        if (!source_) return { 800, 600 };
+        if (!source_) return { 1200, 900 };
         constexpr double maxWidth = 1280.0;
         constexpr double maxHeight = 900.0;
         const double scale = std::min({ 1.0, maxWidth / imageWidth_, maxHeight / imageHeight_ });
@@ -4476,7 +4478,7 @@ public:
     bool FilmstripEligible() const {
         return source_ && navigationBuilt_ && navigationFiles_.size() > 1 && !HasOverlay() && !TutorialActive() && !tutorialPresentation_;
     }
-    bool FilmstripVisible() const { const RECT bounds = GetFilmstripBounds(); return FilmstripEligible() && filmstripOpacity_ > 0.001f && bounds.right > bounds.left; }
+    bool FilmstripVisible() const { const RECT bounds = GetFilmstripBounds(); return FilmstripEligible() && !filmstripAdjustmentSuppressed_ && filmstripOpacity_ > 0.001f && bounds.right > bounds.left; }
     int FilmstripHeight() const {
         if (!FilmstripEligible()) return 0;
         RECT client{};
@@ -4492,6 +4494,9 @@ public:
     int FilmstripThumbnailMaximumWidth() const { return static_cast<int>(std::lround(FilmstripThumbnailHeight() * 16.0f / 9.0f)); }
     int FilmstripGap() const { return MulDiv(22, GetDpiForWindow(window_), 96); }
     int FilmstripPadding() const { return MulDiv(14, GetDpiForWindow(window_), 96); }
+    LONG FilmstripMinimumUsableWidth() const {
+        return static_cast<LONG>(FilmstripPadding() * 2 + FilmstripThumbnailMinimumWidth() * 2 + FilmstripGap());
+    }
     int FindFilmstripThumbnail(const std::wstring& path, uint64_t itemGeneration) const {
         const auto found = std::find_if(filmstripThumbnails_.begin(), filmstripThumbnails_.end(), [&](const FilmstripThumbnailEntry& entry) {
             return entry.itemGeneration == itemGeneration && PathsEqual(fs::path(entry.path), fs::path(path));
@@ -4529,17 +4534,26 @@ public:
         const int bottomMargin = MulDiv(16, dpi, 96);
         return { left, client.bottom - bottomMargin - height, left + width, client.bottom - bottomMargin };
     }
+    bool ShouldSuppressFilmstripForAdjustments(const RECT& normal) const {
+        if (normal.right <= normal.left || !imageAdjustmentsPanelOpen_) return false;
+        const RECT adjustmentPanel = GetImageAdjustmentsPanelLayout().panel;
+        if (adjustmentPanel.bottom <= normal.top || adjustmentPanel.top >= normal.bottom) return false;
+        const int dpi = GetDpiForWindow(window_);
+        const LONG clearance = MulDiv(14, dpi, 96);
+        const LONG reservedRight = adjustmentPanel.left - clearance;
+        if (reservedRight >= normal.right) return false;
+        const LONG availableWidth = reservedRight - normal.left;
+        return availableWidth < FilmstripMinimumUsableWidth();
+    }
     LONG GetFilmstripAdjustmentAvoidanceTargetRight(const RECT& normal) const {
-        if (normal.right <= normal.left || !imageAdjustmentsPanelOpen_) return normal.right;
+        if (normal.right <= normal.left || !imageAdjustmentsPanelOpen_ || ShouldSuppressFilmstripForAdjustments(normal)) return normal.right;
         const RECT adjustmentPanel = GetImageAdjustmentsPanelLayout().panel;
         if (adjustmentPanel.bottom <= normal.top || adjustmentPanel.top >= normal.bottom) return normal.right;
         const int dpi = GetDpiForWindow(window_);
-        const LONG minimumWidth = MulDiv(180, dpi, 96);
         const LONG clearance = MulDiv(14, dpi, 96);
         const LONG reservedRight = adjustmentPanel.left - clearance;
         if (reservedRight >= normal.right) return normal.right;
-        const LONG availableWidth = reservedRight - normal.left;
-        return availableWidth >= minimumWidth ? reservedRight : std::max<LONG>(normal.left, reservedRight);
+        return reservedRight;
     }
     void AdvanceFilmstripAdjustmentAvoidanceMotion() {
         if (!filmstripAdjustmentAvoidanceAnimating_) return;
@@ -4558,6 +4572,20 @@ public:
         AdvanceFilmstripAdjustmentAvoidanceMotion();
         const RECT normal = GetFilmstripNormalBounds();
         if (normal.right <= normal.left) return;
+        const bool suppressed = ShouldSuppressFilmstripForAdjustments(normal);
+        if (suppressed != filmstripAdjustmentSuppressed_) {
+            filmstripAdjustmentSuppressed_ = suppressed;
+            SetFilmstripPointerState({ -1, -1 });
+            SetFilmstripHover({ -1, -1 });
+            if (suppressed || !alwaysShowFilmstrip_) {
+                filmstripOpacity_ = 0.0f;
+                filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
+                StopFilmstripVisibilityTimer();
+            } else {
+                StartFilmstripHold(UINT_MAX);
+            }
+            InvalidateRect(window_, nullptr, FALSE);
+        }
         const LONG target = GetFilmstripAdjustmentAvoidanceTargetRight(normal);
         if (!filmstripAdjustmentAvoidanceInitialized_) {
             filmstripAdjustmentAvoidanceInitialized_ = true;
@@ -5550,7 +5578,7 @@ public:
         const RECT next = GetCanvasNavigationZoneBounds(true);
         return { previous.right, top, next.left, client.bottom };
     }
-    bool FilmstripRevealContains(POINT point) const { const RECT bounds = GetFilmstripRevealBounds(); return FilmstripEligible() && PtInRect(&bounds, point); }
+    bool FilmstripRevealContains(POINT point) const { const RECT bounds = GetFilmstripRevealBounds(); return FilmstripEligible() && !filmstripAdjustmentSuppressed_ && PtInRect(&bounds, point); }
     bool BeginFilmstripInteraction(POINT point) {
         if (!FilmstripContains(point)) return false;
         filmstripDragCandidate_ = true;
@@ -5600,7 +5628,7 @@ public:
     bool FilmstripInteractionActive() const { return filmstripDragCandidate_; }
     void StopFilmstripVisibilityTimer() { KillTimer(window_, kFilmstripVisibilityTimer); }
     void StartFilmstripHold(UINT holdDurationMs = 2000) {
-        if (!FilmstripEligible()) return;
+        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) return;
         filmstripOpacity_ = 1.0f;
         filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
         filmstripHoldDurationMs_ = holdDurationMs;
@@ -5610,7 +5638,7 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void StartFilmstripReveal() {
-        if (!FilmstripEligible()) return;
+        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) return;
         if (!animationsEnabled_) { StartFilmstripHold(); return; }
         filmstripRevealStartOpacity_ = filmstripOpacity_;
         filmstripVisibilityState_ = FilmstripVisibilityState::Revealing;
@@ -5625,7 +5653,31 @@ public:
         filmstripVisibilityStart_ = GetTickCount64();
         SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
     }
+    bool FilmstripHoverSuppressedForImagePan() const {
+        return dragging_ && source_ && !VideoActive() && !AnimatedGifActive() && !ModelActive();
+    }
+    void SuppressFilmstripHoverForImagePan() {
+        if (filmstripHoverSuppressedForImagePan_) return;
+        filmstripHoverSuppressedForImagePan_ = true;
+        ++filmstripHoverPreviewGeneration_;
+        videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
+        CancelFilmstripVideoHoverFade();
+        KillTimer(window_, kFilmstripHoverPreviewTimer);
+        KillTimer(window_, kFilmstripHoverPreviewDwellTimer);
+        CancelQueuedFilmstripHoverPreviews();
+        filmstripHoveredIndex_ = -1;
+        filmstripPanelHovered_ = false;
+        filmstripRevealHovered_ = false;
+        filmstripHintHovered_ = false;
+        if (filmstripPreviewIndex_ >= 0) StartFilmstripHoverPreviewFadeOut();
+        if (!alwaysShowFilmstrip_) BeginFilmstripFadeSequence();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void SetFilmstripPointerState(POINT point) {
+        if (FilmstripHoverSuppressedForImagePan()) {
+            SuppressFilmstripHoverForImagePan();
+            return;
+        }
         const bool panel = FilmstripContains(point);
         const bool reveal = !dragging_ && FilmstripRevealContains(point);
         const bool hint = false;
@@ -5637,7 +5689,7 @@ public:
         else if (wasHeld) BeginFilmstripFadeSequence();
     }
     void UpdateFilmstripVisibility() {
-        if (!FilmstripEligible()) { CancelFilmstripVideoHoverFade(); HideFilmstripHoverPreviewImmediately(); filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); return; }
+        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) { CancelFilmstripVideoHoverFade(); HideFilmstripHoverPreviewImmediately(); filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); return; }
         if (alwaysShowFilmstrip_) { filmstripOpacity_ = 1.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Holding; StopFilmstripVisibilityTimer(); return; }
         const bool held = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
         const ULONGLONG elapsed = GetTickCount64() - filmstripVisibilityStart_;
@@ -5690,6 +5742,10 @@ public:
         filmstripPreviewGeometryValid_ = false;
     }
     void SetFilmstripHover(POINT point) {
+        if (FilmstripHoverSuppressedForImagePan()) {
+            SuppressFilmstripHoverForImagePan();
+            return;
+        }
         const int index = FilmstripItemAt(point);
         if (filmstripHoveredIndex_ == index) return;
 #ifdef _DEBUG
@@ -5720,7 +5776,7 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool FilmstripHoverPreviewEligible(int index) const {
-        return index >= 0 && index < static_cast<int>(navigationFiles_.size()) && !currentPath_.empty() &&
+        return !filmstripAdjustmentSuppressed_ && !FilmstripHoverSuppressedForImagePan() && index >= 0 && index < static_cast<int>(navigationFiles_.size()) && !currentPath_.empty() &&
             !PathsEqual(navigationFiles_[static_cast<size_t>(index)], fs::path(currentPath_));
     }
     void SuppressFilmstripHoverPreviewForCurrentMedia() {
@@ -6281,6 +6337,7 @@ public:
         if (!source_) return;
         dragging_ = true;
         lastDragPoint_ = point;
+        SuppressFilmstripHoverForImagePan();
         SetCapture(window_);
     }
     void SetVideoVolume(double volume, bool persist = true) {
@@ -6678,6 +6735,7 @@ public:
     void EndPan() {
         if (!dragging_) return;
         dragging_ = false;
+        filmstripHoverSuppressedForImagePan_ = false;
         if (GetCapture() == window_) ReleaseCapture();
     }
 
@@ -6850,8 +6908,8 @@ public:
         const LONG workWidth = monitor.rcWork.right - monitor.rcWork.left;
         const LONG workHeight = monitor.rcWork.bottom - monitor.rcWork.top;
         videoWindowSizedForNativePresentation_ = requestedWidth <= workWidth && requestedHeight <= workHeight;
-        const LONG targetWidth = std::min(workWidth, static_cast<LONG>(std::clamp<LONGLONG>(requestedWidth, MulDiv(640, GetDpiForWindow(window_), 96), LONG_MAX)));
-        const LONG targetHeight = std::min(workHeight, static_cast<LONG>(std::clamp<LONGLONG>(requestedHeight, MulDiv(480, GetDpiForWindow(window_), 96), LONG_MAX)));
+        const LONG targetWidth = std::min(workWidth, static_cast<LONG>(std::clamp<LONGLONG>(requestedWidth, MulDiv(800, GetDpiForWindow(window_), 96), LONG_MAX)));
+        const LONG targetHeight = std::min(workHeight, static_cast<LONG>(std::clamp<LONGLONG>(requestedHeight, MulDiv(600, GetDpiForWindow(window_), 96), LONG_MAX)));
         const LONG currentWidth = outer.right - outer.left, currentHeight = outer.bottom - outer.top;
         if (targetWidth == currentWidth && targetHeight == currentHeight) return true;
 
@@ -12276,6 +12334,7 @@ private:
     std::vector<float> filmstripItemOffsets_;
     bool filmstripAdjustmentAvoidanceInitialized_ = false;
     bool filmstripAdjustmentAvoidanceAnimating_ = false;
+    bool filmstripAdjustmentSuppressed_ = false;
     float filmstripAdjustmentAvoidancePresentedRight_ = 0.0f;
     float filmstripAdjustmentAvoidanceStartRight_ = 0.0f;
     LONG filmstripAdjustmentAvoidanceTargetRight_ = 0;
@@ -12336,6 +12395,7 @@ private:
     bool filmstripPanelHovered_ = false;
     bool filmstripRevealHovered_ = false;
     bool filmstripHintHovered_ = false;
+    bool filmstripHoverSuppressedForImagePan_ = false;
     uint64_t filmstripThumbnailGenerationSeed_ = 0;
     std::vector<uint64_t> filmstripThumbnailGenerations_;
     std::vector<FilmstripThumbnailEntry> filmstripThumbnails_;
@@ -12564,8 +12624,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     if (message == WM_GETMINMAXINFO) {
         auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
         const UINT dpi = GetDpiForWindow(window);
-        info->ptMinTrackSize.x = MulDiv(640, dpi, 96);
-        info->ptMinTrackSize.y = MulDiv(480, dpi, 96);
+        info->ptMinTrackSize.x = MulDiv(800, dpi, 96);
+        info->ptMinTrackSize.y = MulDiv(600, dpi, 96);
         return 0;
     }
 
@@ -13212,7 +13272,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     windowClass.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassExW(&windowClass);
 
-    const SIZE client = RememberWindowPlacementEnabled() ? viewer.SuggestedClientSize() : SIZE{ 800, 600 };
+    const SIZE client = RememberWindowPlacementEnabled() ? viewer.SuggestedClientSize() : SIZE{ 1200, 900 };
     RECT bounds{ 0, 0, client.cx, client.cy };
     AdjustWindowRectEx(&bounds, WS_OVERLAPPEDWINDOW, FALSE, 0);
     SavedPlacement savedPlacement{};

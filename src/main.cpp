@@ -10451,8 +10451,10 @@ private:
         const VideoControlsLayout controls = GetVideoControlsLayout();
         const RECT canvas = ModelCanvasBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const float width = 190.0f * scale;
-        const float height = 24.0f * scale;
+        constexpr float textSize = 13.0f;
+        const float width = std::max(190.0f * scale,
+            OverlayTextWidth(L"press Space to cancel auto-play", textSize, DWRITE_FONT_WEIGHT_NORMAL) + 28.0f * scale);
+        const float height = 30.0f * scale;
         const float gap = 10.0f * scale;
         const float left = std::clamp((controls.island.left + controls.island.right - width) * 0.5f,
             static_cast<float>(canvas.left) + 8.0f * scale, static_cast<float>(canvas.right) - 8.0f * scale - width);
@@ -10466,7 +10468,7 @@ private:
         const D2D1_ROUNDED_RECT bounds = D2D1::RoundedRect(D2D1::RectF(left, top, left + width, top + height), 11.0f * scale, 11.0f * scale);
         renderTarget_->FillRoundedRectangle(bounds, surface.Get());
         renderTarget_->DrawRoundedRectangle(bounds, border.Get(), scale);
-        DrawOverlayText(L"press Space to cancel auto-play", left, top, width, height, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
+        DrawOverlayText(L"press Space to cancel auto-play", left, top, width, height, textSize, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
     }
     void DrawGifPlaybackControls() {
         if (!AnimatedGifActive()) return;
@@ -10558,15 +10560,14 @@ private:
                 const D2D1_POINT_2F arcEnd = ringPoint(endAngle);
                 const D2D1_POINT_2F tangent = point(-std::sin(endAngle), std::cos(endAngle));
                 const D2D1_POINT_2F outward = point(std::cos(endAngle), std::sin(endAngle));
-                // Double the visible arrowhead while retaining the tangent direction. The
-                // one-left/two-down DIP origin correction aligns its attachment optically
-                // with the terminal arc stroke at normal control-bar scale.
+                // Keep the previous compact head, shifted one DIP left and two DIP down
+                // to align it optically with the terminal arc stroke.
                 const D2D1_POINT_2F arrowheadOrigin = point(arcEnd.x - 1.0f * scale, arcEnd.y + 2.0f * scale);
-                const D2D1_POINT_2F arrowTip = point(arrowheadOrigin.x + tangent.x * 8.0f * scale, arrowheadOrigin.y + tangent.y * 8.0f * scale);
-                const D2D1_POINT_2F arrowBaseOuter = point(arrowheadOrigin.x - tangent.x * 3.2f * scale + outward.x * 8.0f * scale,
-                    arrowheadOrigin.y - tangent.y * 3.2f * scale + outward.y * 8.0f * scale);
-                const D2D1_POINT_2F arrowBaseInner = point(arrowheadOrigin.x - tangent.x * 3.2f * scale + outward.x * 1.0f * scale,
-                    arrowheadOrigin.y - tangent.y * 3.2f * scale + outward.y * 1.0f * scale);
+                const D2D1_POINT_2F arrowTip = point(arrowheadOrigin.x + tangent.x * 4.0f * scale, arrowheadOrigin.y + tangent.y * 4.0f * scale);
+                const D2D1_POINT_2F arrowBaseOuter = point(arrowheadOrigin.x - tangent.x * 1.6f * scale + outward.x * 4.0f * scale,
+                    arrowheadOrigin.y - tangent.y * 1.6f * scale + outward.y * 4.0f * scale);
+                const D2D1_POINT_2F arrowBaseInner = point(arrowheadOrigin.x - tangent.x * 1.6f * scale + outward.x * 0.5f * scale,
+                    arrowheadOrigin.y - tangent.y * 1.6f * scale + outward.y * 0.5f * scale);
                 ComPtr<ID2D1PathGeometry> arrowhead;
                 ComPtr<ID2D1GeometrySink> arrowheadSink;
                 if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&arrowhead)) && SUCCEEDED(arrowhead->Open(&arrowheadSink))) {

@@ -6750,6 +6750,7 @@ public:
         pan_.y += static_cast<float>(deltaY);
         lastDragPoint_ = point;
         ClampPan();
+        if (FilmstripHoverSuppressedForImagePan()) UpdateFilmstripVisibility();
         if (lanczosSelected_) {
             InvalidateLanczosVariant(true);
             QueueLanczosRefinement();
@@ -13022,9 +13023,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->SetComponentsPanelHover(point);
             return 0;
         }
-        viewer->SetFilmstripPointerState(point);
-        viewer->SetFilmstripHover(point);
-        if (viewer->ContinueFilmstripInteraction(point)) return 0;
+        if (!viewer->FilmstripHoverSuppressedForImagePan()) {
+            viewer->SetFilmstripPointerState(point);
+            viewer->SetFilmstripHover(point);
+            if (viewer->ContinueFilmstripInteraction(point)) return 0;
+        }
         if (viewer->ContinueGifControlsInteraction(point)) return 0;
         viewer->UpdateGifControlsMouse(point);
         viewer->SetButtonHover(viewer->ButtonAt(point));

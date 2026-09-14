@@ -101,6 +101,7 @@ constexpr UINT_PTR kVideoStepHoldTimer = 16;
 constexpr UINT_PTR kVideoAutoPlayNextCountdownTimer = 27;
 constexpr UINT_PTR kVideoFullscreenGlyphTimer = 28;
 constexpr UINT_PTR kVideoPlaybackSpeedHoverTimer = 29;
+constexpr UINT_PTR kLowerUiMorphTimer = 30;
 constexpr UINT_PTR kStillDissolveTimer = 17;
 constexpr UINT_PTR kStartupVideoSizingFallbackTimer = 23;
 constexpr UINT kVideoStepHoldThresholdMs = 250;
@@ -1268,6 +1269,7 @@ public:
         const wchar_t* mediaKind = IsModelPath(path) ? L"model" : IsVideoPath(path) ? L"video" : IsGifPath(path) ? L"gif" : L"image";
         activeOpenAttemptId_ = FileOpenDiagnostics::Begin(path, route, mediaKind);
         FileOpenDiagnostics::Log(activeOpenAttemptId_, L"load-content-dispatch");
+        BeginLowerUiNavigation(path, !resetNavigation);
         BeginAdjustmentPanelNavigation(path);
         CancelVideoAutoPlayNextCountdown();
         if (!currentPath_.empty() && !PathsEqual(fs::path(path), fs::path(currentPath_))) {
@@ -1328,6 +1330,7 @@ public:
             CommitImage(path, source, width, height, resetNavigation);
         } else {
             StopDirectoryWatcher();
+            CancelLowerUiMorph();
             source_.Reset();
             bitmap_.Reset();
             imageWidth_ = imageHeight_ = 0;
@@ -3027,6 +3030,8 @@ public:
     bool BeginVideoControlsInteraction(POINT point) {
         if (HeldAdjustmentPanelContains(point)) return true;
         if (!VideoActive()) return false;
+        if (lowerUiMorph_.active && !VideoAdjustmentsPanelContains(point) && !VideoPlaybackSpeedPanelContains(point) &&
+            (LowerUiMorphContains(point) || VideoControlsContains(point))) return true;
         if (!VideoControlsContains(point) && !VideoControlsRevealZoneContains(point) &&
             !VideoAdjustmentsPanelContains(point) && !VideoPlaybackSpeedPanelContains(point)) return false;
         ShowVideoControls();
@@ -4793,7 +4798,7 @@ public:
                 if (!TransitionOverlayActive() || !transitionOverlayHasVideoControls_) {
                     if (!deferIncomingVideoControls || videoPlayer_.HasValidFrame()) DrawVideoPlaybackControls(!TransitionOverlayActive());
                 }
-                if (!deferIncomingVideoControls || (!transitionOverlayHasVideoControls_ && videoPlayer_.HasValidFrame())) DrawVideoControlsRevealAffordance();
+                if (!lowerUiMorph_.active && (!deferIncomingVideoControls || (!transitionOverlayHasVideoControls_ && videoPlayer_.HasValidFrame()))) DrawVideoControlsRevealAffordance();
             }
             if (source_ && !tutorialPresentation_) {
                 EnsureBitmap();
@@ -4802,6 +4807,7 @@ public:
             else if (EmptyStatePresentationActive()) DrawEmptyState();
             if (!tutorialPresentation_) {
                 DrawTransitionOverlay();
+                DrawLowerUiMorph();
                 DrawAdjustmentOverlays();
             }
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); DrawComponentsPanel(); }
@@ -4852,6 +4858,9 @@ public:
         RebuildFilmstripLayout();
         SynchronizeFilmstripAdjustmentAvoidance();
         SynchronizeFilmstripHoverPreviewAvailability();
+        if (lowerUiMorph_.active && lowerUiMorph_.ready && !lowerUiMorph_.targetVideo)
+            CaptureLowerUiContents(false);
+        RetargetLowerUiGeometry();
         if (imageScaling_ != ImageScaling::Performance && source_) RefreshLanczosForImageViewChange();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -4971,8 +4980,8 @@ public:
         return client.right - client.left >= 1200 && client.bottom - client.top >= 900;
     }
     bool FilmstripVisible() const { const RECT bounds = GetFilmstripBounds(); return FilmstripEligible() && !filmstripAdjustmentSuppressed_ && filmstripOpacity_ > 0.001f && bounds.right > bounds.left; }
-    int FilmstripHeight() const {
-        if (!FilmstripEligible()) return 0;
+    int FilmstripHeight(bool prospective = false) const {
+        if (!prospective && !FilmstripEligible()) return 0;
         RECT client{};
         GetClientRect(window_, &client);
         const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
@@ -5009,18 +5018,28 @@ public:
         if (index < filmstripLayoutAspects_.size()) return filmstripLayoutAspects_[index];
         return index < navigationFiles_.size() && IsVideoPath(navigationFiles_[index].wstring()) ? 16.0f / 9.0f : 1.0f;
     }
-    RECT GetFilmstripNormalBounds() const {
+    RECT GetFilmstripNormalBounds(bool prospective = false) const {
         RECT client{};
         GetClientRect(window_, &client);
-        const int height = FilmstripHeight();
+        const int height = FilmstripHeight(prospective);
         if (!height) return {};
         const int dpi = GetDpiForWindow(window_);
         const int minimumWidth = MulDiv(180, dpi, 96);
         const int desiredMargin = MulDiv(150, dpi, 96);
         const int sideMargin = std::min(desiredMargin, std::max(MulDiv(16, dpi, 96), (static_cast<int>(client.right) - minimumWidth) / 2));
         const int maximumWidth = std::max(minimumWidth, static_cast<int>(client.right) - sideMargin * 2);
-        const float contentWidth = filmstripItemOffsets_.empty() ? static_cast<float>(minimumWidth) :
+        float contentWidth = filmstripItemOffsets_.empty() ? static_cast<float>(minimumWidth) :
             filmstripItemOffsets_.back() - static_cast<float>(FilmstripGap()) + static_cast<float>(FilmstripPadding());
+        if (prospective) {
+            // Same slot rules, evaluated without requiring an already-committed image.
+            const int thumbHeight = std::max(1, std::min(MulDiv(92, dpi, 96), height - MulDiv(20, dpi, 96)));
+            const float minimum = static_cast<float>(std::lround(thumbHeight * 2.0f / 3.0f));
+            const float maximum = static_cast<float>(std::lround(thumbHeight * 16.0f / 9.0f));
+            contentWidth = static_cast<float>(FilmstripPadding() * 2);
+            for (size_t index = 0; index < navigationFiles_.size() && contentWidth < maximumWidth + FilmstripGap(); ++index)
+                contentWidth += std::clamp(thumbHeight * FilmstripPlaceholderAspect(index), minimum, maximum) + FilmstripGap();
+            if (!navigationFiles_.empty()) contentWidth -= FilmstripGap();
+        }
         const int width = std::min(maximumWidth, std::max(minimumWidth, static_cast<int>(std::ceil(contentWidth))));
         const int left = (client.right - width) / 2;
         const int bottomMargin = MulDiv(16, dpi, 96);
@@ -5119,7 +5138,7 @@ public:
         const LONG right = std::clamp<LONG>(static_cast<LONG>(std::lround(filmstripAdjustmentAvoidancePresentedRight_)), normal.left, normal.right);
         return { normal.left, normal.top, right, normal.bottom };
     }
-    bool FilmstripContains(POINT point) const { const RECT bounds = GetFilmstripBounds(); return !FilmstripHoverSuppressedForImagePan() && FilmstripVisible() && PtInRect(&bounds, point); }
+    bool FilmstripContains(POINT point) const { const RECT bounds = GetFilmstripBounds(); return !lowerUiMorph_.active && !FilmstripHoverSuppressedForImagePan() && FilmstripVisible() && PtInRect(&bounds, point); }
     float FilmstripThumbnailWidth(size_t index) const { return filmstripItemWidths_[index]; }
     float FilmstripMaximumScroll() const {
         const RECT bounds = GetFilmstripBounds();
@@ -6086,7 +6105,7 @@ public:
         const RECT next = GetCanvasNavigationZoneBounds(true);
         return { previous.right, top, next.left, client.bottom };
     }
-    bool FilmstripRevealContains(POINT point) const { const RECT bounds = GetFilmstripRevealBounds(); return !FilmstripHoverSuppressedForImagePan() && FilmstripEligible() && !filmstripAdjustmentSuppressed_ && PtInRect(&bounds, point); }
+    bool FilmstripRevealContains(POINT point) const { const RECT bounds = GetFilmstripRevealBounds(); return !lowerUiMorph_.active && !FilmstripHoverSuppressedForImagePan() && FilmstripEligible() && !filmstripAdjustmentSuppressed_ && PtInRect(&bounds, point); }
     bool BeginFilmstripInteraction(POINT point) {
         if (!FilmstripContains(point)) return false;
         filmstripDragCandidate_ = true;
@@ -6540,8 +6559,253 @@ public:
         OutputDebugStringW(message);
     }
 #endif
+    static D2D1_RECT_F LowerUiRect(const RECT& rect) {
+        return D2D1::RectF(static_cast<float>(rect.left), static_cast<float>(rect.top),
+            static_cast<float>(rect.right), static_cast<float>(rect.bottom));
+    }
+    double LowerUiElapsedMs() const {
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        return lowerUiMorph_.frequency > 0 ? static_cast<double>(now.QuadPart - lowerUiMorph_.started) *
+            1000.0 / static_cast<double>(lowerUiMorph_.frequency) : 0.0;
+    }
+    void CancelLowerUiMorph() {
+        KillTimer(window_, kLowerUiMorphTimer);
+        lowerUiMorph_ = {};
+    }
+    D2D1_RECT_F LowerUiTargetBounds() const {
+        if (lowerUiMorph_.targetVideo) return LowerUiRect(GetVideoControlsLayout(false).island);
+        if (lowerUiMorph_.ready && FilmstripEligible()) return LowerUiRect(GetFilmstripBounds());
+        RECT strip = GetFilmstripNormalBounds(true);
+        const bool adjustments = adjustmentPanelNavigation_.pending ? adjustmentPanelNavigation_.open :
+            VideoActive() ? videoAdjustmentsPanelOpen_ : imageAdjustmentsPanelOpen_;
+        if (adjustments) {
+            const RECT panel = GetImageAdjustmentsPanelTargetLayout().panel;
+            const LONG right = panel.left - MulDiv(14, GetDpiForWindow(window_), 96);
+            if (panel.bottom > strip.top && panel.top < strip.bottom && right > strip.left)
+                strip.right = std::min(strip.right, right);
+        }
+        return LowerUiRect(strip);
+    }
+    bool CaptureLowerUiContents(bool video) {
+        if (!renderTarget_ || (video ? !VideoActive() || !videoPlayer_.HasValidFrame() : !FilmstripEligible())) return false;
+        const RECT bounds = video ? GetVideoControlsLayout(false).island : GetFilmstripBounds();
+        if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) return false;
+        float dpiX = 96.0f, dpiY = 96.0f;
+        renderTarget_->GetDpi(&dpiX, &dpiY);
+        const UINT width = static_cast<UINT>(std::ceil((bounds.right - bounds.left) * dpiX / 96.0f));
+        const UINT height = static_cast<UINT>(std::ceil((bounds.bottom - bounds.top) * dpiY / 96.0f));
+        if (!width || !height || static_cast<uint64_t>(width) * height > 4 * 1024 * 1024) return false;
+        ComPtr<ID2D1Bitmap1> contents;
+        const auto properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpiX, dpiY);
+        if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(width, height), nullptr, 0, properties, &contents))) return false;
+        ComPtr<ID2D1Image> target;
+        renderTarget_->GetTarget(&target);
+        D2D1_MATRIX_3X2_F transform{};
+        renderTarget_->GetTransform(&transform);
+        renderTarget_->SetTarget(contents.Get());
+        renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(-static_cast<float>(bounds.left), -static_cast<float>(bounds.top)));
+        renderTarget_->BeginDraw();
+        renderTarget_->Clear(D2D1::ColorF(0, 0.0f));
+        drawingLowerUiContents_ = true;
+        if (video) DrawVideoPlaybackControls(false, 1.0f);
+        else DrawFilmstrip();
+        drawingLowerUiContents_ = false;
+        const HRESULT result = renderTarget_->EndDraw();
+        renderTarget_->SetTarget(target.Get());
+        renderTarget_->SetTransform(transform);
+        if (FAILED(result)) return false;
+        if (video) {
+            lowerUiMorph_.videoContents = std::move(contents);
+        } else {
+            lowerUiMorph_.filmContents = std::move(contents);
+            lowerUiMorph_.filmBounds = bounds;
+            lowerUiMorph_.filmSlots.clear();
+            const auto [first, last] = FilmstripVisibleRange();
+            for (size_t index = first; index < last; ++index)
+                lowerUiMorph_.filmSlots.emplace_back(navigationFiles_[index].wstring(), GetFilmstripThumbnailBounds(index));
+        }
+        return true;
+    }
+    void SampleLowerUiMorph() {
+        auto& state = lowerUiMorph_;
+        if (!state.active) return;
+        const double elapsed = LowerUiElapsedMs();
+        const auto ease = [](double value) { return SmoothTransitionProgress(static_cast<float>(std::clamp(value, 0.0, 1.0))); };
+        const float geometry = ease((elapsed - state.geometryMs) / 200.0);
+        const auto lerp = [geometry](float a, float b) { return a + (b - a) * geometry; };
+        state.bounds = D2D1::RectF(lerp(state.startBounds.left, state.targetBounds.left), lerp(state.startBounds.top, state.targetBounds.top),
+            lerp(state.startBounds.right, state.targetBounds.right), lerp(state.startBounds.bottom, state.targetBounds.bottom));
+        state.radius = lerp(state.startRadius, state.targetVideo ? 11.0f : 12.0f);
+        state.shellOpacity = state.startShell + (1.0f - state.startShell) * ease(elapsed / 100.0);
+        const float outgoing = 1.0f - ease((elapsed - state.holdMs) / 100.0);
+        const float incoming = state.ready ? ease((elapsed - std::max(state.holdMs + 100.0, state.readyMs)) / 140.0) : 0.0f;
+        state.filmOpacity = state.targetVideo ? state.startFilm * outgoing : state.startFilm + (1.0f - state.startFilm) * incoming;
+        state.videoOpacity = state.targetVideo ? state.startVideo * outgoing + (1.0f - state.startVideo * outgoing) * incoming : state.startVideo * outgoing;
+    }
+    void BeginLowerUiNavigation(const std::wstring& path, bool sibling) {
+        const bool video = IsVideoPath(path);
+        if (!sibling || !animationsEnabled_ || IsModelPath(path) || IsGifPath(path) ||
+            ModelActive() || gifPlaying_ || IsGifPath(currentPath_)) { CancelLowerUiMorph(); return; }
+        auto& state = lowerUiMorph_;
+        const bool continuing = state.active;
+        if (!continuing && video == VideoActive()) {
+            if (video) lowerUiReplacesTransitionControls_ = false; // Normal video-to-video overlay ownership.
+            return;
+        }
+        if (!continuing && !VideoActive() && (!FilmstripEligible() || filmstripAdjustmentSuppressed_)) return;
+        if (continuing) SampleLowerUiMorph();
+        else {
+            state.bounds = LowerUiRect(VideoActive() ? GetVideoControlsLayout(false).island : GetFilmstripBounds());
+            state.radius = VideoActive() ? 11.0f : 12.0f;
+            state.filmOpacity = VideoActive() ? 0.0f : filmstripOpacity_;
+            state.videoOpacity = VideoActive() ? videoControlsOpacity_ : 0.0f;
+            state.shellOpacity = VideoActive() ? videoControlsOpacity_ : filmstripOpacity_;
+        }
+        // Capture while the source still owns its resources. Never capture the composed canvas.
+        bool captured = false;
+        if (VideoActive() && videoPlayer_.HasValidFrame()) captured = CaptureLowerUiContents(true);
+        else if (FilmstripEligible()) captured = CaptureLowerUiContents(false);
+        if (!continuing && !captured) { CancelLowerUiMorph(); return; }
+        LARGE_INTEGER frequency{}, now{};
+        if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0 || !QueryPerformanceCounter(&now)) { CancelLowerUiMorph(); return; }
+        state.active = true;
+        lowerUiReplacesTransitionControls_ = true;
+        state.targetVideo = video;
+        state.path = path;
+        state.ready = false;
+        state.started = now.QuadPart;
+        state.frequency = frequency.QuadPart;
+        state.holdMs = video && !continuing ? 90.0 : 0.0;
+        state.geometryMs = state.holdMs;
+        state.readyMs = 0.0;
+        state.startBounds = state.bounds;
+        state.startRadius = state.radius;
+        state.startFilm = state.filmOpacity;
+        state.startVideo = state.videoOpacity;
+        state.startShell = state.shellOpacity;
+        state.targetBounds = LowerUiTargetBounds();
+        SetTimer(window_, kLowerUiMorphTimer, 15, nullptr);
+        InvalidateRect(window_, nullptr, FALSE);
+        // Publish the destination selector before any synchronous destination-load work.
+        UpdateWindow(window_);
+    }
+    void RetargetLowerUiGeometry() {
+        auto& state = lowerUiMorph_;
+        if (!state.active) return;
+        SampleLowerUiMorph();
+        const auto target = LowerUiTargetBounds();
+        if (target.left == state.targetBounds.left && target.top == state.targetBounds.top &&
+            target.right == state.targetBounds.right && target.bottom == state.targetBounds.bottom) return;
+        state.startBounds = state.bounds;
+        state.startRadius = state.radius;
+        state.targetBounds = target;
+        state.geometryMs = LowerUiElapsedMs();
+        SetTimer(window_, kLowerUiMorphTimer, 15, nullptr);
+    }
+    void CommitLowerUiNavigation(const std::wstring& path, bool video) {
+        auto& state = lowerUiMorph_;
+        // Called only from the existing generation-checked image/video presentation commits.
+        if (!state.active || state.ready || video != state.targetVideo || !PathsEqual(fs::path(path), fs::path(state.path))) return;
+        state.ready = true;
+        state.readyMs = LowerUiElapsedMs();
+        if (!video) {
+            if (!navigationBuilt_) BuildNavigation();
+            if (filmstripAdjustmentSuppressed_ || !CaptureLowerUiContents(false)) { CancelLowerUiMorph(); return; }
+        }
+        RetargetLowerUiGeometry();
+        SetTimer(window_, kLowerUiMorphTimer, 15, nullptr);
+    }
+    void UpdateLowerUiMorph() {
+        auto& state = lowerUiMorph_;
+        if (!state.active) { KillTimer(window_, kLowerUiMorphTimer); return; }
+        RetargetLowerUiGeometry();
+        SampleLowerUiMorph();
+        const double elapsed = LowerUiElapsedMs();
+        if (elapsed >= state.geometryMs + 200.0 && elapsed >= state.holdMs + 100.0) {
+            if (!state.ready) KillTimer(window_, kLowerUiMorphTimer); // Wait event-driven for the latest commit.
+            else if (elapsed >= std::max(state.holdMs + 100.0, state.readyMs) + 140.0) {
+                const bool video = state.targetVideo;
+                CancelLowerUiMorph();
+                if (video) ShowVideoControls();
+                else StartFilmstripHold(alwaysShowFilmstrip_ ? UINT_MAX : 2000);
+            }
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool LowerUiMorphContains(POINT point) const {
+        const auto& state = lowerUiMorph_;
+        return state.active && point.x >= state.bounds.left && point.x < state.bounds.right &&
+            point.y >= state.bounds.top && point.y < state.bounds.bottom;
+    }
+    void DrawLowerUiMorph() {
+        auto& state = lowerUiMorph_;
+        if (!state.active || !renderTarget_) return;
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        ComPtr<ID2D1SolidColorBrush> surface, border, selection;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(UseDarkAppMode(), state.shellOpacity), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(UseDarkAppMode(), state.shellOpacity), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 150.0f / 255.0f, 1.0f, state.filmOpacity), &selection))) return;
+        const auto shell = D2D1::RoundedRect(state.bounds, state.radius * scale, state.radius * scale);
+        const auto controlsBounds = LowerUiRect(GetVideoControlsLayout(false).island);
+        if (state.targetVideo && state.bounds.left == controlsBounds.left && state.bounds.top == controlsBounds.top &&
+            state.bounds.right == controlsBounds.right && state.bounds.bottom == controlsBounds.bottom)
+            DrawVideoControlsShell(state.bounds, surface.Get(), border.Get(), scale);
+        else {
+            renderTarget_->FillRoundedRectangle(shell, surface.Get());
+            renderTarget_->DrawRoundedRectangle(shell, border.Get(), scale);
+        }
+        ComPtr<ID2D1RoundedRectangleGeometry> clip;
+        if (FAILED(d2dFactory_->CreateRoundedRectangleGeometry(shell, &clip))) return;
+        renderTarget_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clip.Get()), nullptr);
+        if (state.filmContents && state.filmOpacity > 0.001f) {
+            const float sx = (state.bounds.right - state.bounds.left) / (state.filmBounds.right - state.filmBounds.left);
+            const float sy = (state.bounds.bottom - state.bounds.top) / (state.filmBounds.bottom - state.filmBounds.top);
+            std::optional<D2D1_RECT_F> selectedBox;
+            for (const auto& [path, box] : state.filmSlots) if (PathsEqual(fs::path(path), fs::path(state.path))) {
+                const auto selected = D2D1::RectF(state.bounds.left + (box.left - state.filmBounds.left) * sx,
+                    state.bounds.top + (box.top - state.filmBounds.top) * sy,
+                    state.bounds.left + (box.right - state.filmBounds.left) * sx,
+                    state.bounds.top + (box.bottom - state.filmBounds.top) * sy);
+                selectedBox = selected;
+                const auto backing = D2D1::RoundedRect(D2D1::RectF(selected.left - 4.0f * scale, selected.top - 4.0f * scale,
+                    selected.right + 4.0f * scale, selected.bottom + 4.0f * scale), 8.0f * scale, 8.0f * scale);
+                selection->SetColor(D2D1::ColorF(0.0f, 90.0f / 255.0f, 160.0f / 255.0f, 0.22f * state.filmOpacity));
+                renderTarget_->FillRoundedRectangle(backing, selection.Get());
+                selection->SetColor(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, 0.25f * state.filmOpacity));
+                renderTarget_->DrawRoundedRectangle(backing, selection.Get(), 4.0f * scale);
+                break;
+            }
+            renderTarget_->DrawBitmap(state.filmContents.Get(), state.bounds, state.filmOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            if (selectedBox) {
+                selection->SetColor(D2D1::ColorF(0.0f, 150.0f / 255.0f, 1.0f, state.filmOpacity));
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(*selectedBox, 6.0f * scale, 6.0f * scale), selection.Get(), 2.0f * scale);
+            }
+        }
+        if (state.videoOpacity > 0.001f) {
+            if (state.targetVideo && state.ready && VideoActive() && videoPlayer_.HasValidFrame() &&
+                PathsEqual(fs::path(currentPath_), fs::path(state.path))) {
+                const RECT controls = GetVideoControlsLayout(false).island;
+                const float sx = (state.bounds.right - state.bounds.left) / (controls.right - controls.left);
+                const float sy = (state.bounds.bottom - state.bounds.top) / (controls.bottom - controls.top);
+                D2D1_MATRIX_3X2_F previous{};
+                renderTarget_->GetTransform(&previous);
+                renderTarget_->SetTransform(D2D1::Matrix3x2F(sx, 0, 0, sy,
+                    state.bounds.left - controls.left * sx, state.bounds.top - controls.top * sy));
+                drawingLowerUiContents_ = true;
+                DrawVideoPlaybackControls(false, state.videoOpacity);
+                drawingLowerUiContents_ = false;
+                renderTarget_->SetTransform(previous);
+            } else if (state.videoContents) {
+                renderTarget_->DrawBitmap(state.videoContents.Get(), state.bounds, state.videoOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            }
+        }
+        renderTarget_->PopLayer();
+    }
     void DrawFilmstrip() {
-        if (!FilmstripVisible()) {
+        if (lowerUiMorph_.active && !drawingLowerUiContents_) return;
+        if (!drawingLowerUiContents_ && !FilmstripVisible()) {
             if (FilmstripEligible() && !alwaysShowFilmstrip_ && filmstripOpacity_ <= 0.001f) {
                 RECT client{}; GetClientRect(window_, &client);
                 const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
@@ -6558,9 +6822,9 @@ public:
         }
         const RECT strip = GetFilmstripBounds();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const float opacity = filmstripOpacity_;
+        const float opacity = drawingLowerUiContents_ ? 1.0f : filmstripOpacity_;
         const bool dark = UseDarkAppMode();
-        const bool drawPreviewShell = FilmstripHoverPreviewDrawable() && filmstripHoverPreviewOpacity_ > 0.001f;
+        const bool drawPreviewShell = !drawingLowerUiContents_ && FilmstripHoverPreviewDrawable() && filmstripHoverPreviewOpacity_ > 0.001f;
         if (drawPreviewShell && !filmstripPreviewGeometryValid_) SetFilmstripHoverPreviewGeometry(static_cast<size_t>(filmstripPreviewIndex_));
         ComPtr<ID2D1SolidColorBrush> surface, border, previewSurface, previewBorder, selectedBacking, selectedGlow, selectedOutline, hover, placeholder, placeholderText;
         if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, opacity), &surface)) ||
@@ -6574,11 +6838,13 @@ public:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(24.f / 255, 26.f / 255, 30.f / 255, opacity), &placeholder)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.42f * opacity), &placeholderText))) return;
         const D2D1_RECT_F panel = D2D1::RectF(static_cast<float>(strip.left), static_cast<float>(strip.top), static_cast<float>(strip.right), static_cast<float>(strip.bottom));
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), surface.Get());
-        if (!drawPreviewShell || !DrawFilmstripHoverPreviewShell(panel, border.Get(), previewSurface.Get(), previewBorder.Get(), scale))
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), border.Get(), scale);
+        if (!drawingLowerUiContents_) {
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), surface.Get());
+            if (!drawPreviewShell || !DrawFilmstripHoverPreviewShell(panel, border.Get(), previewSurface.Get(), previewBorder.Get(), scale))
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(panel, 12.0f * scale, 12.0f * scale), border.Get(), scale);
+        }
         renderTarget_->PushAxisAlignedClip(panel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        const size_t current = CurrentNavigationIndex();
+        const size_t current = drawingLowerUiContents_ ? std::numeric_limits<size_t>::max() : CurrentNavigationIndex();
         const auto [first, last] = FilmstripVisibleRange();
 #ifdef _DEBUG
         TraceFilmstripPostStopPaint(strip, first, last);
@@ -6590,7 +6856,7 @@ public:
             if (index == current) {
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(selection, 8.0f * scale, 8.0f * scale), selectedBacking.Get());
                 renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(selection, 8.0f * scale, 8.0f * scale), selectedGlow.Get(), 4.0f * scale);
-            } else if (index == static_cast<size_t>(filmstripHoveredIndex_)) {
+            } else if (!drawingLowerUiContents_ && index == static_cast<size_t>(filmstripHoveredIndex_)) {
                 renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), hover.Get(), scale);
             }
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), placeholder.Get());
@@ -6613,7 +6879,7 @@ public:
             if (index == current) renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f * scale, 6.0f * scale), selectedOutline.Get(), 2.0f * scale);
         }
         renderTarget_->PopAxisAlignedClip();
-        if (FilmstripHoverPreviewDrawable()) {
+        if (!drawingLowerUiContents_ && FilmstripHoverPreviewDrawable()) {
 #ifdef _DEBUG
             OutputDebugStringW(L"[Viewtrious] FILMSTRIP_HOVER_PREVIEW_PAINT_ENTER clip=popped\n");
 #endif
@@ -7055,6 +7321,7 @@ public:
     }
 
     void CaptureTransitionOverlay(bool outgoingVideo) {
+        lowerUiReplacesTransitionControls_ = false;
         // Keep presentation snapshots media-only. Replaying a crop of the composed canvas
         // would retain whatever video pixels happened to be behind a translucent (or hidden)
         // control island. Store only the visible overlay state and redraw it above the held media.
@@ -7071,7 +7338,7 @@ public:
 
     void DrawTransitionOverlay() {
         if (!TransitionOverlayActive()) return;
-        if (transitionOverlayHasVideoControls_)
+        if (transitionOverlayHasVideoControls_ && !lowerUiReplacesTransitionControls_)
             DrawVideoPlaybackControls(false, transitionOverlayVideoControlsOpacity_);
         if (transitionOverlayHasZoomHud_ && !PersistentAdjustmentHudVisible()) {
             const ZoomHudLayout hud = transitionOverlayZoomHudIsVideo_ ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
@@ -7515,6 +7782,7 @@ public:
 
     void Shutdown() {
         shuttingDown_ = true;
+        CancelLowerUiMorph();
         FlushImageAdjustmentPersistence();
         if (VideoActive()) FlushVideoAdjustmentPersistence();
         adjustmentPersistence_.Shutdown();
@@ -7904,6 +8172,7 @@ private:
         EnsureRenderTarget();
         std::wstring videoError;
         if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, openAttemptId, videoError)) {
+            CancelLowerUiMorph();
             contentKind_ = ContentKind::None;
             resolutionText_.clear();
             error_ = videoError.empty() ? L"Viewtrious could not open this video." : videoError;
@@ -7955,7 +8224,7 @@ public:
             videoPan_ = D2D1::Point2F();
         }
         if (!videoError.empty()) error_ = videoError;
-        if (videoPlayer_.Failed()) { DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (videoPlayer_.Failed()) { CancelLowerUiMorph(); DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
         if (videoStepHoldTransportActive_ && !videoPlayer_.Playing()) StopVideoStepHold();
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoStepHoldSeekInFlight_) CompleteVideoStepHoldSeek();
@@ -7965,6 +8234,7 @@ public:
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
         }
         if (videoPlayer_.HasValidFrame()) {
+            CommitLowerUiNavigation(currentPath_, true);
             CommitAdjustmentPanelNavigation(currentPath_);
             BeginStillDissolveIfReady(currentPath_);
             BeginColdOpenFadeIfReady(currentPath_);
@@ -10223,6 +10493,7 @@ private:
     void SelectNavigationTarget(const std::wstring& path, int direction = 0, bool immediatePaint = true) {
         (void)direction;
         if (path.empty()) return;
+        BeginLowerUiNavigation(path, true);
         BeginAdjustmentPanelNavigation(path);
         if (IsGifPath(path)) {
             LoadImage(path, false);
@@ -10305,8 +10576,9 @@ private:
                 if (SUCCEEDED(hr)) {
                     CommitImage(result->request.path, bitmap, result->width, result->height, false, result->hasTransparency);
                     displayedPixels_ = result->pixels;
-                } else error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
+                } else { CancelLowerUiMorph(); error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec."; }
             } else {
+                CancelLowerUiMorph();
                 source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); displayedPath_.clear(); imageWidth_ = imageHeight_ = 0;
                 error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
             }
@@ -10378,6 +10650,7 @@ private:
             RevealClickedFilmstripItem();
         }
         CommitAdjustmentPanelNavigation(path);
+        CommitLowerUiNavigation(path, false);
         BeginStillDissolveIfReady(path);
         BeginColdOpenFadeIfReady(path);
         adjustmentPersistence_.Resolve(path, imageAdjustmentMediaGeneration_, imageAdjustmentEditGeneration_);
@@ -11193,7 +11466,34 @@ private:
             }
         }
     }
+    void DrawVideoControlsShell(const D2D1_RECT_F& island, ID2D1Brush* surface, ID2D1Brush* border, float scale) {
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface);
+        RECT join{};
+        if (GetDockedAdjustmentJoin(join)) {
+            // Keep the exposed border; omit the seam underneath the foot and shoulders.
+            const float radius = 10.0f * scale;
+            const D2D1_RECT_F clips[] = {
+                D2D1::RectF(island.left - scale, island.top - scale, join.left - radius, island.top + scale),
+                D2D1::RectF(join.right + radius, island.top - scale, island.right + scale, island.top + scale),
+                D2D1::RectF(island.left - scale, island.top + scale, island.right + scale, island.bottom + scale)
+            };
+            for (const auto& clip : clips) {
+                renderTarget_->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border, scale);
+                renderTarget_->PopAxisAlignedClip();
+            }
+        } else {
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border, scale);
+        }
+    }
     void DrawVideoPlaybackControls(bool drawZoomHud = true, float overlayOpacity = -1.0f) {
+        if (lowerUiMorph_.active && !drawingLowerUiContents_) {
+            // The morph owns only the lower island, not the independent HUD.
+            if (drawZoomHud && !PersistentAdjustmentHudVisible())
+                DrawZoomHud(GetVideoZoomHudLayout(), VideoCurrentScale() * RenderTargetDpi() / 96.0f,
+                    overlayOpacity >= 0.0f ? overlayOpacity : videoControlsOpacity_, true, videoAdjustmentsPanelOpen_);
+            return;
+        }
         if ((!VideoActive() && overlayOpacity < 0.0f) || (overlayOpacity >= 0.0f ? overlayOpacity : videoControlsOpacity_) <= 0.001f) return;
         const VideoControlsLayout layout = GetVideoControlsLayout();
         if (layout.island.right <= layout.island.left) return;
@@ -11216,7 +11516,7 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(196.0f / 255.0f, 43.0f / 255.0f, 28.0f / 255.0f, opacity), &muted))) return;
 
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
-        if (videoPlaybackSpeedPanelOpen_) {
+        if (videoPlaybackSpeedPanelOpen_ && !drawingLowerUiContents_) {
             const VideoPlaybackSpeedPanelLayout panel = GetVideoPlaybackSpeedPanelLayout();
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), 1.0f * scale);
@@ -11234,24 +11534,7 @@ private:
             }
         }
         const D2D1_RECT_F island = rect(layout.island);
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
-        RECT join{};
-        if (GetDockedAdjustmentJoin(join)) {
-            // Keep the exposed border; omit the seam underneath the foot and shoulders.
-            const float radius = 10.0f * scale;
-            const D2D1_RECT_F clips[] = {
-                D2D1::RectF(island.left - scale, island.top - scale, join.left - radius, island.top + scale),
-                D2D1::RectF(join.right + radius, island.top - scale, island.right + scale, island.top + scale),
-                D2D1::RectF(island.left - scale, island.top + scale, island.right + scale, island.bottom + scale)
-            };
-            for (const auto& clip : clips) {
-                renderTarget_->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
-                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), scale);
-                renderTarget_->PopAxisAlignedClip();
-            }
-        } else {
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), scale);
-        }
+        if (!drawingLowerUiContents_) DrawVideoControlsShell(island, surface.Get(), border.Get(), scale);
         if (videoControlsHovered_ == ButtonKind::VideoPlayPause) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playPause), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
@@ -12881,6 +13164,7 @@ private:
     }
 
     void DiscardRenderResources() {
+        CancelLowerUiMorph();
         bitmap_.Reset();
         transitionOverlayHasVideoControls_ = false;
         transitionOverlayDefersVideoControls_ = false;
@@ -12926,6 +13210,23 @@ private:
     std::vector<GraphicsAdapterInfo> graphicsAdapters_;
     bool graphicsAdapterAuto_ = true;
     LUID graphicsAdapterLuid_{};
+    // Presentation-only state. No media frame, player, scroll offset, or hover worker is owned here.
+    struct LowerUiMorph {
+        bool active = false, targetVideo = false, ready = false;
+        std::wstring path;
+        LONGLONG started = 0, frequency = 0;
+        double holdMs = 0.0, readyMs = 0.0, geometryMs = 0.0;
+        D2D1_RECT_F bounds{}, startBounds{}, targetBounds{};
+        float radius = 12.0f, startRadius = 12.0f;
+        float filmOpacity = 0.0f, videoOpacity = 0.0f, shellOpacity = 1.0f;
+        float startFilm = 0.0f, startVideo = 0.0f, startShell = 1.0f;
+        ComPtr<ID2D1Bitmap1> filmContents, videoContents;
+        RECT filmBounds{};
+        std::vector<std::pair<std::wstring, RECT>> filmSlots;
+    } lowerUiMorph_;
+    bool drawingLowerUiContents_ = false;
+    // Keep the old overlay suppressed even if its media dissolve outlasts the UI morph.
+    bool lowerUiReplacesTransitionControls_ = false;
     ComPtr<ID2D1DeviceContext> renderTarget_;
     ComPtr<ID2D1Bitmap> bitmap_;
     ComPtr<ID2D1Bitmap> lanczosBitmap_;
@@ -13721,6 +14022,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetCapture(window);
             return 0;
         }
+        if (viewer->LowerUiMorphContains(point)) return 0;
         const ButtonKind button = viewer->ButtonAt(point);
         if (button != ButtonKind::None) {
             viewer->SetButtonPressed(button);
@@ -13964,6 +14266,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 #ifdef _DEBUG
         { wchar_t timerMessage[128]{}; swprintf_s(timerMessage, L"[Viewtrious] VIEWTRIOUS_WM_TIMER_RECEIVED id=%zu hwnd=%p\n", static_cast<size_t>(wParam), window); OutputDebugStringW(timerMessage); }
 #endif
+        if (wParam == kLowerUiMorphTimer) { viewer->UpdateLowerUiMorph(); return 0; }
         if (wParam == kGifPlaybackTimer) { viewer->GifPlaybackTimerMessage(); return 0; }
         if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; }
         if (wParam == kCanvasNavigationFadeTimer) { viewer->UpdateCanvasNavigationFade(); return 0; }

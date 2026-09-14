@@ -1844,7 +1844,7 @@ public:
         const LONG bottom = panel.bottom;
         const int labelWidth = MulDiv(70, dpi, 96);
         const int valueWidth = MulDiv(38, dpi, 96);
-        const int rowHeight = MulDiv(32, dpi, 96);
+        const int rowHeight = MulDiv(aboveControls ? 26 : 32, dpi, 96);
         const int sliderLeft = left + labelWidth;
         const int panelPadding = MulDiv(12, dpi, 96);
         const int sliderRight = right - valueWidth - panelPadding;
@@ -1898,7 +1898,7 @@ public:
         const LONG left = std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
         const LONG right = left + width;
         const LONG bottom = controls.island.top;
-        const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
+        const LONG height = std::min<LONG>(MulDiv(238, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
         return MakeVideoAdjustmentsPanelLayout({ left, bottom - height, right, bottom }, true);
     }
     bool VideoAdjustmentsPanelMotionActive() const {
@@ -2320,8 +2320,10 @@ public:
         QueueVideoAdjustmentPersistence();
     }
     int AdjustmentSliderAt(const VideoAdjustmentsPanelLayout& panel, POINT point) const {
-        const LONG verticalPadding = MulDiv(6, GetDpiForWindow(window_), 96);
         for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
+            const LONG previousGap = index > 0 ? panel.sliders[index].top - panel.sliders[index - 1].bottom : MulDiv(12, GetDpiForWindow(window_), 96);
+            const LONG nextGap = index + 1 < static_cast<int>(panel.sliders.size()) ? panel.sliders[index + 1].top - panel.sliders[index].bottom : MulDiv(12, GetDpiForWindow(window_), 96);
+            const LONG verticalPadding = std::max<LONG>(0, std::min({ MulDiv(6, GetDpiForWindow(window_), 96), previousGap / 2, nextGap / 2 }));
             const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - verticalPadding,
                 panel.sliders[index].right, panel.sliders[index].bottom + verticalPadding };
             if (PtInRect(&hit, point)) return index;

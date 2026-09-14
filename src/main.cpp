@@ -6742,6 +6742,9 @@ public:
     void DrawLowerUiMorph() {
         auto& state = lowerUiMorph_;
         if (!state.active || !renderTarget_) return;
+        // Timer messages request paints and handle completion; they are not the visual clock.
+        // Video-driven paints must also sample current QPC time, not reuse the last timer's pose.
+        SampleLowerUiMorph();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         ComPtr<ID2D1SolidColorBrush> surface, border, selection;
         if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(UseDarkAppMode(), state.shellOpacity), &surface)) ||

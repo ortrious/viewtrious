@@ -1890,8 +1890,9 @@ public:
         if (!VideoAdjustmentsPanelAboveControls()) return normal;
         const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(normal);
         const LONG bottom = lip.active ? lip.bounds.bottom : normal.panel.bottom;
-        const LONG gap = MulDiv(8, GetDpiForWindow(window_), 96);
-        auto target = OffsetVideoAdjustmentsPanelLayout(normal, 0, GetVideoControlsLayout(false).island.top - gap - bottom);
+        const RECT controls = GetVideoControlsLayout(false).island;
+        const LONG left = controls.left + (controls.right - controls.left - (normal.panel.right - normal.panel.left)) / 2;
+        auto target = OffsetVideoAdjustmentsPanelLayout(normal, left - normal.panel.left, controls.top - bottom);
         target.aboveControls = true;
         return target;
     }
@@ -2129,6 +2130,7 @@ public:
         held.fadeStartedAt = video ? videoAdjustmentsPanelFadeStartedAt_ : imageAdjustmentsPanelFadeStartedAt_;
         held.layout = video ? GetVideoAdjustmentsPanelPresentedLayout() : GetImageAdjustmentsPanelLayout();
         held.lip = GetAdjustmentPanelLipLayout(held.layout);
+        held.physicalScale = video ? VideoCurrentScale() * RenderTargetDpi() / 96.0f : PhysicalPixelScale();
         held.values = video ? videoAdjustments_ : imageAdjustments_;
         held.source = video ? videoAdjustmentSource_ : imageAdjustmentSource_;
         held.path = path;
@@ -2166,7 +2168,35 @@ public:
         }
         if (held.fadeActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
     }
+    bool PersistentAdjustmentHudVisible() const {
+        return adjustmentPanelNavigation_.pending ? adjustmentPanelNavigation_.open :
+            VideoActive() ? videoAdjustmentsPanelOpen_ : source_ && imageAdjustmentsPanelOpen_;
+    }
+    void DrawPersistentAdjustmentHud() {
+        if (!PersistentAdjustmentHudVisible()) return;
+        const float physicalScale = adjustmentPanelNavigation_.pending ? adjustmentPanelNavigation_.physicalScale :
+            VideoActive() ? VideoCurrentScale() * RenderTargetDpi() / 96.0f : PhysicalPixelScale();
+        DrawZoomHud(GetImageZoomHudLayout(), physicalScale, 1.0f, true, true);
+    }
+    // Join only at the dock, never while the placement animation is in flight.
+    bool GetDockedAdjustmentJoin(RECT& foot) const {
+        const auto& held = adjustmentPanelNavigation_;
+        const auto& panel = held.pending ? held.layout : videoAdjustmentsPanelPresentedLayout_;
+        if (!panel.aboveControls || (!held.pending && (!VideoActive() || !VideoAdjustmentsPanelVisible()))) return false;
+        if ((held.pending ? held.opacity : videoAdjustmentsPanelOpacity_) <= 0.001f) return false;
+        const float controlsOpacity = TransitionOverlayActive() && transitionOverlayHasVideoControls_ ?
+            transitionOverlayVideoControlsOpacity_ : videoControlsOpacity_;
+        if (controlsOpacity <= 0.001f) return false;
+        const auto lip = held.pending ? held.lip : GetAdjustmentPanelLipLayout(panel);
+        if (!lip.active) return false;
+        foot = lip.bounds;
+        const RECT controls = GetVideoControlsLayout(false).island;
+        const LONG radius = MulDiv(10, GetDpiForWindow(window_), 96);
+        return foot.bottom == controls.top && foot.left - radius > controls.left + radius &&
+            foot.right + radius < controls.right - radius;
+    }
     void DrawNavigatingAdjustmentPanel() {
+        DrawAdjustmentDockConnection();
         auto& held = adjustmentPanelNavigation_;
         if (held.pending) {
             if (held.opacity <= 0.001f) return;
@@ -4712,6 +4742,7 @@ public:
             if (!tutorialPresentation_) {
                 DrawTransitionOverlay();
                 DrawNavigatingAdjustmentPanel();
+                DrawPersistentAdjustmentHud();
             }
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); DrawComponentsPanel(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
@@ -6969,7 +7000,7 @@ public:
         if (!TransitionOverlayActive()) return;
         if (transitionOverlayHasVideoControls_)
             DrawVideoPlaybackControls(false, transitionOverlayVideoControlsOpacity_);
-        if (transitionOverlayHasZoomHud_) {
+        if (transitionOverlayHasZoomHud_ && !PersistentAdjustmentHudVisible()) {
             const ZoomHudLayout hud = transitionOverlayZoomHudIsVideo_ ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
             DrawZoomHud(hud, transitionOverlayZoomHudPhysicalScale_, transitionOverlayZoomHudOpacity_, true, false);
         }
@@ -10589,7 +10620,8 @@ private:
         if (!source_) return;
         const ZoomHudLayout hud = GetImageZoomHudLayout();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        DrawZoomHud(hud, PhysicalPixelScale(), 1.0f, true, hoveredButton_ == ButtonKind::ImageAdjustments || imageAdjustmentsPanelOpen_);
+        if (!PersistentAdjustmentHudVisible())
+            DrawZoomHud(hud, PhysicalPixelScale(), 1.0f, true, hoveredButton_ == ButtonKind::ImageAdjustments || imageAdjustmentsPanelOpen_);
         if (hoveredButton_ == ButtonKind::ImageAdjustments && !imageAdjustmentsPanelOpen_) {
             ComPtr<ID2D1SolidColorBrush> backing, text;
             if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f), &backing)) ||
@@ -10680,6 +10712,56 @@ private:
         drawButton(actions.resetButton, L"RESET", AdjustmentFooterButton::Reset, text);
     }
 
+    void DrawAdjustmentDockConnection() {
+        RECT foot{};
+        if (!GetDockedAdjustmentJoin(foot)) return;
+        const auto& held = adjustmentPanelNavigation_;
+        const auto& panel = held.pending ? held.layout : videoAdjustmentsPanelPresentedLayout_;
+        const float reveal = held.pending ? held.opacity : videoAdjustmentsPanelOpacity_;
+        const float opacity = AdjustmentPanelPresentationOpacity(reveal);
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        ComPtr<ID2D1SolidColorBrush> surface, border;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(UseDarkAppMode(), opacity), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(UseDarkAppMode(), opacity), &border))) return;
+        const RECT revealed = AdjustmentPanelRenderedRevealBounds(panel, reveal, { foot, true });
+        // Draw the connector behind the unchanged shared panel/content. Its shoulders
+        // extend outside the panel's own reveal clip.
+        renderTarget_->PushAxisAlignedClip(D2D1::RectF(foot.left - 11.0f * scale, static_cast<float>(revealed.top),
+            foot.right + 11.0f * scale, foot.bottom + scale), D2D1_ANTIALIAS_MODE_ALIASED);
+        DrawAdjustmentDockShoulders(foot, surface.Get(), border.Get(), scale);
+        renderTarget_->PopAxisAlignedClip();
+    }
+    void DrawAdjustmentDockShoulders(const RECT& foot, ID2D1Brush* surface, ID2D1Brush* border, float scale) {
+        const float left = static_cast<float>(foot.left), right = static_cast<float>(foot.right);
+        const float bottom = static_cast<float>(foot.bottom), radius = 10.0f * scale;
+        const float kappa = 0.55228475f;
+        const auto p = [](float x, float y) { return D2D1::Point2F(x, y); };
+        const auto leftShoulder = D2D1::BezierSegment(p(left, bottom - radius + radius * kappa),
+            p(left - radius + radius * kappa, bottom), p(left - radius, bottom));
+        const auto rightShoulder = D2D1::BezierSegment(p(right + radius - radius * kappa, bottom),
+            p(right, bottom - radius + radius * kappa), p(right, bottom - radius));
+        ComPtr<ID2D1PathGeometry> fill, outline;
+        ComPtr<ID2D1GeometrySink> sink;
+        if (FAILED(d2dFactory_->CreatePathGeometry(&fill)) || FAILED(fill->Open(&sink))) return;
+        sink->BeginFigure(p(left, bottom - radius), D2D1_FIGURE_BEGIN_FILLED);
+        sink->AddBezier(leftShoulder);
+        sink->AddLine(p(right + radius, bottom));
+        sink->AddBezier(rightShoulder);
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        if (FAILED(sink->Close())) return;
+        sink.Reset();
+        if (FAILED(d2dFactory_->CreatePathGeometry(&outline)) || FAILED(outline->Open(&sink))) return;
+        sink->BeginFigure(p(left, bottom - radius), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddBezier(leftShoulder);
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->BeginFigure(p(right + radius, bottom), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddBezier(rightShoulder);
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        if (FAILED(sink->Close())) return;
+        renderTarget_->FillGeometry(fill.Get(), surface);
+        renderTarget_->DrawGeometry(outline.Get(), border, scale);
+    }
+
     void DrawAdjustmentPanelShell(const VideoAdjustmentsPanelLayout& panel, const AdjustmentPanelLipLayout& lip,
         ID2D1Brush* surface, ID2D1Brush* border, float scale) {
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
@@ -10717,8 +10799,19 @@ private:
         sink->AddBezier(D2D1::BezierSegment(point(left, top + radius - radius * kappa), point(left + radius - radius * kappa, top), point(left + radius, top)));
         sink->EndFigure(D2D1_FIGURE_END_CLOSED);
         if (FAILED(sink->Close())) return;
-        renderTarget_->FillGeometry(silhouette.Get(), surface);
-        renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
+        RECT join{};
+        if (GetDockedAdjustmentJoin(join) && EqualRect(&join, &lip.bounds)) {
+            // Replace only the shell's bottom corners; content/hit rectangles are unchanged.
+            const float joinY = static_cast<float>(join.bottom);
+            renderTarget_->PushAxisAlignedClip(D2D1::RectF(left - radius, top - scale, right + radius, joinY - radius),
+                D2D1_ANTIALIAS_MODE_ALIASED);
+            renderTarget_->FillGeometry(silhouette.Get(), surface);
+            renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
+            renderTarget_->PopAxisAlignedClip();
+        } else {
+            renderTarget_->FillGeometry(silhouette.Get(), surface);
+            renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
+        }
     }
 
     void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float reveal, AdjustmentSource source, bool originalActive) {
@@ -11016,7 +11109,23 @@ private:
         }
         const D2D1_RECT_F island = rect(layout.island);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), 1.0f * scale);
+        RECT join{};
+        if (GetDockedAdjustmentJoin(join)) {
+            // Keep the exposed border; omit the seam underneath the foot and shoulders.
+            const float radius = 10.0f * scale;
+            const D2D1_RECT_F clips[] = {
+                D2D1::RectF(island.left - scale, island.top - scale, join.left - radius, island.top + scale),
+                D2D1::RectF(join.right + radius, island.top - scale, island.right + scale, island.top + scale),
+                D2D1::RectF(island.left - scale, island.top + scale, island.right + scale, island.bottom + scale)
+            };
+            for (const auto& clip : clips) {
+                renderTarget_->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), scale);
+                renderTarget_->PopAxisAlignedClip();
+            }
+        } else {
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), scale);
+        }
         if (videoControlsHovered_ == ButtonKind::VideoPlayPause) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playPause), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
@@ -11130,7 +11239,7 @@ private:
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(tooltipLeft, tooltipTop, tooltipLeft + tooltipWidth, tooltipTop + tooltipHeight), 5.0f * scale, 5.0f * scale), surface.Get());
             DrawOverlayText(L"Volume", tooltipLeft, tooltipTop, tooltipWidth, tooltipHeight, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
-        if (drawZoomHud) DrawZoomHud(GetVideoZoomHudLayout(), VideoCurrentScale() * RenderTargetDpi() / 96.0f, opacity, true, videoAdjustmentsPanelOpen_);
+        if (drawZoomHud && !PersistentAdjustmentHudVisible()) DrawZoomHud(GetVideoZoomHudLayout(), VideoCurrentScale() * RenderTargetDpi() / 96.0f, opacity, true, videoAdjustmentsPanelOpen_);
     }
 
     bool EnsureTitleTextFormat() {
@@ -12825,6 +12934,7 @@ private:
         bool fadeActive = false;
         float opacity = 0.0f;
         float fadeStartOpacity = 0.0f;
+        float physicalScale = 1.0f;
         ULONGLONG fadeStartedAt = 0;
         std::wstring path;
         VideoAdjustmentsPanelLayout layout{};

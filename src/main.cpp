@@ -2323,7 +2323,8 @@ public:
         for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
             const LONG previousGap = index > 0 ? panel.sliders[index].top - panel.sliders[index - 1].bottom : MulDiv(12, GetDpiForWindow(window_), 96);
             const LONG nextGap = index + 1 < static_cast<int>(panel.sliders.size()) ? panel.sliders[index + 1].top - panel.sliders[index].bottom : MulDiv(12, GetDpiForWindow(window_), 96);
-            const LONG verticalPadding = std::max<LONG>(0, std::min({ MulDiv(6, GetDpiForWindow(window_), 96), previousGap / 2, nextGap / 2 }));
+            const LONG maximumPadding = static_cast<LONG>(MulDiv(6, GetDpiForWindow(window_), 96));
+            const LONG verticalPadding = std::max<LONG>(0, std::min(maximumPadding, std::min(previousGap / 2, nextGap / 2)));
             const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - verticalPadding,
                 panel.sliders[index].right, panel.sliders[index].bottom + verticalPadding };
             if (PtInRect(&hit, point)) return index;

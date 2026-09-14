@@ -10555,7 +10555,6 @@ private:
                 sink->AddLine(ringPoint(startAngle + sweep * static_cast<float>(segment) / static_cast<float>(kArcSegments)));
             sink->EndFigure(D2D1_FIGURE_END_OPEN);
             if (SUCCEEDED(sink->Close())) {
-                renderTarget_->DrawGeometry(arrow.Get(), brush, arrowStroke);
                 const float endAngle = startAngle + sweep;
                 const D2D1_POINT_2F arcEnd = ringPoint(endAngle);
                 const D2D1_POINT_2F tangent = point(-std::sin(endAngle), std::cos(endAngle));
@@ -10566,7 +10565,7 @@ private:
                 const float arrowheadHeight = 0.8660254037844386f * arrowheadSide;
                 const D2D1_POINT_2F arrowheadCenter = point(
                     arcEnd.x - tangent.x * arrowheadHeight * (2.0f / 3.0f) + 3.0f * scale,
-                    arcEnd.y - tangent.y * arrowheadHeight * (2.0f / 3.0f) + 2.0f * scale);
+                    arcEnd.y - tangent.y * arrowheadHeight * (2.0f / 3.0f) + 3.0f * scale);
                 const auto transformArrowheadPoint = [&](float forward, float normal) {
                     return point(arrowheadCenter.x + tangent.x * forward + outward.x * normal,
                         arrowheadCenter.y + tangent.y * forward + outward.y * normal);
@@ -10581,7 +10580,27 @@ private:
                     arrowheadSink->AddLine(arrowBaseOuter);
                     arrowheadSink->AddLine(arrowBaseInner);
                     arrowheadSink->EndFigure(D2D1_FIGURE_END_CLOSED);
-                    if (SUCCEEDED(arrowheadSink->Close())) renderTarget_->FillGeometry(arrowhead.Get(), brush);
+                    if (SUCCEEDED(arrowheadSink->Close())) {
+                        ComPtr<ID2D1PathGeometry> widenedArrow, combinedGlyph;
+                        ComPtr<ID2D1GeometrySink> widenedSink, combinedSink;
+                        const bool combined =
+                            SUCCEEDED(d2dFactory_->CreatePathGeometry(&widenedArrow)) &&
+                            SUCCEEDED(widenedArrow->Open(&widenedSink)) &&
+                            SUCCEEDED(arrow->Widen(arrowStroke, nullptr, nullptr, widenedSink.Get())) &&
+                            SUCCEEDED(widenedSink->Close()) &&
+                            SUCCEEDED(d2dFactory_->CreatePathGeometry(&combinedGlyph)) &&
+                            SUCCEEDED(combinedGlyph->Open(&combinedSink)) &&
+                            SUCCEEDED(widenedArrow->CombineWithGeometry(arrowhead.Get(), D2D1_COMBINE_MODE_UNION, nullptr, 0.25f, combinedSink.Get())) &&
+                            SUCCEEDED(combinedSink->Close());
+                        if (combined) {
+                            // The union is filled once, preventing translucent overlap from
+                            // making the disabled gray or enabled blue glyph brighter.
+                            renderTarget_->FillGeometry(combinedGlyph.Get(), brush);
+                        } else {
+                            renderTarget_->DrawGeometry(arrow.Get(), brush, arrowStroke);
+                            renderTarget_->FillGeometry(arrowhead.Get(), brush);
+                        }
+                    }
                 }
             }
         }

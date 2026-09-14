@@ -1002,6 +1002,11 @@ struct VideoAdjustmentsPanelLayout {
     bool aboveControls = false;
 };
 
+struct AdjustmentPanelLipLayout {
+    RECT bounds{};
+    bool active = false;
+};
+
 enum class VideoAdjustmentsPanelMotion { None, Placement, Opening, Closing };
 
 struct ZoomHudLayout {
@@ -2299,6 +2304,48 @@ public:
         const int bottom = static_cast<int>(hud.combined.top) - gap;
         const int height = std::min(MulDiv(278, dpi, 96), std::max(1, bottom - (static_cast<int>(canvas.top) + gap)));
         return MakeVideoAdjustmentsPanelLayout({ panelLeft, bottom - height, panelLeft + width, bottom }, false);
+    }
+    AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel) const {
+        // The lipped silhouette is intended for the bottom-right HUD anchor. Other HUD
+        // positions retain the established rounded rectangle rather than forcing a foot
+        // through a constrained or unrelated lower-overlay layout.
+        const bool hudAtBottomRight = zoomHudPosition_ == ZoomHudPosition::BottomRight;
+        if (panel.aboveControls || !hudAtBottomRight) return {};
+
+        const UINT dpi = GetDpiForWindow(window_);
+        const LONG radius = MulDiv(10, dpi, 96);
+        const LONG clearance = MulDiv(8, dpi, 96);
+        const LONG minimumFootWidth = MulDiv(120, dpi, 96);
+        const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
+        const LONG footRight = std::min(panel.panel.right - radius, hud.combined.left - clearance);
+        if (footRight - panel.panel.left < minimumFootWidth) return {};
+
+        LONG footBottom = panel.panel.bottom;
+        if (VideoActive()) {
+            const RECT controls = GetVideoControlsLayout(false).island;
+            footBottom = controls.bottom;
+            const RECT expandedControls{ controls.left - clearance, controls.top - clearance,
+                controls.right + clearance, controls.bottom + clearance };
+            const RECT foot{ panel.panel.left, panel.panel.bottom - radius, footRight, footBottom };
+            if (foot.right > expandedControls.left && foot.left < expandedControls.right &&
+                foot.bottom > expandedControls.top && foot.top < expandedControls.bottom) return {};
+        } else if (FilmstripEligible() && !filmstripAdjustmentSuppressed_) {
+            footBottom = GetFilmstripBounds().bottom;
+        } else {
+            return {};
+        }
+
+        if (footBottom - panel.panel.bottom < radius * 2) return {};
+        return { { panel.panel.left, panel.panel.bottom - radius, footRight, footBottom }, true };
+    }
+    RECT AdjustmentPanelRenderedRevealBounds(const VideoAdjustmentsPanelLayout& panel, float reveal,
+        const AdjustmentPanelLipLayout& lip) const {
+        if (!lip.active) return AdjustmentPanelRevealBounds(panel, reveal);
+        RECT bounds = panel.panel;
+        bounds.bottom = lip.bounds.bottom;
+        const float progress = std::clamp(reveal, 0.0f, 1.0f);
+        bounds.top = static_cast<LONG>(std::lround(bounds.bottom + (panel.panel.top - bounds.bottom) * progress));
+        return bounds;
     }
     const ImageAdjustmentsPanelLayout& GetImageAdjustmentsPanelLayout() const {
         return ImageAdjustmentsPanelVisible() ? videoAdjustmentsPanelPresentedLayout_ : imageAdjustmentsPanelTargetLayout_;
@@ -10320,6 +10367,34 @@ private:
         drawButton(panel.resetButton, L"RESET");
     }
 
+    void DrawAdjustmentPanelShell(const VideoAdjustmentsPanelLayout& panel, const AdjustmentPanelLipLayout& lip,
+        ID2D1Brush* surface, ID2D1Brush* border, float scale) {
+        const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
+        const float radius = 10.0f * scale;
+        if (!lip.active) {
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), radius, radius), surface);
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), radius, radius), border, scale);
+            return;
+        }
+
+        ComPtr<ID2D1RoundedRectangleGeometry> body, foot;
+        ComPtr<ID2D1PathGeometry> silhouette;
+        ComPtr<ID2D1GeometrySink> sink;
+        const D2D1_ROUNDED_RECT bodyBounds = D2D1::RoundedRect(rect(panel.panel), radius, radius);
+        const D2D1_ROUNDED_RECT footBounds = D2D1::RoundedRect(rect(lip.bounds), radius, radius);
+        if (FAILED(d2dFactory_->CreateRoundedRectangleGeometry(bodyBounds, &body)) ||
+            FAILED(d2dFactory_->CreateRoundedRectangleGeometry(footBounds, &foot)) ||
+            FAILED(d2dFactory_->CreatePathGeometry(&silhouette)) || FAILED(silhouette->Open(&sink)) ||
+            FAILED(body->CombineWithGeometry(foot.Get(), D2D1_COMBINE_MODE_UNION, nullptr, 0.25f, sink.Get())) ||
+            FAILED(sink->Close())) {
+            renderTarget_->FillRoundedRectangle(bodyBounds, surface);
+            renderTarget_->DrawRoundedRectangle(bodyBounds, border, scale);
+            return;
+        }
+        renderTarget_->FillGeometry(silhouette.Get(), surface);
+        renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
+    }
+
     void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float reveal, bool autoActive, bool originalActive) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
@@ -10332,11 +10407,11 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * panelOpacity), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, panelOpacity), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
-        const RECT revealed = AdjustmentPanelRevealBounds(panel, reveal);
+        const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(panel);
+        const RECT revealed = AdjustmentPanelRenderedRevealBounds(panel, reveal, lip);
         if (revealed.bottom <= revealed.top) return;
         renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), scale);
+        DrawAdjustmentPanelShell(panel, lip, surface.Get(), border.Get(), scale);
         DrawAdjustmentPanelContent(panel, adjustments, panelOpacity, autoActive, originalActive, text.Get(), accent.Get(), track.Get(), hover.Get());
         renderTarget_->PopAxisAlignedClip();
     }
@@ -10664,11 +10739,11 @@ private:
             track->SetOpacity(0.75f * panelOpacity);
             hover->SetOpacity(panelOpacity);
             if (adjustmentsPanelSeparateShell) {
-                const RECT revealed = AdjustmentPanelRevealBounds(panel, panelReveal);
+                const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(panel);
+                const RECT revealed = AdjustmentPanelRenderedRevealBounds(panel, panelReveal, lip);
                 if (revealed.bottom > revealed.top) {
                     renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                    renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
-                    renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), border.Get(), 1.0f * scale);
+                    DrawAdjustmentPanelShell(panel, lip, surface.Get(), border.Get(), scale);
                     DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
                     renderTarget_->PopAxisAlignedClip();
                 }

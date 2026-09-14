@@ -1885,7 +1885,7 @@ public:
         const LONG left = std::clamp<LONG>(hud.combined.right - width, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
         const LONG right = left + width;
         const LONG bottom = hud.combined.top - MulDiv(8, dpi, 96);
-        const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
+        const LONG height = std::min<LONG>(MulDiv(238, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
         const LONG top = bottom - height;
         return MakeVideoAdjustmentsPanelLayout({ left, top, right, bottom }, false);
     }
@@ -2383,7 +2383,7 @@ public:
         const int width = std::min(MulDiv(370, dpi, 96), std::max(MulDiv(220, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
         const int panelLeft = std::clamp(static_cast<int>(hud.combined.right) - width, static_cast<int>(canvas.left) + gap, std::max(static_cast<int>(canvas.left) + gap, static_cast<int>(canvas.right) - gap - width));
         const int bottom = static_cast<int>(hud.combined.top) - gap;
-        const int height = std::min(MulDiv(278, dpi, 96), std::max(1, bottom - (static_cast<int>(canvas.top) + gap)));
+        const int height = std::min(MulDiv(238, dpi, 96), std::max(1, bottom - (static_cast<int>(canvas.top) + gap)));
         return MakeVideoAdjustmentsPanelLayout({ panelLeft, bottom - height, panelLeft + width, bottom }, false);
     }
     AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel) const {

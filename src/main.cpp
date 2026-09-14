@@ -1695,8 +1695,12 @@ public:
         const VideoAdjustmentsPanelLayout normalTarget = GetVideoZoomHudAdjustmentsPanelTargetLayout();
         const RECT controls = GetVideoControlsLayout(false).island;
         const RECT expandedControls{ controls.left - clearance, controls.top - clearance, controls.right + clearance, controls.bottom + clearance };
-        return normalTarget.panel.left < expandedControls.right && normalTarget.panel.right > expandedControls.left &&
-            normalTarget.panel.top < expandedControls.bottom && normalTarget.panel.bottom > expandedControls.top;
+        const auto intersects = [&](const RECT& bounds) {
+            return bounds.left < expandedControls.right && bounds.right > expandedControls.left &&
+                bounds.top < expandedControls.bottom && bounds.bottom > expandedControls.top;
+        };
+        const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(normalTarget);
+        return intersects(normalTarget.panel) || (lip.active && intersects(lip.bounds));
     }
     VideoControlsLayout GetVideoControlsLayout(bool) const {
         const RECT canvas = ModelCanvasBounds();
@@ -1878,28 +1882,17 @@ public:
         return 0.25f + 0.75f * std::clamp(reveal, 0.0f, 1.0f);
     }
     VideoAdjustmentsPanelLayout GetVideoZoomHudAdjustmentsPanelTargetLayout() const {
-        const RECT canvas = ModelCanvasBounds();
-        const UINT dpi = GetDpiForWindow(window_);
-        const LONG width = MulDiv(370, dpi, 96);
-        const ZoomHudLayout hud = GetVideoZoomHudLayout();
-        const LONG left = std::clamp<LONG>(hud.combined.right - width, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
-        const LONG right = left + width;
-        const LONG bottom = hud.combined.top - MulDiv(8, dpi, 96);
-        const LONG height = std::min<LONG>(MulDiv(238, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
-        const LONG top = bottom - height;
-        return MakeVideoAdjustmentsPanelLayout({ left, top, right, bottom }, false);
+        return GetImageAdjustmentsPanelTargetLayout();
     }
     VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
-        if (!VideoAdjustmentsPanelAboveControls()) return GetVideoZoomHudAdjustmentsPanelTargetLayout();
-        const VideoControlsLayout controls = GetVideoControlsLayout(true);
-        const RECT canvas = ModelCanvasBounds();
-        const UINT dpi = GetDpiForWindow(window_);
-        const LONG width = std::min<LONG>(MulDiv(370, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)));
-        const LONG left = std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
-        const LONG right = left + width;
-        const LONG bottom = controls.island.top;
-        const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
-        return MakeVideoAdjustmentsPanelLayout({ left, bottom - height, right, bottom }, true);
+        const VideoAdjustmentsPanelLayout normal = GetImageAdjustmentsPanelTargetLayout();
+        if (!VideoAdjustmentsPanelAboveControls()) return normal;
+        const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(normal);
+        const LONG bottom = lip.active ? lip.bounds.bottom : normal.panel.bottom;
+        const LONG gap = MulDiv(8, GetDpiForWindow(window_), 96);
+        auto target = OffsetVideoAdjustmentsPanelLayout(normal, 0, GetVideoControlsLayout(false).island.top - gap - bottom);
+        target.aboveControls = true;
+        return target;
     }
     bool VideoAdjustmentsPanelMotionActive() const {
         return videoAdjustmentsPanelMotion_ != VideoAdjustmentsPanelMotion::None;
@@ -2391,34 +2384,34 @@ public:
         // positions retain the established rounded rectangle rather than forcing a foot
         // through a constrained or unrelated lower-overlay layout.
         const bool hudAtBottomRight = zoomHudPosition_ == ZoomHudPosition::BottomRight;
-        if (panel.aboveControls || !hudAtBottomRight) return {};
+        if (!hudAtBottomRight) return {};
 
         const UINT dpi = GetDpiForWindow(window_);
         const LONG radius = MulDiv(10, dpi, 96);
         const LONG clearance = MulDiv(8, dpi, 96);
         const LONG minimumFootWidth = MulDiv(220, dpi, 96);
-        const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
-        const LONG footLeft = panel.panel.left;
-        const LONG footRight = std::min(panel.panel.right - radius * 2, hud.combined.left - clearance);
+        // Video translates the finished image panel, including its footer, as one unit.
+        const auto normal = VideoActive() ? GetImageAdjustmentsPanelTargetLayout() : panel;
+        const ZoomHudLayout hud = GetImageZoomHudLayout();
+        const LONG footLeft = normal.panel.left;
+        const LONG footRight = std::min(normal.panel.right - radius * 2, hud.combined.left - clearance);
         if (footRight - footLeft < minimumFootWidth) return {};
 
-        LONG footBottom = panel.panel.bottom;
+        LONG footBottom = normal.panel.bottom;
         if (VideoActive()) {
-            const RECT controls = GetVideoControlsLayout(false).island;
-            footBottom = controls.bottom;
-            const RECT expandedControls{ controls.left - clearance, controls.top - clearance,
-                controls.right + clearance, controls.bottom + clearance };
-            const RECT foot{ footLeft, panel.panel.bottom, footRight, footBottom };
-            if (foot.right > expandedControls.left && foot.left < expandedControls.right &&
-                foot.bottom > expandedControls.top && foot.top < expandedControls.bottom) return {};
+            // Match the image filmstrip's 16-DIP canvas-bottom anchor. Videos have no
+            // source_, so FilmstripEligible()/GetFilmstripBounds() cannot supply it.
+            footBottom = static_cast<LONG>(ImageCanvasBounds().bottom) - MulDiv(16, dpi, 96);
         } else if (FilmstripEligible() && !filmstripAdjustmentSuppressed_) {
             footBottom = GetFilmstripBounds().bottom;
         } else {
             return {};
         }
 
-        if (footBottom - panel.panel.bottom < MulDiv(34, dpi, 96)) return {};
-        return { { footLeft, panel.panel.bottom, footRight, footBottom }, true };
+        if (footBottom - normal.panel.bottom < MulDiv(34, dpi, 96)) return {};
+        RECT foot{ footLeft, normal.panel.bottom, footRight, footBottom };
+        OffsetRect(&foot, panel.panel.left - normal.panel.left, panel.panel.top - normal.panel.top);
+        return { foot, true };
     }
     AdjustmentPanelActionLayout GetAdjustmentPanelActionLayout(const VideoAdjustmentsPanelLayout& panel,
         const AdjustmentPanelLipLayout& lip) const {
@@ -10687,39 +10680,6 @@ private:
         if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.24f), &handle))) return;
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, bottom - height, left + width, bottom), height * 0.5f, height * 0.5f), handle.Get());
     }
-    void DrawVideoAdjustmentCompositeShell(const VideoControlsLayout& controls, const VideoAdjustmentsPanelLayout& panel,
-        ID2D1Brush* surface, ID2D1Brush* border, float scale) {
-        ComPtr<ID2D1PathGeometry> geometry;
-        ComPtr<ID2D1GeometrySink> sink;
-        if (FAILED(d2dFactory_->CreatePathGeometry(&geometry)) || FAILED(geometry->Open(&sink))) return;
-        const float r = 10.0f * scale, c = 0.55228475f;
-        const float cl = static_cast<float>(controls.island.left), ct = static_cast<float>(controls.island.top), cr = static_cast<float>(controls.island.right), cb = static_cast<float>(controls.island.bottom);
-        const float pl = static_cast<float>(panel.panel.left), pt = static_cast<float>(panel.panel.top), pr = static_cast<float>(panel.panel.right), pb = static_cast<float>(panel.panel.bottom);
-        const auto p = [](float x, float y) { return D2D1::Point2F(x, y); };
-        sink->BeginFigure(panel.aboveControls ? p(pl + r, pt) : p(cl + r, ct), D2D1_FIGURE_BEGIN_FILLED);
-        if (!panel.aboveControls) {
-            sink->AddLine(p(cr - r, ct));
-            sink->AddBezier(D2D1::BezierSegment(p(cr - r + c * r, ct), p(cr, ct - r + c * r), p(cr, ct - r)));
-            sink->AddLine(p(pl, pt + r));
-            sink->AddBezier(D2D1::BezierSegment(p(pl, pt + r - c * r), p(pl + r - c * r, pt), p(pl + r, pt)));
-            sink->AddLine(p(pr - r, pt)); sink->AddBezier(D2D1::BezierSegment(p(pr - r + c * r, pt), p(pr, pt + r - c * r), p(pr, pt + r)));
-            sink->AddLine(p(pr, pb - r)); sink->AddBezier(D2D1::BezierSegment(p(pr, pb - r + c * r), p(pr - r + c * r, pb), p(pr - r, pb)));
-            sink->AddLine(p(cl + r, cb)); sink->AddBezier(D2D1::BezierSegment(p(cl + r - c * r, cb), p(cl, cb - r + c * r), p(cl, cb - r)));
-            sink->AddLine(p(cl, ct + r)); sink->AddBezier(D2D1::BezierSegment(p(cl, ct + r - c * r), p(cl + r - c * r, ct), p(cl + r, ct)));
-        } else {
-            sink->AddLine(p(pr - r, pt)); sink->AddBezier(D2D1::BezierSegment(p(pr - r + c * r, pt), p(pr, pt + r - c * r), p(pr, pt + r)));
-            sink->AddLine(p(pr, pb - r)); sink->AddBezier(D2D1::BezierSegment(p(pr, pb - r + c * r), p(pr + r - c * r, ct), p(pr + r, ct)));
-            sink->AddLine(p(cr - r, ct)); sink->AddBezier(D2D1::BezierSegment(p(cr - r + c * r, ct), p(cr, ct + r - c * r), p(cr, ct + r)));
-            sink->AddLine(p(cr, cb - r)); sink->AddBezier(D2D1::BezierSegment(p(cr, cb - r + c * r), p(cr - r + c * r, cb), p(cr - r, cb)));
-            sink->AddLine(p(cl + r, cb)); sink->AddBezier(D2D1::BezierSegment(p(cl + r - c * r, cb), p(cl, cb - r + c * r), p(cl, cb - r)));
-            sink->AddLine(p(cl, ct + r)); sink->AddBezier(D2D1::BezierSegment(p(cl, ct + r - c * r), p(cl + r - c * r, ct), p(cl + r, ct)));
-            sink->AddLine(p(pl - r, pb));
-            sink->AddBezier(D2D1::BezierSegment(p(pl - r + c * r, pb), p(pl, pb - r + c * r), p(pl, pb - r)));
-            sink->AddLine(p(pl, pt + r)); sink->AddBezier(D2D1::BezierSegment(p(pl, pt + r - c * r), p(pl + r - c * r, pt), p(pl + r, pt)));
-        }
-        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-        if (SUCCEEDED(sink->Close())) { renderTarget_->FillGeometry(geometry.Get(), surface); renderTarget_->DrawGeometry(geometry.Get(), border, scale); }
-    }
     void DrawVideoAutoPlayNextCountdown() {
         if (!videoAutoPlayNextCountdownActive_) return;
         const ULONGLONG elapsed = GetTickCount64() - videoAutoPlayNextCountdownStartedAt_;
@@ -10944,92 +10904,12 @@ private:
                 DrawOverlayText(label.c_str(), static_cast<float>(panel.rates[index].left), static_cast<float>(panel.rates[index].top), static_cast<float>(panel.rates[index].right - panel.rates[index].left), static_cast<float>(panel.rates[index].bottom - panel.rates[index].top), 12.0f, selected ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL, supported ? text.Get() : border.Get(), true, false, true);
             }
         }
-        const bool adjustmentsPanelVisible = VideoAdjustmentsPanelVisible();
-        const bool adjustmentsPanelSeparateShell = adjustmentsPanelVisible && (!GetVideoAdjustmentsPanelPresentedLayout().aboveControls || VideoAdjustmentsPanelMotionActive() || videoAdjustmentsPanelFadeActive_);
-        if (adjustmentsPanelVisible && !adjustmentsPanelSeparateShell)
-            DrawVideoAdjustmentCompositeShell(layout, GetVideoAdjustmentsPanelPresentedLayout(), surface.Get(), border.Get(), scale);
         const D2D1_RECT_F island = rect(layout.island);
-        if (!adjustmentsPanelVisible || adjustmentsPanelSeparateShell) {
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), 1.0f * scale);
-        }
-        if (adjustmentsPanelVisible) {
-            const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
-            const float panelReveal = videoAdjustmentsPanelOpacity_;
-            const float panelOpacity = AdjustmentPanelPresentationOpacity(panelReveal);
-            surface->SetOpacity(panelOpacity);
-            border->SetOpacity(panelOpacity);
-            text->SetOpacity(panelOpacity);
-            accent->SetOpacity(panelOpacity);
-            orange->SetOpacity(panelOpacity);
-            track->SetOpacity(0.75f * panelOpacity);
-            hover->SetOpacity(panelOpacity);
-            if (adjustmentsPanelSeparateShell) {
-                const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(panel);
-                const RECT revealed = AdjustmentPanelRenderedRevealBounds(panel, panelReveal, lip);
-                if (revealed.bottom > revealed.top) {
-                    renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                    DrawAdjustmentPanelShell(panel, lip, surface.Get(), border.Get(), scale);
-                    DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, videoAdjustmentSource_, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), orange.Get(), track.Get(), hover.Get());
-                    renderTarget_->PopAxisAlignedClip();
-                }
-            } else {
-                DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, videoAdjustmentSource_, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), orange.Get(), track.Get(), hover.Get());
-            }
-            const bool legacyShellDisabled = false;
-            if (legacyShellDisabled) {
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), 10.0f * scale, 10.0f * scale), surface.Get());
-            const float radius = 10.0f * scale;
-            if (!panel.aboveControls) {
-                renderTarget_->FillRectangle(D2D1::RectF(static_cast<float>(panel.panel.left - radius), static_cast<float>(layout.island.top), static_cast<float>(panel.panel.left + radius), static_cast<float>(panel.panel.bottom)), surface.Get());
-                ComPtr<ID2D1PathGeometry> outline;
-                ComPtr<ID2D1GeometrySink> sink;
-                const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
-                if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&outline)) && SUCCEEDED(outline->Open(&sink))) {
-                    const float curve = 0.55228475f;
-                    sink->BeginFigure(point(static_cast<float>(panel.panel.left), static_cast<float>(panel.panel.top) + radius), D2D1_FIGURE_BEGIN_HOLLOW);
-                    sink->AddBezier(D2D1::BezierSegment(point(static_cast<float>(panel.panel.left), static_cast<float>(panel.panel.top) + radius - curve * radius), point(static_cast<float>(panel.panel.left) + radius - curve * radius, static_cast<float>(panel.panel.top)), point(static_cast<float>(panel.panel.left) + radius, static_cast<float>(panel.panel.top))));
-                    sink->AddLine(point(static_cast<float>(panel.panel.right) - radius, static_cast<float>(panel.panel.top)));
-                    sink->AddBezier(D2D1::BezierSegment(point(static_cast<float>(panel.panel.right) - radius + curve * radius, static_cast<float>(panel.panel.top)), point(static_cast<float>(panel.panel.right), static_cast<float>(panel.panel.top) + radius - curve * radius), point(static_cast<float>(panel.panel.right), static_cast<float>(panel.panel.top) + radius)));
-                    sink->AddLine(point(static_cast<float>(panel.panel.right), static_cast<float>(panel.panel.bottom) - radius));
-                    sink->AddBezier(D2D1::BezierSegment(point(static_cast<float>(panel.panel.right), static_cast<float>(panel.panel.bottom) - radius + curve * radius), point(static_cast<float>(panel.panel.right) - radius + curve * radius, static_cast<float>(panel.panel.bottom)), point(static_cast<float>(panel.panel.right) - radius, static_cast<float>(panel.panel.bottom))));
-                    sink->AddLine(point(static_cast<float>(panel.panel.left), static_cast<float>(panel.panel.bottom)));
-                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
-                    sink->BeginFigure(point(static_cast<float>(panel.panel.left), static_cast<float>(panel.panel.top) + radius), D2D1_FIGURE_BEGIN_HOLLOW);
-                    sink->AddLine(point(static_cast<float>(panel.panel.left), static_cast<float>(layout.island.top) - radius));
-                    sink->AddBezier(D2D1::BezierSegment(point(static_cast<float>(panel.panel.left), static_cast<float>(layout.island.top) - radius + curve * radius), point(static_cast<float>(panel.panel.left) - radius + curve * radius, static_cast<float>(layout.island.top)), point(static_cast<float>(panel.panel.left) - radius, static_cast<float>(layout.island.top))));
-                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
-                    if (SUCCEEDED(sink->Close())) renderTarget_->DrawGeometry(outline.Get(), border.Get(), scale);
-                }
-            } else {
-                renderTarget_->FillRectangle(D2D1::RectF(static_cast<float>(panel.panel.left) - radius, static_cast<float>(panel.panel.bottom) - radius, static_cast<float>(panel.panel.right) + radius, static_cast<float>(panel.panel.bottom) + radius), surface.Get());
-                ComPtr<ID2D1PathGeometry> outline;
-                ComPtr<ID2D1GeometrySink> sink;
-                const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
-                if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&outline)) && SUCCEEDED(outline->Open(&sink))) {
-                    const float curve = 0.55228475f;
-                    sink->BeginFigure(point(static_cast<float>(panel.panel.left), static_cast<float>(panel.panel.bottom) - radius), D2D1_FIGURE_BEGIN_HOLLOW);
-                    sink->AddLine(point(static_cast<float>(panel.panel.left), static_cast<float>(panel.panel.top) + radius));
-                    sink->AddBezier(D2D1::BezierSegment(point(static_cast<float>(panel.panel.left), static_cast<float>(panel.panel.top) + radius - curve * radius), point(static_cast<float>(panel.panel.left) + radius - curve * radius, static_cast<float>(panel.panel.top)), point(static_cast<float>(panel.panel.left) + radius, static_cast<float>(panel.panel.top))));
-                    sink->AddLine(point(static_cast<float>(panel.panel.right) - radius, static_cast<float>(panel.panel.top)));
-                    sink->AddBezier(D2D1::BezierSegment(point(static_cast<float>(panel.panel.right) - radius + curve * radius, static_cast<float>(panel.panel.top)), point(static_cast<float>(panel.panel.right), static_cast<float>(panel.panel.top) + radius - curve * radius), point(static_cast<float>(panel.panel.right), static_cast<float>(panel.panel.top) + radius)));
-                    sink->AddLine(point(static_cast<float>(panel.panel.right), static_cast<float>(panel.panel.bottom) - radius));
-                    sink->AddBezier(D2D1::BezierSegment(point(static_cast<float>(panel.panel.right), static_cast<float>(panel.panel.bottom) - radius + curve * radius), point(static_cast<float>(panel.panel.right) + radius - curve * radius, static_cast<float>(panel.panel.bottom)), point(static_cast<float>(panel.panel.right) + radius, static_cast<float>(panel.panel.bottom))));
-                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
-                    sink->BeginFigure(point(static_cast<float>(panel.panel.left), static_cast<float>(panel.panel.bottom) - radius), D2D1_FIGURE_BEGIN_HOLLOW);
-                    sink->AddBezier(D2D1::BezierSegment(point(static_cast<float>(panel.panel.left), static_cast<float>(panel.panel.bottom) - radius + curve * radius), point(static_cast<float>(panel.panel.left) - radius + curve * radius, static_cast<float>(panel.panel.bottom)), point(static_cast<float>(panel.panel.left) - radius, static_cast<float>(panel.panel.bottom))));
-                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
-                    if (SUCCEEDED(sink->Close())) renderTarget_->DrawGeometry(outline.Get(), border.Get(), scale);
-                }
-            }
-            }
-            surface->SetOpacity(1.0f);
-            border->SetOpacity(1.0f);
-            text->SetOpacity(1.0f);
-            accent->SetOpacity(1.0f);
-            track->SetOpacity(1.0f);
-            hover->SetOpacity(1.0f);
-        }
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), 1.0f * scale);
+        if (VideoAdjustmentsPanelVisible())
+            DrawAdjustmentPanel(GetVideoAdjustmentsPanelPresentedLayout(), videoAdjustments_, videoAdjustmentsPanelOpacity_,
+                videoAdjustmentSource_, videoAdjustmentsOriginalPreviewActive_);
         if (videoControlsHovered_ == ButtonKind::VideoPlayPause) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playPause), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());

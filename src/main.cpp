@@ -1285,7 +1285,7 @@ public:
         }
         if (!(dissolveAwaitingTarget_ && PathsEqual(fs::path(path), fs::path(dissolveTargetPath_)))) ClearStillDissolve();
         if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
-        if (IsVideoPath(path)) { BeginVideoLoad(path, activeOpenAttemptId_); return S_OK; }
+        if (IsVideoPath(path)) { BeginVideoLoad(path, activeOpenAttemptId_, resetNavigation); return S_OK; }
         DeactivateVideo();
         DeactivateModel();
         contentKind_ = ContentKind::Image2D;
@@ -5158,6 +5158,9 @@ public:
         return found == navigationFiles_.end() ? 0 : static_cast<size_t>(std::distance(navigationFiles_.begin(), found));
     }
     void RebuildFilmstripLayout(bool clampScroll = true, bool queueThumbnails = true) {
+        // Hidden Video2D has no filmstrip height. Preserve its slots and manual scroll
+        // until the returning image commits and can rebuild at the real viewport size.
+        if (!source_) return;
         const size_t count = navigationFiles_.size();
         filmstripItemWidths_.resize(count);
         filmstripItemOffsets_.resize(count + 1);
@@ -5234,6 +5237,7 @@ public:
     void ApplyFilmstripAspectRelayout(bool queueThumbnails = true, bool force = false) {
         const size_t pendingCount = static_cast<size_t>(std::count(filmstripAspectRelayoutPending_.begin(), filmstripAspectRelayoutPending_.end(), true));
         if (!pendingCount && !force) return;
+        if (!source_) { filmstripLayoutRebuildPending_ = true; return; }
         const std::optional<FilmstripLayoutAnchor> anchor = CaptureFilmstripLayoutAnchor();
         const RECT oldBounds = GetFilmstripBounds();
         const double oldScroll = filmstripScroll_;
@@ -5850,6 +5854,12 @@ public:
 #endif
             if (layoutDeferred) filmstripLayoutRebuildPending_ = true;
             else if (aspectChanged) ApplyFilmstripAspectRelayout();
+            // A genuinely uncached item may finish after the return morph captured
+            // its contents; do not freeze that placeholder for the rest of the morph.
+            if (lowerUiMorph_.active && lowerUiMorph_.ready && !lowerUiMorph_.targetVideo) {
+                CaptureLowerUiContents(false);
+                RetargetLowerUiGeometry();
+            }
             InvalidateRect(window_, nullptr, FALSE);
         } else {
             if (current) filmstripThumbnailFailures_.push_back(result->request);
@@ -8149,8 +8159,10 @@ private:
         DismissTriangleCountTooltip(false);
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
-    void BeginVideoLoad(const std::wstring& path, uint64_t openAttemptId) {
+    void BeginVideoLoad(const std::wstring& path, uint64_t openAttemptId, bool resetNavigation) {
         FileOpenDiagnostics::Log(openAttemptId, L"video-load-begin");
+        const bool preserveNavigation = !resetNavigation &&
+            PathsEqual(fs::path(path).parent_path(), fs::path(currentPath_).parent_path());
         const bool replacingVideo = VideoActive();
         const std::wstring previousTitleMetadata = resolutionText_;
         if (replacingVideo && PathsEqual(fs::path(path), fs::path(currentPath_))) FlushVideoAdjustmentPersistence();
@@ -8170,7 +8182,10 @@ private:
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         fileSizeText_ = FormatFileSize(path); resolutionText_ = replacingVideo ? previousTitleMetadata : L""; error_.clear();
-        navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false; contentKind_ = ContentKind::Video2D;
+        // Sibling navigation must retain the path-to-thumbnail/aspect mapping. Clearing
+        // it makes the next same-folder scan discard the cache as if the folder changed.
+        if (!preserveNavigation) { navigationFiles_.clear(); navigationBuilt_ = false; }
+        navigationBuildQueued_ = false; contentKind_ = ContentKind::Video2D;
         ResetVideoControls();
         EnsureRenderTarget();
         std::wstring videoError;
@@ -10647,9 +10662,10 @@ private:
             filmstripLayoutRebuildPending_ = false;
             StopFilmstripScrollAnimation();
         } else if (navigationBuilt_) {
-            // A video sibling can build navigation while Image2D has no source. Rebuild after
-            // the image commit so stale compact placeholder widths cannot reach the first paint.
+            // Reuse the retained slots at the current image viewport size, including any
+            // aspect discoveries deferred while the video had no visible filmstrip.
             RebuildFilmstripLayout();
+            ApplyDeferredFilmstripLayout();
             RevealClickedFilmstripItem();
         }
         CommitAdjustmentPanelNavigation(path);

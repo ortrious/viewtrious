@@ -1915,6 +1915,15 @@ public:
     RECT VideoAdjustmentsPanelMotionRect(float progress) const {
         const RECT start = videoAdjustmentsPanelPlacementStartLayout_.panel;
         const RECT target = videoAdjustmentsPanelPlacementTargetLayout_.panel;
+        if (videoAdjustmentsPanelPlacementTargetLayout_.aboveControls) {
+            // Dock directly: one monotonic flight, with no overshoot or settling leg.
+            const float phase = SmoothTransitionProgress(progress);
+            const auto coordinate = [phase](LONG from, LONG to) {
+                return static_cast<LONG>(std::lround(from + (to - from) * phase));
+            };
+            return { coordinate(start.left, target.left), coordinate(start.top, target.top),
+                coordinate(start.right, target.right), coordinate(start.bottom, target.bottom) };
+        }
         const float startWidth = static_cast<float>(start.right - start.left), startHeight = static_cast<float>(start.bottom - start.top);
         const float targetWidth = static_cast<float>(target.right - target.left), targetHeight = static_cast<float>(target.bottom - target.top);
         const float startX = (start.left + start.right) * 0.5f, startY = (start.top + start.bottom) * 0.5f;
@@ -2202,10 +2211,10 @@ public:
         if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Placement) {
             const float start = videoAdjustmentsPanelPlacementStartLayout_.aboveControls ? 1.0f : 0.0f;
             const float target = videoAdjustmentsPanelPlacementTargetLayout_.aboveControls ? 1.0f : 0.0f;
-            // Finish the fill during flight, before the existing final settling phase.
+            // Finish the notch fill before the bottom corners begin their docking morph.
             const float progress = SmoothTransitionProgress(std::min(1.0f,
                 static_cast<float>(GetTickCount64() - videoAdjustmentsPanelPlacementStartedAt_) /
-                (static_cast<float>(kVideoAdjustmentsPlacementDurationMs) * 0.82f)));
+                (static_cast<float>(kVideoAdjustmentsPlacementDurationMs) * 0.65f)));
             return start + (target - start) * progress;
         }
         return videoAdjustmentsPanelPresentedLayout_.aboveControls ? 1.0f : 0.0f;
@@ -2227,6 +2236,27 @@ public:
         const LONG radius = MulDiv(10, GetDpiForWindow(window_), 96);
         return foot.bottom == controls.top && foot.left - radius > controls.left + radius &&
             foot.right + radius < controls.right - radius;
+    }
+    bool GetAdjustmentDockMorph(RECT& foot, float& progress) const {
+        if (GetDockedAdjustmentJoin(foot)) { progress = 1.0f; return true; }
+        if (adjustmentPanelNavigation_.pending || !VideoActive() || !VideoAdjustmentsPanelVisible() ||
+            videoAdjustmentsPanelMotion_ != VideoAdjustmentsPanelMotion::Placement ||
+            !videoAdjustmentsPanelPlacementTargetLayout_.aboveControls) return false;
+        const float flight = std::min(1.0f,
+            static_cast<float>(GetTickCount64() - videoAdjustmentsPanelPlacementStartedAt_) /
+            static_cast<float>(kVideoAdjustmentsPlacementDurationMs));
+        if (flight <= 0.70f) return false;
+        const auto lip = GetAdjustmentPanelLipLayout(videoAdjustmentsPanelPresentedLayout_);
+        if (!lip.active) return false;
+        foot = lip.bounds;
+        foot.right = videoAdjustmentsPanelPresentedLayout_.panel.right;
+        // Only morph toward a dock that has room for the final exposed shoulders.
+        const RECT controls = GetVideoControlsLayout(false).island;
+        const RECT target = videoAdjustmentsPanelPlacementTargetLayout_.panel;
+        const LONG radius = MulDiv(10, GetDpiForWindow(window_), 96);
+        if (target.left - radius <= controls.left + radius || target.right + radius >= controls.right - radius) return false;
+        progress = SmoothTransitionProgress((flight - 0.70f) / 0.30f);
+        return true;
     }
     void DrawNavigatingAdjustmentPanel() {
         DrawAdjustmentDockConnection();
@@ -10757,7 +10787,8 @@ private:
 
     void DrawAdjustmentDockConnection() {
         RECT foot{};
-        if (!GetDockedAdjustmentJoin(foot)) return;
+        float morph = 0.0f;
+        if (!GetAdjustmentDockMorph(foot, morph)) return;
         const auto& held = adjustmentPanelNavigation_;
         const auto& panel = held.pending ? held.layout : videoAdjustmentsPanelPresentedLayout_;
         const float reveal = held.pending ? held.opacity : videoAdjustmentsPanelOpacity_;
@@ -10771,24 +10802,26 @@ private:
         // extend outside the panel's own reveal clip.
         renderTarget_->PushAxisAlignedClip(D2D1::RectF(foot.left - 11.0f * scale, static_cast<float>(revealed.top),
             foot.right + 11.0f * scale, foot.bottom + scale), D2D1_ANTIALIAS_MODE_ALIASED);
-        DrawAdjustmentDockShoulders(foot, surface.Get(), border.Get(), scale);
+        DrawAdjustmentDockShoulders(foot, surface.Get(), border.Get(), scale, morph);
         renderTarget_->PopAxisAlignedClip();
     }
-    void DrawAdjustmentDockShoulders(const RECT& foot, ID2D1Brush* surface, ID2D1Brush* border, float scale) {
+    void DrawAdjustmentDockShoulders(const RECT& foot, ID2D1Brush* surface, ID2D1Brush* border, float scale, float morph) {
         const float left = static_cast<float>(foot.left), right = static_cast<float>(foot.right);
         const float bottom = static_cast<float>(foot.bottom), radius = 10.0f * scale;
         const float kappa = 0.55228475f;
         const auto p = [](float x, float y) { return D2D1::Point2F(x, y); };
+        // Interpolate the same cubic from a convex bottom corner to a concave shoulder.
+        const float reach = radius * (1.0f - 2.0f * morph);
         const auto leftShoulder = D2D1::BezierSegment(p(left, bottom - radius + radius * kappa),
-            p(left - radius + radius * kappa, bottom), p(left - radius, bottom));
-        const auto rightShoulder = D2D1::BezierSegment(p(right + radius - radius * kappa, bottom),
+            p(left + reach * (1.0f - kappa), bottom), p(left + reach, bottom));
+        const auto rightShoulder = D2D1::BezierSegment(p(right - reach * (1.0f - kappa), bottom),
             p(right, bottom - radius + radius * kappa), p(right, bottom - radius));
         ComPtr<ID2D1PathGeometry> fill, outline;
         ComPtr<ID2D1GeometrySink> sink;
         if (FAILED(d2dFactory_->CreatePathGeometry(&fill)) || FAILED(fill->Open(&sink))) return;
         sink->BeginFigure(p(left, bottom - radius), D2D1_FIGURE_BEGIN_FILLED);
         sink->AddBezier(leftShoulder);
-        sink->AddLine(p(right + radius, bottom));
+        sink->AddLine(p(right - reach, bottom));
         sink->AddBezier(rightShoulder);
         sink->EndFigure(D2D1_FIGURE_END_CLOSED);
         if (FAILED(sink->Close())) return;
@@ -10797,12 +10830,16 @@ private:
         sink->BeginFigure(p(left, bottom - radius), D2D1_FIGURE_BEGIN_HOLLOW);
         sink->AddBezier(leftShoulder);
         sink->EndFigure(D2D1_FIGURE_END_OPEN);
-        sink->BeginFigure(p(right + radius, bottom), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->BeginFigure(p(right - reach, bottom), D2D1_FIGURE_BEGIN_HOLLOW);
         sink->AddBezier(rightShoulder);
         sink->EndFigure(D2D1_FIGURE_END_OPEN);
         if (FAILED(sink->Close())) return;
         renderTarget_->FillGeometry(fill.Get(), surface);
         renderTarget_->DrawGeometry(outline.Get(), border, scale);
+        const float borderOpacity = border->GetOpacity();
+        border->SetOpacity(borderOpacity * (1.0f - morph));
+        renderTarget_->DrawLine(p(left + reach, bottom), p(right - reach, bottom), border, scale);
+        border->SetOpacity(borderOpacity);
     }
 
     void DrawAdjustmentPanelShell(const VideoAdjustmentsPanelLayout& panel, const AdjustmentPanelLipLayout& lip,
@@ -10810,10 +10847,11 @@ private:
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         const float radius = 10.0f * scale;
         RECT join{};
-        if (GetDockedAdjustmentJoin(join) && lip.active && join.bottom == lip.bounds.bottom &&
+        float morph = 0.0f;
+        if (GetAdjustmentDockMorph(join, morph) && lip.active && join.bottom == lip.bounds.bottom &&
             join.left == panel.panel.left && join.right == panel.panel.right) {
-            // Docked-only shell extension fills the lower-right notch. Keep the
-            // original content layout and use the existing concave connection below.
+            // The separately drawn bottom band morphs during approach; keep the
+            // unchanged shared content above it without double-filling that band.
             const D2D1_RECT_F docked = D2D1::RectF(static_cast<float>(panel.panel.left),
                 static_cast<float>(panel.panel.top), static_cast<float>(panel.panel.right), static_cast<float>(join.bottom));
             renderTarget_->PushAxisAlignedClip(D2D1::RectF(docked.left - scale, docked.top - scale,

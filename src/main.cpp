@@ -997,8 +997,9 @@ struct VideoAdjustmentsPanelLayout {
     RECT panel;
     std::array<RECT, 7> sliders;
     RECT autoButton;
-    RECT originalButton;
+    RECT userButton;
     RECT saveButton;
+    RECT originalButton;
     RECT resetButton;
     bool aboveControls = false;
 };
@@ -1006,6 +1007,14 @@ struct VideoAdjustmentsPanelLayout {
 struct AdjustmentPanelLipLayout {
     RECT bounds{};
     bool active = false;
+};
+
+struct AdjustmentPanelActionLayout {
+    RECT autoButton;
+    RECT userButton;
+    RECT saveButton;
+    RECT originalButton;
+    RECT resetButton;
 };
 
 enum class VideoAdjustmentsPanelMotion { None, Placement, Opening, Closing };
@@ -1237,6 +1246,7 @@ public:
         videoLastNonZeroVolume_ = videoVolume_ > 0.0 ? videoVolume_ : 1.0;
         videoMuted_ = videoMuted != 0 || videoVolume_ <= 0.0;
         if (videoMuted_) videoVolume_ = 0.0;
+        LoadUserAdjustmentPreset();
         reuseImageWindow_ = ReadExternalOpenBehavior(L"ImageExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
         reuseVideoWindow_ = ReadExternalOpenBehavior(L"VideoExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
         DWORD onboardingVersion = 0;
@@ -1832,27 +1842,29 @@ public:
         const LONG bottom = panel.bottom;
         const int labelWidth = MulDiv(70, dpi, 96);
         const int valueWidth = MulDiv(38, dpi, 96);
-        const int rowHeight = MulDiv(30, dpi, 96);
+        const int rowHeight = MulDiv(32, dpi, 96);
         const int sliderLeft = left + labelWidth;
         const int panelPadding = MulDiv(12, dpi, 96);
         const int sliderRight = right - valueWidth - panelPadding;
         std::array<RECT, 7> sliders{};
         for (int index = 0; index < 7; ++index) {
-            const int y = top + MulDiv(18, dpi, 96) + index * rowHeight;
+            const int y = top + MulDiv(16, dpi, 96) + index * rowHeight;
             sliders[index] = { sliderLeft, y, sliderRight, y + MulDiv(20, dpi, 96) };
         }
-        const int footerGap = MulDiv(8, dpi, 96);
-        const int autoButtonWidth = MulDiv(58, dpi, 96);
+        const int footerGap = MulDiv(5, dpi, 96);
+        const int autoButtonWidth = MulDiv(42, dpi, 96);
+        const int userButtonWidth = MulDiv(38, dpi, 96);
         const int buttonHeight = MulDiv(30, dpi, 96);
         const int originalButtonWidth = buttonHeight;
-        const int saveButtonWidth = MulDiv(58, dpi, 96);
-        const int resetButtonWidth = MulDiv(60, dpi, 96);
+        const int saveButtonWidth = buttonHeight;
+        const int resetButtonWidth = MulDiv(44, dpi, 96);
         const int buttonBottom = bottom - panelPadding;
         const RECT autoButton{ left + panelPadding, buttonBottom - buttonHeight, left + panelPadding + autoButtonWidth, buttonBottom };
-        const RECT original{ autoButton.right + footerGap, buttonBottom - buttonHeight, autoButton.right + footerGap + originalButtonWidth, buttonBottom };
-        const RECT save{ original.right + footerGap, buttonBottom - buttonHeight, original.right + footerGap + saveButtonWidth, buttonBottom };
+        const RECT user{ autoButton.right + footerGap, buttonBottom - buttonHeight, autoButton.right + footerGap + userButtonWidth, buttonBottom };
+        const RECT save{ user.right + footerGap, buttonBottom - buttonHeight, user.right + footerGap + saveButtonWidth, buttonBottom };
+        const RECT original{ save.right + footerGap, buttonBottom - buttonHeight, save.right + footerGap + originalButtonWidth, buttonBottom };
         const RECT reset{ right - panelPadding - resetButtonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
-        return { panel, sliders, autoButton, original, save, reset, aboveControls };
+        return { panel, sliders, autoButton, user, save, original, reset, aboveControls };
     }
     RECT AdjustmentPanelRevealBounds(const VideoAdjustmentsPanelLayout& panel, float reveal) const {
         RECT bounds = panel.panel;
@@ -2053,7 +2065,8 @@ public:
     }
     bool VideoAdjustmentsPanelContains(POINT point) const {
         if (!videoAdjustmentsPanelOpen_ || !VideoControlsInteractive()) return false;
-        const RECT panel = AdjustmentPanelRevealBounds(GetVideoAdjustmentsPanelPresentedLayout(), videoAdjustmentsPanelOpacity_);
+        const VideoAdjustmentsPanelLayout& layout = GetVideoAdjustmentsPanelPresentedLayout();
+        const RECT panel = AdjustmentPanelRenderedRevealBounds(layout, videoAdjustmentsPanelOpacity_, GetAdjustmentPanelLipLayout(layout));
         return PtInRect(&panel, point) != FALSE;
     }
     bool VideoAdjustmentsPanelVisible() const {
@@ -2241,6 +2254,48 @@ public:
         else if (index == 5) adjustments.saturation = normalizedValue;
         else adjustments.sharpness = normalizedValue * kSharpnessSliderMaximum;
     }
+    void LoadUserAdjustmentPreset() {
+        DWORD saved = 0;
+        if (!ReadSetting(L"UserAdjustmentPresetSaved", saved) || saved == 0) return;
+        constexpr std::array<const wchar_t*, 7> names{
+            L"UserAdjustmentPresetExposure", L"UserAdjustmentPresetBrightness", L"UserAdjustmentPresetContrast",
+            L"UserAdjustmentPresetShadows", L"UserAdjustmentPresetHighlights", L"UserAdjustmentPresetSaturation",
+            L"UserAdjustmentPresetSharpness" };
+        ImageAdjustments preset{};
+        for (int index = 0; index < static_cast<int>(names.size()); ++index) {
+            DWORD stored = 0;
+            if (!ReadSetting(names[index], stored) || stored > static_cast<DWORD>(index == 6 ? 100 : 200)) return;
+            SetAdjustmentSliderIntegerValue(preset, index, index == 6 ? static_cast<int>(stored) : static_cast<int>(stored) - 100);
+        }
+        userAdjustmentPreset_ = preset;
+        userAdjustmentPresetSaved_ = true;
+    }
+    void SaveUserAdjustmentPreset(const ImageAdjustments& adjustments) {
+        constexpr std::array<const wchar_t*, 7> names{
+            L"UserAdjustmentPresetExposure", L"UserAdjustmentPresetBrightness", L"UserAdjustmentPresetContrast",
+            L"UserAdjustmentPresetShadows", L"UserAdjustmentPresetHighlights", L"UserAdjustmentPresetSaturation",
+            L"UserAdjustmentPresetSharpness" };
+        for (int index = 0; index < static_cast<int>(names.size()); ++index) {
+            const int value = AdjustmentSliderIntegerValue(adjustments, index);
+            WriteSetting(names[index], static_cast<DWORD>(index == 6 ? value : value + 100));
+        }
+        WriteSetting(L"UserAdjustmentPresetSaved", 1);
+        userAdjustmentPreset_ = adjustments;
+        userAdjustmentPresetSaved_ = true;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void ApplyUserAdjustmentPresetToImage() {
+        if (!userAdjustmentPresetSaved_) return;
+        imageAdjustments_ = userAdjustmentPreset_;
+        ApplyImageAdjustments();
+        QueueImageAdjustmentPersistence();
+    }
+    void ApplyUserAdjustmentPresetToVideo() {
+        if (!userAdjustmentPresetSaved_) return;
+        videoAdjustments_ = userAdjustmentPreset_;
+        ApplyVideoAdjustments();
+        QueueVideoAdjustmentPersistence();
+    }
     int AdjustmentSliderAt(const VideoAdjustmentsPanelLayout& panel, POINT point) const {
         const LONG verticalPadding = MulDiv(6, GetDpiForWindow(window_), 96);
         for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
@@ -2318,10 +2373,11 @@ public:
         const UINT dpi = GetDpiForWindow(window_);
         const LONG radius = MulDiv(10, dpi, 96);
         const LONG clearance = MulDiv(8, dpi, 96);
-        const LONG minimumFootWidth = MulDiv(120, dpi, 96);
+        const LONG minimumFootWidth = MulDiv(212, dpi, 96);
         const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
-        const LONG footRight = std::min(panel.panel.right - radius, hud.combined.left - clearance);
-        if (footRight - panel.panel.left < minimumFootWidth) return {};
+        const LONG footLeft = panel.panel.left + radius * 2;
+        const LONG footRight = std::min(panel.panel.right - radius * 2, hud.combined.left - clearance);
+        if (footRight - footLeft < minimumFootWidth) return {};
 
         LONG footBottom = panel.panel.bottom;
         if (VideoActive()) {
@@ -2329,7 +2385,7 @@ public:
             footBottom = controls.bottom;
             const RECT expandedControls{ controls.left - clearance, controls.top - clearance,
                 controls.right + clearance, controls.bottom + clearance };
-            const RECT foot{ panel.panel.left, panel.panel.bottom - radius, footRight, footBottom };
+            const RECT foot{ footLeft, panel.panel.bottom, footRight, footBottom };
             if (foot.right > expandedControls.left && foot.left < expandedControls.right &&
                 foot.bottom > expandedControls.top && foot.top < expandedControls.bottom) return {};
         } else if (FilmstripEligible() && !filmstripAdjustmentSuppressed_) {
@@ -2338,8 +2394,26 @@ public:
             return {};
         }
 
-        if (footBottom - panel.panel.bottom < radius * 2) return {};
-        return { { panel.panel.left, panel.panel.bottom - radius, footRight, footBottom }, true };
+        if (footBottom - panel.panel.bottom < MulDiv(34, dpi, 96)) return {};
+        return { { footLeft, panel.panel.bottom, footRight, footBottom }, true };
+    }
+    AdjustmentPanelActionLayout GetAdjustmentPanelActionLayout(const VideoAdjustmentsPanelLayout& panel,
+        const AdjustmentPanelLipLayout& lip) const {
+        if (!lip.active) return { panel.autoButton, panel.userButton, panel.saveButton, panel.originalButton, panel.resetButton };
+        const UINT dpi = GetDpiForWindow(window_);
+        const LONG inset = MulDiv(4, dpi, 96);
+        const LONG gap = MulDiv(5, dpi, 96);
+        const LONG buttonHeight = MulDiv(30, dpi, 96);
+        const std::array<LONG, 5> widths{ MulDiv(42, dpi, 96), MulDiv(38, dpi, 96), buttonHeight, buttonHeight, MulDiv(44, dpi, 96) };
+        const LONG bottom = lip.bounds.bottom - inset;
+        const LONG top = bottom - buttonHeight;
+        LONG left = lip.bounds.left + inset;
+        auto next = [&](LONG width) {
+            const RECT result{ left, top, left + width, bottom };
+            left = result.right + gap;
+            return result;
+        };
+        return { next(widths[0]), next(widths[1]), next(widths[2]), next(widths[3]), next(widths[4]) };
     }
     RECT AdjustmentPanelRenderedRevealBounds(const VideoAdjustmentsPanelLayout& panel, float reveal,
         const AdjustmentPanelLipLayout& lip) const {
@@ -2370,7 +2444,8 @@ public:
     bool ImageAdjustmentsPanelOpen() const { return imageAdjustmentsPanelOpen_; }
     bool ImageAdjustmentsPanelContains(POINT point) const {
         if (!imageAdjustmentsPanelOpen_) return false;
-        const RECT panel = AdjustmentPanelRevealBounds(GetImageAdjustmentsPanelLayout(), imageAdjustmentsPanelOpacity_);
+        const ImageAdjustmentsPanelLayout& layout = GetImageAdjustmentsPanelLayout();
+        const RECT panel = AdjustmentPanelRenderedRevealBounds(layout, imageAdjustmentsPanelOpacity_, GetAdjustmentPanelLipLayout(layout));
         return PtInRect(&panel, point) != FALSE;
     }
     bool ImageAdjustmentsPanelVisible() const {
@@ -2499,13 +2574,15 @@ public:
         if (imageAdjustmentsPanelOpen_) {
             const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
             if (ImageAdjustmentsPanelContains(point)) {
+                const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
                 const int thumb = AdjustmentSliderThumbAt(panel, imageAdjustments_, point);
                 const int slider = thumb >= 0 ? thumb : AdjustmentSliderAt(panel, point);
                 if (slider >= 0) { imageAdjustmentsDragging_ = slider; imageAdjustmentThumbGrab_ = thumb >= 0; imageAdjustmentDetentIndex_ = -1; if (!imageAdjustmentThumbGrab_) UpdateImageAdjustmentSlider(slider, point); return true; }
-                if (PtInRect(&panel.autoButton, point)) { StartAiAnalysis(); return true; }
-                if (PtInRect(&panel.originalButton, point)) { SetImageAdjustmentsOriginalPreview(true); return true; }
-                if (PtInRect(&panel.saveButton, point)) return true;
-                if (PtInRect(&panel.resetButton, point)) { ResetImageAdjustments(); return true; }
+                if (PtInRect(&actions.autoButton, point)) { StartAiAnalysis(); return true; }
+                if (PtInRect(&actions.userButton, point)) { ApplyUserAdjustmentPresetToImage(); return true; }
+                if (PtInRect(&actions.saveButton, point)) { SaveUserAdjustmentPreset(imageAdjustments_); return true; }
+                if (PtInRect(&actions.originalButton, point)) { SetImageAdjustmentsOriginalPreview(true); return true; }
+                if (PtInRect(&actions.resetButton, point)) { ResetImageAdjustments(); return true; }
                 return true;
             }
         }
@@ -2713,13 +2790,15 @@ public:
         if (videoAdjustmentsPanelOpen_) {
             const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
             if (VideoAdjustmentsPanelContains(point)) {
+                const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
                 const int thumb = AdjustmentSliderThumbAt(panel, videoAdjustments_, point);
                 const int slider = thumb >= 0 ? thumb : AdjustmentSliderAt(panel, point);
                 if (slider >= 0) { videoAdjustmentsDragging_ = slider; videoAdjustmentThumbGrab_ = thumb >= 0; videoAdjustmentDetentIndex_ = -1; if (!videoAdjustmentThumbGrab_) UpdateVideoAdjustmentSlider(slider, point); return true; }
-                if (PtInRect(&panel.autoButton, point)) { AutoVideoAdjustments(); return true; }
-                if (PtInRect(&panel.originalButton, point)) { SetVideoAdjustmentsOriginalPreview(true); return true; }
-                if (PtInRect(&panel.saveButton, point)) return true;
-                if (PtInRect(&panel.resetButton, point)) { ResetVideoAdjustments(); return true; }
+                if (PtInRect(&actions.autoButton, point)) { AutoVideoAdjustments(); return true; }
+                if (PtInRect(&actions.userButton, point)) { ApplyUserAdjustmentPresetToVideo(); return true; }
+                if (PtInRect(&actions.saveButton, point)) { SaveUserAdjustmentPreset(videoAdjustments_); return true; }
+                if (PtInRect(&actions.originalButton, point)) { SetVideoAdjustmentsOriginalPreview(true); return true; }
+                if (PtInRect(&actions.resetButton, point)) { ResetVideoAdjustments(); return true; }
                 return true;
             }
             if (!VideoControlsContains(point)) { SetVideoAdjustmentsPanelOpen(false); return true; }
@@ -10369,6 +10448,16 @@ private:
         }
     }
 
+    void DrawAdjustmentSaveCheckmark(const RECT& bounds, ID2D1Brush* brush, float scale) {
+        if (!brush) return;
+        const float centerX = (bounds.left + bounds.right) * 0.5f;
+        const float centerY = (bounds.top + bounds.bottom) * 0.5f;
+        renderTarget_->DrawLine(D2D1::Point2F(centerX - 6.0f * scale, centerY),
+            D2D1::Point2F(centerX - 1.5f * scale, centerY + 4.5f * scale), brush, 1.8f * scale);
+        renderTarget_->DrawLine(D2D1::Point2F(centerX - 1.5f * scale, centerY + 4.5f * scale),
+            D2D1::Point2F(centerX + 6.5f * scale, centerY - 5.0f * scale), brush, 1.8f * scale);
+    }
+
     void DrawAdjustmentPanelContent(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float opacity,
         bool autoActive, bool originalActive, ID2D1SolidColorBrush* text, ID2D1SolidColorBrush* accent,
         ID2D1SolidColorBrush* track, ID2D1SolidColorBrush* hover) {
@@ -10395,12 +10484,20 @@ private:
             DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text, true, false, true);
         }
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
-        const auto drawButton = [&](const RECT& bounds, const wchar_t* label, bool pressed = false) { renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent : hover); DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text, true, false, true); };
-        drawButton(panel.autoButton, L"AUTO", autoActive);
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.originalButton), 5.0f * scale, 5.0f * scale), hover);
-        DrawAdjustmentOriginalEyeIcon(panel.originalButton, originalActive, text, scale);
-        drawButton(panel.saveButton, L"SAVE");
-        drawButton(panel.resetButton, L"RESET");
+        const auto drawButton = [&](const RECT& bounds, const wchar_t* label, bool pressed = false, bool enabled = true) {
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent : hover);
+            text->SetOpacity(opacity * (enabled ? 1.0f : 0.42f));
+            DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text, true, false, true);
+            text->SetOpacity(opacity);
+        };
+        const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
+        drawButton(actions.autoButton, L"AUTO", autoActive);
+        drawButton(actions.userButton, L"USER", false, userAdjustmentPresetSaved_);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(actions.saveButton), 5.0f * scale, 5.0f * scale), hover);
+        DrawAdjustmentSaveCheckmark(actions.saveButton, text, scale);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(actions.originalButton), 5.0f * scale, 5.0f * scale), hover);
+        DrawAdjustmentOriginalEyeIcon(actions.originalButton, originalActive, text, scale);
+        drawButton(actions.resetButton, L"RESET");
     }
 
     void DrawAdjustmentPanelShell(const VideoAdjustmentsPanelLayout& panel, const AdjustmentPanelLipLayout& lip,
@@ -10413,20 +10510,37 @@ private:
             return;
         }
 
-        ComPtr<ID2D1RoundedRectangleGeometry> body, foot;
         ComPtr<ID2D1PathGeometry> silhouette;
         ComPtr<ID2D1GeometrySink> sink;
-        const D2D1_ROUNDED_RECT bodyBounds = D2D1::RoundedRect(rect(panel.panel), radius, radius);
-        const D2D1_ROUNDED_RECT footBounds = D2D1::RoundedRect(rect(lip.bounds), radius, radius);
-        if (FAILED(d2dFactory_->CreateRoundedRectangleGeometry(bodyBounds, &body)) ||
-            FAILED(d2dFactory_->CreateRoundedRectangleGeometry(footBounds, &foot)) ||
-            FAILED(d2dFactory_->CreatePathGeometry(&silhouette)) || FAILED(silhouette->Open(&sink)) ||
-            FAILED(body->CombineWithGeometry(foot.Get(), D2D1_COMBINE_MODE_UNION, nullptr, 0.25f, sink.Get())) ||
-            FAILED(sink->Close())) {
-            renderTarget_->FillRoundedRectangle(bodyBounds, surface);
-            renderTarget_->DrawRoundedRectangle(bodyBounds, border, scale);
+        if (FAILED(d2dFactory_->CreatePathGeometry(&silhouette)) || FAILED(silhouette->Open(&sink))) {
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), radius, radius), surface);
+            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), radius, radius), border, scale);
             return;
         }
+        const float left = static_cast<float>(panel.panel.left), top = static_cast<float>(panel.panel.top);
+        const float right = static_cast<float>(panel.panel.right), bottom = static_cast<float>(panel.panel.bottom);
+        const float footLeft = static_cast<float>(lip.bounds.left), footRight = static_cast<float>(lip.bounds.right), footBottom = static_cast<float>(lip.bounds.bottom);
+        const float kappa = 0.55228475f;
+        const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
+        sink->BeginFigure(point(left + radius, top), D2D1_FIGURE_BEGIN_FILLED);
+        sink->AddLine(point(right - radius, top));
+        sink->AddBezier(D2D1::BezierSegment(point(right - radius + radius * kappa, top), point(right, top + radius - radius * kappa), point(right, top + radius)));
+        sink->AddLine(point(right, bottom - radius));
+        sink->AddBezier(D2D1::BezierSegment(point(right, bottom - radius + radius * kappa), point(right - radius + radius * kappa, bottom), point(right - radius, bottom)));
+        sink->AddLine(point(footRight + radius, bottom));
+        sink->AddBezier(D2D1::BezierSegment(point(footRight + radius - radius * kappa, bottom), point(footRight, bottom + radius - radius * kappa), point(footRight, bottom + radius)));
+        sink->AddLine(point(footRight, footBottom - radius));
+        sink->AddBezier(D2D1::BezierSegment(point(footRight, footBottom - radius + radius * kappa), point(footRight - radius + radius * kappa, footBottom), point(footRight - radius, footBottom)));
+        sink->AddLine(point(footLeft + radius, footBottom));
+        sink->AddBezier(D2D1::BezierSegment(point(footLeft + radius - radius * kappa, footBottom), point(footLeft, footBottom - radius + radius * kappa), point(footLeft, footBottom - radius)));
+        sink->AddLine(point(footLeft, bottom + radius));
+        sink->AddBezier(D2D1::BezierSegment(point(footLeft, bottom + radius - radius * kappa), point(footLeft - radius + radius * kappa, bottom), point(footLeft - radius, bottom)));
+        sink->AddLine(point(left + radius, bottom));
+        sink->AddBezier(D2D1::BezierSegment(point(left + radius - radius * kappa, bottom), point(left, bottom - radius + radius * kappa), point(left, bottom - radius)));
+        sink->AddLine(point(left, top + radius));
+        sink->AddBezier(D2D1::BezierSegment(point(left, top + radius - radius * kappa), point(left + radius - radius * kappa, top), point(left + radius, top)));
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        if (FAILED(sink->Close())) return;
         renderTarget_->FillGeometry(silhouette.Get(), surface);
         renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
     }
@@ -12614,6 +12728,8 @@ private:
     bool reuseImageWindow_ = false;
     bool reuseVideoWindow_ = false;
     ImageAdjustments videoAdjustments_;
+    ImageAdjustments userAdjustmentPreset_;
+    bool userAdjustmentPresetSaved_ = false;
     uint64_t activeOpenAttemptId_ = 0;
     ImageAdjustments imageAdjustments_;
     ImageAdjustmentPersistence adjustmentPersistence_;
@@ -13111,7 +13227,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetCapture(window);
             return 0;
         }
-        if (viewer->ImageAdjustmentsPanelContains(point)) return 0;
+        if (viewer->ImageAdjustmentsPanelContains(point)) {
+            if (viewer->BeginImageAdjustmentsInteraction(point)) SetCapture(window);
+            return 0;
+        }
         if (viewer->BeginGifControlsInteraction(point)) {
             SetCapture(window);
             return 0;
@@ -13122,6 +13241,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         const ButtonKind videoControl = viewer->VideoControlAt(point);
+        if (viewer->VideoAdjustmentsPanelContains(point)) {
+            if (viewer->BeginVideoControlsInteraction(point)) SetCapture(window);
+            return 0;
+        }
         if (videoControl == ButtonKind::VideoPlayPause || videoControl == ButtonKind::VideoMute ||
             videoControl == ButtonKind::VideoAutoPlayNext || videoControl == ButtonKind::VideoPlaybackSpeed) {
             if (viewer->BeginVideoControlsInteraction(point)) SetCapture(window);

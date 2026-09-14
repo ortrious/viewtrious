@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.9.24.11 LANGUAGES CXX)
+project(Viewtrious VERSION 0.9.24.12 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -74,7 +74,7 @@ if(NOT VIEWTRIOUS_CPPWINRT_INCLUDE_DIR)
     message(FATAL_ERROR "The installed Windows SDK C++/WinRT projection is required for the Windows.UI.Composition experiment.")
 endif()
 target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_CPPWINRT_INCLUDE_DIR}")
-target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 bcrypt d3d11 dxgi d3dcompiler dcomp xmllite ole32 oleaut32 mfplat mf mfreadwrite mfuuid windowsapp coremessaging "${VIEWTRIOUS_3DXWARE_LIBRARY}")
+target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 bcrypt d3d11 dxgi dxguid d3dcompiler dcomp xmllite ole32 oleaut32 mfplat mf mfreadwrite mfuuid windowsapp coremessaging "${VIEWTRIOUS_3DXWARE_LIBRARY}")
 
 if(VIEWTRIOUS_BUILD_AI_ADDON)
     set(VIEWTRIOUS_ONNXRUNTIME_INCLUDE_DIR "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/include")

@@ -1858,7 +1858,7 @@ public:
         const int userButtonWidth = MulDiv(38, dpi, 96);
         const int buttonHeight = MulDiv(30, dpi, 96);
         const int originalButtonWidth = buttonHeight;
-        const int saveButtonWidth = buttonHeight;
+        const int saveButtonWidth = MulDiv(42, dpi, 96);
         const int resetButtonWidth = MulDiv(44, dpi, 96);
         const int buttonBottom = bottom - panelPadding;
         const RECT autoButton{ left + panelPadding, buttonBottom - buttonHeight, left + panelPadding + autoButtonWidth, buttonBottom };
@@ -2396,7 +2396,7 @@ public:
         const UINT dpi = GetDpiForWindow(window_);
         const LONG radius = MulDiv(10, dpi, 96);
         const LONG clearance = MulDiv(8, dpi, 96);
-        const LONG minimumFootWidth = MulDiv(212, dpi, 96);
+        const LONG minimumFootWidth = MulDiv(220, dpi, 96);
         const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
         const LONG footLeft = panel.panel.left;
         const LONG footRight = std::min(panel.panel.right - radius * 2, hud.combined.left - clearance);
@@ -2427,7 +2427,7 @@ public:
         const LONG inset = MulDiv(4, dpi, 96);
         const LONG gap = MulDiv(5, dpi, 96);
         const LONG buttonHeight = MulDiv(30, dpi, 96);
-        const std::array<LONG, 5> widths{ MulDiv(42, dpi, 96), MulDiv(38, dpi, 96), buttonHeight, buttonHeight, MulDiv(44, dpi, 96) };
+        const std::array<LONG, 5> widths{ MulDiv(42, dpi, 96), MulDiv(38, dpi, 96), MulDiv(42, dpi, 96), buttonHeight, MulDiv(44, dpi, 96) };
         const LONG bottom = lip.bounds.bottom - inset;
         const LONG top = bottom - buttonHeight;
         LONG left = lip.bounds.left + inset;
@@ -10531,16 +10531,6 @@ private:
         }
     }
 
-    void DrawAdjustmentSaveCheckmark(const RECT& bounds, ID2D1Brush* brush, float scale) {
-        if (!brush) return;
-        const float centerX = (bounds.left + bounds.right) * 0.5f;
-        const float centerY = (bounds.top + bounds.bottom) * 0.5f;
-        renderTarget_->DrawLine(D2D1::Point2F(centerX - 6.0f * scale, centerY),
-            D2D1::Point2F(centerX - 1.5f * scale, centerY + 4.5f * scale), brush, 1.8f * scale);
-        renderTarget_->DrawLine(D2D1::Point2F(centerX - 1.5f * scale, centerY + 4.5f * scale),
-            D2D1::Point2F(centerX + 6.5f * scale, centerY - 5.0f * scale), brush, 1.8f * scale);
-    }
-
     void DrawAdjustmentPanelContent(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float opacity,
         AdjustmentSource source, bool originalActive, ID2D1SolidColorBrush* text, ID2D1SolidColorBrush* accent, ID2D1SolidColorBrush* orange,
         ID2D1SolidColorBrush* track, ID2D1SolidColorBrush* hover) {
@@ -10581,8 +10571,7 @@ private:
         drawButton(actions.autoButton, L"AUTO", AdjustmentFooterButton::Auto, source == AdjustmentSource::Auto ? orange : text);
         drawButton(actions.userButton, L"USER", AdjustmentFooterButton::User, source == AdjustmentSource::User ? orange : (userAdjustmentPresetSaved_ ? accent : text), userAdjustmentPresetSaved_);
         const bool saveConfirmed = adjustmentFooterSaveConfirmedAt_ != 0 && GetTickCount64() - adjustmentFooterSaveConfirmedAt_ < 260;
-        drawButton(actions.saveButton, L"", AdjustmentFooterButton::Save, text);
-        DrawAdjustmentSaveCheckmark(actions.saveButton, saveConfirmed ? accent : text, scale);
+        drawButton(actions.saveButton, L"SAVE", AdjustmentFooterButton::Save, saveConfirmed ? accent : text);
         drawButton(actions.originalButton, L"", AdjustmentFooterButton::Original, text);
         DrawAdjustmentOriginalEyeIcon(actions.originalButton, originalActive, text, scale);
         drawButton(actions.resetButton, L"RESET", AdjustmentFooterButton::Reset, text);

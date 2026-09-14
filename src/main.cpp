@@ -4944,6 +4944,7 @@ public:
         const bool changed = scannedFiles.size() != navigationFiles_.size() || !std::equal(scannedFiles.begin(), scannedFiles.end(), navigationFiles_.begin(),
             [](const fs::path& left, const fs::path& right) { return PathsEqual(left, right); });
         if (changed) {
+            CancelFilmstripWrapAnchor();
             const std::vector<fs::path> previousNavigationFiles = navigationFiles_;
             CancelQueuedFilmstripThumbnails();
             CancelQueuedFilmstripHoverPreviews();
@@ -5245,6 +5246,7 @@ public:
         if (!pendingCount && !force) return;
         if (!source_) { filmstripLayoutRebuildPending_ = true; return; }
         const std::optional<FilmstripLayoutAnchor> anchor = CaptureFilmstripLayoutAnchor();
+        const bool wrapAnchor = filmstripWrapAnchor_.active && filmstripWrapAnchor_.index < navigationFiles_.size();
         const RECT oldBounds = GetFilmstripBounds();
         const double oldScroll = filmstripScroll_;
 #ifdef _DEBUG
@@ -5262,7 +5264,13 @@ public:
         const double scrollBeforeCompensation = filmstripScroll_;
 #endif
         double compensatedScroll = filmstripScroll_;
-        if (anchor && anchor->index < filmstripItemOffsets_.size()) {
+        if (wrapAnchor && filmstripWrapAnchor_.index < filmstripItemOffsets_.size()) {
+            const RECT newBounds = GetFilmstripBounds();
+            const size_t index = filmstripWrapAnchor_.index;
+            const double contentEdge = filmstripItemOffsets_[index] +
+                (filmstripWrapAnchor_.rightEdge ? FilmstripThumbnailWidth(index) : 0.0f);
+            compensatedScroll = static_cast<double>(newBounds.left) + contentEdge - filmstripWrapAnchor_.screenEdge;
+        } else if (anchor && anchor->index < filmstripItemOffsets_.size()) {
             const RECT newBounds = GetFilmstripBounds();
             compensatedScroll = oldScroll + (static_cast<double>(newBounds.left) - oldBounds.left) +
                 (static_cast<double>(filmstripItemOffsets_[anchor->index]) - anchor->contentX);
@@ -5271,6 +5279,7 @@ public:
         filmstripScroll_ = clampedScroll;
         if ((filmstripScroll_ <= 0.0 && filmstripScrollVelocity_ < 0.0) ||
             (filmstripScroll_ >= FilmstripMaximumScroll() && filmstripScrollVelocity_ > 0.0)) filmstripScrollVelocity_ = 0.0;
+        ReleaseFilmstripWrapAnchorIfSettled();
 #ifdef _DEBUG
         const bool boundPrevented = std::abs(clampedScroll - compensatedScroll) > 0.01;
         const double renderedX = anchor && anchor->index < filmstripItemOffsets_.size()
@@ -5860,6 +5869,7 @@ public:
 #endif
             if (layoutDeferred) filmstripLayoutRebuildPending_ = true;
             else if (aspectChanged) ApplyFilmstripAspectRelayout();
+            ReleaseFilmstripWrapAnchorIfSettled();
             // A genuinely uncached item may finish after the return morph captured
             // its contents; do not freeze that placeholder for the rest of the morph.
             if (lowerUiMorph_.active && lowerUiMorph_.ready && !lowerUiMorph_.targetVideo) {
@@ -5869,6 +5879,7 @@ public:
             InvalidateRect(window_, nullptr, FALSE);
         } else {
             if (current) filmstripThumbnailFailures_.push_back(result->request);
+            ReleaseFilmstripWrapAnchorIfSettled();
             QueueFilmstripThumbnails();
         }
         delete result;
@@ -6302,6 +6313,7 @@ public:
     }
     void SelectFilmstripItem(int index) {
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
+        CancelFilmstripWrapAnchor();
         CancelVideoAutoPlayNextCountdown();
 #ifdef _DEBUG
         filmstripPostStopPosition_.reset();
@@ -7036,6 +7048,34 @@ public:
         const size_t current = CurrentNavigationIndex();
         return (direction > 0 && current + 1 == navigationFiles_.size()) || (direction < 0 && current == 0);
     }
+    void CancelFilmstripWrapAnchor() { filmstripWrapAnchor_ = {}; }
+    bool FilmstripWrapAnchorNeedsResolution() const {
+        if (!filmstripWrapAnchor_.active || filmstripWrapAnchor_.first >= navigationFiles_.size()) return false;
+        const size_t last = std::min(filmstripWrapAnchor_.last, navigationFiles_.size());
+        for (size_t index = filmstripWrapAnchor_.first; index < last; ++index) {
+            const bool authoritative = index < filmstripAspectAuthoritative_.size() && filmstripAspectAuthoritative_[index];
+            const bool failed = index < filmstripThumbnailGenerations_.size() &&
+                FilmstripThumbnailFailed(navigationFiles_[index].wstring(), filmstripThumbnailGenerations_[index]);
+            if (!authoritative && !failed) return true;
+        }
+        return false;
+    }
+    void ReleaseFilmstripWrapAnchorIfSettled() {
+        if (filmstripWrapAnchor_.active && filmstripWrapAnchor_.armed && !FilmstripWrapAnchorNeedsResolution())
+            CancelFilmstripWrapAnchor();
+    }
+    void BeginFilmstripWrapAnchor(int direction) {
+        if (navigationFiles_.empty()) return;
+        const size_t index = direction > 0 ? 0 : navigationFiles_.size() - 1;
+        const RECT item = GetFilmstripThumbnailBounds(index);
+        const auto [first, last] = FilmstripVisibleRange();
+        filmstripWrapAnchor_.active = true;
+        filmstripWrapAnchor_.index = index;
+        filmstripWrapAnchor_.rightEdge = direction < 0;
+        filmstripWrapAnchor_.screenEdge = direction > 0 ? static_cast<double>(item.left) : static_cast<double>(item.right);
+        filmstripWrapAnchor_.first = first;
+        filmstripWrapAnchor_.last = last;
+    }
     void CancelFilmstripWrapFade() {
         KillTimer(window_, kFilmstripWrapFadeTimer);
         filmstripWrapFade_ = {};
@@ -7048,6 +7088,7 @@ public:
         state.opacity = state.startOpacity + (state.targetOpacity - state.startOpacity) * SmoothTransitionProgress(progress);
     }
     bool BeginFilmstripWrapFade(int direction, bool immediatePaint) {
+        CancelFilmstripWrapAnchor();
         if (filmstripWrapFade_.active) {
             if (filmstripWrapFade_.dispatched || !FilmstripNavigationWraps(direction)) { CancelFilmstripWrapFade(); return false; }
             SampleFilmstripWrapFade();
@@ -7094,12 +7135,15 @@ public:
             // while item content is hidden, before the new selected item is exposed.
             filmstripScroll_ = state.direction > 0 ? 0.0 : static_cast<double>(FilmstripMaximumScroll());
             StopFilmstripScrollAnimation();
+            BeginFilmstripWrapAnchor(state.direction);
             state.dispatched = true;
             state.startOpacity = 0.0f;
             state.targetOpacity = 1.0f;
             LARGE_INTEGER now{}; QueryPerformanceCounter(&now); state.startedQpc = now.QuadPart;
             Navigate(state.direction, state.immediatePaint, true);
             QueueFilmstripThumbnails();
+            filmstripWrapAnchor_.armed = true;
+            ReleaseFilmstripWrapAnchorIfSettled();
         } else {
             CancelFilmstripWrapFade();
         }
@@ -7108,6 +7152,7 @@ public:
     float FilmstripContentOpacity() const { return filmstripWrapFade_.active ? filmstripWrapFade_.opacity : 1.0f; }
     void Navigate(int direction, bool immediatePaint = true, bool skipWrapFade = false) {
         CancelVideoAutoPlayNextCountdown();
+        if (!skipWrapFade) CancelFilmstripWrapAnchor();
         if (!skipWrapFade && BeginFilmstripWrapFade(direction, immediatePaint)) return;
         if (BeginStillDissolveNavigation(direction)) {
             if (VideoActive() || IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) {
@@ -13660,6 +13705,15 @@ private:
         LONGLONG startedQpc = 0;
         LONGLONG qpcFrequency = 0;
     } filmstripWrapFade_;
+    struct FilmstripWrapAnchor {
+        bool active = false;
+        bool armed = false;
+        size_t index = 0;
+        bool rightEdge = false;
+        double screenEdge = 0.0;
+        size_t first = 0;
+        size_t last = 0;
+    } filmstripWrapAnchor_;
     std::vector<float> filmstripLayoutAspects_;
     std::vector<float> filmstripKnownAspects_;
     std::vector<bool> filmstripAspectAuthoritative_;

@@ -4814,14 +4814,14 @@ public:
         ClampPan();
         ClampVideoPan();
         filmstripPreviewGeometryValid_ = false;
-        RebuildFilmstripLayout();
-        SynchronizeFilmstripHoverPreviewAvailability();
         if (VideoActive()) SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
         else if (!adjustmentPanelNavigation_.pending && ImageAdjustmentsPanelVisible()) {
             imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
             videoAdjustmentsPanelPresentedLayout_ = imageAdjustmentsPanelTargetLayout_;
-            SynchronizeFilmstripAdjustmentAvoidance();
         }
+        RebuildFilmstripLayout();
+        SynchronizeFilmstripAdjustmentAvoidance();
+        SynchronizeFilmstripHoverPreviewAvailability();
         if (imageScaling_ != ImageScaling::Performance && source_) RefreshLanczosForImageViewChange();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -5049,6 +5049,15 @@ public:
             InvalidateRect(window_, nullptr, FALSE);
         }
         const LONG target = GetFilmstripAdjustmentAvoidanceTargetRight(normal);
+        if (!ImageAdjustmentsPanelVisible() && !filmstripAdjustmentAvoidanceAnimating_) {
+            // Once the close motion ends, no absolute right-edge reservation survives.
+            // Keep the next animation's starting point current even on closed-panel resizes.
+            filmstripAdjustmentAvoidanceInitialized_ = false;
+            filmstripAdjustmentAvoidancePresentedRight_ = static_cast<float>(normal.right);
+            filmstripAdjustmentAvoidanceTargetRight_ = normal.right;
+            ClampFilmstripScrollToViewport();
+            return;
+        }
         if (!filmstripAdjustmentAvoidanceInitialized_) {
             filmstripAdjustmentAvoidanceInitialized_ = true;
             filmstripAdjustmentAvoidancePresentedRight_ = static_cast<float>(normal.right);
@@ -5073,6 +5082,10 @@ public:
     RECT GetFilmstripBounds() const {
         const RECT normal = GetFilmstripNormalBounds();
         if (normal.right <= normal.left || !filmstripAdjustmentAvoidanceInitialized_) return normal;
+        // Cached presentation coordinates are only authoritative during avoidance motion.
+        // At rest, derive the viewport from today's bounds and current panel state.
+        if (!filmstripAdjustmentAvoidanceAnimating_)
+            return { normal.left, normal.top, GetFilmstripAdjustmentAvoidanceTargetRight(normal), normal.bottom };
         const LONG right = std::clamp<LONG>(static_cast<LONG>(std::lround(filmstripAdjustmentAvoidancePresentedRight_)), normal.left, normal.right);
         return { normal.left, normal.top, right, normal.bottom };
     }

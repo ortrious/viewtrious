@@ -1911,8 +1911,9 @@ public:
         const LONG width = std::min<LONG>(MulDiv(370, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)));
         const LONG left = std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
         const LONG right = left + width;
+        const LONG clearance = MulDiv(8, dpi, 96);
         const LONG footerHeight = MulDiv(40, dpi, 96);
-        const LONG bodyBottom = controls.island.top - footerHeight;
+        const LONG bodyBottom = controls.island.top - clearance - footerHeight;
         const LONG bodyHeight = MulDiv(238, dpi, 96);
         return MakeVideoAdjustmentsPanelLayout({ left, bodyBottom - bodyHeight, right, bodyBottom }, true);
     }
@@ -2430,7 +2431,7 @@ public:
 
         LONG footBottom = panel.panel.bottom;
         if (panel.aboveControls) {
-            footBottom = GetVideoControlsLayout(false).island.top;
+            footBottom = GetVideoControlsLayout(false).island.top - clearance;
         } else if (VideoActive()) {
             const RECT controls = GetVideoControlsLayout(false).island;
             footBottom = controls.bottom;

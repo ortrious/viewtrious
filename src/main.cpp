@@ -1699,8 +1699,14 @@ public:
         const VideoAdjustmentsPanelLayout normalTarget = GetVideoZoomHudAdjustmentsPanelTargetLayout();
         const RECT controls = GetVideoControlsLayout(false).island;
         const RECT expandedControls{ controls.left - clearance, controls.top - clearance, controls.right + clearance, controls.bottom + clearance };
-        return normalTarget.panel.left < expandedControls.right && normalTarget.panel.right > expandedControls.left &&
+        const bool bodyIntersectsControls = normalTarget.panel.left < expandedControls.right && normalTarget.panel.right > expandedControls.left &&
             normalTarget.panel.top < expandedControls.bottom && normalTarget.panel.bottom > expandedControls.top;
+        // The body can clear the control island while its required lower lip does
+        // not.  In that case the old path silently dropped the lip and placed the
+        // footer inside the shared body, over the sharpness row.
+        const bool requiredLipCannotFit = zoomHudPosition_ == ZoomHudPosition::BottomRight &&
+            !GetAdjustmentPanelLipLayout(normalTarget).active;
+        return bodyIntersectsControls || requiredLipCannotFit;
     }
     VideoControlsLayout GetVideoControlsLayout(bool) const {
         const RECT canvas = ModelCanvasBounds();

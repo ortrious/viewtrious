@@ -1699,14 +1699,13 @@ public:
         const VideoAdjustmentsPanelLayout normalTarget = GetVideoZoomHudAdjustmentsPanelTargetLayout();
         const RECT controls = GetVideoControlsLayout(false).island;
         const RECT expandedControls{ controls.left - clearance, controls.top - clearance, controls.right + clearance, controls.bottom + clearance };
-        const bool bodyIntersectsControls = normalTarget.panel.left < expandedControls.right && normalTarget.panel.right > expandedControls.left &&
-            normalTarget.panel.top < expandedControls.bottom && normalTarget.panel.bottom > expandedControls.top;
-        // The body can clear the control island while its required lower lip does
-        // not.  In that case the old path silently dropped the lip and placed the
-        // footer inside the shared body, over the sharpness row.
-        const bool requiredLipCannotFit = zoomHudPosition_ == ZoomHudPosition::BottomRight &&
-            !GetAdjustmentPanelLipLayout(normalTarget).active;
-        return bodyIntersectsControls || requiredLipCannotFit;
+        const auto intersectsControls = [&](const RECT& candidate) {
+            return candidate.left < expandedControls.right && candidate.right > expandedControls.left &&
+                candidate.top < expandedControls.bottom && candidate.bottom > expandedControls.top;
+        };
+        if (intersectsControls(normalTarget.panel)) return true;
+        const AdjustmentPanelLipLayout normalLip = GetAdjustmentPanelLipLayout(normalTarget, false);
+        return normalLip.active && intersectsControls(normalLip.bounds);
     }
     VideoControlsLayout GetVideoControlsLayout(bool) const {
         const RECT canvas = ModelCanvasBounds();
@@ -2413,7 +2412,7 @@ public:
         const int height = std::min(MulDiv(238, dpi, 96), std::max(1, bottom - (static_cast<int>(canvas.top) + gap)));
         return MakeVideoAdjustmentsPanelLayout({ panelLeft, bottom - height, panelLeft + width, bottom }, false);
     }
-    AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel) const {
+    AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel, bool rejectVideoControlsCollision = true) const {
         // The lipped silhouette is intended for the bottom-right HUD anchor. Other HUD
         // positions retain the established rounded rectangle rather than forcing a foot
         // through a constrained or unrelated lower-overlay layout.
@@ -2438,7 +2437,7 @@ public:
             const RECT expandedControls{ controls.left - clearance, controls.top - clearance,
                 controls.right + clearance, controls.bottom + clearance };
             const RECT foot{ footLeft, panel.panel.bottom, footRight, footBottom };
-            if (foot.right > expandedControls.left && foot.left < expandedControls.right &&
+            if (rejectVideoControlsCollision && foot.right > expandedControls.left && foot.left < expandedControls.right &&
                 foot.bottom > expandedControls.top && foot.top < expandedControls.bottom) return {};
         } else if (FilmstripEligible() && !filmstripAdjustmentSuppressed_) {
             footBottom = GetFilmstripBounds().bottom;

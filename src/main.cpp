@@ -1018,6 +1018,7 @@ struct AdjustmentPanelActionLayout {
 };
 
 enum class VideoAdjustmentsPanelMotion { None, Placement, Opening, Closing };
+enum class AdjustmentSource { None, Auto, User };
 
 struct ZoomHudLayout {
     RECT combined;
@@ -2196,7 +2197,7 @@ public:
         KillTimer(window_, kVideoAdjustmentPersistenceTimer);
         if (videoAdjustmentHashResolved_) adjustmentPersistence_.Save(videoAdjustmentHash_, videoAdjustments_, AdjustmentMediaKind::Video);
     }
-    void ResetVideoAdjustments() { videoAdjustments_ = {}; ApplyVideoAdjustments(); QueueVideoAdjustmentPersistence(); }
+    void ResetVideoAdjustments() { videoAdjustments_ = {}; videoAdjustmentSource_ = AdjustmentSource::None; ApplyVideoAdjustments(); QueueVideoAdjustmentPersistence(); }
     void AutoVideoAdjustments() {
         AiImageBuffer image{};
         if (!videoPlayer_.CopyCurrentFrameBgra(image.pixels, image.width, image.height) || !image.width || !image.height) return;
@@ -2208,10 +2209,12 @@ public:
         if (!ComputeAutoImageAdjustments(image, result)) return;
         videoAdjustments_.exposure = result.exposure; videoAdjustments_.brightness = result.brightness; videoAdjustments_.contrast = result.contrast;
         videoAdjustments_.shadows = result.shadows; videoAdjustments_.highlights = result.highlights; videoAdjustments_.saturation = result.saturation;
+        videoAdjustmentSource_ = AdjustmentSource::Auto;
         ApplyVideoAdjustments(); QueueVideoAdjustmentPersistence();
     }
     void UpdateVideoAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 7) return;
+        videoAdjustmentSource_ = AdjustmentSource::None;
         const RECT slider = GetVideoAdjustmentsPanelPresentedLayout().sliders[index];
         const float normalized = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f);
         const int minimum = index == 6 ? 0 : -100;
@@ -2287,12 +2290,14 @@ public:
     void ApplyUserAdjustmentPresetToImage() {
         if (!userAdjustmentPresetSaved_) return;
         imageAdjustments_ = userAdjustmentPreset_;
+        imageAdjustmentSource_ = AdjustmentSource::User;
         ApplyImageAdjustments();
         QueueImageAdjustmentPersistence();
     }
     void ApplyUserAdjustmentPresetToVideo() {
         if (!userAdjustmentPresetSaved_) return;
         videoAdjustments_ = userAdjustmentPreset_;
+        videoAdjustmentSource_ = AdjustmentSource::User;
         ApplyVideoAdjustments();
         QueueVideoAdjustmentPersistence();
     }
@@ -2375,7 +2380,7 @@ public:
         const LONG clearance = MulDiv(8, dpi, 96);
         const LONG minimumFootWidth = MulDiv(212, dpi, 96);
         const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
-        const LONG footLeft = panel.panel.left + radius * 2;
+        const LONG footLeft = panel.panel.left;
         const LONG footRight = std::min(panel.panel.right - radius * 2, hud.combined.left - clearance);
         if (footRight - footLeft < minimumFootWidth) return {};
 
@@ -2407,7 +2412,7 @@ public:
         const std::array<LONG, 5> widths{ MulDiv(42, dpi, 96), MulDiv(38, dpi, 96), buttonHeight, buttonHeight, MulDiv(44, dpi, 96) };
         const LONG bottom = lip.bounds.bottom - inset;
         const LONG top = bottom - buttonHeight;
-        LONG left = lip.bounds.left + inset;
+        LONG left = panel.panel.left + MulDiv(20, dpi, 96) + inset;
         auto next = [&](LONG width) {
             const RECT result{ left, top, left + width, bottom };
             left = result.right + gap;
@@ -2440,7 +2445,7 @@ public:
         KillTimer(window_, kImageAdjustmentPersistenceTimer);
         if (imageAdjustmentHashResolved_) adjustmentPersistence_.Save(imageAdjustmentHash_, imageAdjustments_);
     }
-    void ResetImageAdjustments() { imageAdjustments_ = {}; ApplyImageAdjustments(); QueueImageAdjustmentPersistence(); }
+    void ResetImageAdjustments() { imageAdjustments_ = {}; imageAdjustmentSource_ = AdjustmentSource::None; ApplyImageAdjustments(); QueueImageAdjustmentPersistence(); }
     bool ImageAdjustmentsPanelOpen() const { return imageAdjustmentsPanelOpen_; }
     bool ImageAdjustmentsPanelContains(POINT point) const {
         if (!imageAdjustmentsPanelOpen_) return false;
@@ -2478,6 +2483,7 @@ public:
     }
     void UpdateImageAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 7) return;
+        imageAdjustmentSource_ = AdjustmentSource::None;
         const RECT slider = GetImageAdjustmentsPanelLayout().sliders[index];
         const float position = std::clamp(static_cast<float>(point.x - slider.left) / static_cast<float>(std::max(1L, slider.right - slider.left)), 0.0f, 1.0f);
         const int minimum = index == 6 ? 0 : -100;
@@ -2501,6 +2507,7 @@ public:
             const int value = AdjustmentSliderIntegerValue(imageAdjustments_, index);
             const int adjusted = std::clamp(value - steps, index == 6 ? 0 : -100, 100);
             if (adjusted == value) return true;
+            imageAdjustmentSource_ = AdjustmentSource::None;
             SetAdjustmentSliderIntegerValue(imageAdjustments_, index, adjusted);
             ApplyImageAdjustments();
             QueueImageAdjustmentPersistence();
@@ -2514,6 +2521,7 @@ public:
             const int value = AdjustmentSliderIntegerValue(videoAdjustments_, index);
             const int adjusted = std::clamp(value - steps, index == 6 ? 0 : -100, 100);
             if (adjusted == value) return true;
+            videoAdjustmentSource_ = AdjustmentSource::None;
             SetAdjustmentSliderIntegerValue(videoAdjustments_, index, adjusted);
             ApplyVideoAdjustments();
             QueueVideoAdjustmentPersistence();
@@ -2566,6 +2574,7 @@ public:
         imageAdjustments_.shadows = result->adjustments.shadows;
         imageAdjustments_.highlights = result->adjustments.highlights;
         imageAdjustments_.saturation = result->adjustments.saturation;
+        imageAdjustmentSource_ = AdjustmentSource::Auto;
         ApplyImageAdjustments();
         QueueImageAdjustmentPersistence();
     }
@@ -7317,6 +7326,7 @@ public:
         }
         if (result->hasAdjustments) {
             imageAdjustments_ = result->adjustments;
+            imageAdjustmentSource_ = AdjustmentSource::None;
             ApplyImageAdjustments();
             OutputDebugStringW(L"[Viewtrious] ADJUST_DB_LOAD_HIT\n");
         } else {
@@ -7343,6 +7353,7 @@ public:
         }
         if (result.hasAdjustments) {
             videoAdjustments_ = result.adjustments;
+            videoAdjustmentSource_ = AdjustmentSource::None;
             ApplyVideoAdjustments();
             OutputDebugStringW(L"[Viewtrious] VIDEO_ADJUST_DB_LOAD_HIT\n");
         } else {
@@ -7608,6 +7619,7 @@ private:
         videoInitialZoomApplied_ = false;
         videoWindowSizedForNativePresentation_ = false;
         videoAdjustments_ = {};
+        videoAdjustmentSource_ = AdjustmentSource::None;
         videoAdjustmentHashResolved_ = false;
         ++videoAdjustmentMediaGeneration_;
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
@@ -10043,6 +10055,7 @@ private:
         imageAdjustmentSourceDirty_ = true;
         imageAdjustedBitmap_.Reset();
         imageAdjustments_ = {};
+        imageAdjustmentSource_ = AdjustmentSource::None;
         imageAdjustmentHashResolved_ = false;
         ++imageAdjustmentMediaGeneration_;
         imageWidth_ = width;
@@ -10416,7 +10429,7 @@ private:
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, topEdge, left + width, topEdge + height), 5.0f * scale, 5.0f * scale), backing.Get());
             DrawOverlayText(L"adjustments", left, topEdge, width, height, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
-        if (ImageAdjustmentsPanelVisible()) DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, imageAdjustmentsPanelOpacity_, aiAnalysisRunning_, imageAdjustmentsOriginalPreviewActive_);
+        if (ImageAdjustmentsPanelVisible()) DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, imageAdjustmentsPanelOpacity_, imageAdjustmentSource_, imageAdjustmentsOriginalPreviewActive_);
     }
 
     void DrawAdjustmentOriginalEyeIcon(const RECT& bounds, bool closed, ID2D1Brush* brush, float scale) {
@@ -10459,7 +10472,7 @@ private:
     }
 
     void DrawAdjustmentPanelContent(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float opacity,
-        bool autoActive, bool originalActive, ID2D1SolidColorBrush* text, ID2D1SolidColorBrush* accent,
+        AdjustmentSource source, bool originalActive, ID2D1SolidColorBrush* text, ID2D1SolidColorBrush* accent, ID2D1SolidColorBrush* orange,
         ID2D1SolidColorBrush* track, ID2D1SolidColorBrush* hover) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
@@ -10484,20 +10497,20 @@ private:
             DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text, true, false, true);
         }
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
-        const auto drawButton = [&](const RECT& bounds, const wchar_t* label, bool pressed = false, bool enabled = true) {
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent : hover);
-            text->SetOpacity(opacity * (enabled ? 1.0f : 0.42f));
-            DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text, true, false, true);
-            text->SetOpacity(opacity);
+        const auto drawButton = [&](const RECT& bounds, const wchar_t* label, ID2D1SolidColorBrush* glyph, bool enabled = true) {
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), hover);
+            glyph->SetOpacity(opacity * (enabled ? 1.0f : 0.42f));
+            DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, glyph, true, false, true);
+            glyph->SetOpacity(opacity);
         };
         const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
-        drawButton(actions.autoButton, L"AUTO", autoActive);
-        drawButton(actions.userButton, L"USER", false, userAdjustmentPresetSaved_);
+        drawButton(actions.autoButton, L"AUTO", source == AdjustmentSource::Auto ? orange : text);
+        drawButton(actions.userButton, L"USER", source == AdjustmentSource::User ? orange : (userAdjustmentPresetSaved_ ? accent : text), userAdjustmentPresetSaved_);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(actions.saveButton), 5.0f * scale, 5.0f * scale), hover);
         DrawAdjustmentSaveCheckmark(actions.saveButton, text, scale);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(actions.originalButton), 5.0f * scale, 5.0f * scale), hover);
         DrawAdjustmentOriginalEyeIcon(actions.originalButton, originalActive, text, scale);
-        drawButton(actions.resetButton, L"RESET");
+        drawButton(actions.resetButton, L"RESET", text);
     }
 
     void DrawAdjustmentPanelShell(const VideoAdjustmentsPanelLayout& panel, const AdjustmentPanelLipLayout& lip,
@@ -10533,11 +10546,7 @@ private:
         sink->AddBezier(D2D1::BezierSegment(point(footRight, footBottom - radius + radius * kappa), point(footRight - radius + radius * kappa, footBottom), point(footRight - radius, footBottom)));
         sink->AddLine(point(footLeft + radius, footBottom));
         sink->AddBezier(D2D1::BezierSegment(point(footLeft + radius - radius * kappa, footBottom), point(footLeft, footBottom - radius + radius * kappa), point(footLeft, footBottom - radius)));
-        sink->AddLine(point(footLeft, bottom + radius));
-        sink->AddBezier(D2D1::BezierSegment(point(footLeft, bottom + radius - radius * kappa), point(footLeft - radius + radius * kappa, bottom), point(footLeft - radius, bottom)));
-        sink->AddLine(point(left + radius, bottom));
-        sink->AddBezier(D2D1::BezierSegment(point(left + radius - radius * kappa, bottom), point(left, bottom - radius + radius * kappa), point(left, bottom - radius)));
-        sink->AddLine(point(left, top + radius));
+        sink->AddLine(point(footLeft, top + radius));
         sink->AddBezier(D2D1::BezierSegment(point(left, top + radius - radius * kappa), point(left + radius - radius * kappa, top), point(left + radius, top)));
         sink->EndFigure(D2D1_FIGURE_END_CLOSED);
         if (FAILED(sink->Close())) return;
@@ -10545,15 +10554,16 @@ private:
         renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
     }
 
-    void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float reveal, bool autoActive, bool originalActive) {
+    void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float reveal, AdjustmentSource source, bool originalActive) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
         const float panelOpacity = AdjustmentPanelPresentationOpacity(reveal);
-        ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, track, hover;
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, accent, orange, track, hover;
         if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, panelOpacity), &surface)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, panelOpacity), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, panelOpacity), &text)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, panelOpacity), &accent)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 142.0f / 255.0f, 0.0f, panelOpacity), &orange)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * panelOpacity), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, panelOpacity), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
@@ -10562,7 +10572,7 @@ private:
         if (revealed.bottom <= revealed.top) return;
         renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         DrawAdjustmentPanelShell(panel, lip, surface.Get(), border.Get(), scale);
-        DrawAdjustmentPanelContent(panel, adjustments, panelOpacity, autoActive, originalActive, text.Get(), accent.Get(), track.Get(), hover.Get());
+        DrawAdjustmentPanelContent(panel, adjustments, panelOpacity, source, originalActive, text.Get(), accent.Get(), orange.Get(), track.Get(), hover.Get());
         renderTarget_->PopAxisAlignedClip();
     }
 
@@ -10840,12 +10850,13 @@ private:
         const D2D1_COLOR_F autoPlayGlyphColor = videoAutoPlayNext_
             ? D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, opacity)
             : D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 0.42f * opacity);
-        ComPtr<ID2D1SolidColorBrush> surface, border, text, autoPlayIcon, accent, track, hover, speedHover, muted;
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, autoPlayIcon, accent, orange, track, hover, speedHover, muted;
         if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, opacity), &surface)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, opacity), &border)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, opacity), &text)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(autoPlayGlyphColor, &autoPlayIcon)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, opacity), &accent)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 142.0f / 255.0f, 0.0f, opacity), &orange)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * opacity), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, opacity), &hover)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 0.82f * opacity), &speedHover)) ||
@@ -10886,6 +10897,7 @@ private:
             border->SetOpacity(panelOpacity);
             text->SetOpacity(panelOpacity);
             accent->SetOpacity(panelOpacity);
+            orange->SetOpacity(panelOpacity);
             track->SetOpacity(0.75f * panelOpacity);
             hover->SetOpacity(panelOpacity);
             if (adjustmentsPanelSeparateShell) {
@@ -10894,11 +10906,11 @@ private:
                 if (revealed.bottom > revealed.top) {
                     renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                     DrawAdjustmentPanelShell(panel, lip, surface.Get(), border.Get(), scale);
-                    DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
+                    DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, videoAdjustmentSource_, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), orange.Get(), track.Get(), hover.Get());
                     renderTarget_->PopAxisAlignedClip();
                 }
             } else {
-                DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, false, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), track.Get(), hover.Get());
+                DrawAdjustmentPanelContent(panel, videoAdjustments_, panelOpacity, videoAdjustmentSource_, videoAdjustmentsOriginalPreviewActive_, text.Get(), accent.Get(), orange.Get(), track.Get(), hover.Get());
             }
             const bool legacyShellDisabled = false;
             if (legacyShellDisabled) {
@@ -12730,8 +12742,10 @@ private:
     ImageAdjustments videoAdjustments_;
     ImageAdjustments userAdjustmentPreset_;
     bool userAdjustmentPresetSaved_ = false;
+    AdjustmentSource videoAdjustmentSource_ = AdjustmentSource::None;
     uint64_t activeOpenAttemptId_ = 0;
     ImageAdjustments imageAdjustments_;
+    AdjustmentSource imageAdjustmentSource_ = AdjustmentSource::None;
     ImageAdjustmentPersistence adjustmentPersistence_;
     std::array<unsigned char, 32> imageAdjustmentHash_{};
     uint64_t imageAdjustmentMediaGeneration_ = 0;

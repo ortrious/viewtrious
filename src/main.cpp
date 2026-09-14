@@ -9510,6 +9510,8 @@ private:
         const LONG width = MulDiv(94, GetDpiForWindow(window_), 96);
         return { toast.right - inset - width, toast.top + inset, toast.right - inset, toast.bottom - inset };
     }
+
+public:
     void SetVideoFrameSaveToastHover(POINT point) {
         if (!videoFrameSaveToastActive_) return;
         const RECT bounds = VideoFrameSaveToastBounds();
@@ -13795,14 +13797,16 @@ private:
             const D2D1_RECT_F button = D2D1::RectF(static_cast<float>(action.left), static_cast<float>(action.top),
                 static_cast<float>(action.right), static_cast<float>(action.bottom));
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(button, 5.0f * scale, 5.0f * scale), actionSurface.Get());
-            DrawOverlayText(L"frame saved", bounds.left + inset, bounds.top, static_cast<float>(action.left - bounds.left) - inset * 1.5f,
-                static_cast<float>(bounds.bottom - bounds.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true);
+            DrawOverlayText(L"frame saved", static_cast<float>(bounds.left) + inset, static_cast<float>(bounds.top),
+                static_cast<float>(action.left - bounds.left) - inset * 1.5f, static_cast<float>(bounds.bottom - bounds.top),
+                12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true);
             DrawOverlayText(L"OPEN FOLDER", static_cast<float>(action.left), static_cast<float>(action.top),
                 static_cast<float>(action.right - action.left), static_cast<float>(action.bottom - action.top), 10.0f,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, actionText.Get(), true, false, true);
         } else {
-            DrawOverlayText(L"frame save failed", bounds.left + inset, bounds.top, static_cast<float>(bounds.right - bounds.left) - inset * 2.0f,
-                static_cast<float>(bounds.bottom - bounds.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true);
+            DrawOverlayText(L"frame save failed", static_cast<float>(bounds.left) + inset, static_cast<float>(bounds.top),
+                static_cast<float>(bounds.right - bounds.left) - inset * 2.0f, static_cast<float>(bounds.bottom - bounds.top),
+                12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true);
         }
     }
     void DrawCopyFeedback() {

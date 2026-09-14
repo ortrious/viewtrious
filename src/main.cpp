@@ -10560,13 +10560,13 @@ private:
                 const D2D1_POINT_2F arcEnd = ringPoint(endAngle);
                 const D2D1_POINT_2F tangent = point(-std::sin(endAngle), std::cos(endAngle));
                 const D2D1_POINT_2F outward = point(std::cos(endAngle), std::sin(endAngle));
-                // Construct a single regular triangle in tangent/normal local space,
-                // then rigidly rotate and translate it from the terminal arc endpoint.
+                // Construct a single regular triangle in tangent/normal local space.
+                // Translate its centroid backward so the forward tip is the arc endpoint.
                 const float arrowheadSide = 6.0f * scale;
                 const float arrowheadHeight = 0.8660254037844386f * arrowheadSide;
-                const float outsideClearance = arrowheadSide * 0.5f + arrowStroke * 0.5f;
                 const D2D1_POINT_2F arrowheadCenter = point(
-                    arcEnd.x + outward.x * outsideClearance, arcEnd.y + outward.y * outsideClearance);
+                    arcEnd.x - tangent.x * arrowheadHeight * (2.0f / 3.0f),
+                    arcEnd.y - tangent.y * arrowheadHeight * (2.0f / 3.0f));
                 const auto transformArrowheadPoint = [&](float forward, float normal) {
                     return point(arrowheadCenter.x + tangent.x * forward + outward.x * normal,
                         arrowheadCenter.y + tangent.y * forward + outward.y * normal);

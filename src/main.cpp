@@ -7076,6 +7076,28 @@ public:
         filmstripWrapAnchor_.first = first;
         filmstripWrapAnchor_.last = last;
     }
+    bool FilmstripWrapContentsReady() const {
+        if (!filmstripWrapFade_.dispatched || !FilmstripEligible()) return true;
+        if (filmstripWrapFade_.contentFirst >= navigationFiles_.size()) return true;
+        const size_t last = std::min(filmstripWrapFade_.contentLast, navigationFiles_.size());
+        for (size_t index = filmstripWrapFade_.contentFirst; index < last; ++index) {
+            if (index >= filmstripThumbnailGenerations_.size()) return false;
+            const std::wstring path = navigationFiles_[index].wstring();
+            if (FindFilmstripThumbnail(path, filmstripThumbnailGenerations_[index]) < 0 &&
+                !FilmstripThumbnailFailed(path, filmstripThumbnailGenerations_[index])) return false;
+        }
+        return true;
+    }
+    void BeginFilmstripWrapFadeInIfReady() {
+        auto& state = filmstripWrapFade_;
+        if (!state.active || !state.waitingForContents || !FilmstripWrapContentsReady()) return;
+        state.waitingForContents = false;
+        state.startOpacity = 0.0f;
+        state.targetOpacity = 1.0f;
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        state.startedQpc = now.QuadPart;
+    }
     void CancelFilmstripWrapFade() {
         KillTimer(window_, kFilmstripWrapFadeTimer);
         filmstripWrapFade_ = {};
@@ -7083,6 +7105,7 @@ public:
     void SampleFilmstripWrapFade() {
         auto& state = filmstripWrapFade_;
         if (!state.active) return;
+        if (state.waitingForContents) { state.opacity = 0.0f; return; }
         const double duration = state.dispatched ? kFilmstripWrapFadeInMs : kFilmstripWrapFadeOutMs;
         const float progress = static_cast<float>(std::clamp(FilmstripQpcElapsedMs(state.startedQpc, state.qpcFrequency) / duration, 0.0, 1.0));
         state.opacity = state.startOpacity + (state.targetOpacity - state.startOpacity) * SmoothTransitionProgress(progress);
@@ -7126,6 +7149,11 @@ public:
     void UpdateFilmstripWrapFade() {
         auto& state = filmstripWrapFade_;
         if (!state.active) { KillTimer(window_, kFilmstripWrapFadeTimer); return; }
+        if (state.dispatched && state.waitingForContents) {
+            BeginFilmstripWrapFadeInIfReady();
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
         SampleFilmstripWrapFade();
         const double duration = state.dispatched ? kFilmstripWrapFadeInMs : kFilmstripWrapFadeOutMs;
         if (FilmstripQpcElapsedMs(state.startedQpc, state.qpcFrequency) < duration) { InvalidateRect(window_, nullptr, FALSE); return; }
@@ -7136,14 +7164,15 @@ public:
             filmstripScroll_ = state.direction > 0 ? 0.0 : static_cast<double>(FilmstripMaximumScroll());
             StopFilmstripScrollAnimation();
             BeginFilmstripWrapAnchor(state.direction);
+            state.contentFirst = filmstripWrapAnchor_.first;
+            state.contentLast = filmstripWrapAnchor_.last;
             state.dispatched = true;
-            state.startOpacity = 0.0f;
-            state.targetOpacity = 1.0f;
-            LARGE_INTEGER now{}; QueryPerformanceCounter(&now); state.startedQpc = now.QuadPart;
+            state.waitingForContents = true;
             Navigate(state.direction, state.immediatePaint, true);
             QueueFilmstripThumbnails();
             filmstripWrapAnchor_.armed = true;
             ReleaseFilmstripWrapAnchorIfSettled();
+            BeginFilmstripWrapFadeInIfReady();
         } else {
             CancelFilmstripWrapFade();
         }
@@ -13697,11 +13726,14 @@ private:
     struct FilmstripWrapFade {
         bool active = false;
         bool dispatched = false;
+        bool waitingForContents = false;
         int direction = 0;
         bool immediatePaint = true;
         float opacity = 1.0f;
         float startOpacity = 1.0f;
         float targetOpacity = 1.0f;
+        size_t contentFirst = 0;
+        size_t contentLast = 0;
         LONGLONG startedQpc = 0;
         LONGLONG qpcFrequency = 0;
     } filmstripWrapFade_;

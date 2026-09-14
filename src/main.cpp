@@ -998,6 +998,7 @@ struct VideoAdjustmentsPanelLayout {
     std::array<RECT, 7> sliders;
     RECT autoButton;
     RECT originalButton;
+    RECT saveButton;
     RECT resetButton;
     bool aboveControls = false;
 };
@@ -1842,14 +1843,16 @@ public:
         }
         const int footerGap = MulDiv(8, dpi, 96);
         const int autoButtonWidth = MulDiv(58, dpi, 96);
-        const int originalButtonWidth = MulDiv(78, dpi, 96);
-        const int resetButtonWidth = MulDiv(60, dpi, 96);
         const int buttonHeight = MulDiv(30, dpi, 96);
+        const int originalButtonWidth = buttonHeight;
+        const int saveButtonWidth = MulDiv(58, dpi, 96);
+        const int resetButtonWidth = MulDiv(60, dpi, 96);
         const int buttonBottom = bottom - panelPadding;
         const RECT autoButton{ left + panelPadding, buttonBottom - buttonHeight, left + panelPadding + autoButtonWidth, buttonBottom };
         const RECT original{ autoButton.right + footerGap, buttonBottom - buttonHeight, autoButton.right + footerGap + originalButtonWidth, buttonBottom };
+        const RECT save{ original.right + footerGap, buttonBottom - buttonHeight, original.right + footerGap + saveButtonWidth, buttonBottom };
         const RECT reset{ right - panelPadding - resetButtonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
-        return { panel, sliders, autoButton, original, reset, aboveControls };
+        return { panel, sliders, autoButton, original, save, reset, aboveControls };
     }
     RECT AdjustmentPanelRevealBounds(const VideoAdjustmentsPanelLayout& panel, float reveal) const {
         RECT bounds = panel.panel;
@@ -2501,6 +2504,7 @@ public:
                 if (slider >= 0) { imageAdjustmentsDragging_ = slider; imageAdjustmentThumbGrab_ = thumb >= 0; imageAdjustmentDetentIndex_ = -1; if (!imageAdjustmentThumbGrab_) UpdateImageAdjustmentSlider(slider, point); return true; }
                 if (PtInRect(&panel.autoButton, point)) { StartAiAnalysis(); return true; }
                 if (PtInRect(&panel.originalButton, point)) { SetImageAdjustmentsOriginalPreview(true); return true; }
+                if (PtInRect(&panel.saveButton, point)) return true;
                 if (PtInRect(&panel.resetButton, point)) { ResetImageAdjustments(); return true; }
                 return true;
             }
@@ -2714,6 +2718,7 @@ public:
                 if (slider >= 0) { videoAdjustmentsDragging_ = slider; videoAdjustmentThumbGrab_ = thumb >= 0; videoAdjustmentDetentIndex_ = -1; if (!videoAdjustmentThumbGrab_) UpdateVideoAdjustmentSlider(slider, point); return true; }
                 if (PtInRect(&panel.autoButton, point)) { AutoVideoAdjustments(); return true; }
                 if (PtInRect(&panel.originalButton, point)) { SetVideoAdjustmentsOriginalPreview(true); return true; }
+                if (PtInRect(&panel.saveButton, point)) return true;
                 if (PtInRect(&panel.resetButton, point)) { ResetVideoAdjustments(); return true; }
                 return true;
             }
@@ -10335,6 +10340,35 @@ private:
         if (ImageAdjustmentsPanelVisible()) DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, imageAdjustmentsPanelOpacity_, aiAnalysisRunning_, imageAdjustmentsOriginalPreviewActive_);
     }
 
+    void DrawAdjustmentOriginalEyeIcon(const RECT& bounds, bool closed, ID2D1Brush* brush, float scale) {
+        if (!brush) return;
+        const float centerX = (bounds.left + bounds.right) * 0.5f;
+        const float centerY = (bounds.top + bounds.bottom) * 0.5f;
+        const float halfWidth = 7.0f * scale;
+        const float halfHeight = 4.5f * scale;
+        ComPtr<ID2D1PathGeometry> geometry;
+        ComPtr<ID2D1GeometrySink> sink;
+        if (FAILED(d2dFactory_->CreatePathGeometry(&geometry)) || FAILED(geometry->Open(&sink))) return;
+        if (closed) {
+            sink->BeginFigure(D2D1::Point2F(centerX - halfWidth, centerY), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddBezier(D2D1::BezierSegment(D2D1::Point2F(centerX - halfWidth * 0.45f, centerY + halfHeight),
+                D2D1::Point2F(centerX + halfWidth * 0.45f, centerY + halfHeight), D2D1::Point2F(centerX + halfWidth, centerY)));
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            if (SUCCEEDED(sink->Close())) renderTarget_->DrawGeometry(geometry.Get(), brush, 1.5f * scale);
+            return;
+        }
+        sink->BeginFigure(D2D1::Point2F(centerX - halfWidth, centerY), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddBezier(D2D1::BezierSegment(D2D1::Point2F(centerX - halfWidth * 0.45f, centerY - halfHeight),
+            D2D1::Point2F(centerX + halfWidth * 0.45f, centerY - halfHeight), D2D1::Point2F(centerX + halfWidth, centerY)));
+        sink->AddBezier(D2D1::BezierSegment(D2D1::Point2F(centerX + halfWidth * 0.45f, centerY + halfHeight),
+            D2D1::Point2F(centerX - halfWidth * 0.45f, centerY + halfHeight), D2D1::Point2F(centerX - halfWidth, centerY)));
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        if (SUCCEEDED(sink->Close())) {
+            renderTarget_->DrawGeometry(geometry.Get(), brush, 1.5f * scale);
+            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(centerX, centerY), 2.1f * scale, 2.1f * scale), brush);
+        }
+    }
+
     void DrawAdjustmentPanelContent(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float opacity,
         bool autoActive, bool originalActive, ID2D1SolidColorBrush* text, ID2D1SolidColorBrush* accent,
         ID2D1SolidColorBrush* track, ID2D1SolidColorBrush* hover) {
@@ -10363,7 +10397,9 @@ private:
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         const auto drawButton = [&](const RECT& bounds, const wchar_t* label, bool pressed = false) { renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent : hover); DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text, true, false, true); };
         drawButton(panel.autoButton, L"AUTO", autoActive);
-        drawButton(panel.originalButton, L"ORIGINAL", originalActive);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.originalButton), 5.0f * scale, 5.0f * scale), hover);
+        DrawAdjustmentOriginalEyeIcon(panel.originalButton, originalActive, text, scale);
+        drawButton(panel.saveButton, L"SAVE");
         drawButton(panel.resetButton, L"RESET");
     }
 

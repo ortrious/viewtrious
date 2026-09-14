@@ -6574,6 +6574,9 @@ public:
             static_cast<float>(rect.right), static_cast<float>(rect.bottom));
     }
     double LowerUiElapsedMs() const {
+        // Reverse navigation can synchronously shut down video and decode an image.
+        // Its visual clock starts at the first ready paint, not before that work.
+        if (!lowerUiMorph_.started) return 0.0;
         LARGE_INTEGER now{};
         QueryPerformanceCounter(&now);
         return lowerUiMorph_.frequency > 0 ? static_cast<double>(now.QuadPart - lowerUiMorph_.started) *
@@ -6685,9 +6688,9 @@ public:
         state.targetVideo = video;
         state.path = path;
         state.ready = false;
-        state.started = now.QuadPart;
+        state.started = video ? now.QuadPart : 0;
         state.frequency = frequency.QuadPart;
-        state.holdMs = video && !continuing ? 90.0 : 0.0;
+        state.holdMs = !continuing ? 90.0 : 0.0;
         state.geometryMs = state.holdMs;
         state.readyMs = 0.0;
         state.startBounds = state.bounds;
@@ -6752,6 +6755,11 @@ public:
     void DrawLowerUiMorph() {
         auto& state = lowerUiMorph_;
         if (!state.active || !renderTarget_) return;
+        if (!state.started && state.ready) {
+            LARGE_INTEGER now{};
+            QueryPerformanceCounter(&now);
+            state.started = now.QuadPart;
+        }
         // Timer messages request paints and handle completion; they are not the visual clock.
         // Video-driven paints must also sample current QPC time, not reuse the last timer's pose.
         SampleLowerUiMorph();

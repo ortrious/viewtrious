@@ -5765,11 +5765,7 @@ public:
                 filmstripVideoHoverPreview_ = std::move(entry);
                 filmstripVideoHoverLoading_ = false;
                 if (filmstripHoverPreviewPendingIndex_ == static_cast<int>(index)) CommitFilmstripHoverPreviewTarget(index);
-                else if (transitionFromPoster && staticPresentation) {
-                    filmstripHoverPreviewOutgoingBitmap_ = staticPresentation;
-                    filmstripHoverPreviewOutgoingOpacity_ = 1.0f;
-                    StartFilmstripHoverPreviewContentDissolve();
-                }
+                else if (transitionFromPoster && staticPresentation) StartFilmstripHoverPreviewContentDissolve(true);
                 if (filmstripHoverPreviewTargetIndex_ == static_cast<int>(index)) SetFilmstripHoverPreviewGeometry(index);
 #ifdef _DEBUG
                 wchar_t trace[192]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_UI_FRAME_ACCEPTED timestamp=%lld alpha=%u\\n", filmstripVideoHoverTimestamp_, (*filmstripVideoHoverPreview_->pixels)[3]); OutputDebugStringW(trace);
@@ -6370,12 +6366,7 @@ public:
         filmstripHoverPreviewSessionActive_ = false;
         filmstripHoverPreviewOpacity_ = 0.0f;
         filmstripHoverPreviewShellOpacity_ = 0.0f;
-        filmstripHoverPreviewOutgoingOpacity_ = 0.0f;
-        filmstripHoverPreviewIncomingOpacity_ = 1.0f;
-        filmstripHoverPreviewPendingOutgoingOpacity_ = 0.0f;
         filmstripHoverPreviewBlurStandardDeviation_ = 0.0f;
-        filmstripHoverPreviewOutgoingBitmap_.Reset();
-        filmstripHoverPreviewPendingOutgoingBitmap_.Reset();
         filmstripVideoHoverLoading_ = false;
         CancelFilmstripVideoHoverFade();
         filmstripPreviewIndex_ = -1;
@@ -6584,25 +6575,13 @@ public:
     void StartFilmstripHoverPreviewAnimationTimer() {
         SetTimer(window_, kFilmstripHoverPreviewFadeTimer, 15, nullptr);
     }
-    void StartFilmstripHoverPreviewContentDissolve() {
+    void StartFilmstripHoverPreviewContentDissolve(bool animate) {
         LARGE_INTEGER frequency{}, now{};
-        if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&now) || frequency.QuadPart <= 0) {
-            filmstripHoverPreviewOutgoingOpacity_ = 0.0f;
-            filmstripHoverPreviewIncomingOpacity_ = 1.0f;
-            filmstripHoverPreviewBlurStandardDeviation_ = 0.0f;
-            filmstripHoverPreviewOutgoingBitmap_.Reset();
-            filmstripHoverPreviewContentFadeActive_ = false;
-            return;
-        }
-        if (!filmstripHoverPreviewOutgoingBitmap_) {
-            filmstripHoverPreviewOutgoingOpacity_ = 0.0f;
-            filmstripHoverPreviewIncomingOpacity_ = 1.0f;
+        if (!animate || !QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&now) || frequency.QuadPart <= 0) {
             filmstripHoverPreviewBlurStandardDeviation_ = 0.0f;
             filmstripHoverPreviewContentFadeActive_ = false;
             return;
         }
-        filmstripHoverPreviewOutgoingOpacity_ = 1.0f;
-        filmstripHoverPreviewIncomingOpacity_ = 0.0f;
         filmstripHoverPreviewBlurStandardDeviation_ = kFilmstripHoverPreviewPeakBlurStandardDeviation;
         filmstripHoverPreviewContentFadeStartedQpc_ = now.QuadPart;
         filmstripHoverPreviewContentFadeQpcFrequency_ = frequency.QuadPart;
@@ -6613,21 +6592,7 @@ public:
         if (!filmstripHoverPreviewSessionActive_ || index >= navigationFiles_.size() ||
             filmstripHoverPreviewPendingIndex_ != static_cast<int>(index) || !FilmstripHoverPreviewContentReady(index)) return;
         SampleFilmstripHoverPreviewMorph();
-        if (filmstripHoverPreviewContentFadeActive_ && filmstripHoverPreviewOutgoingBitmap_) {
-            // Preserve the fully visible base while the newest target replaces the in-flight incoming layer.
-        } else if (filmstripPreviewIndex_ >= 0 && filmstripPreviewIndex_ < static_cast<int>(navigationFiles_.size())) {
-            ID2D1Bitmap* outgoing = FilmstripHoverPreviewPresentationBitmap(static_cast<size_t>(filmstripPreviewIndex_));
-            filmstripHoverPreviewOutgoingBitmap_ = outgoing;
-            filmstripHoverPreviewOutgoingOpacity_ = outgoing ? 1.0f : 0.0f;
-        } else if (filmstripHoverPreviewPendingOutgoingBitmap_) {
-            filmstripHoverPreviewOutgoingBitmap_ = filmstripHoverPreviewPendingOutgoingBitmap_;
-            filmstripHoverPreviewOutgoingOpacity_ = filmstripHoverPreviewPendingOutgoingOpacity_;
-        } else {
-            filmstripHoverPreviewOutgoingBitmap_.Reset();
-            filmstripHoverPreviewOutgoingOpacity_ = 0.0f;
-        }
-        filmstripHoverPreviewPendingOutgoingBitmap_.Reset();
-        filmstripHoverPreviewPendingOutgoingOpacity_ = 0.0f;
+        const bool replacingPresentedPreview = filmstripPreviewIndex_ >= 0 && filmstripPreviewIndex_ < static_cast<int>(navigationFiles_.size());
         filmstripPreviewIndex_ = static_cast<int>(index);
         filmstripHoverPreviewPendingIndex_ = -1;
         const bool movingVideoReady = filmstripVideoHoverPreview_ && index < filmstripThumbnailGenerations_.size() &&
@@ -6638,7 +6603,7 @@ public:
             filmstripVideoHoverPreview_->itemGeneration != filmstripThumbnailGenerations_[index] ||
             !PathsEqual(fs::path(filmstripVideoHoverPreview_->path), navigationFiles_[index])))
             filmstripVideoHoverPreview_.reset();
-        StartFilmstripHoverPreviewContentDissolve();
+        StartFilmstripHoverPreviewContentDissolve(replacingPresentedPreview);
         SetFilmstripHoverPreviewGeometry(index);
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -6647,17 +6612,6 @@ public:
             static_cast<int>(index) != filmstripHoverPreviewTargetIndex_) return;
         if (filmstripPreviewIndex_ == static_cast<int>(index) && filmstripHoverPreviewPendingIndex_ < 0) return;
         SampleFilmstripHoverPreviewMorph();
-        if (filmstripHoverPreviewContentFadeActive_ && filmstripHoverPreviewOutgoingBitmap_) {
-            // The current base remains the stable handoff layer until the latest target is ready.
-            filmstripHoverPreviewPendingOutgoingBitmap_ = filmstripHoverPreviewOutgoingBitmap_;
-            filmstripHoverPreviewPendingOutgoingOpacity_ = 1.0f;
-        } else if (filmstripPreviewIndex_ >= 0 && filmstripPreviewIndex_ < static_cast<int>(navigationFiles_.size())) {
-            filmstripHoverPreviewPendingOutgoingBitmap_ = FilmstripHoverPreviewPresentationBitmap(static_cast<size_t>(filmstripPreviewIndex_));
-            filmstripHoverPreviewPendingOutgoingOpacity_ = filmstripHoverPreviewPendingOutgoingBitmap_ ? 1.0f : 0.0f;
-        } else {
-            filmstripHoverPreviewPendingOutgoingBitmap_.Reset();
-            filmstripHoverPreviewPendingOutgoingOpacity_ = 0.0f;
-        }
         ++filmstripHoverPreviewGeneration_;
         videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
         CancelFilmstripVideoHoverFade(false);
@@ -6724,11 +6678,7 @@ public:
             filmstripHoverPreviewShellStartOpacity_ = 0.0f;
             filmstripHoverPreviewOpacity_ = 0.0f;
             filmstripHoverPreviewShellOpacity_ = 0.0f;
-            filmstripHoverPreviewOutgoingOpacity_ = 0.0f;
-            filmstripHoverPreviewIncomingOpacity_ = 1.0f;
-            filmstripHoverPreviewPendingOutgoingOpacity_ = 0.0f;
             filmstripHoverPreviewBlurStandardDeviation_ = 0.0f;
-            filmstripHoverPreviewOutgoingBitmap_.Reset();
             filmstripHoverPreviewMorphDurationMs_ = kFilmstripHoverPreviewOpenDurationMs;
             QueueFilmstripHoverPreview(previewIndex);
             LARGE_INTEGER frequency{}, now{};
@@ -6817,8 +6767,6 @@ public:
             const float linear = static_cast<float>(std::clamp(FilmstripQpcElapsedMs(filmstripHoverPreviewContentFadeStartedQpc_,
                 filmstripHoverPreviewContentFadeQpcFrequency_) / kFilmstripHoverPreviewContentDissolveMs, 0.0, 1.0));
             const float progress = SmoothTransitionProgress(linear);
-            filmstripHoverPreviewOutgoingOpacity_ = filmstripHoverPreviewOutgoingBitmap_ ? 1.0f : 0.0f;
-            filmstripHoverPreviewIncomingOpacity_ = progress;
             filmstripHoverPreviewBlurStandardDeviation_ = kFilmstripHoverPreviewPeakBlurStandardDeviation * (1.0f - progress);
         }
     }
@@ -6837,10 +6785,7 @@ public:
         if (filmstripHoverPreviewContentFadeActive_ && FilmstripQpcElapsedMs(filmstripHoverPreviewContentFadeStartedQpc_,
             filmstripHoverPreviewContentFadeQpcFrequency_) >= kFilmstripHoverPreviewContentDissolveMs) {
             filmstripHoverPreviewContentFadeActive_ = false;
-            filmstripHoverPreviewOutgoingOpacity_ = 0.0f;
-            filmstripHoverPreviewIncomingOpacity_ = 1.0f;
             filmstripHoverPreviewBlurStandardDeviation_ = 0.0f;
-            filmstripHoverPreviewOutgoingBitmap_.Reset();
         }
         if (!filmstripHoverPreviewFadeActive_ && !filmstripHoverPreviewFollowing_ && !filmstripHoverPreviewContentFadeActive_)
             KillTimer(window_, kFilmstripHoverPreviewFadeTimer);
@@ -7385,23 +7330,16 @@ public:
                 OutputDebugStringW(message);
 #endif
                 const float previewOpacity = filmstripHoverPreviewOpacity_;
-                if (filmstripHoverPreviewOutgoingBitmap_ && filmstripHoverPreviewOutgoingOpacity_ > 0.001f) {
-                    const D2D1_RECT_F outgoing = FitFilmstripHoverPreviewBitmap(filmstripPreviewGeometry_,
-                        filmstripHoverPreviewOutgoingBitmap_->GetSize());
-                    renderTarget_->DrawBitmap(filmstripHoverPreviewOutgoingBitmap_.Get(), outgoing,
-                        previewOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                }
-                const float incomingOpacity = previewOpacity * filmstripHoverPreviewIncomingOpacity_;
                 blurredComposite = DrawBlurredFilmstripHoverPreviewComposite(previewIndex, previewBitmap, videoPreviewBitmap,
-                    preview, incomingOpacity);
+                    preview, previewOpacity);
                 if (!blurredComposite) {
                     if (filmstripVideoHoverFadeActive_ && videoPreviewBitmap) {
                         const float fadeProgress = FilmstripVideoHoverFadeProgress();
                         if (ID2D1Bitmap* staticThumbnail = FilmstripThumbnailBitmap(previewIndex))
-                            renderTarget_->DrawBitmap(staticThumbnail, preview, fadeProgress * incomingOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                        renderTarget_->DrawBitmap(videoPreviewBitmap, preview, (1.0f - fadeProgress) * incomingOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                            renderTarget_->DrawBitmap(staticThumbnail, preview, fadeProgress * previewOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                        renderTarget_->DrawBitmap(videoPreviewBitmap, preview, (1.0f - fadeProgress) * previewOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
                     } else {
-                        renderTarget_->DrawBitmap(previewBitmap, preview, incomingOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                        renderTarget_->DrawBitmap(previewBitmap, preview, previewOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
                     }
                 }
                 if (filmstripVideoHoverLoading_ && !filmstripVideoHoverFadeActive_ && !blurredComposite) {
@@ -14028,11 +13966,6 @@ private:
         for (FilmstripThumbnailEntry& entry : filmstripThumbnails_) entry.bitmap.Reset();
         for (FilmstripHoverPreviewEntry& entry : filmstripHoverPreviews_) entry.bitmap.Reset();
         if (filmstripVideoHoverPreview_) filmstripVideoHoverPreview_->bitmap.Reset();
-        filmstripHoverPreviewOutgoingBitmap_.Reset();
-        filmstripHoverPreviewPendingOutgoingBitmap_.Reset();
-        filmstripHoverPreviewOutgoingOpacity_ = 0.0f;
-        filmstripHoverPreviewIncomingOpacity_ = 1.0f;
-        filmstripHoverPreviewPendingOutgoingOpacity_ = 0.0f;
         filmstripHoverPreviewBlurStandardDeviation_ = 0.0f;
         filmstripHoverPreviewContentFadeActive_ = false;
         filmstripHoverPreviewCompositeTarget_.Reset();
@@ -14376,12 +14309,7 @@ private:
     float filmstripHoverPreviewFadeStartOpacity_ = 0.0f;
     float filmstripHoverPreviewShellOpacity_ = 0.0f;
     float filmstripHoverPreviewShellStartOpacity_ = 0.0f;
-    float filmstripHoverPreviewOutgoingOpacity_ = 0.0f;
-    float filmstripHoverPreviewIncomingOpacity_ = 1.0f;
-    float filmstripHoverPreviewPendingOutgoingOpacity_ = 0.0f;
     float filmstripHoverPreviewBlurStandardDeviation_ = 0.0f;
-    ComPtr<ID2D1Bitmap> filmstripHoverPreviewOutgoingBitmap_;
-    ComPtr<ID2D1Bitmap> filmstripHoverPreviewPendingOutgoingBitmap_;
     ComPtr<ID2D1BitmapRenderTarget> filmstripHoverPreviewCompositeTarget_;
     ComPtr<ID2D1Effect> filmstripHoverPreviewBlurEffect_;
     D2D1_SIZE_F filmstripHoverPreviewCompositeSize_{};

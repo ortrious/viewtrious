@@ -1844,10 +1844,10 @@ public:
         const LONG bottom = panel.bottom;
         const int labelWidth = MulDiv(70, dpi, 96);
         const int valueWidth = MulDiv(38, dpi, 96);
-        // In the above-controls fallback, the footer remains inside the compact
-        // panel rather than in a lower lip.  Reserve its clearance explicitly.
-        const int rowHeight = MulDiv(aboveControls ? 25 : 32, dpi, 96);
-        const int sliderTopInset = MulDiv(aboveControls ? 12 : 16, dpi, 96);
+        // Content geometry is identical for Image2D and Video2D.  Placement may
+        // differ, but a Video2D fallback must not compress the shared panel.
+        const int rowHeight = MulDiv(32, dpi, 96);
+        const int sliderTopInset = MulDiv(16, dpi, 96);
         const int sliderLeft = left + labelWidth;
         const int panelPadding = MulDiv(12, dpi, 96);
         const int sliderRight = right - valueWidth - panelPadding;
@@ -1901,7 +1901,10 @@ public:
         const LONG left = std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
         const LONG right = left + width;
         const LONG bottom = controls.island.top;
-        const LONG height = std::min<LONG>(MulDiv(238, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
+        // The regular Image2D panel places its footer in a lower lip.  When the
+        // Video2D panel moves above the controls, retain that same 40-DIP footer
+        // footprint within its fallback surface instead of overlapping sharpness.
+        const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
         return MakeVideoAdjustmentsPanelLayout({ left, bottom - height, right, bottom }, true);
     }
     bool VideoAdjustmentsPanelMotionActive() const {

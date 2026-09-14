@@ -1019,6 +1019,7 @@ struct AdjustmentPanelActionLayout {
 
 enum class VideoAdjustmentsPanelMotion { None, Placement, Opening, Closing };
 enum class AdjustmentSource { None, Auto, User };
+enum class AdjustmentFooterButton : int { None = -1, Auto, Original, User, Save, Reset };
 
 struct ZoomHudLayout {
     RECT combined;
@@ -1861,9 +1862,9 @@ public:
         const int resetButtonWidth = MulDiv(44, dpi, 96);
         const int buttonBottom = bottom - panelPadding;
         const RECT autoButton{ left + panelPadding, buttonBottom - buttonHeight, left + panelPadding + autoButtonWidth, buttonBottom };
-        const RECT user{ autoButton.right + footerGap, buttonBottom - buttonHeight, autoButton.right + footerGap + userButtonWidth, buttonBottom };
+        const RECT original{ autoButton.right + footerGap, buttonBottom - buttonHeight, autoButton.right + footerGap + originalButtonWidth, buttonBottom };
+        const RECT user{ original.right + footerGap, buttonBottom - buttonHeight, original.right + footerGap + userButtonWidth, buttonBottom };
         const RECT save{ user.right + footerGap, buttonBottom - buttonHeight, user.right + footerGap + saveButtonWidth, buttonBottom };
-        const RECT original{ save.right + footerGap, buttonBottom - buttonHeight, save.right + footerGap + originalButtonWidth, buttonBottom };
         const RECT reset{ right - panelPadding - resetButtonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
         return { panel, sliders, autoButton, user, save, original, reset, aboveControls };
     }
@@ -2183,9 +2184,10 @@ public:
             imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_, imageAdjustmentsPanelFadeStartedAt_);
         const bool videoActive = UpdateVideoAdjustmentsPanelFade();
         SynchronizeFilmstripAdjustmentAvoidance();
+        const bool footerActive = UpdateAdjustmentFooterVisuals();
         const bool filmstripActive = filmstripAdjustmentAvoidanceAnimating_;
         InvalidateRect(window_, nullptr, FALSE);
-        if (imageActive || videoActive || filmstripActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+        if (imageActive || videoActive || footerActive || filmstripActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
         else KillTimer(window_, kVideoAdjustmentsFadeTimer);
     }
     void QueueVideoAdjustmentPersistence() {
@@ -2278,13 +2280,29 @@ public:
             L"UserAdjustmentPresetExposure", L"UserAdjustmentPresetBrightness", L"UserAdjustmentPresetContrast",
             L"UserAdjustmentPresetShadows", L"UserAdjustmentPresetHighlights", L"UserAdjustmentPresetSaturation",
             L"UserAdjustmentPresetSharpness" };
+        bool neutral = true;
         for (int index = 0; index < static_cast<int>(names.size()); ++index) {
             const int value = AdjustmentSliderIntegerValue(adjustments, index);
+            neutral &= value == 0;
             WriteSetting(names[index], static_cast<DWORD>(index == 6 ? value : value + 100));
         }
-        WriteSetting(L"UserAdjustmentPresetSaved", 1);
-        userAdjustmentPreset_ = adjustments;
-        userAdjustmentPresetSaved_ = true;
+        WriteSetting(L"UserAdjustmentPresetSaved", neutral ? 0 : 1);
+        if (neutral) {
+            HKEY key = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+                for (const wchar_t* name : names) RegDeleteValueW(key, name);
+                RegCloseKey(key);
+            }
+            userAdjustmentPreset_ = {};
+            userAdjustmentPresetSaved_ = false;
+            if (imageAdjustmentSource_ == AdjustmentSource::User) imageAdjustmentSource_ = AdjustmentSource::None;
+            if (videoAdjustmentSource_ == AdjustmentSource::User) videoAdjustmentSource_ = AdjustmentSource::None;
+        } else {
+            userAdjustmentPreset_ = adjustments;
+            userAdjustmentPresetSaved_ = true;
+        }
+        adjustmentFooterSaveConfirmedAt_ = GetTickCount64();
+        SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ApplyUserAdjustmentPresetToImage() {
@@ -2412,13 +2430,57 @@ public:
         const std::array<LONG, 5> widths{ MulDiv(42, dpi, 96), MulDiv(38, dpi, 96), buttonHeight, buttonHeight, MulDiv(44, dpi, 96) };
         const LONG bottom = lip.bounds.bottom - inset;
         const LONG top = bottom - buttonHeight;
-        LONG left = panel.panel.left + MulDiv(20, dpi, 96) + inset;
+        LONG left = lip.bounds.left + inset;
         auto next = [&](LONG width) {
             const RECT result{ left, top, left + width, bottom };
             left = result.right + gap;
             return result;
         };
-        return { next(widths[0]), next(widths[1]), next(widths[2]), next(widths[3]), next(widths[4]) };
+        const RECT autoButton = next(widths[0]);
+        const RECT originalButton = next(widths[3]);
+        const RECT userButton = next(widths[1]);
+        const RECT saveButton = next(widths[2]);
+        const RECT resetButton{ lip.bounds.right - inset - widths[4], top, lip.bounds.right - inset, bottom };
+        return { autoButton, userButton, saveButton, originalButton, resetButton };
+    }
+    AdjustmentFooterButton AdjustmentFooterButtonAt(const AdjustmentPanelActionLayout& actions, POINT point) const {
+        if (PtInRect(&actions.autoButton, point)) return AdjustmentFooterButton::Auto;
+        if (PtInRect(&actions.originalButton, point)) return AdjustmentFooterButton::Original;
+        if (PtInRect(&actions.userButton, point)) return AdjustmentFooterButton::User;
+        if (PtInRect(&actions.saveButton, point)) return AdjustmentFooterButton::Save;
+        if (PtInRect(&actions.resetButton, point)) return AdjustmentFooterButton::Reset;
+        return AdjustmentFooterButton::None;
+    }
+    void SetAdjustmentFooterHover(POINT point) {
+        AdjustmentFooterButton hovered = AdjustmentFooterButton::None;
+        if (VideoAdjustmentsPanelOpen()) {
+            const auto& panel = GetVideoAdjustmentsPanelPresentedLayout();
+            hovered = AdjustmentFooterButtonAt(GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel)), point);
+        } else if (ImageAdjustmentsPanelOpen()) {
+            const auto& panel = GetImageAdjustmentsPanelLayout();
+            hovered = AdjustmentFooterButtonAt(GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel)), point);
+        }
+        if (hovered == adjustmentFooterHovered_) return;
+        UpdateAdjustmentFooterVisuals();
+        adjustmentFooterHoverStart_ = adjustmentFooterHoverProgress_;
+        adjustmentFooterHovered_ = hovered;
+        adjustmentFooterHoverStartedAt_ = GetTickCount64();
+        adjustmentFooterHoverAnimating_ = true;
+        SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+    }
+    bool UpdateAdjustmentFooterVisuals() {
+        bool active = false;
+        if (adjustmentFooterHoverAnimating_) {
+            const float progress = std::clamp(static_cast<float>(GetTickCount64() - adjustmentFooterHoverStartedAt_) / static_cast<float>(kVideoPlaybackSpeedHoverDurationMs), 0.0f, 1.0f);
+            adjustmentFooterHoverProgress_ = adjustmentFooterHoverStart_ + ((adjustmentFooterHovered_ == AdjustmentFooterButton::None ? 0.0f : 1.0f) - adjustmentFooterHoverStart_) * SmoothTransitionProgress(progress);
+            adjustmentFooterHoverAnimating_ = progress < 1.0f;
+            active |= adjustmentFooterHoverAnimating_;
+        }
+        if (adjustmentFooterSaveConfirmedAt_ != 0) {
+            if (GetTickCount64() - adjustmentFooterSaveConfirmedAt_ < 260) active = true;
+            else adjustmentFooterSaveConfirmedAt_ = 0;
+        }
+        return active;
     }
     RECT AdjustmentPanelRenderedRevealBounds(const VideoAdjustmentsPanelLayout& panel, float reveal,
         const AdjustmentPanelLipLayout& lip) const {
@@ -2584,6 +2646,7 @@ public:
             const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
             if (ImageAdjustmentsPanelContains(point)) {
                 const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
+                adjustmentFooterPressed_ = AdjustmentFooterButtonAt(actions, point);
                 const int thumb = AdjustmentSliderThumbAt(panel, imageAdjustments_, point);
                 const int slider = thumb >= 0 ? thumb : AdjustmentSliderAt(panel, point);
                 if (slider >= 0) { imageAdjustmentsDragging_ = slider; imageAdjustmentThumbGrab_ = thumb >= 0; imageAdjustmentDetentIndex_ = -1; if (!imageAdjustmentThumbGrab_) UpdateImageAdjustmentSlider(slider, point); return true; }
@@ -2603,7 +2666,10 @@ public:
         return true;
     }
     bool EndImageAdjustmentsInteraction(POINT point) {
+        const bool footerPressed = adjustmentFooterPressed_ != AdjustmentFooterButton::None;
+        adjustmentFooterPressed_ = AdjustmentFooterButton::None;
         if (imageAdjustmentsOriginalPreviewActive_) { SetImageAdjustmentsOriginalPreview(false); return true; }
+        if (footerPressed) { InvalidateRect(window_, nullptr, FALSE); return true; }
         if (imageAdjustmentsDragging_ < 0) return false;
         if (!imageAdjustmentThumbGrab_) UpdateImageAdjustmentSlider(imageAdjustmentsDragging_, point);
         imageAdjustmentsDragging_ = -1;
@@ -2800,6 +2866,7 @@ public:
             const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
             if (VideoAdjustmentsPanelContains(point)) {
                 const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
+                adjustmentFooterPressed_ = AdjustmentFooterButtonAt(actions, point);
                 const int thumb = AdjustmentSliderThumbAt(panel, videoAdjustments_, point);
                 const int slider = thumb >= 0 ? thumb : AdjustmentSliderAt(panel, point);
                 if (slider >= 0) { videoAdjustmentsDragging_ = slider; videoAdjustmentThumbGrab_ = thumb >= 0; videoAdjustmentDetentIndex_ = -1; if (!videoAdjustmentThumbGrab_) UpdateVideoAdjustmentSlider(slider, point); return true; }
@@ -2850,7 +2917,10 @@ public:
         return true;
     }
     bool EndVideoControlsInteraction(POINT point) {
+        const bool footerPressed = adjustmentFooterPressed_ != AdjustmentFooterButton::None;
+        adjustmentFooterPressed_ = AdjustmentFooterButton::None;
         if (videoAdjustmentsOriginalPreviewActive_) { SetVideoAdjustmentsOriginalPreview(false); return true; }
+        if (footerPressed) { InvalidateRect(window_, nullptr, FALSE); return true; }
         if (videoAdjustmentsDragging_ >= 0) { if (!videoAdjustmentThumbGrab_) UpdateVideoAdjustmentSlider(videoAdjustmentsDragging_, point); videoAdjustmentsDragging_ = -1; videoAdjustmentThumbGrab_ = false; videoAdjustmentDetentIndex_ = -1; FlushVideoAdjustmentPersistence(); return true; }
         if (videoStepHoldDirection_) {
             StopVideoStepHold();
@@ -10497,20 +10567,25 @@ private:
             DrawOverlayText(value.c_str(), static_cast<float>(slider.right + MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.top), static_cast<float>(panel.panel.right - slider.right - MulDiv(8, GetDpiForWindow(window_), 96)), static_cast<float>(slider.bottom - slider.top), 11.0f, DWRITE_FONT_WEIGHT_NORMAL, text, true, false, true);
         }
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
-        const auto drawButton = [&](const RECT& bounds, const wchar_t* label, ID2D1SolidColorBrush* glyph, bool enabled = true) {
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), hover);
+        const auto drawButton = [&](const RECT& bounds, const wchar_t* label, AdjustmentFooterButton button, ID2D1SolidColorBrush* glyph, bool enabled = true) {
+            const bool pressed = adjustmentFooterPressed_ == button;
+            const float hoverOpacity = opacity * (0.72f + 0.28f * (adjustmentFooterHovered_ == button ? adjustmentFooterHoverProgress_ : 0.0f));
+            hover->SetOpacity(hoverOpacity);
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent : hover);
+            hover->SetOpacity(opacity);
             glyph->SetOpacity(opacity * (enabled ? 1.0f : 0.42f));
             DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, glyph, true, false, true);
             glyph->SetOpacity(opacity);
         };
         const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
-        drawButton(actions.autoButton, L"AUTO", source == AdjustmentSource::Auto ? orange : text);
-        drawButton(actions.userButton, L"USER", source == AdjustmentSource::User ? orange : (userAdjustmentPresetSaved_ ? accent : text), userAdjustmentPresetSaved_);
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(actions.saveButton), 5.0f * scale, 5.0f * scale), hover);
-        DrawAdjustmentSaveCheckmark(actions.saveButton, text, scale);
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(actions.originalButton), 5.0f * scale, 5.0f * scale), hover);
+        drawButton(actions.autoButton, L"AUTO", AdjustmentFooterButton::Auto, source == AdjustmentSource::Auto ? orange : text);
+        drawButton(actions.userButton, L"USER", AdjustmentFooterButton::User, source == AdjustmentSource::User ? orange : (userAdjustmentPresetSaved_ ? accent : text), userAdjustmentPresetSaved_);
+        const bool saveConfirmed = adjustmentFooterSaveConfirmedAt_ != 0 && GetTickCount64() - adjustmentFooterSaveConfirmedAt_ < 260;
+        drawButton(actions.saveButton, L"", AdjustmentFooterButton::Save, text);
+        DrawAdjustmentSaveCheckmark(actions.saveButton, saveConfirmed ? accent : text, scale);
+        drawButton(actions.originalButton, L"", AdjustmentFooterButton::Original, text);
         DrawAdjustmentOriginalEyeIcon(actions.originalButton, originalActive, text, scale);
-        drawButton(actions.resetButton, L"RESET", text);
+        drawButton(actions.resetButton, L"RESET", AdjustmentFooterButton::Reset, text);
     }
 
     void DrawAdjustmentPanelShell(const VideoAdjustmentsPanelLayout& panel, const AdjustmentPanelLipLayout& lip,
@@ -12743,6 +12818,13 @@ private:
     ImageAdjustments userAdjustmentPreset_;
     bool userAdjustmentPresetSaved_ = false;
     AdjustmentSource videoAdjustmentSource_ = AdjustmentSource::None;
+    AdjustmentFooterButton adjustmentFooterHovered_ = AdjustmentFooterButton::None;
+    AdjustmentFooterButton adjustmentFooterPressed_ = AdjustmentFooterButton::None;
+    float adjustmentFooterHoverProgress_ = 0.0f;
+    float adjustmentFooterHoverStart_ = 0.0f;
+    bool adjustmentFooterHoverAnimating_ = false;
+    ULONGLONG adjustmentFooterHoverStartedAt_ = 0;
+    ULONGLONG adjustmentFooterSaveConfirmedAt_ = 0;
     uint64_t activeOpenAttemptId_ = 0;
     ImageAdjustments imageAdjustments_;
     AdjustmentSource imageAdjustmentSource_ = AdjustmentSource::None;
@@ -13501,6 +13583,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const FrameMetrics frame = GetFrameMetrics(window);
             viewer->SetHamburgerHover(!viewer->IsFullscreen() && PtInRect(&frame.hamburger, point));
             viewer->UpdateVideoControlsMouse(point);
+            viewer->SetAdjustmentFooterHover(point);
             viewer->SetCanvasNavigationHover(viewer->VideoControlsContains(point) ? ButtonKind::None : viewer->CanvasNavigationZoneAt(point));
             TRACKMOUSEEVENT track{ sizeof(track), TME_LEAVE, window, 0 };
             TrackMouseEvent(&track);
@@ -13514,6 +13597,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         const FrameMetrics frame = GetFrameMetrics(window);
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        viewer->SetAdjustmentFooterHover(point);
         if (viewer->ComponentsPanelInteractionActive() || viewer->ComponentsPanelContains(point)) {
             viewer->SetComponentsPanelHover(point);
             return 0;

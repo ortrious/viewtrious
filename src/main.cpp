@@ -1268,6 +1268,7 @@ public:
         const wchar_t* mediaKind = IsModelPath(path) ? L"model" : IsVideoPath(path) ? L"video" : IsGifPath(path) ? L"gif" : L"image";
         activeOpenAttemptId_ = FileOpenDiagnostics::Begin(path, route, mediaKind);
         FileOpenDiagnostics::Log(activeOpenAttemptId_, L"load-content-dispatch");
+        BeginAdjustmentPanelNavigation(path);
         CancelVideoAutoPlayNextCountdown();
         if (!currentPath_.empty() && !PathsEqual(fs::path(path), fs::path(currentPath_))) {
             if (VideoActive()) FlushVideoAdjustmentPersistence();
@@ -1689,7 +1690,7 @@ public:
         return seekStarted && !videoPlayer_.Playing();
     }
     bool VideoAdjustmentsPanelAboveControls() const {
-        if (!VideoAdjustmentsPanelVisible()) return false;
+        if (!VideoAdjustmentsPanelVisible() || videoControlsOpacity_ <= 0.001f) return false;
         const UINT dpi = GetDpiForWindow(window_);
         const int clearance = MulDiv(8, dpi, 96);
         const VideoAdjustmentsPanelLayout normalTarget = GetVideoZoomHudAdjustmentsPanelTargetLayout();
@@ -2014,6 +2015,7 @@ public:
         SetTimer(window_, kVideoAdjustmentsPlacementTimer, 16, nullptr);
     }
     void SynchronizeVideoAdjustmentsPanelPresentedLayout(bool animatePlacement = false) {
+        if (adjustmentPanelNavigation_.pending) return;
         const VideoAdjustmentsPanelLayout target = GetVideoAdjustmentsPanelTargetLayout();
         if (!animatePlacement || videoAdjustmentsDragging_ >= 0) {
             StopVideoAdjustmentsPanelMotion();
@@ -2059,7 +2061,7 @@ public:
         return videoAdjustmentsPanelPresentedLayout_;
     }
     bool VideoAdjustmentsPanelContains(POINT point) const {
-        if (!videoAdjustmentsPanelOpen_ || !VideoControlsInteractive()) return false;
+        if (adjustmentPanelNavigation_.pending || !VideoActive() || !videoAdjustmentsPanelOpen_ || videoAdjustmentsPanelOpacity_ <= 0.05f) return false;
         const VideoAdjustmentsPanelLayout& layout = GetVideoAdjustmentsPanelPresentedLayout();
         const RECT panel = AdjustmentPanelRenderedRevealBounds(layout, videoAdjustmentsPanelOpacity_, GetAdjustmentPanelLipLayout(layout));
         return PtInRect(&panel, point) != FALSE;
@@ -2107,7 +2109,84 @@ public:
         imageAdjustmentsOriginalPreviewActive_ = active;
         InvalidateRect(window_, nullptr, FALSE);
     }
-    bool VideoAdjustmentsPanelOpen() const { return videoAdjustmentsPanelOpen_; }
+    bool VideoAdjustmentsPanelOpen() const {
+        return adjustmentPanelNavigation_.pending ? VideoActive() && adjustmentPanelNavigation_.open : videoAdjustmentsPanelOpen_;
+    }
+    void BeginAdjustmentPanelNavigation(const std::wstring& path) {
+        auto& held = adjustmentPanelNavigation_;
+        if (IsModelPath(path)) { held = {}; return; }
+        if (held.pending) { held.path = path; return; }
+        if (!VideoActive() && !source_) return;
+        const bool video = VideoActive();
+        UpdateVideoAdjustmentsPanelPlacementMotion();
+        UpdateAdjustmentPanelFade(imageAdjustmentsPanelOpen_, imageAdjustmentsPanelFadeActive_,
+            imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_, imageAdjustmentsPanelFadeStartedAt_);
+        UpdateVideoAdjustmentsPanelFade();
+        held.open = video ? videoAdjustmentsPanelOpen_ : imageAdjustmentsPanelOpen_;
+        held.fadeActive = video ? videoAdjustmentsPanelFadeActive_ : imageAdjustmentsPanelFadeActive_;
+        held.opacity = video ? videoAdjustmentsPanelOpacity_ : imageAdjustmentsPanelOpacity_;
+        held.fadeStartOpacity = video ? videoAdjustmentsPanelFadeStartOpacity_ : imageAdjustmentsPanelFadeStartOpacity_;
+        held.fadeStartedAt = video ? videoAdjustmentsPanelFadeStartedAt_ : imageAdjustmentsPanelFadeStartedAt_;
+        held.layout = video ? GetVideoAdjustmentsPanelPresentedLayout() : GetImageAdjustmentsPanelLayout();
+        held.lip = GetAdjustmentPanelLipLayout(held.layout);
+        held.values = video ? videoAdjustments_ : imageAdjustments_;
+        held.source = video ? videoAdjustmentSource_ : imageAdjustmentSource_;
+        held.path = path;
+        held.pending = true;
+        // Retain the outgoing UI independently of player teardown and superseding opens.
+        StopVideoAdjustmentsPanelMotion();
+        imageAdjustmentsDragging_ = videoAdjustmentsDragging_ = -1;
+        imageAdjustmentThumbGrab_ = videoAdjustmentThumbGrab_ = false;
+        SetImageAdjustmentsOriginalPreview(false);
+        SetVideoAdjustmentsOriginalPreview(false);
+        adjustmentFooterPressed_ = AdjustmentFooterButton::None;
+        adjustmentFooterHovered_ = AdjustmentFooterButton::None;
+    }
+    void CommitAdjustmentPanelNavigation(const std::wstring& path) {
+        auto& held = adjustmentPanelNavigation_;
+        if (!held.pending || !PathsEqual(fs::path(path), fs::path(held.path)) ||
+            !PathsEqual(fs::path(path), fs::path(currentPath_))) return;
+        UpdateAdjustmentPanelFade(held.open, held.fadeActive, held.opacity, held.fadeStartOpacity, held.fadeStartedAt);
+        const bool video = VideoActive();
+        imageAdjustmentsPanelOpen_ = !video && held.open;
+        videoAdjustmentsPanelOpen_ = video && held.open;
+        imageAdjustmentsPanelFadeActive_ = !video && held.fadeActive;
+        videoAdjustmentsPanelFadeActive_ = video && held.fadeActive;
+        imageAdjustmentsPanelOpacity_ = !video ? held.opacity : 0.0f;
+        videoAdjustmentsPanelOpacity_ = video ? held.opacity : 0.0f;
+        imageAdjustmentsPanelFadeStartOpacity_ = videoAdjustmentsPanelFadeStartOpacity_ = held.fadeStartOpacity;
+        imageAdjustmentsPanelFadeStartedAt_ = videoAdjustmentsPanelFadeStartedAt_ = held.fadeStartedAt;
+        videoAdjustmentsPanelPresentedLayout_ = held.layout;
+        held.pending = false;
+        if (video) SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
+        else {
+            imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
+            videoAdjustmentsPanelPresentedLayout_ = imageAdjustmentsPanelTargetLayout_;
+            SynchronizeFilmstripAdjustmentAvoidance();
+        }
+        if (held.fadeActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+    }
+    void DrawNavigatingAdjustmentPanel() {
+        auto& held = adjustmentPanelNavigation_;
+        if (held.pending) {
+            if (held.opacity <= 0.001f) return;
+            drawingHeldAdjustmentPanel_ = true;
+            DrawAdjustmentPanel(held.layout, held.values, held.opacity, held.source, false);
+            drawingHeldAdjustmentPanel_ = false;
+        } else if (VideoActive() && VideoAdjustmentsPanelVisible()) {
+            DrawAdjustmentPanel(GetVideoAdjustmentsPanelPresentedLayout(), videoAdjustments_, videoAdjustmentsPanelOpacity_,
+                videoAdjustmentSource_, videoAdjustmentsOriginalPreviewActive_);
+        } else if (source_ && TransitionOverlayActive() && ImageAdjustmentsPanelVisible()) {
+            DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, imageAdjustmentsPanelOpacity_,
+                imageAdjustmentSource_, imageAdjustmentsOriginalPreviewActive_);
+        }
+    }
+    bool HeldAdjustmentPanelContains(POINT point) const {
+        const auto& held = adjustmentPanelNavigation_;
+        if (!held.pending || held.opacity <= 0.05f) return false;
+        const RECT bounds = AdjustmentPanelRenderedRevealBounds(held.layout, held.opacity, held.lip);
+        return PtInRect(&bounds, point) != FALSE;
+    }
     void SetAdjustmentPanelOpen(bool& panelOpen, bool& fadeActive, float& opacity,
             float& fadeStartOpacity, ULONGLONG& fadeStartedAt, bool open) {
         if (open == panelOpen && !fadeActive) return;
@@ -2153,6 +2232,12 @@ public:
         return videoAdjustmentsPanelFadeActive_;
     }
     void SetVideoAdjustmentsPanelOpen(bool open) {
+        if (adjustmentPanelNavigation_.pending) {
+            auto& held = adjustmentPanelNavigation_;
+            SetAdjustmentPanelOpen(held.open, held.fadeActive, held.opacity, held.fadeStartOpacity, held.fadeStartedAt, open);
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
         if (open == videoAdjustmentsPanelOpen_ && !videoAdjustmentsPanelFadeActive_) return;
         const bool wasMoving = VideoAdjustmentsPanelMotionActive();
         if (wasMoving) UpdateVideoAdjustmentsPanelPlacementMotion();
@@ -2173,6 +2258,9 @@ public:
         ShowVideoControls();
     }
     void UpdateAdjustmentPanelsFade() {
+        auto& held = adjustmentPanelNavigation_;
+        const bool heldActive = held.pending && UpdateAdjustmentPanelFade(held.open, held.fadeActive,
+            held.opacity, held.fadeStartOpacity, held.fadeStartedAt);
         const bool imageActive = UpdateAdjustmentPanelFade(imageAdjustmentsPanelOpen_, imageAdjustmentsPanelFadeActive_,
             imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_, imageAdjustmentsPanelFadeStartedAt_);
         const bool videoActive = UpdateVideoAdjustmentsPanelFade();
@@ -2180,7 +2268,7 @@ public:
         const bool footerActive = UpdateAdjustmentFooterVisuals();
         const bool filmstripActive = filmstripAdjustmentAvoidanceAnimating_;
         InvalidateRect(window_, nullptr, FALSE);
-        if (imageActive || videoActive || footerActive || filmstripActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+        if (heldActive || imageActive || videoActive || footerActive || filmstripActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
         else KillTimer(window_, kVideoAdjustmentsFadeTimer);
     }
     void QueueVideoAdjustmentPersistence() {
@@ -2380,6 +2468,7 @@ public:
         return MakeVideoAdjustmentsPanelLayout({ panelLeft, bottom - height, panelLeft + width, bottom }, false);
     }
     AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel) const {
+        if (drawingHeldAdjustmentPanel_) return adjustmentPanelNavigation_.lip;
         // The lipped silhouette is intended for the bottom-right HUD anchor. Other HUD
         // positions retain the established rounded rectangle rather than forcing a foot
         // through a constrained or unrelated lower-overlay layout.
@@ -2445,6 +2534,7 @@ public:
         return AdjustmentFooterButton::None;
     }
     void SetAdjustmentFooterHover(POINT point) {
+        if (adjustmentPanelNavigation_.pending) return;
         AdjustmentFooterButton hovered = AdjustmentFooterButton::None;
         if (VideoAdjustmentsPanelOpen()) {
             const auto& panel = GetVideoAdjustmentsPanelPresentedLayout();
@@ -2501,9 +2591,11 @@ public:
         if (imageAdjustmentHashResolved_) adjustmentPersistence_.Save(imageAdjustmentHash_, imageAdjustments_);
     }
     void ResetImageAdjustments() { imageAdjustments_ = {}; imageAdjustmentSource_ = AdjustmentSource::None; ApplyImageAdjustments(); QueueImageAdjustmentPersistence(); }
-    bool ImageAdjustmentsPanelOpen() const { return imageAdjustmentsPanelOpen_; }
+    bool ImageAdjustmentsPanelOpen() const {
+        return adjustmentPanelNavigation_.pending ? !VideoActive() && adjustmentPanelNavigation_.open : imageAdjustmentsPanelOpen_;
+    }
     bool ImageAdjustmentsPanelContains(POINT point) const {
-        if (!imageAdjustmentsPanelOpen_) return false;
+        if (adjustmentPanelNavigation_.pending || !imageAdjustmentsPanelOpen_) return false;
         const ImageAdjustmentsPanelLayout& layout = GetImageAdjustmentsPanelLayout();
         const RECT panel = AdjustmentPanelRenderedRevealBounds(layout, imageAdjustmentsPanelOpacity_, GetAdjustmentPanelLipLayout(layout));
         return PtInRect(&panel, point) != FALSE;
@@ -2512,6 +2604,7 @@ public:
         return imageAdjustmentsPanelOpen_ || imageAdjustmentsPanelFadeActive_ || imageAdjustmentsPanelOpacity_ > 0.001f;
     }
     void SetImageAdjustmentsPanelOpen(bool open) {
+        if (adjustmentPanelNavigation_.pending) { SetVideoAdjustmentsPanelOpen(open); return; }
         const bool wasMoving = VideoAdjustmentsPanelMotionActive();
         if (wasMoving) UpdateVideoAdjustmentsPanelPlacementMotion();
         imageAdjustmentsDragging_ = -1;
@@ -2533,8 +2626,8 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleAdjustments() {
-        if (VideoActive()) { videoPlaybackSpeedPanelOpen_ = false; SetVideoAdjustmentsPanelOpen(!videoAdjustmentsPanelOpen_); }
-        else SetImageAdjustmentsPanelOpen(!imageAdjustmentsPanelOpen_);
+        if (VideoActive()) { videoPlaybackSpeedPanelOpen_ = false; SetVideoAdjustmentsPanelOpen(!VideoAdjustmentsPanelOpen()); }
+        else SetImageAdjustmentsPanelOpen(!ImageAdjustmentsPanelOpen());
     }
     void UpdateImageAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 7) return;
@@ -2554,6 +2647,7 @@ public:
         QueueImageAdjustmentPersistence();
     }
     bool HandleAdjustmentPanelWheel(POINT point, int rawWheelDelta) {
+        if (adjustmentPanelNavigation_.pending) return HeldAdjustmentPanelContains(point);
         if (ImageAdjustmentsPanelContains(point)) {
             const int index = AdjustmentSliderAt(GetImageAdjustmentsPanelLayout(), point);
             if (index < 0) { imageAdjustmentWheelRow_ = -1; imageAdjustmentWheelRemainder_ = 0; return true; }
@@ -2634,6 +2728,7 @@ public:
         QueueImageAdjustmentPersistence();
     }
     bool BeginImageAdjustmentsInteraction(POINT point) {
+        if (adjustmentPanelNavigation_.pending) return HeldAdjustmentPanelContains(point);
         if (!source_) return false;
         if (imageAdjustmentsPanelOpen_) {
             const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
@@ -2761,12 +2856,14 @@ public:
         KillTimer(window_, kVideoControlsTimer);
         if (VideoUserPlaybackActive() && !videoControlsPointerOver_ && !videoScrubbing_ && !videoVolumeDragging_ && !videoPlaybackSpeedPanelOpen_)
             SetTimer(window_, kVideoControlsTimer, static_cast<UINT>(kVideoControlsIdleDelayMs), nullptr);
+        if (visibilityChanged) SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
         if (invalidate || visibilityChanged) InvalidateRect(window_, nullptr, FALSE);
     }
     void ResetVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
         KillTimer(window_, kVideoPlaybackSpeedHoverTimer);
-        if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        if (!imageAdjustmentsPanelFadeActive_ && !(adjustmentPanelNavigation_.pending && adjustmentPanelNavigation_.fadeActive))
+            KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
         SetVideoAdjustmentsOriginalPreview(false);
@@ -2795,7 +2892,8 @@ public:
         KillTimer(window_, kVideoControlsTimer);
         KillTimer(window_, kVideoFullscreenGlyphTimer);
         KillTimer(window_, kVideoPlaybackSpeedHoverTimer);
-        if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        if (!imageAdjustmentsPanelFadeActive_ && !(adjustmentPanelNavigation_.pending && adjustmentPanelNavigation_.fadeActive))
+            KillTimer(window_, kVideoAdjustmentsFadeTimer);
         StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
         SetVideoAdjustmentsOriginalPreview(false);
@@ -2834,6 +2932,7 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool BeginVideoControlsInteraction(POINT point) {
+        if (HeldAdjustmentPanelContains(point)) return true;
         if (!VideoActive()) return false;
         if (!VideoControlsContains(point) && !VideoControlsRevealZoneContains(point) &&
             !VideoAdjustmentsPanelContains(point) && !VideoPlaybackSpeedPanelContains(point)) return false;
@@ -3023,7 +3122,12 @@ public:
         videoControlsOpacity_ = videoControlsFadeStartOpacity_ * (1.0f - progress);
         InvalidateRect(window_, nullptr, FALSE);
         if (progress < 1.0f) SetTimer(window_, kVideoControlsTimer, 16, nullptr);
-        else { videoControlsFadeActive_ = false; KillTimer(window_, kVideoControlsTimer); HideVideoCursorIfAppropriate(); }
+        else {
+            videoControlsFadeActive_ = false;
+            KillTimer(window_, kVideoControlsTimer);
+            SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
+            HideVideoCursorIfAppropriate();
+        }
     }
     void UpdateTriangleCountTooltipHover(POINT point) {
         const RECT textBounds = TriangleCountTitleTextBounds();
@@ -4545,7 +4649,7 @@ public:
         if (!fullscreen_) DismissOverlay();
         if (VideoActive()) {
             SetVideoPlaybackSpeedPanelOpen(false);
-            SetVideoAdjustmentsPanelOpen(false);
+            if (!adjustmentPanelNavigation_.pending) SetVideoAdjustmentsPanelOpen(false);
         }
         if (!fullscreen_) {
             fullscreenStyle_ = GetWindowLongPtrW(window_, GWL_STYLE);
@@ -4605,7 +4709,10 @@ public:
                 if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(ColdOpenFadeOpacity()); if (!TransitionOverlayActive()) DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); DrawGifPlaybackControls(); }
             } else if (dissolveAwaitingTarget_ && dissolveOldBitmap_) DrawDissolveOldFrame();
             else if (EmptyStatePresentationActive()) DrawEmptyState();
-            if (!tutorialPresentation_) DrawTransitionOverlay();
+            if (!tutorialPresentation_) {
+                DrawTransitionOverlay();
+                DrawNavigatingAdjustmentPanel();
+            }
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); DrawComponentsPanel(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
             if (!tutorialPresentation_) DrawRevisionLabel();
@@ -4649,7 +4756,7 @@ public:
         RebuildFilmstripLayout();
         SynchronizeFilmstripHoverPreviewAvailability();
         if (VideoActive()) SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
-        else if (ImageAdjustmentsPanelVisible()) {
+        else if (!adjustmentPanelNavigation_.pending && ImageAdjustmentsPanelVisible()) {
             imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
             videoAdjustmentsPanelPresentedLayout_ = imageAdjustmentsPanelTargetLayout_;
             SynchronizeFilmstripAdjustmentAvoidance();
@@ -7754,6 +7861,7 @@ public:
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
         }
         if (videoPlayer_.HasValidFrame()) {
+            CommitAdjustmentPanelNavigation(currentPath_);
             BeginStillDissolveIfReady(currentPath_);
             BeginColdOpenFadeIfReady(currentPath_);
         }
@@ -10011,6 +10119,7 @@ private:
     void SelectNavigationTarget(const std::wstring& path, int direction = 0, bool immediatePaint = true) {
         (void)direction;
         if (path.empty()) return;
+        BeginAdjustmentPanelNavigation(path);
         if (IsGifPath(path)) {
             LoadImage(path, false);
             PresentNavigationUpdate(immediatePaint);
@@ -10164,6 +10273,7 @@ private:
             RebuildFilmstripLayout();
             RevealClickedFilmstripItem();
         }
+        CommitAdjustmentPanelNavigation(path);
         BeginStillDissolveIfReady(path);
         BeginColdOpenFadeIfReady(path);
         adjustmentPersistence_.Resolve(path, imageAdjustmentMediaGeneration_, imageAdjustmentEditGeneration_);
@@ -10492,7 +10602,7 @@ private:
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, topEdge, left + width, topEdge + height), 5.0f * scale, 5.0f * scale), backing.Get());
             DrawOverlayText(L"adjustments", left, topEdge, width, height, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
-        if (ImageAdjustmentsPanelVisible()) DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, imageAdjustmentsPanelOpacity_, imageAdjustmentSource_, imageAdjustmentsOriginalPreviewActive_);
+        if (!adjustmentPanelNavigation_.pending && ImageAdjustmentsPanelVisible()) DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, imageAdjustmentsPanelOpacity_, imageAdjustmentSource_, imageAdjustmentsOriginalPreviewActive_);
     }
 
     void DrawAdjustmentOriginalEyeIcon(const RECT& bounds, bool closed, ID2D1Brush* brush, float scale) {
@@ -10907,9 +11017,6 @@ private:
         const D2D1_RECT_F island = rect(layout.island);
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border.Get(), 1.0f * scale);
-        if (VideoAdjustmentsPanelVisible())
-            DrawAdjustmentPanel(GetVideoAdjustmentsPanelPresentedLayout(), videoAdjustments_, videoAdjustmentsPanelOpacity_,
-                videoAdjustmentSource_, videoAdjustmentsOriginalPreviewActive_);
         if (videoControlsHovered_ == ButtonKind::VideoPlayPause) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.playPause), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepBackward || videoStepHoldDirection_ < 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepBackward), 5.0f * scale, 5.0f * scale), hover.Get());
         if (videoControlsHovered_ == ButtonKind::VideoStepForward || videoStepHoldDirection_ > 0) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.stepForward), 5.0f * scale, 5.0f * scale), hover.Get());
@@ -12712,6 +12819,20 @@ private:
     std::thread aiAnalysisThread_;
     std::atomic<uint64_t> aiRequestGeneration_{ 0 };
     std::atomic<bool> aiAnalysisRunning_{ false };
+    struct AdjustmentPanelNavigation {
+        bool pending = false;
+        bool open = false;
+        bool fadeActive = false;
+        float opacity = 0.0f;
+        float fadeStartOpacity = 0.0f;
+        ULONGLONG fadeStartedAt = 0;
+        std::wstring path;
+        VideoAdjustmentsPanelLayout layout{};
+        AdjustmentPanelLipLayout lip{};
+        ImageAdjustments values{};
+        AdjustmentSource source = AdjustmentSource::None;
+    } adjustmentPanelNavigation_;
+    bool drawingHeldAdjustmentPanel_ = false;
     bool imageAdjustmentsPanelOpen_ = false;
     bool imageAdjustmentsPanelFadeActive_ = false;
     float imageAdjustmentsPanelOpacity_ = 0.0f;

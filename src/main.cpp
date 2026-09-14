@@ -2079,7 +2079,6 @@ public:
     bool VideoPlaybackSpeedPanelOpen() const { return videoPlaybackSpeedPanelOpen_; }
     void SetVideoPlaybackSpeedPanelOpen(bool open) {
         videoPlaybackSpeedPanelOpen_ = open;
-        if (open) SetVideoAdjustmentsPanelOpen(false);
         if (!open) {
             videoControlsPointerOver_ = false;
             SetVideoPlaybackSpeedHover(-1);
@@ -3033,7 +3032,6 @@ public:
                 if (PtInRect(&actions.resetButton, point)) { ResetVideoAdjustments(); return true; }
                 return true;
             }
-            if (!VideoControlsContains(point)) { SetVideoAdjustmentsPanelOpen(false); return true; }
         }
         if (!VideoControlsContains(point)) return false;
         videoControlsPointerOver_ = true;
@@ -4713,7 +4711,6 @@ public:
         if (!fullscreen_) DismissOverlay();
         if (VideoActive()) {
             SetVideoPlaybackSpeedPanelOpen(false);
-            if (!adjustmentPanelNavigation_.pending) SetVideoAdjustmentsPanelOpen(false);
         }
         if (!fullscreen_) {
             fullscreenStyle_ = GetWindowLongPtrW(window_, GWL_STYLE);

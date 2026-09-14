@@ -1286,10 +1286,6 @@ public:
         DeactivateVideo();
         DeactivateModel();
         contentKind_ = ContentKind::Image2D;
-        if (VideoAdjustmentsPanelOpen()) {
-            videoAdjustmentsPanelPresentedLayout_ = GetImageAdjustmentsPanelTargetLayout();
-            SynchronizeFilmstripAdjustmentAvoidance();
-        }
         const HRESULT result = LoadImage(path, resetNavigation);
         FileOpenDiagnostics::Log(activeOpenAttemptId_, SUCCEEDED(result) ? L"nonvideo-open-complete" : L"nonvideo-open-failed", L"hr=0x" + std::to_wstring(static_cast<unsigned int>(result)));
         return result;
@@ -1696,16 +1692,11 @@ public:
         if (!VideoAdjustmentsPanelVisible()) return false;
         const UINT dpi = GetDpiForWindow(window_);
         const int clearance = MulDiv(8, dpi, 96);
-        const VideoAdjustmentsPanelLayout normalTarget = GetShared2DAdjustmentsPanelNormalTargetLayout();
+        const VideoAdjustmentsPanelLayout normalTarget = GetVideoZoomHudAdjustmentsPanelTargetLayout();
         const RECT controls = GetVideoControlsLayout(false).island;
         const RECT expandedControls{ controls.left - clearance, controls.top - clearance, controls.right + clearance, controls.bottom + clearance };
-        const auto intersectsControls = [&](const RECT& candidate) {
-            return candidate.left < expandedControls.right && candidate.right > expandedControls.left &&
-                candidate.top < expandedControls.bottom && candidate.bottom > expandedControls.top;
-        };
-        if (intersectsControls(normalTarget.panel)) return true;
-        const AdjustmentPanelLipLayout normalLip = GetShared2DAdjustmentsPanelNormalLipLayout(normalTarget);
-        return normalLip.active && intersectsControls(normalLip.bounds);
+        return normalTarget.panel.left < expandedControls.right && normalTarget.panel.right > expandedControls.left &&
+            normalTarget.panel.top < expandedControls.bottom && normalTarget.panel.bottom > expandedControls.top;
     }
     VideoControlsLayout GetVideoControlsLayout(bool) const {
         const RECT canvas = ModelCanvasBounds();
@@ -1815,7 +1806,7 @@ public:
         return static_cast<UINT>(std::lround(fraction * static_cast<float>(gifFrameCount_ - 1)));
     }
     ButtonKind GifControlAt(POINT point) const {
-        if (!AnimatedGifActive() || filmstripOpacity_ <= 0.05f) return ButtonKind::None;
+        if (!AnimatedGifActive()) return ButtonKind::None;
         const GifControlsLayout layout = GetGifControlsLayout();
         if (PtInRect(&layout.playPause, point)) return ButtonKind::GifPlayPause;
         if (PtInRect(&layout.stepBackward, point)) return ButtonKind::GifStepBackward;
@@ -1823,7 +1814,7 @@ public:
         return ButtonKind::None;
     }
     bool GifControlsContains(POINT point) const {
-        if (!AnimatedGifActive() || filmstripOpacity_ <= 0.05f) return false;
+        if (!AnimatedGifActive()) return false;
         const RECT island = GetGifControlsLayout().island;
         return PtInRect(&island, point) != FALSE;
     }
@@ -1853,16 +1844,13 @@ public:
         const LONG bottom = panel.bottom;
         const int labelWidth = MulDiv(70, dpi, 96);
         const int valueWidth = MulDiv(38, dpi, 96);
-        // Content geometry is identical for Image2D and Video2D.  Placement may
-        // differ, but a Video2D fallback must not compress the shared panel.
         const int rowHeight = MulDiv(32, dpi, 96);
-        const int sliderTopInset = MulDiv(16, dpi, 96);
         const int sliderLeft = left + labelWidth;
         const int panelPadding = MulDiv(12, dpi, 96);
         const int sliderRight = right - valueWidth - panelPadding;
         std::array<RECT, 7> sliders{};
         for (int index = 0; index < 7; ++index) {
-            const int y = top + sliderTopInset + index * rowHeight;
+            const int y = top + MulDiv(16, dpi, 96) + index * rowHeight;
             sliders[index] = { sliderLeft, y, sliderRight, y + MulDiv(20, dpi, 96) };
         }
         const int footerGap = MulDiv(5, dpi, 96);
@@ -1890,20 +1878,28 @@ public:
         return 0.25f + 0.75f * std::clamp(reveal, 0.0f, 1.0f);
     }
     VideoAdjustmentsPanelLayout GetVideoZoomHudAdjustmentsPanelTargetLayout() const {
-        return GetShared2DAdjustmentsPanelNormalTargetLayout();
+        const RECT canvas = ModelCanvasBounds();
+        const UINT dpi = GetDpiForWindow(window_);
+        const LONG width = MulDiv(370, dpi, 96);
+        const ZoomHudLayout hud = GetVideoZoomHudLayout();
+        const LONG left = std::clamp<LONG>(hud.combined.right - width, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
+        const LONG right = left + width;
+        const LONG bottom = hud.combined.top - MulDiv(8, dpi, 96);
+        const LONG height = std::min<LONG>(MulDiv(238, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
+        const LONG top = bottom - height;
+        return MakeVideoAdjustmentsPanelLayout({ left, top, right, bottom }, false);
     }
     VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
-        const VideoAdjustmentsPanelLayout normalTarget = GetShared2DAdjustmentsPanelNormalTargetLayout();
-        if (!VideoActive() || !VideoAdjustmentsPanelAboveControls()) return normalTarget;
+        if (!VideoAdjustmentsPanelAboveControls()) return GetVideoZoomHudAdjustmentsPanelTargetLayout();
         const VideoControlsLayout controls = GetVideoControlsLayout(true);
+        const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const LONG clearance = MulDiv(8, dpi, 96);
-        const AdjustmentPanelLipLayout normalLip = GetShared2DAdjustmentsPanelNormalLipLayout(normalTarget);
-        const LONG completeBottom = normalLip.active ? std::max(normalTarget.panel.bottom, normalLip.bounds.bottom) : normalTarget.panel.bottom;
-        VideoAdjustmentsPanelLayout translated = OffsetVideoAdjustmentsPanelLayout(
-            normalTarget, 0, controls.island.top - clearance - completeBottom);
-        translated.aboveControls = true;
-        return translated;
+        const LONG width = std::min<LONG>(MulDiv(370, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)));
+        const LONG left = std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
+        const LONG right = left + width;
+        const LONG bottom = controls.island.top;
+        const LONG height = std::min<LONG>(MulDiv(278, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
+        return MakeVideoAdjustmentsPanelLayout({ left, bottom - height, right, bottom }, true);
     }
     bool VideoAdjustmentsPanelMotionActive() const {
         return videoAdjustmentsPanelMotion_ != VideoAdjustmentsPanelMotion::None;
@@ -2129,7 +2125,7 @@ public:
         if (fadeActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
         else {
             opacity = open ? 1.0f : 0.0f;
-            if (!videoAdjustmentsPanelFadeActive_)
+            if (!imageAdjustmentsPanelFadeActive_ && !videoAdjustmentsPanelFadeActive_)
                 KillTimer(window_, kVideoAdjustmentsFadeTimer);
         }
     }
@@ -2171,16 +2167,8 @@ public:
         if (open) videoPlaybackSpeedPanelOpen_ = false;
         videoAdjustmentsDragging_ = -1;
         videoAdjustmentThumbGrab_ = false;
-        imageAdjustmentsDragging_ = -1;
-        imageAdjustmentThumbGrab_ = false;
-        imageAdjustmentWheelRow_ = -1;
-        imageAdjustmentWheelRemainder_ = 0;
         if (!open && videoAdjustmentsOriginalPreviewActive_) {
             SetVideoAdjustmentsOriginalPreview(false);
-            if (GetCapture() == window_) ReleaseCapture();
-        }
-        if (!open && imageAdjustmentsOriginalPreviewActive_) {
-            SetImageAdjustmentsOriginalPreview(false);
             if (GetCapture() == window_) ReleaseCapture();
         }
         if (!open) videoControlsPointerOver_ = false;
@@ -2189,17 +2177,17 @@ public:
             videoAdjustmentsPanelFadeStartedAt_, open);
         StopVideoAdjustmentsPanelMotion();
         videoAdjustmentsPanelPresentedLayout_ = open ? GetVideoAdjustmentsPanelTargetLayout() : closeTarget;
-        filmstripPreviewGeometryValid_ = false;
-        SynchronizeFilmstripAdjustmentAvoidance();
         ShowVideoControls();
     }
     void UpdateAdjustmentPanelsFade() {
-        const bool panelActive = UpdateVideoAdjustmentsPanelFade();
+        const bool imageActive = UpdateAdjustmentPanelFade(imageAdjustmentsPanelOpen_, imageAdjustmentsPanelFadeActive_,
+            imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_, imageAdjustmentsPanelFadeStartedAt_);
+        const bool videoActive = UpdateVideoAdjustmentsPanelFade();
         SynchronizeFilmstripAdjustmentAvoidance();
         const bool footerActive = UpdateAdjustmentFooterVisuals();
         const bool filmstripActive = filmstripAdjustmentAvoidanceAnimating_;
         InvalidateRect(window_, nullptr, FALSE);
-        if (panelActive || footerActive || filmstripActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
+        if (imageActive || videoActive || footerActive || filmstripActive) SetTimer(window_, kVideoAdjustmentsFadeTimer, 16, nullptr);
         else KillTimer(window_, kVideoAdjustmentsFadeTimer);
     }
     void QueueVideoAdjustmentPersistence() {
@@ -2332,11 +2320,8 @@ public:
         QueueVideoAdjustmentPersistence();
     }
     int AdjustmentSliderAt(const VideoAdjustmentsPanelLayout& panel, POINT point) const {
+        const LONG verticalPadding = MulDiv(6, GetDpiForWindow(window_), 96);
         for (int index = 0; index < static_cast<int>(panel.sliders.size()); ++index) {
-            const LONG previousGap = index > 0 ? panel.sliders[index].top - panel.sliders[index - 1].bottom : MulDiv(12, GetDpiForWindow(window_), 96);
-            const LONG nextGap = index + 1 < static_cast<int>(panel.sliders.size()) ? panel.sliders[index + 1].top - panel.sliders[index].bottom : MulDiv(12, GetDpiForWindow(window_), 96);
-            const LONG maximumPadding = static_cast<LONG>(MulDiv(6, GetDpiForWindow(window_), 96));
-            const LONG verticalPadding = std::max<LONG>(0, std::min(maximumPadding, std::min(previousGap / 2, nextGap / 2)));
             const RECT hit{ panel.sliders[index].left, panel.sliders[index].top - verticalPadding,
                 panel.sliders[index].right, panel.sliders[index].bottom + verticalPadding };
             if (PtInRect(&hit, point)) return index;
@@ -2390,7 +2375,7 @@ public:
         return GetZoomHudLayout({ static_cast<LONG>(bounds.left), static_cast<LONG>(bounds.top), static_cast<LONG>(bounds.right), static_cast<LONG>(bounds.bottom) }, true);
     }
     ZoomHudLayout GetVideoZoomHudLayout() const { return GetZoomHudLayout(ModelCanvasBounds(), true); }
-    ImageAdjustmentsPanelLayout GetShared2DAdjustmentsPanelNormalTargetLayout() const {
+    ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelTargetLayout() const {
         const ZoomHudLayout hud = GetImageZoomHudLayout();
         const D2D1_RECT_F canvas = ImageCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
@@ -2401,39 +2386,39 @@ public:
         const int height = std::min(MulDiv(238, dpi, 96), std::max(1, bottom - (static_cast<int>(canvas.top) + gap)));
         return MakeVideoAdjustmentsPanelLayout({ panelLeft, bottom - height, panelLeft + width, bottom }, false);
     }
-    ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelTargetLayout() const {
-        return GetShared2DAdjustmentsPanelNormalTargetLayout();
-    }
-    AdjustmentPanelLipLayout GetShared2DAdjustmentsPanelNormalLipLayout(const VideoAdjustmentsPanelLayout& panel) const {
+    AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel) const {
         // The lipped silhouette is intended for the bottom-right HUD anchor. Other HUD
         // positions retain the established rounded rectangle rather than forcing a foot
         // through a constrained or unrelated lower-overlay layout.
         const bool hudAtBottomRight = zoomHudPosition_ == ZoomHudPosition::BottomRight;
-        if (!hudAtBottomRight) return {};
+        if (panel.aboveControls || !hudAtBottomRight) return {};
 
         const UINT dpi = GetDpiForWindow(window_);
         const LONG radius = MulDiv(10, dpi, 96);
         const LONG clearance = MulDiv(8, dpi, 96);
         const LONG minimumFootWidth = MulDiv(220, dpi, 96);
-        const ZoomHudLayout hud = GetImageZoomHudLayout();
+        const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
         const LONG footLeft = panel.panel.left;
         const LONG footRight = std::min(panel.panel.right - radius * 2, hud.combined.left - clearance);
         if (footRight - footLeft < minimumFootWidth) return {};
 
-        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) return {};
-        const LONG footBottom = GetFilmstripBounds().bottom;
+        LONG footBottom = panel.panel.bottom;
+        if (VideoActive()) {
+            const RECT controls = GetVideoControlsLayout(false).island;
+            footBottom = controls.bottom;
+            const RECT expandedControls{ controls.left - clearance, controls.top - clearance,
+                controls.right + clearance, controls.bottom + clearance };
+            const RECT foot{ footLeft, panel.panel.bottom, footRight, footBottom };
+            if (foot.right > expandedControls.left && foot.left < expandedControls.right &&
+                foot.bottom > expandedControls.top && foot.top < expandedControls.bottom) return {};
+        } else if (FilmstripEligible() && !filmstripAdjustmentSuppressed_) {
+            footBottom = GetFilmstripBounds().bottom;
+        } else {
+            return {};
+        }
 
         if (footBottom - panel.panel.bottom < MulDiv(34, dpi, 96)) return {};
         return { { footLeft, panel.panel.bottom, footRight, footBottom }, true };
-    }
-    AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel) const {
-        if (!panel.aboveControls) return GetShared2DAdjustmentsPanelNormalLipLayout(panel);
-
-        const VideoAdjustmentsPanelLayout normalTarget = GetShared2DAdjustmentsPanelNormalTargetLayout();
-        AdjustmentPanelLipLayout lip = GetShared2DAdjustmentsPanelNormalLipLayout(normalTarget);
-        if (!lip.active) return {};
-        OffsetRect(&lip.bounds, panel.panel.left - normalTarget.panel.left, panel.panel.top - normalTarget.panel.top);
-        return lip;
     }
     AdjustmentPanelActionLayout GetAdjustmentPanelActionLayout(const VideoAdjustmentsPanelLayout& panel,
         const AdjustmentPanelLipLayout& lip) const {
@@ -2506,7 +2491,9 @@ public:
         bounds.top = static_cast<LONG>(std::lround(bounds.bottom + (panel.panel.top - bounds.bottom) * progress));
         return bounds;
     }
-    const ImageAdjustmentsPanelLayout& GetImageAdjustmentsPanelLayout() const { return videoAdjustmentsPanelPresentedLayout_; }
+    const ImageAdjustmentsPanelLayout& GetImageAdjustmentsPanelLayout() const {
+        return ImageAdjustmentsPanelVisible() ? videoAdjustmentsPanelPresentedLayout_ : imageAdjustmentsPanelTargetLayout_;
+    }
     void ApplyImageAdjustments() {
         imageAdjustedBitmap_.Reset();
         InvalidateRect(window_, nullptr, FALSE);
@@ -2521,19 +2508,40 @@ public:
         if (imageAdjustmentHashResolved_) adjustmentPersistence_.Save(imageAdjustmentHash_, imageAdjustments_);
     }
     void ResetImageAdjustments() { imageAdjustments_ = {}; imageAdjustmentSource_ = AdjustmentSource::None; ApplyImageAdjustments(); QueueImageAdjustmentPersistence(); }
-    bool ImageAdjustmentsPanelOpen() const { return videoAdjustmentsPanelOpen_; }
+    bool ImageAdjustmentsPanelOpen() const { return imageAdjustmentsPanelOpen_; }
     bool ImageAdjustmentsPanelContains(POINT point) const {
-        if (!VideoAdjustmentsPanelOpen()) return false;
+        if (!imageAdjustmentsPanelOpen_) return false;
         const ImageAdjustmentsPanelLayout& layout = GetImageAdjustmentsPanelLayout();
-        const RECT panel = AdjustmentPanelRenderedRevealBounds(layout, videoAdjustmentsPanelOpacity_, GetAdjustmentPanelLipLayout(layout));
+        const RECT panel = AdjustmentPanelRenderedRevealBounds(layout, imageAdjustmentsPanelOpacity_, GetAdjustmentPanelLipLayout(layout));
         return PtInRect(&panel, point) != FALSE;
     }
     bool ImageAdjustmentsPanelVisible() const {
-        return VideoAdjustmentsPanelVisible();
+        return imageAdjustmentsPanelOpen_ || imageAdjustmentsPanelFadeActive_ || imageAdjustmentsPanelOpacity_ > 0.001f;
     }
-    void SetImageAdjustmentsPanelOpen(bool open) { SetVideoAdjustmentsPanelOpen(open); }
+    void SetImageAdjustmentsPanelOpen(bool open) {
+        const bool wasMoving = VideoAdjustmentsPanelMotionActive();
+        if (wasMoving) UpdateVideoAdjustmentsPanelPlacementMotion();
+        imageAdjustmentsDragging_ = -1;
+        imageAdjustmentThumbGrab_ = false;
+        imageAdjustmentWheelRow_ = -1;
+        imageAdjustmentWheelRemainder_ = 0;
+        filmstripPreviewGeometryValid_ = false;
+        if (!open && imageAdjustmentsOriginalPreviewActive_) {
+            SetImageAdjustmentsOriginalPreview(false);
+            if (GetCapture() == window_) ReleaseCapture();
+        }
+        SetAdjustmentPanelOpen(imageAdjustmentsPanelOpen_, imageAdjustmentsPanelFadeActive_,
+            imageAdjustmentsPanelOpacity_, imageAdjustmentsPanelFadeStartOpacity_,
+            imageAdjustmentsPanelFadeStartedAt_, open);
+        imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
+        StopVideoAdjustmentsPanelMotion();
+        videoAdjustmentsPanelPresentedLayout_ = imageAdjustmentsPanelTargetLayout_;
+        SynchronizeFilmstripAdjustmentAvoidance();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     void ToggleAdjustments() {
-        SetVideoAdjustmentsPanelOpen(!videoAdjustmentsPanelOpen_);
+        if (VideoActive()) { videoPlaybackSpeedPanelOpen_ = false; SetVideoAdjustmentsPanelOpen(!videoAdjustmentsPanelOpen_); }
+        else SetImageAdjustmentsPanelOpen(!imageAdjustmentsPanelOpen_);
     }
     void UpdateImageAdjustmentSlider(int index, POINT point) {
         if (index < 0 || index >= 7) return;
@@ -2634,7 +2642,7 @@ public:
     }
     bool BeginImageAdjustmentsInteraction(POINT point) {
         if (!source_) return false;
-        if (VideoAdjustmentsPanelOpen()) {
+        if (imageAdjustmentsPanelOpen_) {
             const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
             if (ImageAdjustmentsPanelContains(point)) {
                 const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
@@ -2765,7 +2773,8 @@ public:
     void ResetVideoControls() {
         KillTimer(window_, kVideoControlsTimer);
         KillTimer(window_, kVideoPlaybackSpeedHoverTimer);
-        if (!videoAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
         SetVideoAdjustmentsOriginalPreview(false);
         videoControlsOpacity_ = 1.0f;
@@ -2776,6 +2785,9 @@ public:
         videoVolumeDragging_ = false;
         videoVolumeThumbGrab_ = false;
         videoWasPlayingBeforeScrub_ = false;
+        videoAdjustmentsPanelOpen_ = false;
+        videoAdjustmentsPanelFadeActive_ = false;
+        videoAdjustmentsPanelOpacity_ = 0.0f;
         videoPlaybackSpeedPanelOpen_ = false;
         videoPlaybackSpeedHovered_ = -1;
         videoPlaybackSpeedHoverAnimating_ = false;
@@ -2790,7 +2802,8 @@ public:
         KillTimer(window_, kVideoControlsTimer);
         KillTimer(window_, kVideoFullscreenGlyphTimer);
         KillTimer(window_, kVideoPlaybackSpeedHoverTimer);
-        if (!videoAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        if (!imageAdjustmentsPanelFadeActive_) KillTimer(window_, kVideoAdjustmentsFadeTimer);
+        StopVideoAdjustmentsPanelMotion();
         StopVideoStepHold();
         SetVideoAdjustmentsOriginalPreview(false);
         videoScrubbing_ = false;
@@ -2798,6 +2811,9 @@ public:
         videoVolumeDragging_ = false;
         videoVolumeThumbGrab_ = false;
         videoWasPlayingBeforeScrub_ = false;
+        videoAdjustmentsPanelOpen_ = false;
+        videoAdjustmentsPanelFadeActive_ = false;
+        videoAdjustmentsPanelOpacity_ = 0.0f;
         videoPlaybackSpeedPanelOpen_ = false;
         videoPlaybackSpeedHovered_ = -1;
         videoPlaybackSpeedHoverAnimating_ = false;
@@ -4641,7 +4657,8 @@ public:
         SynchronizeFilmstripHoverPreviewAvailability();
         if (VideoActive()) SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
         else if (ImageAdjustmentsPanelVisible()) {
-            videoAdjustmentsPanelPresentedLayout_ = GetImageAdjustmentsPanelTargetLayout();
+            imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
+            videoAdjustmentsPanelPresentedLayout_ = imageAdjustmentsPanelTargetLayout_;
             SynchronizeFilmstripAdjustmentAvoidance();
         }
         if (imageScaling_ != ImageScaling::Performance && source_) RefreshLanczosForImageViewChange();
@@ -4819,7 +4836,7 @@ public:
         return { left, client.bottom - bottomMargin - height, left + width, client.bottom - bottomMargin };
     }
     bool ShouldSuppressFilmstripForAdjustments(const RECT& normal) const {
-        if (normal.right <= normal.left || !VideoAdjustmentsPanelOpen()) return false;
+        if (normal.right <= normal.left || !imageAdjustmentsPanelOpen_) return false;
         const RECT adjustmentPanel = GetImageAdjustmentsPanelLayout().panel;
         if (adjustmentPanel.bottom <= normal.top || adjustmentPanel.top >= normal.bottom) return false;
         const int dpi = GetDpiForWindow(window_);
@@ -4830,7 +4847,7 @@ public:
         return availableWidth < FilmstripMinimumUsableWidth();
     }
     LONG GetFilmstripAdjustmentAvoidanceTargetRight(const RECT& normal) const {
-        if (normal.right <= normal.left || !VideoAdjustmentsPanelOpen() || ShouldSuppressFilmstripForAdjustments(normal)) return normal.right;
+        if (normal.right <= normal.left || !imageAdjustmentsPanelOpen_ || ShouldSuppressFilmstripForAdjustments(normal)) return normal.right;
         const RECT adjustmentPanel = GetImageAdjustmentsPanelLayout().panel;
         if (adjustmentPanel.bottom <= normal.top || adjustmentPanel.top >= normal.bottom) return normal.right;
         const int dpi = GetDpiForWindow(window_);
@@ -7694,7 +7711,6 @@ private:
             videoPlayer_.SetPreferredPlaybackRate(PlaybackRateFromPercent(videoPreferredPlaybackRatePercent_));
             videoEffectivePlaybackRate_ = videoPlayer_.EffectivePlaybackRate();
             adjustmentPersistence_.Resolve(path, videoAdjustmentMediaGeneration_, videoAdjustmentEditGeneration_, AdjustmentMediaKind::Video);
-            if (VideoAdjustmentsPanelOpen()) SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -10470,8 +10486,8 @@ private:
         if (!source_) return;
         const ZoomHudLayout hud = GetImageZoomHudLayout();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        DrawZoomHud(hud, PhysicalPixelScale(), 1.0f, true, hoveredButton_ == ButtonKind::ImageAdjustments || VideoAdjustmentsPanelOpen());
-        if (hoveredButton_ == ButtonKind::ImageAdjustments && !VideoAdjustmentsPanelOpen()) {
+        DrawZoomHud(hud, PhysicalPixelScale(), 1.0f, true, hoveredButton_ == ButtonKind::ImageAdjustments || imageAdjustmentsPanelOpen_);
+        if (hoveredButton_ == ButtonKind::ImageAdjustments && !imageAdjustmentsPanelOpen_) {
             ComPtr<ID2D1SolidColorBrush> backing, text;
             if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.50f), &backing)) ||
                 FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.62f), &text))) return;
@@ -10483,7 +10499,7 @@ private:
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, topEdge, left + width, topEdge + height), 5.0f * scale, 5.0f * scale), backing.Get());
             DrawOverlayText(L"adjustments", left, topEdge, width, height, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
-        if (ImageAdjustmentsPanelVisible()) DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, videoAdjustmentsPanelOpacity_, imageAdjustmentSource_, imageAdjustmentsOriginalPreviewActive_);
+        if (ImageAdjustmentsPanelVisible()) DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, imageAdjustmentsPanelOpacity_, imageAdjustmentSource_, imageAdjustmentsOriginalPreviewActive_);
     }
 
     void DrawAdjustmentOriginalEyeIcon(const RECT& bounds, bool closed, ID2D1Brush* brush, float scale) {
@@ -10754,18 +10770,17 @@ private:
         DrawOverlayText(L"press Space to cancel auto-play", left, top, width, height, textSize, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
     }
     void DrawGifPlaybackControls() {
-        const float opacity = filmstripOpacity_;
-        if (!AnimatedGifActive() || opacity <= 0.001f) return;
+        if (!AnimatedGifActive()) return;
         const GifControlsLayout layout = GetGifControlsLayout();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
         ComPtr<ID2D1SolidColorBrush> surface, border, text, hover, track, accent;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, 0.94f * opacity), &surface)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, 0.94f * opacity), &border)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 0.92f * opacity), &text)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 0.88f * opacity), &track)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, opacity), &accent)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, 0.12f * opacity), &hover))) return;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, 0.94f), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, 0.94f), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 0.92f), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 0.88f), &track)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, 1.0f), &accent)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, 0.12f), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.island), 9.0f * scale, 9.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(layout.island), 9.0f * scale, 9.0f * scale), border.Get(), scale);
@@ -10930,9 +10945,7 @@ private:
             }
         }
         const bool adjustmentsPanelVisible = VideoAdjustmentsPanelVisible();
-        // The shared panel always owns its lipped shell.  Video controls are a
-        // separate overlay even when placement moves the complete panel above it.
-        const bool adjustmentsPanelSeparateShell = adjustmentsPanelVisible;
+        const bool adjustmentsPanelSeparateShell = adjustmentsPanelVisible && (!GetVideoAdjustmentsPanelPresentedLayout().aboveControls || VideoAdjustmentsPanelMotionActive() || videoAdjustmentsPanelFadeActive_);
         if (adjustmentsPanelVisible && !adjustmentsPanelSeparateShell)
             DrawVideoAdjustmentCompositeShell(layout, GetVideoAdjustmentsPanelPresentedLayout(), surface.Get(), border.Get(), scale);
         const D2D1_RECT_F island = rect(layout.island);
@@ -12819,6 +12832,12 @@ private:
     std::thread aiAnalysisThread_;
     std::atomic<uint64_t> aiRequestGeneration_{ 0 };
     std::atomic<bool> aiAnalysisRunning_{ false };
+    bool imageAdjustmentsPanelOpen_ = false;
+    bool imageAdjustmentsPanelFadeActive_ = false;
+    float imageAdjustmentsPanelOpacity_ = 0.0f;
+    float imageAdjustmentsPanelFadeStartOpacity_ = 0.0f;
+    ULONGLONG imageAdjustmentsPanelFadeStartedAt_ = 0;
+    ImageAdjustmentsPanelLayout imageAdjustmentsPanelTargetLayout_{};
     int imageAdjustmentsDragging_ = -1;
     bool imageAdjustmentThumbGrab_ = false;
     bool imageAdjustmentsOriginalPreviewActive_ = false;

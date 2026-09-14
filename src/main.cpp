@@ -1696,7 +1696,7 @@ public:
         if (!VideoAdjustmentsPanelVisible()) return false;
         const UINT dpi = GetDpiForWindow(window_);
         const int clearance = MulDiv(8, dpi, 96);
-        const VideoAdjustmentsPanelLayout normalTarget = GetVideoZoomHudAdjustmentsPanelTargetLayout();
+        const VideoAdjustmentsPanelLayout normalTarget = GetShared2DAdjustmentsPanelNormalTargetLayout();
         const RECT controls = GetVideoControlsLayout(false).island;
         const RECT expandedControls{ controls.left - clearance, controls.top - clearance, controls.right + clearance, controls.bottom + clearance };
         const auto intersectsControls = [&](const RECT& candidate) {
@@ -1704,7 +1704,7 @@ public:
                 candidate.top < expandedControls.bottom && candidate.bottom > expandedControls.top;
         };
         if (intersectsControls(normalTarget.panel)) return true;
-        const AdjustmentPanelLipLayout normalLip = GetAdjustmentPanelLipLayout(normalTarget, false);
+        const AdjustmentPanelLipLayout normalLip = GetShared2DAdjustmentsPanelNormalLipLayout(normalTarget);
         return normalLip.active && intersectsControls(normalLip.bounds);
     }
     VideoControlsLayout GetVideoControlsLayout(bool) const {
@@ -1890,31 +1890,20 @@ public:
         return 0.25f + 0.75f * std::clamp(reveal, 0.0f, 1.0f);
     }
     VideoAdjustmentsPanelLayout GetVideoZoomHudAdjustmentsPanelTargetLayout() const {
-        const RECT canvas = ModelCanvasBounds();
-        const UINT dpi = GetDpiForWindow(window_);
-        const LONG width = MulDiv(370, dpi, 96);
-        const ZoomHudLayout hud = GetVideoZoomHudLayout();
-        const LONG left = std::clamp<LONG>(hud.combined.right - width, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
-        const LONG right = left + width;
-        const LONG bottom = hud.combined.top - MulDiv(8, dpi, 96);
-        const LONG height = std::min<LONG>(MulDiv(238, dpi, 96), std::max<LONG>(1, bottom - (canvas.top + MulDiv(8, dpi, 96))));
-        const LONG top = bottom - height;
-        return MakeVideoAdjustmentsPanelLayout({ left, top, right, bottom }, false);
+        return GetShared2DAdjustmentsPanelNormalTargetLayout();
     }
     VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
-        if (!VideoActive()) return GetImageAdjustmentsPanelTargetLayout();
-        if (!VideoAdjustmentsPanelAboveControls()) return GetVideoZoomHudAdjustmentsPanelTargetLayout();
+        const VideoAdjustmentsPanelLayout normalTarget = GetShared2DAdjustmentsPanelNormalTargetLayout();
+        if (!VideoActive() || !VideoAdjustmentsPanelAboveControls()) return normalTarget;
         const VideoControlsLayout controls = GetVideoControlsLayout(true);
-        const RECT canvas = ModelCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
-        const LONG width = std::min<LONG>(MulDiv(370, dpi, 96), std::max<LONG>(MulDiv(220, dpi, 96), canvas.right - canvas.left - MulDiv(24, dpi, 96)));
-        const LONG left = std::clamp<LONG>((controls.island.left + controls.island.right - width) / 2, canvas.left + MulDiv(8, dpi, 96), canvas.right - MulDiv(8, dpi, 96) - width);
-        const LONG right = left + width;
         const LONG clearance = MulDiv(8, dpi, 96);
-        const LONG footerHeight = MulDiv(40, dpi, 96);
-        const LONG bodyBottom = controls.island.top - clearance - footerHeight;
-        const LONG bodyHeight = MulDiv(238, dpi, 96);
-        return MakeVideoAdjustmentsPanelLayout({ left, bodyBottom - bodyHeight, right, bodyBottom }, true);
+        const AdjustmentPanelLipLayout normalLip = GetShared2DAdjustmentsPanelNormalLipLayout(normalTarget);
+        const LONG completeBottom = normalLip.active ? std::max(normalTarget.panel.bottom, normalLip.bounds.bottom) : normalTarget.panel.bottom;
+        VideoAdjustmentsPanelLayout translated = OffsetVideoAdjustmentsPanelLayout(
+            normalTarget, 0, controls.island.top - clearance - completeBottom);
+        translated.aboveControls = true;
+        return translated;
     }
     bool VideoAdjustmentsPanelMotionActive() const {
         return videoAdjustmentsPanelMotion_ != VideoAdjustmentsPanelMotion::None;
@@ -2401,7 +2390,7 @@ public:
         return GetZoomHudLayout({ static_cast<LONG>(bounds.left), static_cast<LONG>(bounds.top), static_cast<LONG>(bounds.right), static_cast<LONG>(bounds.bottom) }, true);
     }
     ZoomHudLayout GetVideoZoomHudLayout() const { return GetZoomHudLayout(ModelCanvasBounds(), true); }
-    ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelTargetLayout() const {
+    ImageAdjustmentsPanelLayout GetShared2DAdjustmentsPanelNormalTargetLayout() const {
         const ZoomHudLayout hud = GetImageZoomHudLayout();
         const D2D1_RECT_F canvas = ImageCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
@@ -2412,7 +2401,10 @@ public:
         const int height = std::min(MulDiv(238, dpi, 96), std::max(1, bottom - (static_cast<int>(canvas.top) + gap)));
         return MakeVideoAdjustmentsPanelLayout({ panelLeft, bottom - height, panelLeft + width, bottom }, false);
     }
-    AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel, bool rejectVideoControlsCollision = true) const {
+    ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelTargetLayout() const {
+        return GetShared2DAdjustmentsPanelNormalTargetLayout();
+    }
+    AdjustmentPanelLipLayout GetShared2DAdjustmentsPanelNormalLipLayout(const VideoAdjustmentsPanelLayout& panel) const {
         // The lipped silhouette is intended for the bottom-right HUD anchor. Other HUD
         // positions retain the established rounded rectangle rather than forcing a foot
         // through a constrained or unrelated lower-overlay layout.
@@ -2423,30 +2415,25 @@ public:
         const LONG radius = MulDiv(10, dpi, 96);
         const LONG clearance = MulDiv(8, dpi, 96);
         const LONG minimumFootWidth = MulDiv(220, dpi, 96);
-        const ZoomHudLayout hud = VideoActive() ? GetVideoZoomHudLayout() : GetImageZoomHudLayout();
+        const ZoomHudLayout hud = GetImageZoomHudLayout();
         const LONG footLeft = panel.panel.left;
         const LONG footRight = std::min(panel.panel.right - radius * 2, hud.combined.left - clearance);
         if (footRight - footLeft < minimumFootWidth) return {};
 
-        LONG footBottom = panel.panel.bottom;
-        if (panel.aboveControls) {
-            footBottom = GetVideoControlsLayout(false).island.top - clearance;
-        } else if (VideoActive()) {
-            const RECT controls = GetVideoControlsLayout(false).island;
-            footBottom = controls.bottom;
-            const RECT expandedControls{ controls.left - clearance, controls.top - clearance,
-                controls.right + clearance, controls.bottom + clearance };
-            const RECT foot{ footLeft, panel.panel.bottom, footRight, footBottom };
-            if (rejectVideoControlsCollision && foot.right > expandedControls.left && foot.left < expandedControls.right &&
-                foot.bottom > expandedControls.top && foot.top < expandedControls.bottom) return {};
-        } else if (FilmstripEligible() && !filmstripAdjustmentSuppressed_) {
-            footBottom = GetFilmstripBounds().bottom;
-        } else {
-            return {};
-        }
+        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) return {};
+        const LONG footBottom = GetFilmstripBounds().bottom;
 
         if (footBottom - panel.panel.bottom < MulDiv(34, dpi, 96)) return {};
         return { { footLeft, panel.panel.bottom, footRight, footBottom }, true };
+    }
+    AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel) const {
+        if (!panel.aboveControls) return GetShared2DAdjustmentsPanelNormalLipLayout(panel);
+
+        const VideoAdjustmentsPanelLayout normalTarget = GetShared2DAdjustmentsPanelNormalTargetLayout();
+        AdjustmentPanelLipLayout lip = GetShared2DAdjustmentsPanelNormalLipLayout(normalTarget);
+        if (!lip.active) return {};
+        OffsetRect(&lip.bounds, panel.panel.left - normalTarget.panel.left, panel.panel.top - normalTarget.panel.top);
+        return lip;
     }
     AdjustmentPanelActionLayout GetAdjustmentPanelActionLayout(const VideoAdjustmentsPanelLayout& panel,
         const AdjustmentPanelLipLayout& lip) const {

@@ -2196,6 +2196,21 @@ public:
         DrawPersistentAdjustmentHud();
         if (opacity < 0.999f) renderTarget_->PopLayer();
     }
+    float AdjustmentDockFillProgress() const {
+        if (adjustmentPanelNavigation_.pending)
+            return adjustmentPanelNavigation_.layout.aboveControls ? 1.0f : 0.0f;
+        if (!VideoActive()) return 0.0f;
+        if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Placement) {
+            const float start = videoAdjustmentsPanelPlacementStartLayout_.aboveControls ? 1.0f : 0.0f;
+            const float target = videoAdjustmentsPanelPlacementTargetLayout_.aboveControls ? 1.0f : 0.0f;
+            // Finish the fill during flight, before the existing final settling phase.
+            const float progress = SmoothTransitionProgress(std::min(1.0f,
+                static_cast<float>(GetTickCount64() - videoAdjustmentsPanelPlacementStartedAt_) /
+                (static_cast<float>(kVideoAdjustmentsPlacementDurationMs) * 0.82f)));
+            return start + (target - start) * progress;
+        }
+        return videoAdjustmentsPanelPresentedLayout_.aboveControls ? 1.0f : 0.0f;
+    }
     // Join only at the dock, never while the placement animation is in flight.
     bool GetDockedAdjustmentJoin(RECT& foot) const {
         const auto& held = adjustmentPanelNavigation_;
@@ -10831,6 +10846,48 @@ private:
         sink->AddBezier(D2D1::BezierSegment(point(left, top + radius - radius * kappa), point(left + radius - radius * kappa, top), point(left + radius, top)));
         sink->EndFigure(D2D1_FIGURE_END_CLOSED);
         if (FAILED(sink->Close())) return;
+        const float dockFill = AdjustmentDockFillProgress();
+        if (dockFill > 0.0f) {
+            const auto filled = D2D1::RoundedRect(D2D1::RectF(left, top, right, footBottom), radius, radius);
+            if (dockFill >= 1.0f) {
+                renderTarget_->FillRoundedRectangle(filled, surface);
+                renderTarget_->DrawRoundedRectangle(filled, border, scale);
+                return;
+            }
+            ComPtr<ID2D1RoundedRectangleGeometry> filledGeometry;
+            ComPtr<ID2D1PathGeometry> extension;
+            ComPtr<ID2D1GeometrySink> extensionSink;
+            if (SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(filled, &filledGeometry)) &&
+                SUCCEEDED(d2dFactory_->CreatePathGeometry(&extension)) && SUCCEEDED(extension->Open(&extensionSink)) &&
+                SUCCEEDED(filledGeometry->CombineWithGeometry(silhouette.Get(), D2D1_COMBINE_MODE_EXCLUDE,
+                    D2D1::IdentityMatrix(), extensionSink.Get())) && SUCCEEDED(extensionSink->Close())) {
+                // Fade only the missing area, never a second fill over the existing panel.
+                renderTarget_->FillGeometry(silhouette.Get(), surface);
+                const float surfaceOpacity = surface->GetOpacity(), borderOpacity = border->GetOpacity();
+                surface->SetOpacity(surfaceOpacity * dockFill);
+                renderTarget_->FillGeometry(extension.Get(), surface);
+                surface->SetOpacity(surfaceOpacity);
+                // Keep the common border unchanged; crossfade only the notch outline.
+                const float changeLeft = footRight - radius - scale;
+                const float changeTop = bottom - radius - scale;
+                const auto drawClippedBorder = [&](D2D1_RECT_F clip) {
+                    renderTarget_->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
+                    renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
+                    renderTarget_->PopAxisAlignedClip();
+                };
+                drawClippedBorder(D2D1::RectF(left - scale, top - scale, right + scale, changeTop));
+                drawClippedBorder(D2D1::RectF(left - scale, changeTop, changeLeft, footBottom + scale));
+                renderTarget_->PushAxisAlignedClip(D2D1::RectF(changeLeft, changeTop, right + scale,
+                    footBottom + scale), D2D1_ANTIALIAS_MODE_ALIASED);
+                border->SetOpacity(borderOpacity * (1.0f - dockFill));
+                renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
+                border->SetOpacity(borderOpacity * dockFill);
+                renderTarget_->DrawRoundedRectangle(filled, border, scale);
+                border->SetOpacity(borderOpacity);
+                renderTarget_->PopAxisAlignedClip();
+                return;
+            }
+        }
         renderTarget_->FillGeometry(silhouette.Get(), surface);
         renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
     }

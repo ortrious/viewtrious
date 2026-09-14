@@ -1806,7 +1806,7 @@ public:
         return static_cast<UINT>(std::lround(fraction * static_cast<float>(gifFrameCount_ - 1)));
     }
     ButtonKind GifControlAt(POINT point) const {
-        if (!AnimatedGifActive()) return ButtonKind::None;
+        if (!AnimatedGifActive() || filmstripOpacity_ <= 0.05f) return ButtonKind::None;
         const GifControlsLayout layout = GetGifControlsLayout();
         if (PtInRect(&layout.playPause, point)) return ButtonKind::GifPlayPause;
         if (PtInRect(&layout.stepBackward, point)) return ButtonKind::GifStepBackward;
@@ -1814,7 +1814,7 @@ public:
         return ButtonKind::None;
     }
     bool GifControlsContains(POINT point) const {
-        if (!AnimatedGifActive()) return false;
+        if (!AnimatedGifActive() || filmstripOpacity_ <= 0.05f) return false;
         const RECT island = GetGifControlsLayout().island;
         return PtInRect(&island, point) != FALSE;
     }
@@ -10773,17 +10773,18 @@ private:
         DrawOverlayText(L"press Space to cancel auto-play", left, top, width, height, textSize, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
     }
     void DrawGifPlaybackControls() {
-        if (!AnimatedGifActive()) return;
+        const float opacity = filmstripOpacity_;
+        if (!AnimatedGifActive() || opacity <= 0.001f) return;
         const GifControlsLayout layout = GetGifControlsLayout();
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
         ComPtr<ID2D1SolidColorBrush> surface, border, text, hover, track, accent;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, 0.94f), &surface)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, 0.94f), &border)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 0.92f), &text)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 0.88f), &track)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, 1.0f), &accent)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, 0.12f), &hover))) return;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, 0.94f * opacity), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, 0.94f * opacity), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 0.92f * opacity), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, 0.88f * opacity), &track)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, opacity), &accent)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, dark ? 1.0f : 0.0f, 0.12f * opacity), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(layout.island), 9.0f * scale, 9.0f * scale), surface.Get());
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(layout.island), 9.0f * scale, 9.0f * scale), border.Get(), scale);

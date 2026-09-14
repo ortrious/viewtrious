@@ -40,6 +40,7 @@ public:
     void SetDisplayAdjustments(const ImageAdjustments& adjustments);
     void SetDisplayAdjustmentsBypassed(bool bypassed) { displayAdjustmentsBypassed_ = bypassed; }
     bool CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
+    bool CopyCurrentDisplayedFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
     bool SetPreferredPlaybackRate(double rate);
     bool PlaybackRateSupported(double rate) const;
     bool SupportsNegativePlaybackRate() const { return negativePlaybackRateSupported_; }
@@ -65,6 +66,7 @@ private:
     bool SetSourceFromPath(const std::wstring& path, std::wstring& error);
     bool EnsureMultithreadProtection(ID3D11Device* device, std::wstring& error);
     bool ApplyPreferredPlaybackRate();
+    bool CopyTextureBgra(ID3D11Texture2D* texture, std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
     enum class FramePacingEvent : unsigned char { PlaybackBegin, PlaybackPause, PlaybackResume, PlaybackSeek, PlaybackEnd, Schedule, Timer, SchedulerAcquire, InitialLoadAcquire, SeekAcquire, StreamTick, Transfer, CachePublish, Paint, Present, Count };
     struct FramePacingRecord { LONGLONG qpc = 0; LONGLONG pts = 0; HRESULT result = S_OK; FramePacingEvent event = FramePacingEvent::PlaybackBegin; double first = 0.0; double second = 0.0; };
     void ResetFramePacingDiagnostics();

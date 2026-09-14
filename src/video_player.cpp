@@ -449,18 +449,34 @@ void VideoPlayer::SetDisplayAdjustments(const ImageAdjustments& adjustments) {
 bool VideoPlayer::CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const {
     pixels.clear(); width = height = 0;
     if (!hasValidFrame_ || !frameTexture_ || !device_ || !videoWidth_ || !videoHeight_) return false;
-    D3D11_TEXTURE2D_DESC desc{}; frameTexture_->GetDesc(&desc);
+    return CopyTextureBgra(frameTexture_.Get(), pixels, width, height);
+}
+
+bool VideoPlayer::CopyCurrentDisplayedFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const {
+    pixels.clear(); width = height = 0;
+    if (!hasValidFrame_ || !frameTexture_ || !device_) return false;
+    ID3D11Texture2D* displayTexture = frameTexture_.Get();
+    if (!displayAdjustmentsBypassed_ && adjustedFrameValid_ && adjustmentProcessor_.OutputTexture())
+        displayTexture = adjustmentProcessor_.OutputTexture();
+    return CopyTextureBgra(displayTexture, pixels, width, height);
+}
+
+bool VideoPlayer::CopyTextureBgra(ID3D11Texture2D* texture, std::vector<unsigned char>& pixels, UINT& width, UINT& height) const {
+    pixels.clear(); width = height = 0;
+    if (!texture || !device_) return false;
+    D3D11_TEXTURE2D_DESC desc{}; texture->GetDesc(&desc);
+    if (!desc.Width || !desc.Height || desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || desc.SampleDesc.Count != 1) return false;
     desc.BindFlags = 0; desc.Usage = D3D11_USAGE_STAGING; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ; desc.MiscFlags = 0;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
     if (FAILED(device_->CreateTexture2D(&desc, nullptr, &staging))) return false;
     device_->GetImmediateContext(&context); if (!context) return false;
-    context->CopyResource(staging.Get(), frameTexture_.Get());
+    context->CopyResource(staging.Get(), texture);
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return false;
-    pixels.resize(static_cast<size_t>(videoWidth_) * videoHeight_ * 4);
-    for (DWORD y = 0; y < videoHeight_; ++y) std::memcpy(pixels.data() + static_cast<size_t>(y) * videoWidth_ * 4, static_cast<const unsigned char*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch, static_cast<size_t>(videoWidth_) * 4);
-    context->Unmap(staging.Get(), 0); width = videoWidth_; height = videoHeight_; return true;
+    pixels.resize(static_cast<size_t>(desc.Width) * desc.Height * 4);
+    for (UINT y = 0; y < desc.Height; ++y) std::memcpy(pixels.data() + static_cast<size_t>(y) * desc.Width * 4, static_cast<const unsigned char*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch, static_cast<size_t>(desc.Width) * 4);
+    context->Unmap(staging.Get(), 0); width = desc.Width; height = desc.Height; return true;
 }
 
 bool VideoPlayer::PlaybackRateSupported(double rate) const {

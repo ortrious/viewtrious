@@ -3,6 +3,7 @@
 #include <shellapi.h>
 #include <shlobj_core.h>
 #include <shobjidl_core.h>
+#include <knownfolders.h>
 #include <shlwapi.h>
 #include <propkey.h>
 #include <propsys.h>
@@ -138,6 +139,8 @@ constexpr UINT kFilmstripHoverPreviewDelayMs = 100;
 constexpr UINT_PTR kFilmstripVideoHoverFadeTimer = 20;
 constexpr UINT_PTR kImageAdjustmentPersistenceTimer = 21;
 constexpr UINT_PTR kVideoAdjustmentPersistenceTimer = 26;
+constexpr UINT_PTR kVideoFrameSaveToastTimer = 34;
+constexpr ULONGLONG kVideoFrameSaveToastDurationMs = 3000;
 
 D2D1_COLOR_F AdjustmentSurfaceFill(bool dark, float opacity = 1.0f) {
     return D2D1::ColorF(dark ? 35.0f / 255.0f : 246.0f / 255.0f, dark ? 38.0f / 255.0f : 246.0f / 255.0f,
@@ -4832,6 +4835,7 @@ public:
             DrawContextMenu();
             DrawOpenWithSubmenu();
             DrawOverlay();
+            if (!tutorialPresentation_) DrawVideoFrameSaveToast();
             if (!tutorialPresentation_) DrawCopyFeedback();
             DrawTutorial();
             const HRESULT hr = graphicsHost_.EndDraw();
@@ -6475,6 +6479,26 @@ public:
             filmstripHoverPreviewTargetIndex_ = -1;
         }
         InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool VideoFrameSaveContextAllowed(POINT point) const {
+        if (!VideoActive() || !videoPlayer_.HasValidFrame() || !VideoCanvasContains(point) || FilmstripContains(point)) return false;
+        const RECT controls = GetVideoControlsLayout(false).island;
+        return !PtInRect(&controls, point) && !VideoAdjustmentsPanelContains(point) && !VideoPlaybackSpeedPanelContains(point) &&
+            ButtonAt(point) == ButtonKind::None;
+    }
+    bool OpenVideoFrameContextMenu(POINT point) {
+        if (WelcomeOpen() || TutorialActive() || !VideoFrameSaveContextAllowed(point)) return false;
+        HMENU menu = CreatePopupMenu();
+        if (!menu) return true;
+        constexpr UINT kSaveCurrentFrameCommand = 1;
+        AppendMenuW(menu, MF_STRING, kSaveCurrentFrameCommand, L"Save current frame");
+        POINT screen = point;
+        ClientToScreen(window_, &screen);
+        const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+            screen.x, screen.y, 0, window_, nullptr);
+        DestroyMenu(menu);
+        if (command == kSaveCurrentFrameCommand) SaveCurrentVideoFrame();
+        return true;
     }
     bool FilmstripHoverPreviewEligible(int index) const {
         return !filmstripWrapFade_.active && FilmstripHoverPreviewsFitWindow() && !filmstripAdjustmentSuppressed_ && !FilmstripHoverSuppressedForImagePan() && index >= 0 && index < static_cast<int>(navigationFiles_.size()) && !currentPath_.empty() &&
@@ -9361,6 +9385,165 @@ private:
         if (fileDrop && !SetClipboardData(CF_HDROP, fileDrop)) GlobalFree(fileDrop);
         CloseClipboard();
         StartCopyFeedback();
+    }
+
+    static std::wstring VideoFrameSaveFilenameStem(std::wstring stem) {
+        if (stem.empty()) stem = L"video";
+        for (wchar_t& character : stem) {
+            if (character < 32 || character == L'<' || character == L'>' || character == L':' || character == L'\"' ||
+                character == L'/' || character == L'\\' || character == L'|' || character == L'?' || character == L'*') character = L'_';
+        }
+        while (!stem.empty() && (stem.back() == L'.' || stem.back() == L' ')) stem.pop_back();
+        return stem.empty() ? L"video" : stem;
+    }
+    bool ReserveVideoFrameSavePath(const fs::path& directory, const std::wstring& baseName, fs::path& output) const {
+        for (unsigned int suffix = 1; suffix < 10000; ++suffix) {
+            const std::wstring suffixText = suffix == 1 ? L"" : L"_" + std::to_wstring(suffix);
+            const fs::path candidate = directory / (baseName + suffixText + L".png");
+            HANDLE file = CreateFileW(candidate.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file != INVALID_HANDLE_VALUE) {
+                CloseHandle(file);
+                output = candidate;
+                return true;
+            }
+            if (GetLastError() != ERROR_FILE_EXISTS) return false;
+        }
+        return false;
+    }
+    bool EncodeVideoFramePng(const fs::path& path, std::vector<unsigned char>& pixels, UINT width, UINT height) const {
+        if (!wicFactory_ || !width || !height || pixels.size() != static_cast<size_t>(width) * height * 4) return false;
+        for (size_t offset = 3; offset < pixels.size(); offset += 4) pixels[offset] = 255;
+        ComPtr<IWICBitmap> bitmap;
+        ComPtr<IWICStream> stream;
+        ComPtr<IWICBitmapEncoder> encoder;
+        ComPtr<IWICBitmapFrameEncode> frame;
+        HRESULT result = wicFactory_->CreateBitmapFromMemory(width, height, GUID_WICPixelFormat32bppBGRA, width * 4,
+            static_cast<UINT>(pixels.size()), pixels.data(), &bitmap);
+        if (SUCCEEDED(result)) result = wicFactory_->CreateStream(&stream);
+        if (SUCCEEDED(result)) result = stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE);
+        if (SUCCEEDED(result)) result = wicFactory_->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+        if (SUCCEEDED(result)) result = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+        if (SUCCEEDED(result)) result = encoder->CreateNewFrame(&frame, nullptr);
+        if (SUCCEEDED(result)) result = frame->Initialize(nullptr);
+        if (SUCCEEDED(result)) result = frame->SetSize(width, height);
+        WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+        if (SUCCEEDED(result)) result = frame->SetPixelFormat(&format);
+        if (SUCCEEDED(result)) result = frame->WriteSource(bitmap.Get(), nullptr);
+        if (SUCCEEDED(result)) result = frame->Commit();
+        if (SUCCEEDED(result)) result = encoder->Commit();
+        return SUCCEEDED(result);
+    }
+    void ShowVideoFrameSaveToast(bool saved, const fs::path& folder = {}) {
+        videoFrameSaveToastActive_ = true;
+        videoFrameSaveToastSucceeded_ = saved;
+        videoFrameSaveToastFolder_ = folder;
+        videoFrameSaveToastHovered_ = false;
+        videoFrameSaveToastHoverStartedAt_ = 0;
+        videoFrameSaveToastDeadline_ = GetTickCount64() + kVideoFrameSaveToastDurationMs;
+        SetTimer(window_, kVideoFrameSaveToastTimer, animationsEnabled_ ? 16 : 100, nullptr);
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void SaveCurrentVideoFrame() {
+        std::vector<unsigned char> pixels;
+        UINT width = 0, height = 0;
+        if (!VideoActive() || !videoPlayer_.CopyCurrentDisplayedFrameBgra(pixels, width, height)) {
+            ShowVideoFrameSaveToast(false);
+            return;
+        }
+        PWSTR pictures = nullptr;
+        const HRESULT knownFolder = SHGetKnownFolderPath(FOLDERID_Pictures, KF_FLAG_DEFAULT, nullptr, &pictures);
+        if (FAILED(knownFolder) || !pictures) {
+            if (pictures) CoTaskMemFree(pictures);
+            ShowVideoFrameSaveToast(false);
+            return;
+        }
+        const fs::path outputFolder = fs::path(pictures) / L"Viewtrious";
+        CoTaskMemFree(pictures);
+        std::error_code createError;
+        fs::create_directories(outputFolder, createError);
+        if (createError) {
+            ShowVideoFrameSaveToast(false);
+            return;
+        }
+        double currentSeconds = 0.0, durationSeconds = 0.0;
+        videoPlayer_.GetPlaybackTimes(currentSeconds, durationSeconds);
+        const uint64_t milliseconds = static_cast<uint64_t>(std::llround(std::max(0.0, currentSeconds) * 1000.0));
+        const uint64_t hours = milliseconds / 3600000, minutes = milliseconds / 60000 % 60, seconds = milliseconds / 1000 % 60;
+        wchar_t timestamp[32]{};
+        swprintf_s(timestamp, L"_%02llu-%02llu-%02llu.%03llu", hours, minutes, seconds, milliseconds % 1000);
+        const std::wstring baseName = VideoFrameSaveFilenameStem(fs::path(currentPath_).stem().wstring()) + timestamp;
+        fs::path output;
+        if (!ReserveVideoFrameSavePath(outputFolder, baseName, output)) {
+            ShowVideoFrameSaveToast(false);
+            return;
+        }
+        if (!EncodeVideoFramePng(output, pixels, width, height)) {
+            std::error_code removeError;
+            fs::remove(output, removeError);
+            ShowVideoFrameSaveToast(false);
+            return;
+        }
+        ShowVideoFrameSaveToast(true, outputFolder);
+    }
+    RECT VideoFrameSaveToastBounds() const {
+        if (!videoFrameSaveToastActive_) return {};
+        RECT client{};
+        GetClientRect(window_, &client);
+        const UINT dpi = GetDpiForWindow(window_);
+        const LONG width = MulDiv(videoFrameSaveToastSucceeded_ ? 238 : 184, dpi, 96);
+        const LONG height = MulDiv(42, dpi, 96);
+        const LONG inset = MulDiv(16, dpi, 96);
+        LONG bottom = client.bottom - inset;
+        if (VideoActive() && videoControlsOpacity_ > 0.05f) {
+            const RECT controls = GetVideoControlsLayout(false).island;
+            bottom = std::min(bottom, controls.top - inset);
+        }
+        const LONG topLimit = fullscreen_ ? inset : GetFrameMetrics(window_).titleBarHeight + inset;
+        bottom = std::max(bottom, topLimit + height);
+        return { std::max(client.left + inset, client.right - inset - width), bottom - height,
+            client.right - inset, bottom };
+    }
+    RECT VideoFrameSaveToastOpenFolderBounds() const {
+        const RECT toast = VideoFrameSaveToastBounds();
+        if (!videoFrameSaveToastSucceeded_ || IsRectEmpty(&toast)) return {};
+        const LONG inset = MulDiv(7, GetDpiForWindow(window_), 96);
+        const LONG width = MulDiv(94, GetDpiForWindow(window_), 96);
+        return { toast.right - inset - width, toast.top + inset, toast.right - inset, toast.bottom - inset };
+    }
+    void SetVideoFrameSaveToastHover(POINT point) {
+        if (!videoFrameSaveToastActive_) return;
+        const RECT bounds = VideoFrameSaveToastBounds();
+        const bool hovered = PtInRect(&bounds, point) != FALSE;
+        if (hovered == videoFrameSaveToastHovered_) return;
+        const ULONGLONG now = GetTickCount64();
+        if (hovered) videoFrameSaveToastHoverStartedAt_ = now;
+        else if (videoFrameSaveToastHoverStartedAt_) {
+            videoFrameSaveToastDeadline_ += now - videoFrameSaveToastHoverStartedAt_;
+            videoFrameSaveToastHoverStartedAt_ = 0;
+        }
+        videoFrameSaveToastHovered_ = hovered;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    void UpdateVideoFrameSaveToast() {
+        if (!videoFrameSaveToastActive_) return;
+        if (!videoFrameSaveToastHovered_ && GetTickCount64() >= videoFrameSaveToastDeadline_) {
+            videoFrameSaveToastActive_ = false;
+            KillTimer(window_, kVideoFrameSaveToastTimer);
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool HandleVideoFrameSaveToastClick(POINT point) {
+        if (!videoFrameSaveToastActive_) return false;
+        const RECT toast = VideoFrameSaveToastBounds();
+        if (!PtInRect(&toast, point)) return false;
+        const RECT openFolder = VideoFrameSaveToastOpenFolderBounds();
+        if (videoFrameSaveToastSucceeded_ && PtInRect(&openFolder, point) && !videoFrameSaveToastFolder_.empty() &&
+            reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", videoFrameSaveToastFolder_.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
+            return true;
+        videoFrameSaveToastActive_ = false;
+        KillTimer(window_, kVideoFrameSaveToastTimer);
+        InvalidateRect(window_, nullptr, FALSE);
+        return true;
     }
 
 private:
@@ -13588,6 +13771,40 @@ private:
         DrawOverlayText(tutorialStep_ == TutorialStep::Shortcuts ? L"finish" : L"next", next.left, next.top, next.right - next.left, next.bottom - next.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
     }
 
+    void DrawVideoFrameSaveToast() {
+        if (!videoFrameSaveToastActive_) return;
+        const RECT bounds = VideoFrameSaveToastBounds();
+        if (IsRectEmpty(&bounds)) return;
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const bool dark = UseDarkAppMode();
+        ComPtr<ID2D1SolidColorBrush> surface, border, text, actionSurface, actionText;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(dark, 0.98f), &surface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(dark, 0.98f), &border)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 242.0f / 255.0f : 35.0f / 255.0f,
+                dark ? 242.0f / 255.0f : 35.0f / 255.0f, dark ? 242.0f / 255.0f : 35.0f / 255.0f, 1.0f), &text)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f,
+                videoFrameSaveToastHovered_ ? 0.24f : 0.16f), &actionSurface)) ||
+            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 120.0f / 255.0f, 212.0f / 255.0f, 1.0f), &actionText))) return;
+        const D2D1_RECT_F toast = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top),
+            static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(toast, 8.0f * scale, 8.0f * scale), surface.Get());
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(toast, 8.0f * scale, 8.0f * scale), border.Get(), 1.0f * scale);
+        const RECT action = VideoFrameSaveToastOpenFolderBounds();
+        const float inset = 12.0f * scale;
+        if (videoFrameSaveToastSucceeded_) {
+            const D2D1_RECT_F button = D2D1::RectF(static_cast<float>(action.left), static_cast<float>(action.top),
+                static_cast<float>(action.right), static_cast<float>(action.bottom));
+            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(button, 5.0f * scale, 5.0f * scale), actionSurface.Get());
+            DrawOverlayText(L"frame saved", bounds.left + inset, bounds.top, static_cast<float>(action.left - bounds.left) - inset * 1.5f,
+                static_cast<float>(bounds.bottom - bounds.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true);
+            DrawOverlayText(L"OPEN FOLDER", static_cast<float>(action.left), static_cast<float>(action.top),
+                static_cast<float>(action.right - action.left), static_cast<float>(action.bottom - action.top), 10.0f,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD, actionText.Get(), true, false, true);
+        } else {
+            DrawOverlayText(L"frame save failed", bounds.left + inset, bounds.top, static_cast<float>(bounds.right - bounds.left) - inset * 2.0f,
+                static_cast<float>(bounds.bottom - bounds.top), 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, text.Get(), true);
+        }
+    }
     void DrawCopyFeedback() {
         if (!copyFeedbackActive_) return;
         const ULONGLONG elapsed = GetTickCount64() - copyFeedbackStart_;
@@ -14367,6 +14584,12 @@ private:
     bool copyFeedbackActive_ = false;
     bool feedbackIsWallpaper_ = false;
     ULONGLONG copyFeedbackStart_ = 0;
+    bool videoFrameSaveToastActive_ = false;
+    bool videoFrameSaveToastSucceeded_ = false;
+    bool videoFrameSaveToastHovered_ = false;
+    ULONGLONG videoFrameSaveToastDeadline_ = 0;
+    ULONGLONG videoFrameSaveToastHoverStartedAt_ = 0;
+    fs::path videoFrameSaveToastFolder_;
     ButtonKind canvasNavigationHovered_ = ButtonKind::None;
     ButtonKind canvasNavigationPressed_ = ButtonKind::None;
     POINT canvasNavigationPressPoint_{};
@@ -14599,6 +14822,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             }
             return 0;
         }
+        if (viewer->HandleVideoFrameSaveToastClick(point)) return 0;
         if (viewer->OpenWithSubmenuOpen()) {
             const int item = viewer->OpenWithItemAt(point);
             if (item >= 0) { viewer->InvokeOpenWithItem(item); return 0; }
@@ -14755,6 +14979,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         break;
     }
     case WM_MOUSEMOVE: {
+        viewer->SetVideoFrameSaveToastHover({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         viewer->UpdateTriangleCountTooltipHover({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         if (viewer->TutorialActive()) {
             viewer->SetButtonHover(viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }));
@@ -14942,6 +15167,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->ComponentsPanelContains(point)) return 0;
         viewer->HideFilmstripHoverPreviewImmediately();
         viewer->SetFilmstripHover({ -1, -1 });
+        if (!viewer->TutorialActive() && viewer->OpenVideoFrameContextMenu(point)) return 0;
         if (!viewer->TutorialActive()) { if (viewer->ModelActive() && viewer->SelectModelFace(point)) viewer->SelectComponentsPanelRange(viewer->ModelObjectRangeAt(point), true); viewer->OpenContextMenu(point); }
         return 0;
     }
@@ -14957,6 +15183,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kNavigationDecodeDebounceTimer) { viewer->NavigationDecodeTimer(); return 0; }
         if (wParam == kImageAdjustmentPersistenceTimer) { KillTimer(window, kImageAdjustmentPersistenceTimer); viewer->ImageAdjustmentPersistenceTimer(); return 0; }
         if (wParam == kVideoAdjustmentPersistenceTimer) { KillTimer(window, kVideoAdjustmentPersistenceTimer); viewer->VideoAdjustmentPersistenceTimer(); return 0; }
+        if (wParam == kVideoFrameSaveToastTimer) { viewer->UpdateVideoFrameSaveToast(); return 0; }
         if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
         if (wParam == kModelHomeAnimationTimer) { viewer->UpdateAnimatedModelHome(); return 0; }

@@ -6988,7 +6988,8 @@ public:
             static_cast<float>(std::max(1L, canvas.bottom - canvas.top)) / height);
     }
     float VideoActualPixelScale() const { return 96.0f / RenderTargetDpi(); }
-    float VideoMinimumScale() const { return std::min(VideoFitScale(), VideoActualPixelScale()); }
+    float MinimumScaleForFit(float fitScale) const { return std::min(1.0f, fitScale); }
+    float VideoMinimumScale() const { return MinimumScaleForFit(VideoFitScale()); }
     float VideoCurrentScale() const { return videoFitToWindow_ ? VideoFitScale() : videoZoom_; }
     void CenterAtVideoMinimumScale() {
         const float fitScale = VideoFitScale();
@@ -7015,10 +7016,9 @@ public:
     void SetVideoScaleAt(POINT cursor, float requestedScale) {
         DWORD nativeWidth = 0, nativeHeight = 0;
         if (!VideoActive() || !videoPlayer_.GetNativeVideoSize(nativeWidth, nativeHeight)) return;
-        const float oldScale = VideoCurrentScale(), fitScale = VideoFitScale(), actualScale = VideoActualPixelScale();
+        const float oldScale = VideoCurrentScale(), fitScale = VideoFitScale();
         const float minimumScale = VideoMinimumScale();
         float newScale = std::clamp(requestedScale, minimumScale, std::max(kMaximumZoom, fitScale));
-        if ((oldScale < actualScale && newScale >= actualScale) || (oldScale > actualScale && newScale <= actualScale)) newScale = actualScale;
         if (std::abs(newScale - fitScale) <= 0.0001f) {
             if (videoFitToWindow_ && std::abs(videoPan_.x) < 0.0001f && std::abs(videoPan_.y) < 0.0001f) return;
             videoFitToWindow_ = true;
@@ -10757,7 +10757,7 @@ private:
         return fitScale;
     }
 
-    float MinimumScale() const { return std::min(1.0f, BaseScale()); }
+    float MinimumScale() const { return MinimumScaleForFit(BaseScale()); }
 
     float CurrentScale() const { return fitToWindow_ ? BaseScale() : zoom_; }
 

@@ -1844,13 +1844,16 @@ public:
         const LONG bottom = panel.bottom;
         const int labelWidth = MulDiv(70, dpi, 96);
         const int valueWidth = MulDiv(38, dpi, 96);
-        const int rowHeight = MulDiv(aboveControls ? 26 : 32, dpi, 96);
+        // In the above-controls fallback, the footer remains inside the compact
+        // panel rather than in a lower lip.  Reserve its clearance explicitly.
+        const int rowHeight = MulDiv(aboveControls ? 25 : 32, dpi, 96);
+        const int sliderTopInset = MulDiv(aboveControls ? 12 : 16, dpi, 96);
         const int sliderLeft = left + labelWidth;
         const int panelPadding = MulDiv(12, dpi, 96);
         const int sliderRight = right - valueWidth - panelPadding;
         std::array<RECT, 7> sliders{};
         for (int index = 0; index < 7; ++index) {
-            const int y = top + MulDiv(16, dpi, 96) + index * rowHeight;
+            const int y = top + sliderTopInset + index * rowHeight;
             sliders[index] = { sliderLeft, y, sliderRight, y + MulDiv(20, dpi, 96) };
         }
         const int footerGap = MulDiv(5, dpi, 96);

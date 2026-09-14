@@ -10565,8 +10565,8 @@ private:
                 const float arrowheadSide = 6.0f * scale;
                 const float arrowheadHeight = 0.8660254037844386f * arrowheadSide;
                 const D2D1_POINT_2F arrowheadCenter = point(
-                    arcEnd.x - tangent.x * arrowheadHeight * (2.0f / 3.0f) + 1.0f * scale,
-                    arcEnd.y - tangent.y * arrowheadHeight * (2.0f / 3.0f) + 3.0f * scale);
+                    arcEnd.x - tangent.x * arrowheadHeight * (2.0f / 3.0f) + 3.0f * scale,
+                    arcEnd.y - tangent.y * arrowheadHeight * (2.0f / 3.0f) + 2.0f * scale);
                 const auto transformArrowheadPoint = [&](float forward, float normal) {
                     return point(arrowheadCenter.x + tangent.x * forward + outward.x * normal,
                         arrowheadCenter.y + tangent.y * forward + outward.y * normal);

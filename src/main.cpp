@@ -1405,6 +1405,8 @@ public:
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
         CancelExternalMediaDragArming();
+        if (!IsModelPath(path) && (resetNavigation || currentPath_.empty() || !PathsEqual(fs::path(path), fs::path(currentPath_))))
+            RequestFilmstripSelectionAnchor();
         ++activeOpenAttemptId_;
         BeginLowerUiNavigation(path, !resetNavigation);
         BeginAdjustmentPanelNavigation(path);
@@ -4221,7 +4223,7 @@ public:
     void ToggleIncludeHiddenImages() {
         includeHiddenImages_ = !includeHiddenImages_;
         WriteSetting(L"IncludeHiddenImages", includeHiddenImages_ ? 1 : 0);
-        BuildNavigation(true);
+        BuildNavigation(true, true);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleRememberWindowPlacement() {
@@ -5341,6 +5343,8 @@ public:
     void SynchronizeFilmstripMembership(std::vector<fs::path> files) {
         const std::vector<fs::path> previousNavigationFiles = navigationFiles_;
         const std::vector<uint64_t> previousThumbnailGenerations = filmstripThumbnailGenerations_;
+        filmstripSelectionAnchorActive_ = false;
+        filmstripSelectionAnchorPending_ = false;
         CancelFilmstripWrapFade();
         CancelFilmstripWrapAnchor();
         CancelFilmstripInteraction();
@@ -5394,7 +5398,6 @@ public:
         RemapFilmstripAspectMetadata(previousNavigationFiles);
         filmstripItemWidths_.clear();
         filmstripItemOffsets_.clear();
-        filmstripClickedRevealTarget_.reset();
         filmstripThumbnailFailures_.clear();
         filmstripScroll_ = 0.0;
         filmstripDemandFirst_ = filmstripDemandLast_ = filmstripDemandCurrent_ = std::numeric_limits<size_t>::max();
@@ -5402,9 +5405,9 @@ public:
         StopFilmstripScrollAnimation();
     }
 
-    void BuildNavigation(bool refresh = false) {
+    bool BuildNavigation(bool refresh = false, bool reanchorSelection = false) {
         navigationBuildQueued_ = false;
-        if ((navigationBuilt_ && !refresh) || currentPath_.empty()) return;
+        if ((navigationBuilt_ && !refresh) || currentPath_.empty()) return true;
 
         fs::path current(currentPath_);
         std::vector<fs::path> scannedFiles;
@@ -5444,8 +5447,8 @@ public:
         }
         std::error_code currentError;
         if (!error && !fs::exists(current, currentError)) {
-            ClearDeletedImage();
-            return;
+            ShowImageAfterDelete(navigationFiles_, current, std::move(scannedFiles));
+            return false;
         }
         const DWORD currentAttributes = GetFileAttributesW(current.c_str());
         const bool currentHidden = currentAttributes != INVALID_FILE_ATTRIBUTES && (currentAttributes & FILE_ATTRIBUTE_HIDDEN) != 0;
@@ -5456,16 +5459,23 @@ public:
         }
         const bool changed = scannedFiles.size() != navigationFiles_.size() || !std::equal(scannedFiles.begin(), scannedFiles.end(), navigationFiles_.begin(),
             [](const fs::path& left, const fs::path& right) { return PathsEqual(left, right); });
-        if (changed) SynchronizeFilmstripMembership(std::move(scannedFiles));
+        if (changed) {
+            SynchronizeFilmstripMembership(std::move(scannedFiles));
+            reanchorSelection = true;
+        }
+        if (currentRenamed) reanchorSelection = true;
         if ((changed || currentRenamed) && imageDecodePending_) {
             ++decodeRequestGeneration_;
             pendingFullDecode_ = DecodeRequest{ currentPath_, decodeRequestGeneration_, navigationFolderGeneration_ };
             QueueLatestFullDecode();
         }
         navigationBuilt_ = true;
-        RebuildFilmstripLayout();
+        if (reanchorSelection) RequestFilmstripSelectionAnchor();
+        RebuildFilmstripLayout(true, !reanchorSelection);
+        if (reanchorSelection) ResolveFilmstripSelectionAnchor();
         SynchronizeFilmstripVisibilityToCurrentState();
         InvalidateRect(window_, nullptr, FALSE);
+        return true;
     }
 
     bool FilmstripEligible() const {
@@ -5651,6 +5661,55 @@ public:
         if (found == navigationFiles_.end()) return std::nullopt;
         return static_cast<size_t>(std::distance(navigationFiles_.begin(), found));
     }
+    void CancelFilmstripSelectionAnchor() {
+        filmstripSelectionAnchorActive_ = false;
+        filmstripSelectionAnchorPending_ = false;
+    }
+    void RequestFilmstripSelectionAnchor() {
+        filmstripSelectionAnchorActive_ = false;
+        filmstripSelectionAnchorPending_ = true;
+        StopFilmstripScrollAnimation();
+    }
+    RECT FilmstripSelectionViewportBounds() const {
+        const RECT visible = GetFilmstripBounds();
+        return visible.right > visible.left ? visible : GetFilmstripNormalBounds(true);
+    }
+    std::optional<double> FilmstripSelectedCenterScroll() const {
+        const std::optional<size_t> selected = CurrentNavigationIndex();
+        if (!selected || *selected >= filmstripItemWidths_.size() || *selected >= filmstripItemOffsets_.size()) return std::nullopt;
+        const RECT viewport = FilmstripSelectionViewportBounds();
+        const double viewportWidth = static_cast<double>(std::max(0L, viewport.right - viewport.left));
+        const double selectedCenter = static_cast<double>(filmstripItemOffsets_[*selected]) +
+            static_cast<double>(filmstripItemWidths_[*selected]) * 0.5;
+        const double maximumScroll = std::max(0.0, static_cast<double>(FilmstripContentWidth()) - viewportWidth);
+        return std::clamp(selectedCenter - viewportWidth * 0.5, 0.0, maximumScroll);
+    }
+    bool ResolveFilmstripSelectionAnchor(bool updateThumbnailDemand = true) {
+        const std::optional<double> target = FilmstripSelectedCenterScroll();
+        filmstripSelectionAnchorPending_ = false;
+        if (!target) {
+            filmstripSelectionAnchorActive_ = false;
+            return false;
+        }
+        StopFilmstripScrollAnimation();
+        if (std::abs(filmstripScroll_ - *target) > 0.01) {
+            ++filmstripHoverPreviewGeneration_;
+            videoHoverPreviewGeneration_.store(filmstripHoverPreviewGeneration_, std::memory_order_release);
+            CancelQueuedFilmstripHoverPreviews();
+            HideFilmstripHoverPreviewImmediately();
+            filmstripHoveredIndex_ = -1;
+            filmstripHoverVisualIndex_ = -1;
+            filmstripHoverVisualProgress_ = 0.0f;
+            filmstripHoverVisualStartProgress_ = 0.0f;
+            filmstripHoverVisualTargetProgress_ = 0.0f;
+            filmstripHoverVisualAnimating_ = false;
+            KillTimer(window_, kFilmstripHoverVisualTimer);
+        }
+        filmstripSelectionAnchorActive_ = true;
+        filmstripScroll_ = *target;
+        if (updateThumbnailDemand) UpdateFilmstripThumbnailDemand(true);
+        return true;
+    }
     void RebuildFilmstripLayout(bool clampScroll = true, bool queueThumbnails = true) {
         // Hidden Video2D has no filmstrip height. Preserve its slots and manual scroll
         // until the returning image commits and can rebuild at the real viewport size.
@@ -5671,7 +5730,13 @@ public:
             offset += filmstripItemWidths_[index] + FilmstripGap();
         }
         if (!filmstripItemOffsets_.empty()) filmstripItemOffsets_.back() = offset;
-        if (clampScroll) ClampFilmstripScrollToViewport();
+        if (clampScroll) {
+            if (filmstripSelectionAnchorActive_) {
+                const std::optional<double> target = FilmstripSelectedCenterScroll();
+                if (target) filmstripScroll_ = *target;
+                else { filmstripSelectionAnchorActive_ = false; ClampFilmstripScrollToViewport(); }
+            } else ClampFilmstripScrollToViewport();
+        }
         if (queueThumbnails) QueueFilmstripThumbnails();
     }
     struct FilmstripLayoutAnchor {
@@ -5735,8 +5800,8 @@ public:
         const size_t pendingCount = static_cast<size_t>(std::count(filmstripAspectRelayoutPending_.begin(), filmstripAspectRelayoutPending_.end(), true));
         if (!pendingCount && !force) return;
         if (!source_) { filmstripLayoutRebuildPending_ = true; return; }
-        const std::optional<FilmstripLayoutAnchor> anchor = CaptureFilmstripLayoutAnchor();
         const bool wrapAnchor = filmstripWrapAnchor_.active && filmstripWrapAnchor_.index < navigationFiles_.size();
+        const std::optional<FilmstripLayoutAnchor> anchor = !wrapAnchor && !filmstripSelectionAnchorActive_ ? CaptureFilmstripLayoutAnchor() : std::nullopt;
         const RECT oldBounds = GetFilmstripBounds();
         const double oldScroll = filmstripScroll_;
 #ifdef _DEBUG
@@ -5760,6 +5825,10 @@ public:
             const double contentEdge = filmstripItemOffsets_[index] +
                 (filmstripWrapAnchor_.rightEdge ? FilmstripThumbnailWidth(index) : 0.0f);
             compensatedScroll = static_cast<double>(newBounds.left) + contentEdge - filmstripWrapAnchor_.screenEdge;
+        } else if (filmstripSelectionAnchorActive_) {
+            const std::optional<double> target = FilmstripSelectedCenterScroll();
+            if (target) compensatedScroll = *target;
+            else filmstripSelectionAnchorActive_ = false;
         } else if (anchor && anchor->index < filmstripItemOffsets_.size()) {
             const RECT newBounds = GetFilmstripBounds();
             compensatedScroll = oldScroll + (static_cast<double>(newBounds.left) - oldBounds.left) +
@@ -5788,9 +5857,9 @@ public:
         if (changed) filmstripAspectRelayoutPending_[index] = true;
         return changed;
     }
-    void ApplyDeferredFilmstripLayout() {
+    void ApplyDeferredFilmstripLayout(bool queueThumbnails = true) {
         if (!filmstripLayoutRebuildPending_) return;
-        ApplyFilmstripAspectRelayout();
+        ApplyFilmstripAspectRelayout(queueThumbnails);
     }
     std::pair<size_t, size_t> FilmstripVisibleRange() const {
         if (navigationFiles_.empty() || filmstripItemOffsets_.empty()) return { 0, 0 };
@@ -6414,18 +6483,6 @@ public:
         }
         return entry.bitmap.Get();
     }
-    void EnsureFilmstripItemVisible(size_t index) {
-        if (!FilmstripEligible() || filmstripItemOffsets_.size() < 2 || index >= navigationFiles_.size() ||
-            index >= filmstripItemWidths_.size() || index + 1 >= filmstripItemOffsets_.size()) return;
-        const RECT bounds = GetFilmstripBounds();
-        const double left = filmstripItemOffsets_[index];
-        const double right = left + FilmstripThumbnailWidth(index);
-        const double visibleRight = filmstripScroll_ + static_cast<double>(bounds.right - bounds.left);
-        if (left < filmstripScroll_) filmstripScroll_ = left;
-        else if (right > visibleRight) filmstripScroll_ = right - static_cast<double>(bounds.right - bounds.left);
-        filmstripScroll_ = std::clamp(filmstripScroll_, 0.0, static_cast<double>(FilmstripMaximumScroll()));
-        StopFilmstripScrollAnimation();
-    }
     RECT GetFilmstripThumbnailBounds(size_t index) const {
         const RECT strip = GetFilmstripBounds();
         const int left = strip.left + static_cast<int>(std::lround(static_cast<double>(filmstripItemOffsets_[index]) - filmstripScroll_));
@@ -6572,6 +6629,7 @@ public:
     }
     void ScrollFilmstrip(int rawWheelDelta) {
         if (!FilmstripVisible() || rawWheelDelta == 0) return;
+        CancelFilmstripSelectionAnchor();
         HideFilmstripHoverPreviewImmediately();
         SetFilmstripHover({ -1, -1 });
         if (!filmstripScrollAnimating_) ApplyDeferredFilmstripLayout();
@@ -6666,6 +6724,7 @@ public:
         const int dy = point.y - filmstripDragStart_.y;
         if (!filmstripDragging_ && (std::abs(dx) >= GetSystemMetrics(SM_CXDRAG) || std::abs(dy) >= GetSystemMetrics(SM_CYDRAG))) {
             filmstripDragging_ = true;
+            CancelFilmstripSelectionAnchor();
             HideFilmstripHoverPreviewImmediately();
             SetFilmstripHover({ -1, -1 });
             StopFilmstripScrollAnimation();
@@ -6833,14 +6892,6 @@ public:
         if (std::abs(opacity - filmstripOpacity_) > 0.001f) { filmstripOpacity_ = opacity; InvalidateRect(window_, nullptr, FALSE); }
         if (opacity <= 0.001f) { filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); }
     }
-    void RevealClickedFilmstripItem() {
-        if (filmstripClickedRevealTarget_) {
-            const size_t target = *filmstripClickedRevealTarget_;
-            filmstripClickedRevealTarget_.reset();
-            EnsureFilmstripItemVisible(target);
-            StartFilmstripHold(1000);
-        }
-    }
     void SelectFilmstripItem(int index) {
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
         CancelFilmstripWrapAnchor();
@@ -6849,13 +6900,11 @@ public:
         filmstripPostStopPosition_.reset();
 #endif
         StopFilmstripScrollAnimation();
-        filmstripClickedRevealTarget_ = static_cast<size_t>(index);
         const std::wstring path = navigationFiles_[index].wstring();
         if (!PathsEqual(fs::path(path), fs::path(currentPath_))) {
-            if (FAILED(LoadContent(path, false))) filmstripClickedRevealTarget_.reset();
-            else if (!imageDecodePending_) RevealClickedFilmstripItem();
+            if (SUCCEEDED(LoadContent(path, false))) StartFilmstripHold(1000);
         }
-        else RevealClickedFilmstripItem();
+        else StartFilmstripHold(1000);
     }
     void HideFilmstripHoverPreviewImmediately() {
         KillTimer(window_, kFilmstripHoverPreviewTimer);
@@ -8025,7 +8074,7 @@ public:
 
     std::optional<std::wstring> NavigationTargetPath(int direction) {
         if (currentPath_.empty() || ModelActive()) return std::nullopt;
-        BuildNavigation(true);
+        if (!BuildNavigation(true)) return std::nullopt;
         if (navigationFiles_.empty()) return std::nullopt;
 
         const fs::path current(currentPath_);
@@ -8516,7 +8565,7 @@ public:
     bool VideoAutoPlayNextCountdownActive() const { return videoAutoPlayNextCountdownActive_; }
     std::optional<std::wstring> NextEligibleVideoNavigationTargetPath() {
         if (!VideoActive() || currentPath_.empty()) return std::nullopt;
-        BuildNavigation(true);
+        if (!BuildNavigation(true)) return std::nullopt;
         if (navigationFiles_.size() < 2) return std::nullopt;
         const fs::path current(currentPath_);
         const auto currentIt = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&current](const fs::path& path) { return PathsEqual(path, current); });
@@ -10958,7 +11007,7 @@ private:
         SetCommittedMediaWindowTitle(L"");
         CancelQueuedFilmstripThumbnails();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
-        filmstripClickedRevealTarget_.reset();
+        CancelFilmstripSelectionAnchor();
         filmstripThumbnailGenerations_.clear(); filmstripThumbnails_.clear(); filmstripThumbnailPending_.clear(); filmstripThumbnailFailures_.clear();
         CancelQueuedFilmstripHoverPreviews();
         filmstripHoverPreviews_.clear();
@@ -10978,49 +11027,77 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
 
-    void ShowImageAfterDelete(std::vector<fs::path> filesBeforeDelete, const fs::path& deleted) {
+    void ShowImageAfterDelete(std::vector<fs::path> filesBeforeDelete, const fs::path& deleted, std::vector<fs::path> filesAfterDelete) {
         StopGifPlayback();
         auto current = std::find_if(filesBeforeDelete.begin(), filesBeforeDelete.end(),
             [&deleted](const fs::path& path) { return PathsEqual(path, deleted); });
-        if (current == filesBeforeDelete.end()) { ClearDeletedImage(); return; }
-        const size_t index = static_cast<size_t>(std::distance(filesBeforeDelete.begin(), current));
-        const std::vector<fs::path> previousNavigationFiles = filesBeforeDelete;
-        filesBeforeDelete.erase(current);
-        CancelQueuedFilmstripThumbnails();
-        navigationFiles_ = std::move(filesBeforeDelete);
-        ++navigationFolderGeneration_;
-        filmstripThumbnailFolderGeneration_.store(navigationFolderGeneration_, std::memory_order_release);
-        filmstripThumbnailGenerations_.assign(navigationFiles_.size(), ++filmstripThumbnailGenerationSeed_);
-        RemapFilmstripAspectMetadata(previousNavigationFiles);
-        filmstripThumbnails_.clear();
-        filmstripThumbnailFailures_.clear();
+        std::vector<fs::path> candidates;
+        const auto appendCandidate = [&](const fs::path& path) {
+            const bool eligible = std::any_of(filesAfterDelete.begin(), filesAfterDelete.end(), [&](const fs::path& available) {
+                return PathsEqual(available, path);
+            });
+            const bool alreadyQueued = std::any_of(candidates.begin(), candidates.end(), [&](const fs::path& candidate) {
+                return PathsEqual(candidate, path);
+            });
+            if (eligible && !alreadyQueued) candidates.push_back(path);
+        };
+        if (current != filesBeforeDelete.end()) {
+            const size_t deletedIndex = static_cast<size_t>(std::distance(filesBeforeDelete.begin(), current));
+            for (size_t offset = 1; offset < filesBeforeDelete.size(); ++offset)
+                appendCandidate(filesBeforeDelete[(deletedIndex + offset) % filesBeforeDelete.size()]);
+        } else if (!filesAfterDelete.empty()) {
+            const auto naturalLess = [](const fs::path& left, const fs::path& right) {
+                const int comparison = StrCmpLogicalW(left.filename().c_str(), right.filename().c_str());
+                return comparison == 0 ? left.wstring() < right.wstring() : comparison < 0;
+            };
+            const auto next = std::lower_bound(filesAfterDelete.begin(), filesAfterDelete.end(), deleted, naturalLess);
+            const size_t start = next == filesAfterDelete.end() ? 0 : static_cast<size_t>(std::distance(filesAfterDelete.begin(), next));
+            for (size_t offset = 0; offset < filesAfterDelete.size(); ++offset)
+                appendCandidate(filesAfterDelete[(start + offset) % filesAfterDelete.size()]);
+        }
+        for (const fs::path& path : filesAfterDelete) appendCandidate(path);
+        if (candidates.empty()) { ClearDeletedImage(); return; }
+
+        SynchronizeFilmstripMembership(std::move(filesAfterDelete));
         navigationBuilt_ = true;
-        for (size_t offset = 0; offset < navigationFiles_.size(); ++offset) {
-            const size_t candidate = (index + offset) % navigationFiles_.size();
-            const std::wstring candidatePath = navigationFiles_[candidate].wstring();
+        RebuildFilmstripLayout(true, false);
+        for (const fs::path& candidate : candidates) {
+            const std::wstring candidatePath = candidate.wstring();
             const bool dissolve = BeginStillDissolveToTarget(candidatePath);
             if (IsVideoPath(candidatePath)) {
                 LoadContent(candidatePath, false);
                 return;
             }
-            if (IsGifPath(navigationFiles_[candidate].wstring())) {
-                if (SUCCEEDED(LoadAnimatedGif(navigationFiles_[candidate].wstring(), false))) {
+            RequestFilmstripSelectionAnchor();
+            if (IsGifPath(candidatePath)) {
+                const HRESULT gifResult = LoadAnimatedGif(candidatePath, false);
+                if (gifResult == S_OK) {
                     InvalidateRect(window_, nullptr, FALSE);
                     return;
                 }
-                if (dissolve) ClearStillDissolve();
-                continue;
+                if (gifResult != S_FALSE) {
+                    if (dissolve) ClearStillDissolve();
+                    continue;
+                }
             }
             ComPtr<IWICBitmapSource> source;
             UINT width = 0, height = 0;
-            if (SUCCEEDED(DecodeImage(navigationFiles_[candidate].wstring(), source, width, height))) {
-                CommitImage(navigationFiles_[candidate].wstring(), source, width, height, false);
+            if (SUCCEEDED(DecodeImage(candidatePath, source, width, height))) {
+                CommitImage(candidatePath, source, width, height, false);
                 InvalidateRect(window_, nullptr, FALSE);
                 return;
             }
             if (dissolve) ClearStillDissolve();
         }
         ClearDeletedImage();
+    }
+
+    void ShowImageAfterDelete(std::vector<fs::path> filesBeforeDelete, const fs::path& deleted) {
+        std::vector<fs::path> filesAfterDelete = filesBeforeDelete;
+        filesAfterDelete.erase(std::remove_if(filesAfterDelete.begin(), filesAfterDelete.end(), [&](const fs::path& path) {
+            return PathsEqual(path, deleted);
+        }), filesAfterDelete.end());
+        ShowImageAfterDelete(std::move(filesBeforeDelete), deleted, std::move(filesAfterDelete));
     }
 
     std::optional<std::wstring> DeleteContinuationTargetPath(const std::vector<fs::path>& files, const fs::path& deleted) const {
@@ -11071,12 +11148,8 @@ private:
 
         const std::wstring restoredPath = record.originalPath;
         deleteUndoStack_.pop_back();
-        const double preservedFilmstripScroll = filmstripScroll_;
         const bool hasCurrentMedia = !currentPath_.empty();
-        if (hasCurrentMedia) {
-            BuildNavigation(true);
-            filmstripScroll_ = std::clamp(preservedFilmstripScroll, 0.0, static_cast<double>(FilmstripMaximumScroll()));
-        }
+        if (hasCurrentMedia) BuildNavigation(true);
         const bool heldPresentation = !ModelActive() &&
             (VideoActive() ? BeginVideoSiblingDissolve(restoredPath) : BeginStillDissolveToTarget(restoredPath));
         if (FAILED(LoadContent(restoredPath, !hasCurrentMedia))) {
@@ -11087,7 +11160,7 @@ private:
 
     void DeleteImage() {
         if (currentPath_.empty()) return;
-        BuildNavigation(true);
+        if (!BuildNavigation(true)) return;
         if (currentPath_.empty()) return;
         const fs::path deleted(currentPath_);
         const std::vector<fs::path> filesBeforeDelete = navigationFiles_;
@@ -11966,6 +12039,7 @@ private:
     bool NavigateFastRasterSynchronously(const std::wstring& path, int direction) {
         (void)direction;
         if (!IsFastNavigationPath(path)) return false;
+        RequestFilmstripSelectionAnchor();
 
         // This is the accepted pre-0.4.4 path: present each inexpensive raster image
         // before the next queued navigation repeat is allowed to advance the target.
@@ -12006,6 +12080,7 @@ private:
     void SelectNavigationTarget(const std::wstring& path, int direction = 0, bool immediatePaint = true) {
         (void)direction;
         if (path.empty()) return;
+        RequestFilmstripSelectionAnchor();
         BeginLowerUiNavigation(path, true);
         BeginAdjustmentPanelNavigation(path);
         if (IsGifPath(path)) {
@@ -12157,16 +12232,17 @@ private:
             filmstripThumbnails_.clear();
             filmstripThumbnailPending_.clear();
             filmstripThumbnailFailures_.clear();
-            filmstripClickedRevealTarget_.reset();
+            filmstripSelectionAnchorActive_ = false;
             filmstripScroll_ = 0.0;
             filmstripLayoutRebuildPending_ = false;
             StopFilmstripScrollAnimation();
         } else if (navigationBuilt_) {
             // Reuse the retained slots at the current image viewport size, including any
             // aspect discoveries deferred while the video had no visible filmstrip.
-            RebuildFilmstripLayout();
-            ApplyDeferredFilmstripLayout();
-            RevealClickedFilmstripItem();
+            const bool reanchorSelection = filmstripSelectionAnchorPending_;
+            RebuildFilmstripLayout(true, !reanchorSelection);
+            ApplyDeferredFilmstripLayout(!reanchorSelection);
+            if (reanchorSelection) ResolveFilmstripSelectionAnchor();
         }
         CommitAdjustmentPanelNavigation(path);
         CommitLowerUiNavigation(path, false);
@@ -15251,7 +15327,8 @@ private:
     std::deque<FilmstripHoverPreviewRequest> filmstripHoverPreviewQueue_;
     std::thread filmstripHoverPreviewWorker_;
     std::atomic<bool> filmstripHoverPreviewStopping_{ false };
-    std::optional<size_t> filmstripClickedRevealTarget_;
+    bool filmstripSelectionAnchorActive_ = false;
+    bool filmstripSelectionAnchorPending_ = false;
     bool filmstripPanelHovered_ = false;
     bool filmstripRevealHovered_ = false;
     bool filmstripHintHovered_ = false;

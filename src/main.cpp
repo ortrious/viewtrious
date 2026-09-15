@@ -144,6 +144,7 @@ constexpr ULONGLONG kVideoFrameSaveToastDurationMs = 3000;
 constexpr UINT_PTR kExternalMediaDragIntentTimer = 35;
 constexpr int kExternalMediaDragOutsideMarginDip = 24;
 constexpr ULONGLONG kExternalMediaDragOutsideDwellMs = 140;
+constexpr int kExternalMediaDragImageMaximumDip = 192;
 
 class CopyFileDropSource final : public IDropSource {
 public:
@@ -175,6 +176,9 @@ private:
 class FileDropDataObject final : public IDataObject {
 public:
     explicit FileDropDataObject(std::wstring path) : path_(std::move(path)) {}
+    ~FileDropDataObject() {
+        for (StoredData& stored : storedData_) ReleaseStgMedium(&stored.medium);
+    }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
         if (!object) return E_POINTER;
         *object = nullptr;
@@ -192,47 +196,88 @@ public:
         return references;
     }
     HRESULT STDMETHODCALLTYPE GetData(FORMATETC* format, STGMEDIUM* medium) override {
+        if (!format) return E_INVALIDARG;
         if (!medium) return E_POINTER;
-        const HRESULT accepted = QueryGetData(format);
-        if (FAILED(accepted)) return accepted;
-        const size_t bytes = sizeof(DROPFILES) + (path_.size() + 2) * sizeof(wchar_t);
-        HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
-        if (!data) return E_OUTOFMEMORY;
-        auto* drop = static_cast<DROPFILES*>(GlobalLock(data));
-        if (!drop) { GlobalFree(data); return E_OUTOFMEMORY; }
-        drop->pFiles = sizeof(DROPFILES);
-        drop->fWide = TRUE;
-        auto* paths = reinterpret_cast<wchar_t*>(reinterpret_cast<BYTE*>(drop) + drop->pFiles);
-        memcpy(paths, path_.c_str(), (path_.size() + 1) * sizeof(wchar_t));
-        GlobalUnlock(data);
+        if (format->cfFormat == CF_HDROP && format->dwAspect == DVASPECT_CONTENT && format->lindex == -1 &&
+            (format->tymed & TYMED_HGLOBAL)) {
+            const size_t bytes = sizeof(DROPFILES) + (path_.size() + 2) * sizeof(wchar_t);
+            HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+            if (!data) return E_OUTOFMEMORY;
+            auto* drop = static_cast<DROPFILES*>(GlobalLock(data));
+            if (!drop) { GlobalFree(data); return E_OUTOFMEMORY; }
+            drop->pFiles = sizeof(DROPFILES);
+            drop->fWide = TRUE;
+            auto* paths = reinterpret_cast<wchar_t*>(reinterpret_cast<BYTE*>(drop) + drop->pFiles);
+            memcpy(paths, path_.c_str(), (path_.size() + 1) * sizeof(wchar_t));
+            GlobalUnlock(data);
+            ZeroMemory(medium, sizeof(*medium));
+            medium->tymed = TYMED_HGLOBAL;
+            medium->hGlobal = data;
+            return S_OK;
+        }
+        const auto stored = std::find_if(storedData_.begin(), storedData_.end(), [&](const StoredData& candidate) {
+            return candidate.format.cfFormat == format->cfFormat && candidate.format.dwAspect == format->dwAspect &&
+                candidate.format.lindex == format->lindex && (format->tymed & candidate.medium.tymed);
+        });
+        if (stored == storedData_.end() || stored->medium.tymed != TYMED_HGLOBAL) return DV_E_FORMATETC;
+        HGLOBAL duplicate = OleDuplicateData(stored->medium.hGlobal, stored->format.cfFormat, 0);
+        if (!duplicate) return E_OUTOFMEMORY;
         ZeroMemory(medium, sizeof(*medium));
         medium->tymed = TYMED_HGLOBAL;
-        medium->hGlobal = data;
+        medium->hGlobal = duplicate;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return DATA_E_FORMATETC; }
     HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override {
         if (!format) return E_INVALIDARG;
-        return format->cfFormat == CF_HDROP && format->dwAspect == DVASPECT_CONTENT && format->lindex == -1 &&
-            (format->tymed & TYMED_HGLOBAL) ? S_OK : DV_E_FORMATETC;
+        if (format->cfFormat == CF_HDROP && format->dwAspect == DVASPECT_CONTENT && format->lindex == -1 &&
+            (format->tymed & TYMED_HGLOBAL)) return S_OK;
+        return std::any_of(storedData_.begin(), storedData_.end(), [&](const StoredData& candidate) {
+            return candidate.format.cfFormat == format->cfFormat && candidate.format.dwAspect == format->dwAspect &&
+                candidate.format.lindex == format->lindex && (format->tymed & candidate.medium.tymed);
+        }) ? S_OK : DV_E_FORMATETC;
     }
     HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC* out) override {
         if (out) out->ptd = nullptr;
         return E_NOTIMPL;
     }
-    HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE SetData(FORMATETC* format, STGMEDIUM* medium, BOOL release) override {
+        if (!format || !medium) return E_INVALIDARG;
+        if (medium->tymed != TYMED_HGLOBAL || !medium->hGlobal) return DV_E_TYMED;
+        StoredData stored{};
+        stored.format = *format;
+        stored.format.ptd = nullptr;
+        stored.medium.tymed = TYMED_HGLOBAL;
+        if (release) stored.medium = *medium;
+        else {
+            stored.medium.hGlobal = OleDuplicateData(medium->hGlobal, format->cfFormat, 0);
+            if (!stored.medium.hGlobal) return E_OUTOFMEMORY;
+        }
+        const auto existing = std::find_if(storedData_.begin(), storedData_.end(), [&](const StoredData& candidate) {
+            return candidate.format.cfFormat == format->cfFormat && candidate.format.dwAspect == format->dwAspect &&
+                candidate.format.lindex == format->lindex;
+        });
+        if (existing != storedData_.end()) {
+            ReleaseStgMedium(&existing->medium);
+            *existing = std::move(stored);
+        } else storedData_.push_back(std::move(stored));
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD direction, IEnumFORMATETC** formats) override {
         if (!formats) return E_POINTER;
         if (direction != DATADIR_GET) return E_NOTIMPL;
-        FORMATETC format{ CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-        return SHCreateStdEnumFmtEtc(1, &format, formats);
+        std::vector<FORMATETC> available{ { CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL } };
+        for (const StoredData& stored : storedData_) available.push_back(stored.format);
+        return SHCreateStdEnumFmtEtc(static_cast<UINT>(available.size()), available.data(), formats);
     }
     HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
 private:
+    struct StoredData { FORMATETC format{}; STGMEDIUM medium{}; };
     ULONG references_ = 1;
     std::wstring path_;
+    std::vector<StoredData> storedData_;
 };
 
 D2D1_COLOR_F AdjustmentSurfaceFill(bool dark, float opacity = 1.0f) {
@@ -7858,6 +7903,101 @@ public:
         InflateRect(&outer, margin, margin);
         return !PtInRect(&outer, screenPoint);
     }
+    bool TryGetExternalMediaDragImageSource(PixelBuffer& source) const {
+        source = {};
+        if (!VideoActive() && displayedPixels_ && imageWidth_ && imageHeight_ &&
+            displayedPixels_->size() >= static_cast<size_t>(imageWidth_) * imageHeight_ * 4) {
+            source.width = imageWidth_;
+            source.height = imageHeight_;
+            source.stride = imageWidth_ * 4;
+            source.hasTransparency = imageHasTransparency_;
+            source.pixels = displayedPixels_;
+            return true;
+        }
+        const auto cached = std::find_if(filmstripThumbnails_.rbegin(), filmstripThumbnails_.rend(), [&](const FilmstripThumbnailEntry& entry) {
+            return entry.pixels && entry.width && entry.height && entry.stride >= entry.width * 4 &&
+                PathsEqual(fs::path(entry.path), fs::path(currentPath_));
+        });
+        if (cached == filmstripThumbnails_.rend()) return false;
+        source.width = cached->width;
+        source.height = cached->height;
+        source.stride = cached->stride;
+        source.hasTransparency = cached->hasTransparency;
+        source.pixels = cached->pixels;
+        return true;
+    }
+    HBITMAP CreateExternalMediaDragImageBitmap(const PixelBuffer& source, SIZE& outputSize) const {
+        outputSize = {};
+        if (!source.pixels || !source.width || !source.height || source.stride < source.width * 4 ||
+            source.pixels->size() < static_cast<size_t>(source.stride) * source.height) return nullptr;
+        const UINT maximum = static_cast<UINT>(std::max(1, MulDiv(kExternalMediaDragImageMaximumDip, GetDpiForWindow(window_), 96)));
+        const double scale = static_cast<double>(maximum) / std::max(source.width, source.height);
+        const UINT width = std::max(1u, static_cast<UINT>(std::lround(source.width * scale)));
+        const UINT height = std::max(1u, static_cast<UINT>(std::lround(source.height * scale)));
+        if (width > static_cast<UINT>(LONG_MAX) || height > static_cast<UINT>(LONG_MAX)) return nullptr;
+
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = static_cast<LONG>(width);
+        info.bmiHeader.biHeight = -static_cast<LONG>(height);
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        void* bitmapBits = nullptr;
+        HBITMAP bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bitmapBits, nullptr, 0);
+        if (!bitmap || !bitmapBits) {
+            if (bitmap) DeleteObject(bitmap);
+            return nullptr;
+        }
+
+        auto* destination = static_cast<BYTE*>(bitmapBits);
+        const BYTE* sourcePixels = source.pixels->data();
+        for (UINT y = 0; y < height; ++y) {
+            const double sourceY = std::max(0.0, (static_cast<double>(y) + 0.5) * source.height / height - 0.5);
+            const UINT y0 = std::min(source.height - 1, static_cast<UINT>(sourceY));
+            const UINT y1 = std::min(source.height - 1, y0 + 1);
+            const double fy = sourceY - y0;
+            for (UINT x = 0; x < width; ++x) {
+                const double sourceX = std::max(0.0, (static_cast<double>(x) + 0.5) * source.width / width - 0.5);
+                const UINT x0 = std::min(source.width - 1, static_cast<UINT>(sourceX));
+                const UINT x1 = std::min(source.width - 1, x0 + 1);
+                const double fx = sourceX - x0;
+                BYTE* pixel = destination + (static_cast<size_t>(y) * width + x) * 4;
+                for (UINT channel = 0; channel < 4; ++channel) {
+                    const double top = sourcePixels[static_cast<size_t>(y0) * source.stride + x0 * 4 + channel] * (1.0 - fx) +
+                        sourcePixels[static_cast<size_t>(y0) * source.stride + x1 * 4 + channel] * fx;
+                    const double bottom = sourcePixels[static_cast<size_t>(y1) * source.stride + x0 * 4 + channel] * (1.0 - fx) +
+                        sourcePixels[static_cast<size_t>(y1) * source.stride + x1 * 4 + channel] * fx;
+                    pixel[channel] = static_cast<BYTE>(std::clamp(std::lround(top * (1.0 - fy) + bottom * fy), 0L, 255L));
+                }
+                const BYTE alpha = pixel[3];
+                if (alpha && alpha < 255) {
+                    for (UINT channel = 0; channel < 3; ++channel)
+                        pixel[channel] = static_cast<BYTE>(std::min(255u, static_cast<UINT>(pixel[channel]) * 255u / alpha));
+                }
+            }
+        }
+        outputSize = { static_cast<LONG>(width), static_cast<LONG>(height) };
+        return bitmap;
+    }
+    void InitializeExternalMediaDragImage(IDataObject* dataObject) const {
+        if (!dataObject) return;
+        PixelBuffer source;
+        if (!TryGetExternalMediaDragImageSource(source)) return;
+        SIZE size{};
+        HBITMAP bitmap = CreateExternalMediaDragImageBitmap(source, size);
+        if (!bitmap) return;
+        ComPtr<IDragSourceHelper> helper;
+        if (SUCCEEDED(CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&helper)))) {
+            SHDRAGIMAGE image{};
+            image.sizeDragImage = size;
+            image.ptOffset = { std::max(1L, size.cx / 4), std::max(1L, size.cy / 4) };
+            image.hbmpDragImage = bitmap;
+            image.crColorKey = CLR_NONE;
+            helper->InitializeFromBitmap(&image, dataObject);
+        }
+        DeleteObject(bitmap);
+    }
     void BeginExternalMediaFileDrag() {
         if (!externalMediaDragArmed_ || !ExternalMediaDragSourceAvailable() ||
             externalMediaDragOpenAttemptId_ != activeOpenAttemptId_) {
@@ -7876,6 +8016,7 @@ public:
 
         ComPtr<IDataObject> dataObject;
         dataObject.Attach(new FileDropDataObject(path));
+        InitializeExternalMediaDragImage(dataObject.Get());
         ComPtr<IDropSource> dropSource;
         dropSource.Attach(new CopyFileDropSource());
         DWORD effect = DROPEFFECT_NONE;

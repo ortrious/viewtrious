@@ -3972,13 +3972,15 @@ public:
             const int imageVideoTop = GetSettingsImageVideoBehaviorHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
             const RECT reverse = GetSettingsSingleColumnBounds(imageVideoTop, L"reverse mouse wheel zoom direction");
             const RECT animations = GetSettingsSingleColumnBounds(reverse.bottom + SettingsStackGap(), L"animations and face effects");
+            if (option <= 1) return option == 0 ? reverse : animations;
             const int imageTop = GetSettingsImageBehaviorHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
             const RECT reuseImages = GetSettingsSingleColumnBounds(imageTop, L"reuse current window for images / GIFs");
             const RECT filmstrip = GetSettingsSingleColumnBounds(reuseImages.bottom + SettingsStackGap(), L"always show the filmstrip");
+            if (option <= 3) return option == 2 ? reuseImages : filmstrip;
             const int videoTop = GetSettingsVideoBehaviorHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
             const RECT reuseVideos = GetSettingsSingleColumnBounds(videoTop, L"reuse current window for videos");
             const RECT resizeWindow = GetSettingsSingleColumnBounds(reuseVideos.bottom + SettingsStackGap(), L"resize app window to video size");
-            return option == 0 ? reverse : option == 1 ? animations : option == 2 ? reuseImages : option == 3 ? filmstrip : option == 4 ? reuseVideos : resizeWindow;
+            return option == 4 ? reuseVideos : resizeWindow;
         }
         return option == 6 ? GetSettingsSpaceMouseBounds() : GetSettingsModelReverseWheelZoomBounds();
     }

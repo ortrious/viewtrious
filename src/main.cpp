@@ -3853,7 +3853,7 @@ public:
         const int firstTop = bounds.top + MulDiv(static_cast<int>(kSettingsFirstRowTopDips), GetDpiForWindow(window_), 96);
         if (settingsPage_ == SettingsPage::General) {
             const RECT remember = GetSettingsSingleColumnBounds(firstTop, L"remember application position and size");
-            const RECT include = GetSettingsSingleColumnBounds(remember.bottom + SettingsStackGap(), L"include hidden images in folder");
+            const RECT include = GetSettingsSingleColumnBounds(remember.bottom + SettingsStackGap(), L"include hidden files in current folder");
             const RECT confirm = GetSettingsSingleColumnBounds(include.bottom + SettingsStackGap(), L"confirm before deleting images");
             const RECT swipe = GetSettingsSingleColumnBounds(confirm.bottom + SettingsStackGap(), L"swipe to navigate when fit");
             const RECT reuseImages = GetSettingsSingleColumnBounds(swipe.bottom + SettingsStackGap(), L"reuse current window for images / GIFs");
@@ -3947,7 +3947,7 @@ public:
     int SettingsViewHeadingTop() const { return GetOverlayBounds().top + MulDiv(76, GetDpiForWindow(window_), 96); }
     int SettingsViewFirstControlTop() const {
         const int labels = std::max(MeasureSettingsTextHeight(L"up axis", GetSettingsGridCell(0, 0).right - GetSettingsGridCell(0, 0).left, 16.0f, DWRITE_FONT_WEIGHT_NORMAL),
-            MeasureSettingsTextHeight(L"build plate", GetSettingsGridCell(1, 0).right - GetSettingsGridCell(1, 0).left, 16.0f, DWRITE_FONT_WEIGHT_NORMAL));
+            MeasureSettingsTextHeight(L"3D printer build plate", GetSettingsGridCell(1, 0).right - GetSettingsGridCell(1, 0).left, 16.0f, DWRITE_FONT_WEIGHT_NORMAL));
         return SettingsViewHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap() + labels + SettingsLabelToControlGap();
     }
     RECT GetSettingsGridCellAtTop(int column, int top) const {
@@ -4163,7 +4163,7 @@ public:
     RECT GetSettingsDefaultAppsButtonBounds() const {
         const UINT dpi = GetDpiForWindow(window_);
         const RECT theme = GetSettingsThemeBounds(ThemePreference::System);
-        const int description = MeasureSettingsTextHeight(L"choose which image types open with viewtrious", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
+        const int description = MeasureSettingsTextHeight(L"choose which file types open with viewtrious", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
         const int top = theme.bottom + SettingsSectionGap() + MulDiv(20, dpi, 96) + description + MulDiv(8, dpi, 96);
         return { SettingsContentLeft(), top, SettingsContentLeft() + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
@@ -13505,7 +13505,7 @@ private:
             const RECT defaultAppsLayoutBounds = GetSettingsDefaultAppsButtonBounds();
             const float resetTop = static_cast<float>(defaultAppsLayoutBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"remember application position and size", rememberWindowPlacement_);
-            drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden images in folder", includeHiddenImages_);
+            drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden files in current folder", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
             drawToggle(3, ButtonKind::SettingsSwipeToNavigateWhenFit, L"swipe to navigate when fit", swipeToNavigateWhenFit_);
             drawToggle(4, ButtonKind::SettingsReuseImageWindow, L"reuse current window for images / GIFs", reuseImageWindow_);
@@ -13526,8 +13526,8 @@ private:
             drawTheme(ThemePreference::Light, ButtonKind::SettingsThemeLight, L"light");
             drawTheme(ThemePreference::Dark, ButtonKind::SettingsThemeDark, L"dark");
             group(L"DEFAULT FILE TYPES", defaultTypesTop);
-            const int defaultTypesDescriptionHeight = MeasureSettingsTextHeight(L"choose which image types open with viewtrious", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-            DrawOverlayText(L"choose which image types open with viewtrious", settingsLeft,
+            const int defaultTypesDescriptionHeight = MeasureSettingsTextHeight(L"choose which file types open with viewtrious", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
+            DrawOverlayText(L"choose which file types open with viewtrious", settingsLeft,
                 static_cast<float>(bounds.top) + (defaultTypesTop + 22.0f) * dpiScale, settingsWidth, static_cast<float>(defaultTypesDescriptionHeight),
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             const RECT defaultAppsBounds = GetSettingsDefaultAppsButtonBounds();
@@ -13549,8 +13549,8 @@ private:
             DrawOverlayText(L"reset", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             } else if (settingsPage_ == SettingsPage::Video2D) {
             const RECT sizingBounds = GetSettingsVideoSizingBounds(VideoWindowSizing::FitToWindow);
-            const int sizingLabelHeight = MeasureSettingsTextHeight(L"Video sizing", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-            DrawOverlayText(L"Video sizing", settingsLeft, static_cast<float>(sizingBounds.top - sizingLabelHeight - SettingsLabelToControlGap()), settingsWidth, static_cast<float>(sizingLabelHeight), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+            const int sizingLabelHeight = MeasureSettingsTextHeight(L"video sizing", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
+            DrawOverlayText(L"video sizing", settingsLeft, static_cast<float>(sizingBounds.top - sizingLabelHeight - SettingsLabelToControlGap()), settingsWidth, static_cast<float>(sizingLabelHeight), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             const auto drawSizingButton = [&](VideoWindowSizing sizing, ButtonKind button, const wchar_t* text) {
                 const RECT control = GetSettingsVideoSizingBounds(sizing);
                 const D2D1_RECT_F r = D2D1::RectF(static_cast<float>(control.left), static_cast<float>(control.top), static_cast<float>(control.right), static_cast<float>(control.bottom));
@@ -13576,7 +13576,7 @@ private:
             const auto drawMenu = [&](RECT menu, const std::vector<const wchar_t*>& items, int selected) { const D2D1_RECT_F r=D2D1::RectF((float)menu.left,(float)menu.top,(float)menu.right,(float)menu.bottom); renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),panelBrush.Get()); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),borderBrush.Get(),1); const int row=MulDiv(30,GetDpiForWindow(window_),96); for(int i=0;i<(int)items.size();++i){const D2D1_RECT_F item=D2D1::RectF((float)menu.left,(float)(menu.top+i*row),(float)menu.right,(float)(menu.top+(i+1)*row));if(i==selected)renderTarget_->FillRectangle(item,accent.Get());DrawOverlayText(items[i],item.left+kDropdownLeftPaddingDips*dpiScale,item.top,item.right-item.left-kDropdownLeftPaddingDips*dpiScale,item.bottom-item.top,13,DWRITE_FONT_WEIGHT_NORMAL,i==selected?checkmark.Get():primaryBrush.Get(),true); } };
             group(L"VIEW", static_cast<float>(SettingsViewHeadingTop() - bounds.top) / dpiScale);
             label(L"up axis",0,static_cast<float>(SettingsViewFirstControlTop() - bounds.top) / dpiScale); drawDropdown(GetSettingsUpAxisBounds(),ButtonKind::SettingsUpAxisToggle,modelUpAxis_==ModelUpAxis::ZUp?L"z axis up":modelUpAxis_==ModelUpAxis::YUp?L"y axis up":L"x axis up",upAxisMenuOpen_);
-            label(L"build plate",1,static_cast<float>(SettingsViewFirstControlTop() - bounds.top) / dpiScale); drawDropdown(GetSettingsBuildPlateBounds(),ButtonKind::SettingsBuildPlateToggle,modelBuildPlate_==ModelBuildPlate::Auto?L"auto":modelBuildPlate_==ModelBuildPlate::On?L"on":L"off",buildPlateMenuOpen_);
+            label(L"3D printer build plate",1,static_cast<float>(SettingsViewFirstControlTop() - bounds.top) / dpiScale); drawDropdown(GetSettingsBuildPlateBounds(),ButtonKind::SettingsBuildPlateToggle,modelBuildPlate_==ModelBuildPlate::Auto?L"auto":modelBuildPlate_==ModelBuildPlate::On?L"on":L"off",buildPlateMenuOpen_);
             label(L"projection",0,static_cast<float>(GetSettingsProjectionBounds().top - bounds.top) / dpiScale); drawDropdown(GetSettingsProjectionBounds(),ButtonKind::SettingsProjectionToggle,modelProjectionMode_==ModelProjectionMode::Perspective?L"perspective":L"orthographic",projectionMenuOpen_);
             label(L"axis indicator position",1,static_cast<float>(GetSettingsAxisIndicatorPositionBounds().top - bounds.top) / dpiScale); const wchar_t* axisPositionLabel=axisIndicatorPosition_==AxisIndicatorPosition::BottomLeft?L"bottom left":axisIndicatorPosition_==AxisIndicatorPosition::BottomRight?L"bottom right":axisIndicatorPosition_==AxisIndicatorPosition::TopLeft?L"top left":L"top right"; drawDropdown(GetSettingsAxisIndicatorPositionBounds(),ButtonKind::SettingsAxisIndicatorPositionToggle,axisPositionLabel,axisIndicatorPositionMenuOpen_);
             if(upAxisMenuOpen_)drawMenu(GetSettingsUpAxisMenuBounds(),{L"z axis up",L"y axis up",L"x axis up"},modelUpAxis_==ModelUpAxis::ZUp?0:modelUpAxis_==ModelUpAxis::YUp?1:2);

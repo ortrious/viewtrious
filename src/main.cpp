@@ -13101,7 +13101,8 @@ private:
         else if (centerAlign) format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         ComPtr<IDWriteTextLayout> layout;
         if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), width, height, &layout))) return;
-        renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        const float opticalCenterOffset = verticallyCenter && centerAlign ? dpiScale : 0.0f;
+        renderTarget_->DrawTextLayout(D2D1::Point2F(x, y - opticalCenterOffset), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
     void DrawProductName(const wchar_t* text, float x, float y, float width, float height, float size, ID2D1Brush* brush, bool centerAlign) {
@@ -13618,13 +13619,11 @@ private:
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
             renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::ResetConfirm) {
-            DrawOverlayText(L"Reset viewtrious to defaults?", left, static_cast<float>(bounds.top) + panelPadding,
+            DrawOverlayText(L"reset viewtrious to defaults?", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 36.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            DrawOverlayText(L"This removes viewtrious preferences, saved window placement, and viewtrious-owned app data.", left,
+            DrawOverlayText(L"this removes viewtrious preferences, saved window placement, and viewtrious-owned app data.", left,
                 static_cast<float>(bounds.top) + panelPadding + 45.0f * dpiScale, contentWidth, 48.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
-            DrawOverlayText(L"Your images will not be touched.", left, static_cast<float>(bounds.top) + panelPadding + 96.0f * dpiScale,
-                contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const RECT cancelBounds = GetResetConfirmationButtonBounds(false), resetBounds = GetResetConfirmationButtonBounds(true);
             const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));
             const D2D1_RECT_F reset = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top), static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
@@ -13641,8 +13640,8 @@ private:
                 else if (hoveredButton_ == ButtonKind::ResetCancel) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), neutralHover.Get());
             }
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(cancel, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
-            DrawOverlayText(L"Reset", reset.left, reset.top, reset.right - reset.left, reset.bottom - reset.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            DrawOverlayText(L"cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            DrawOverlayText(L"reset", reset.left, reset.top, reset.right - reset.left, reset.bottom - reset.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::DeleteConfirm) {
             DrawOverlayText(L"Move this image to the Recycle Bin?", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 36.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());

@@ -147,6 +147,7 @@ constexpr ULONGLONG kExternalMediaDragOutsideDwellMs = 140;
 
 class CopyFileDropSource final : public IDropSource {
 public:
+    explicit CopyFileDropSource(bool customDragImage) : customDragImage_(customDragImage) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
         if (!object) return E_POINTER;
         *object = nullptr;
@@ -167,9 +168,18 @@ public:
         if (escapePressed) return DRAGDROP_S_CANCEL;
         return (keyState & MK_LBUTTON) ? S_OK : DRAGDROP_S_DROP;
     }
-    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
+    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD effect) override {
+        if (customDragImage_ && (effect & DROPEFFECT_COPY)) {
+            if (HCURSOR cursor = LoadCursorW(nullptr, IDC_ARROW)) {
+                SetCursor(cursor);
+                return S_OK;
+            }
+        }
+        return DRAGDROP_S_USEDEFAULTCURSORS;
+    }
 private:
     ULONG references_ = 1;
+    bool customDragImage_ = false;
 };
 
 class RejectingMediaDropTarget final : public IDropTarget {
@@ -7892,6 +7902,80 @@ public:
                 target[3] = alpha;
             }
         }
+
+        // Reuse the app's copy-feedback language: two offset rounded rectangles on a
+        // compact dark plate. Composite once in straight alpha so overlapping glyph
+        // strokes do not brighten and transparent media keeps clean edges.
+        const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const LONG edgeInset = std::max(2L, static_cast<LONG>(std::lround(5.0f * dpiScale)));
+        const LONG desiredBadge = std::max(18L, static_cast<LONG>(std::lround(28.0f * dpiScale)));
+        const LONG badgeSize = std::min(desiredBadge, std::min(size.cx, size.cy) - edgeInset * 2);
+        if (badgeSize >= 14) {
+            const float badgeLeft = static_cast<float>(size.cx - edgeInset - badgeSize);
+            const float badgeTop = static_cast<float>(size.cy - edgeInset - badgeSize);
+            const float badgeRight = badgeLeft + badgeSize;
+            const float badgeBottom = badgeTop + badgeSize;
+            const float badgeRadius = badgeSize * 0.22f;
+            const auto roundedCoverage = [](float px, float py, float left, float top, float right, float bottom, float radius) {
+                const float centerX = (left + right) * 0.5f;
+                const float centerY = (top + bottom) * 0.5f;
+                const float halfWidth = (right - left) * 0.5f;
+                const float halfHeight = (bottom - top) * 0.5f;
+                const float qx = std::abs(px - centerX) - halfWidth + radius;
+                const float qy = std::abs(py - centerY) - halfHeight + radius;
+                const float outside = std::hypot(std::max(qx, 0.0f), std::max(qy, 0.0f));
+                const float distance = outside + std::min(std::max(qx, qy), 0.0f) - radius;
+                return std::clamp(0.5f - distance, 0.0f, 1.0f);
+            };
+            const auto outlineCoverage = [&](float px, float py, float left, float top, float right, float bottom,
+                    float radius, float stroke) {
+                const float outer = roundedCoverage(px, py, left, top, right, bottom, radius);
+                const float inner = roundedCoverage(px, py, left + stroke, top + stroke, right - stroke,
+                    bottom - stroke, std::max(0.0f, radius - stroke));
+                return std::clamp(outer - inner, 0.0f, 1.0f);
+            };
+            const auto blendStraight = [](BYTE* pixel, BYTE blue, BYTE green, BYTE red, float alpha) {
+                const float sourceAlpha = std::clamp(alpha, 0.0f, 1.0f);
+                const float destinationAlpha = pixel[3] / 255.0f;
+                const float outputAlpha = sourceAlpha + destinationAlpha * (1.0f - sourceAlpha);
+                if (outputAlpha <= 0.0f) { pixel[0] = pixel[1] = pixel[2] = pixel[3] = 0; return; }
+                const auto channel = [&](BYTE source, BYTE destination) {
+                    const float value = (source * sourceAlpha + destination * destinationAlpha * (1.0f - sourceAlpha)) / outputAlpha;
+                    return static_cast<BYTE>(std::clamp(std::lround(value), 0L, 255L));
+                };
+                pixel[0] = channel(blue, pixel[0]);
+                pixel[1] = channel(green, pixel[1]);
+                pixel[2] = channel(red, pixel[2]);
+                pixel[3] = static_cast<BYTE>(std::clamp(std::lround(outputAlpha * 255.0f), 0L, 255L));
+            };
+            const float glyphStroke = std::max(1.25f, badgeSize * 0.065f);
+            const float glyphRadius = badgeSize * 0.065f;
+            const float rearLeft = badgeLeft + badgeSize * 0.22f;
+            const float rearTop = badgeTop + badgeSize * 0.18f;
+            const float rearRight = badgeLeft + badgeSize * 0.64f;
+            const float rearBottom = badgeTop + badgeSize * 0.60f;
+            const float frontLeft = badgeLeft + badgeSize * 0.38f;
+            const float frontTop = badgeTop + badgeSize * 0.34f;
+            const float frontRight = badgeLeft + badgeSize * 0.80f;
+            const float frontBottom = badgeTop + badgeSize * 0.76f;
+            const LONG drawLeft = std::max(0L, static_cast<LONG>(std::floor(badgeLeft - 1.0f)));
+            const LONG drawTop = std::max(0L, static_cast<LONG>(std::floor(badgeTop - 1.0f)));
+            const LONG drawRight = std::min(size.cx, static_cast<LONG>(std::ceil(badgeRight + 1.0f)));
+            const LONG drawBottom = std::min(size.cy, static_cast<LONG>(std::ceil(badgeBottom + 1.0f)));
+            for (LONG y = drawTop; y < drawBottom; ++y) {
+                for (LONG x = drawLeft; x < drawRight; ++x) {
+                    BYTE* pixel = destination + (static_cast<size_t>(y) * size.cx + x) * 4;
+                    const float px = x + 0.5f;
+                    const float py = y + 0.5f;
+                    const float plate = roundedCoverage(px, py, badgeLeft, badgeTop, badgeRight, badgeBottom, badgeRadius);
+                    if (plate > 0.0f) blendStraight(pixel, 26, 26, 26, plate * 0.82f);
+                    const float rear = outlineCoverage(px, py, rearLeft, rearTop, rearRight, rearBottom, glyphRadius, glyphStroke);
+                    const float front = outlineCoverage(px, py, frontLeft, frontTop, frontRight, frontBottom, glyphRadius, glyphStroke);
+                    const float glyph = std::max(rear, front);
+                    if (glyph > 0.0f) blendStraight(pixel, 255, 255, 255, glyph * 0.94f);
+                }
+            }
+        }
         return bitmap;
     }
     HBITMAP CreateImageDragBitmap() const {
@@ -7955,10 +8039,11 @@ public:
             FAILED(item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&dataObject)))) return;
         SetPreferredCopyDropEffect(dataObject.Get());
         HBITMAP dragBitmap = nullptr;
-        if (!InitializeNativeMediaDragImage(dataObject.Get(), dragBitmap))
+        const bool customDragImage = InitializeNativeMediaDragImage(dataObject.Get(), dragBitmap);
+        if (!customDragImage)
             OutputDebugStringW(L"Viewtrious drag image unavailable; using generic file feedback.\n");
         ComPtr<IDropSource> dropSource;
-        dropSource.Attach(new CopyFileDropSource());
+        dropSource.Attach(new CopyFileDropSource(customDragImage));
         ComPtr<IDropTarget> rejectingTarget;
         rejectingTarget.Attach(new RejectingMediaDropTarget(window_));
         const bool registered = SUCCEEDED(RegisterDragDrop(window_, rejectingTarget.Get()));

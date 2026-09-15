@@ -158,7 +158,7 @@ struct ImageAdjustmentPersistence::Impl {
 
     bool OpenDatabase() {
         std::filesystem::path databasePath;
-        if (!ViewtriousPaths::ResolveSettingsDatabasePath(databasePath)) return false;
+        if (!ViewtriousPaths::ResolveDatabasePath(databasePath)) return false;
         module = LoadLibraryExW(L"winsqlite3.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!module) { Trace(L"[Viewtrious] WINSQLITE_RUNTIME_UNAVAILABLE system runtime"); return false; }
         if (!ResolveProc(openV2, "sqlite3_open_v2") || !ResolveProc(close, "sqlite3_close") || !ResolveProc(exec, "sqlite3_exec") || !ResolveProc(free, "sqlite3_free") ||

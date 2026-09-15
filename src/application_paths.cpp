@@ -55,44 +55,44 @@ std::filesystem::path ShellExtensionsDirectory() { const std::filesystem::path a
 std::filesystem::path AddonsDirectory() { const std::filesystem::path app = AppDirectory(); return app.empty() ? std::filesystem::path{} : app / L"addons"; }
 std::filesystem::path LicensesDirectory() { const std::filesystem::path app = AppDirectory(); return app.empty() ? std::filesystem::path{} : app / L"licenses"; }
 std::filesystem::path DataDirectory() { const std::filesystem::path root = RootFromKnownFolder(); return root.empty() ? std::filesystem::path{} : root / L"data"; }
-std::filesystem::path CacheDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"cache"; }
-std::filesystem::path LogsDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"logs"; }
-std::filesystem::path DiagnosticsDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"diagnostics"; }
+std::filesystem::path WallpaperDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"wallpaper"; }
+std::filesystem::path LegacyWallpaperDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"cache" / L"wallpaper"; }
 std::filesystem::path AiModelsDirectory() { const std::filesystem::path root = RootFromKnownFolder(); return root.empty() ? std::filesystem::path{} : root / L"ai" / L"models"; }
 
-bool SettingsDirectory(std::filesystem::path& path) {
+bool ResolveDatabasePath(std::filesystem::path& path) {
     const std::filesystem::path data = DataDirectory();
     if (data.empty()) return false;
-    path = data / L"settings";
     std::error_code error;
-    std::filesystem::create_directories(path, error);
-    return !error;
-}
-
-bool ResolveSettingsDatabasePath(std::filesystem::path& path) {
-    std::filesystem::path settings;
-    if (!SettingsDirectory(settings)) return false;
-    path = settings / L"viewtrious.db";
-    std::error_code error;
+    std::filesystem::create_directories(data, error);
+    if (error) return false;
+    path = data / L"viewtrious.db";
     const bool targetExists = std::filesystem::exists(path, error);
     if (error) return false;
     std::filesystem::path root;
     if (!LocalAppDataRoot(root)) return false;
     if (!targetExists) {
+        const std::filesystem::path nestedLegacyDatabase = data / L"settings" / L"viewtrious.db";
         const std::filesystem::path legacyLocalAppDataDatabase = root / L"viewtrious.db";
-        if (std::filesystem::exists(legacyLocalAppDataDatabase, error) && !error) {
-            if (!MoveOrCopyDatabase(legacyLocalAppDataDatabase, path)) return false;
-        } else if (error) {
-            return false;
-        } else {
-            const std::filesystem::path moduleDirectory = ModuleDirectory();
-            const std::filesystem::path legacyModuleDatabase = moduleDirectory.empty() ? std::filesystem::path{} : moduleDirectory / L"viewtrious.db";
-            if (!legacyModuleDatabase.empty() && std::filesystem::exists(legacyModuleDatabase, error) && !error) {
-                std::filesystem::copy_file(legacyModuleDatabase, path, std::filesystem::copy_options::none, error);
+        const std::filesystem::path moduleDirectory = ModuleDirectory();
+        const std::filesystem::path legacyModuleDatabase = moduleDirectory.empty() ? std::filesystem::path{} : moduleDirectory / L"viewtrious.db";
+        const std::filesystem::path* legacyDatabase = nullptr;
+        if (std::filesystem::exists(nestedLegacyDatabase, error) && !error) legacyDatabase = &nestedLegacyDatabase;
+        else if (error) return false;
+        else if (std::filesystem::exists(legacyLocalAppDataDatabase, error) && !error) legacyDatabase = &legacyLocalAppDataDatabase;
+        else if (error) return false;
+        else if (!legacyModuleDatabase.empty() && std::filesystem::exists(legacyModuleDatabase, error) && !error) legacyDatabase = &legacyModuleDatabase;
+        else if (error) return false;
+        if (legacyDatabase) {
+            if (legacyDatabase == &legacyModuleDatabase) {
+                std::filesystem::copy_file(*legacyDatabase, path, std::filesystem::copy_options::none, error);
                 if (error) return false;
-            } else if (error) {
+            } else if (!MoveOrCopyDatabase(*legacyDatabase, path)) {
                 return false;
             }
+        }
+        if (legacyDatabase == &nestedLegacyDatabase) {
+            error.clear();
+            std::filesystem::remove(nestedLegacyDatabase.parent_path(), error);
         }
     }
 

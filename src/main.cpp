@@ -9872,16 +9872,12 @@ private:
     }
 
     HRESULT GetWallpaperStagingDirectory(fs::path& directory) const {
-        directory = ViewtriousPaths::CacheDirectory();
+        directory = ViewtriousPaths::WallpaperDirectory();
         if (directory.empty()) return E_FAIL;
-        directory /= L"wallpaper";
         return S_OK;
     }
 
-    void CleanupWallpaperStaging() {
-        fs::path directory;
-        if (FAILED(GetWallpaperStagingDirectory(directory))) return;
-        const fs::path wallpaperPath = directory / L"current.bmp";
+    bool WallpaperStagingPathIsActive(const fs::path& wallpaperPath) const {
         ComPtr<IDesktopWallpaper> wallpaper;
         HRESULT wallpaperResult = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&wallpaper));
         bool preserveActiveFile = FAILED(wallpaperResult);
@@ -9896,9 +9892,22 @@ private:
             if (activePath) CoTaskMemFree(activePath);
         }
         if (FAILED(wallpaperResult)) preserveActiveFile = true;
-        if (preserveActiveFile) return;
+        return preserveActiveFile;
+    }
+
+    void CleanupWallpaperStagingDirectory(const fs::path& directory) {
+        if (directory.empty()) return;
+        const fs::path wallpaperPath = directory / L"current.bmp";
+        if (WallpaperStagingPathIsActive(wallpaperPath)) return;
         std::error_code error;
         fs::remove_all(directory, error);
+        if (!error) std::filesystem::remove(directory.parent_path(), error);
+    }
+
+    void CleanupWallpaperStaging() {
+        fs::path directory;
+        if (SUCCEEDED(GetWallpaperStagingDirectory(directory))) CleanupWallpaperStagingDirectory(directory);
+        CleanupWallpaperStagingDirectory(ViewtriousPaths::LegacyWallpaperDirectory());
     }
 
     HRESULT ExportDesktopWallpaper(std::wstring& wallpaperPath) {

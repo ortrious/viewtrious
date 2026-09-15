@@ -106,7 +106,7 @@ private:
     bool Open() {
         if (database_) return true;
         std::filesystem::path path;
-        if (!ViewtriousPaths::ResolveSettingsDatabasePath(path)) return false;
+        if (!ViewtriousPaths::ResolveDatabasePath(path)) return false;
         module_ = LoadLibraryExW(L"winsqlite3.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!module_ || !Resolve(openV2_, "sqlite3_open_v2") || !Resolve(close_, "sqlite3_close") || !Resolve(exec_, "sqlite3_exec") ||
             !Resolve(prepareV2_, "sqlite3_prepare_v2") || !Resolve(finalize_, "sqlite3_finalize") || !Resolve(step_, "sqlite3_step") ||

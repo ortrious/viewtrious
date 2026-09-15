@@ -115,8 +115,6 @@ constexpr ULONGLONG kShellRotationTimeoutMs = 10000;
 constexpr size_t kDeleteUndoStackLimit = 16;
 constexpr int kApplicationIconGroupResourceId = 101;
 constexpr int kFilmstripVideoIconGroupResourceId = 104;
-constexpr int kContextMenuRowCount = 9;
-constexpr int kContextMenuSeparatorCount = 4;
 constexpr int kContextMenuPaddingDip = 8;
 constexpr float kMaximumZoom = 16.0f;
 constexpr float kWheelZoomStep = 1.11f;
@@ -327,7 +325,18 @@ constexpr float kSignedAdjustmentSliderMaximum = 1.0f;
 
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, ResetAdjustmentsConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError, RegistrationError };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
-enum class ContextAction { None, Fullscreen, Adjustments, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
+enum class ContextAction { None, Fullscreen, Adjustments, SaveCurrentFrame, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
+struct ContextMenuItem {
+    ContextAction action;
+    const wchar_t* label;
+    wchar_t glyph;
+    bool separatorAfter;
+    bool submenu;
+};
+struct ContextMenuItemList {
+    const ContextMenuItem* items;
+    size_t count;
+};
 enum class ButtonKind { None, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsAddOnsPage, SettingsClose, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAdjustmentsDatabase, SettingsResetAdjustmentsDatabase, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingToggle, SettingsScrollUp, SettingsScrollDown,
@@ -343,7 +352,7 @@ enum class ZoomHudPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 
 enum class SettingsPage { General, Image2D, Model3D, AddOns };
 enum class ContentKind { None, Image2D, Model3D, Video2D };
 enum class ExternalOpenBehavior : DWORD { NewWindow = 0, SameWindow = 1 };
-enum class ExternalOpenMediaFamily : WPARAM { ImageOrGif = 1, Video = 2 };
+enum class ExternalOpenMediaFamily : WPARAM { ImageOrGif = 1, Video = 2, Any2D = 3 };
 enum class FilmstripVisibilityState { Hidden, Revealing, Holding, Fading };
 
 struct SettingsToggleVisualState {
@@ -855,13 +864,17 @@ ExternalOpenBehavior ReadExternalOpenBehavior(const wchar_t* name) {
     return value == static_cast<DWORD>(ExternalOpenBehavior::SameWindow) ? ExternalOpenBehavior::SameWindow : ExternalOpenBehavior::NewWindow;
 }
 
-bool ShouldReuseExistingWindowForExternalOpen(const std::wstring& path) {
-    if (!IsExternalOpenPath(path)) return false;
-    return ReadExternalOpenBehavior(IsVideoPath(path) ? L"VideoExternalOpenBehavior" : L"ImageExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
-}
-
-ExternalOpenMediaFamily ExternalOpenFamilyForPath(const std::wstring& path) {
-    return IsVideoPath(path) ? ExternalOpenMediaFamily::Video : ExternalOpenMediaFamily::ImageOrGif;
+std::optional<ExternalOpenMediaFamily> ExternalOpenReuseFamily(const std::wstring& path) {
+    if (!IsExternalOpenPath(path)) return std::nullopt;
+    const bool reuseImages = ReadExternalOpenBehavior(L"ImageExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
+    const bool reuseVideos = ReadExternalOpenBehavior(L"VideoExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
+    if (reuseImages && reuseVideos) return ExternalOpenMediaFamily::Any2D;
+    if (IsVideoPath(path)) {
+        if (!reuseVideos) return std::nullopt;
+        return ExternalOpenMediaFamily::Video;
+    }
+    if (!reuseImages) return std::nullopt;
+    return ExternalOpenMediaFamily::ImageOrGif;
 }
 
 UINT gPrimaryWindowQueryMessage = 0;
@@ -880,10 +893,11 @@ BOOL CALLBACK FindPrimaryWindowProc(HWND window, LPARAM parameter) {
     return TRUE;
 }
 
-bool ForwardExternalOpenToPrimary(const std::wstring& path) {
+bool ForwardExternalOpenToPrimary(const std::wstring& path, ExternalOpenMediaFamily family) {
     if (!gPrimaryWindowQueryMessage || path.empty() || path.size() >= 32768) return false;
     for (int attempt = 0; attempt < 4; ++attempt) {
-        PrimaryWindowSearch search{ nullptr, ExternalOpenFamilyForPath(path) };
+        PrimaryWindowSearch search{ nullptr, family };
+        // EnumWindows visits top-level windows in Z order, selecting the most recently active eligible target.
         EnumWindows(FindPrimaryWindowProc, reinterpret_cast<LPARAM>(&search));
         if (search.window) {
             COPYDATASTRUCT data{};
@@ -1416,7 +1430,11 @@ public:
         return result;
     }
     bool CanReuseExternalOpen(ExternalOpenMediaFamily family) const {
-        return family == ExternalOpenMediaFamily::Video ? VideoActive() : contentKind_ == ContentKind::Image2D && source_;
+        const bool imageOrGif = contentKind_ == ContentKind::Image2D && source_;
+        if (family == ExternalOpenMediaFamily::ImageOrGif) return imageOrGif;
+        if (family == ExternalOpenMediaFamily::Video) return VideoActive();
+        if (family == ExternalOpenMediaFamily::Any2D) return imageOrGif || VideoActive();
+        return false;
     }
     void QueueExternalOpen(std::wstring path) {
         if (!IsExternalOpenPath(path)) return;
@@ -3505,10 +3523,29 @@ public:
     }
     bool SelectModelFace(POINT point) { if(!ModelActive()||!modelViewport_.Document()||modelViewport_.Document()->geometries.empty())return false;const D3D11_VIEWPORT viewport=modelViewport_.LogicalViewport();const float localX=float(point.x)-viewport.TopLeftX,localY=float(point.y)-viewport.TopLeftY;if(viewport.Width<=0||viewport.Height<=0||localX<0||localX>=viewport.Width||localY<0||localY>=viewport.Height){ClearModelFaceSelection();TraceModelPick(point,viewport,localX,localY,0,0,{}, {},-1,-1);return false;}const auto state=modelViewport_.Camera().NavLibState();const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};const auto normalize=[&](Float3 v){const float l=std::sqrt(v.x*v.x+v.y*v.y+v.z*v.z);return l>1e-6f?Float3{v.x/l,v.y/l,v.z/l}:Float3{0,0,1};};const Float3 forward=normalize(state.forward),right=normalize(cross(forward,state.up)),up=normalize(cross(right,forward));const float ndcX=2.f*localX/viewport.Width-1.f,ndcY=1.f-2.f*localY/viewport.Height;Float3 rayOrigin=state.position,ray{};if(modelViewport_.Camera().ProjectionMode()==ModelProjectionMode::Orthographic){const float halfHeight=modelViewport_.Camera().ViewHalfHeight();rayOrigin={state.position.x+right.x*ndcX*halfHeight*modelViewport_.Camera().AspectRatio()+up.x*ndcY*halfHeight,state.position.y+right.y*ndcX*halfHeight*modelViewport_.Camera().AspectRatio()+up.y*ndcY*halfHeight,state.position.z+right.z*ndcX*halfHeight*modelViewport_.Camera().AspectRatio()+up.z*ndcY*halfHeight};ray=forward;}else{const float t=std::tan(modelViewport_.Camera().FieldOfView()*.5f),nx=ndcX*modelViewport_.Camera().AspectRatio()*t,ny=ndcY*t;ray=normalize({forward.x+right.x*nx+up.x*ny,forward.y+right.y*nx+up.y*ny,forward.z+right.z*nx+up.z*ny});}const auto& document=*modelViewport_.Document();const auto& mesh=document.geometries.front();float best=FLT_MAX;int selectedPlane=-1;ptrdiff_t selectedTriangle=-1;for(size_t i=0;i+2<mesh.indices.size();i+=3){const Float3 a=mesh.positions[mesh.indices[i]],b=mesh.positions[mesh.indices[i+1]],c=mesh.positions[mesh.indices[i+2]],e1{b.x-a.x,b.y-a.y,b.z-a.z},e2{c.x-a.x,c.y-a.y,c.z-a.z},p=cross(ray,e2);const float det=dot(e1,p);if(std::fabs(det)<1e-7f)continue;const float inv=1.f/det;const Float3 s{rayOrigin.x-a.x,rayOrigin.y-a.y,rayOrigin.z-a.z};const float u=dot(s,p)*inv;if(u<0||u>1)continue;const Float3 q=cross(s,e1);const float v=dot(ray,q)*inv;if(v<0||u+v>1)continue;const float d=dot(e2,q)*inv;if(d>0&&d<best){best=d;const size_t triangle=i/3;if(triangle<document.triangleSnapPlanes.size()){selectedTriangle=static_cast<ptrdiff_t>(triangle);selectedPlane=static_cast<int>(document.triangleSnapPlanes[triangle]);}}}TraceModelPick(point,viewport,localX,localY,ndcX,ndcY,rayOrigin,ray,selectedTriangle,selectedPlane);if(selectedPlane<0||!modelViewport_.SetSelectedSnapPlane(static_cast<uint32_t>(selectedPlane))){ClearModelFaceSelection();return false;}selectedFaceNormal_=document.snapPlanes[static_cast<size_t>(selectedPlane)].normal;selectedFaceHit_={rayOrigin.x+ray.x*best,rayOrigin.y+ray.y*best,rayOrigin.z+ray.z*best};selectedFacePlane_=selectedPlane;modelFaceSelected_=true;InvalidateRect(window_,nullptr,FALSE);return true; }
     bool ContextMenuOpen() const { return contextMenuOpen_; }
+    ContextMenuItemList CurrentContextMenuItems() const {
+        static constexpr std::array<ContextMenuItem, 9> imageItems{
+            ContextMenuItem{ ContextAction::Fullscreen, nullptr, L'\uE740', false, false },
+            ContextMenuItem{ ContextAction::Adjustments, L"adjustments", L'\uE713', true, false },
+            ContextMenuItem{ ContextAction::RotateLeft, L"Rotate Left", L'\uE7AD', false, false },
+            ContextMenuItem{ ContextAction::RotateRight, L"Rotate Right", L'\uE7AD', true, false },
+            ContextMenuItem{ ContextAction::OpenWith, L"Open With", L'\uE8A7', false, true },
+            ContextMenuItem{ ContextAction::Copy, L"copy media", L'\uE8C8', false, false },
+            ContextMenuItem{ ContextAction::Print, L"Print", L'\uE749', true, false },
+            ContextMenuItem{ ContextAction::SetBackground, L"Set as Desktop Background", L'\uE7F4', true, false },
+            ContextMenuItem{ ContextAction::Delete, L"Delete", L'\uE74D', false, false },
+        };
+        static constexpr std::array<ContextMenuItem, 2> videoItems{
+            ContextMenuItem{ ContextAction::Adjustments, L"adjustments", L'\uE713', false, false },
+            ContextMenuItem{ ContextAction::SaveCurrentFrame, L"Save current frame", L'\uE74E', false, false },
+        };
+        return VideoActive() ? ContextMenuItemList{ videoItems.data(), videoItems.size() }
+            : ContextMenuItemList{ imageItems.data(), imageItems.size() };
+    }
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
-        if (!HasImage() && !(ModelActive() && modelFaceSelected_)) return;
-        RefreshHeifShellRotationCapability();
+        if (!HasImage() && !VideoActive() && !(ModelActive() && modelFaceSelected_)) return;
+        if (HasImage()) RefreshHeifShellRotationCapability();
         DismissTriangleCountTooltip(false);
         DismissDropdown();
         DismissOverlay();
@@ -3530,32 +3567,25 @@ public:
         if (!contextMenuOpen_) return ContextAction::None;
         const RECT bounds = GetContextMenuBounds();
         if (!PtInRect(&bounds, point)) return ContextAction::None;
-        if (ModelActive()) return point.y >= bounds.top && point.y < bounds.bottom ? ContextAction::SnapViewToFace : ContextAction::None; const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
+        if (ModelActive()) return point.y >= bounds.top && point.y < bounds.bottom ? ContextAction::SnapViewToFace : ContextAction::None;
+        const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
         const int separatorGap = MulDiv(9, GetDpiForWindow(window_), 96);
         int top = bounds.top + MulDiv(kContextMenuPaddingDip, GetDpiForWindow(window_), 96);
-        const auto hit = [&](ContextAction action) {
+        const ContextMenuItemList menuItems = CurrentContextMenuItems();
+        for (size_t index = 0; index < menuItems.count; ++index) {
+            const ContextMenuItem& item = menuItems.items[index];
             const bool contains = point.y >= top && point.y < top + rowHeight;
             top += rowHeight;
-            return contains ? action : ContextAction::None;
-        };
-        ContextAction action = hit(ContextAction::Fullscreen); if (action != ContextAction::None) return action;
-        action = hit(ContextAction::Adjustments); if (action != ContextAction::None) return action;
-        top += separatorGap;
-        action = hit(ContextAction::RotateLeft); if (action != ContextAction::None) return action;
-        action = hit(ContextAction::RotateRight); if (action != ContextAction::None) return action;
-        top += separatorGap;
-        action = hit(ContextAction::OpenWith); if (action != ContextAction::None) return action;
-        action = hit(ContextAction::Copy); if (action != ContextAction::None) return action;
-        action = hit(ContextAction::Print); if (action != ContextAction::None) return action;
-        top += separatorGap;
-        action = hit(ContextAction::SetBackground); if (action != ContextAction::None) return action;
-        top += separatorGap;
-        return hit(ContextAction::Delete);
+            if (contains) return item.action;
+            if (item.separatorAfter) top += separatorGap;
+        }
+        return ContextAction::None;
     }
     bool ContextActionEnabled(ContextAction action) const {
         if (action == ContextAction::SnapViewToFace) return ModelActive() && modelFaceSelected_;
         if (tutorialStep_ == TutorialStep::ContextMenu && !HasImage()) return false;
-        if (action == ContextAction::Adjustments) return HasImage();
+        if (action == ContextAction::Adjustments) return HasImage() || VideoActive();
+        if (action == ContextAction::SaveCurrentFrame) return VideoActive() && videoPlayer_.HasValidFrame();
         if (action == ContextAction::Copy || action == ContextAction::Print) return HasImage() && DisplayedImageMatchesTarget();
         if (action == ContextAction::Fullscreen || action == ContextAction::OpenWith ||
             action == ContextAction::SetBackground || action == ContextAction::Delete)
@@ -3584,6 +3614,7 @@ public:
         DismissContextMenu();
         if (action == ContextAction::Fullscreen) ToggleFullscreen();
         else if (action == ContextAction::Adjustments) ToggleAdjustments();
+        else if (action == ContextAction::SaveCurrentFrame) SaveCurrentVideoFrame();
         else if (action == ContextAction::Copy) CopyImage();
         else if (action == ContextAction::Print) PrintImage();
         else if (action == ContextAction::RotateLeft) RotateImage(false);
@@ -4046,7 +4077,7 @@ public:
     RECT GetSettingsThemeCardBounds() const { return GetSettingsCardBounds(GetSettingsThemeHeadingTop(), GetSettingsThemeBounds(ThemePreference::System).bottom); }
     int GetSettingsImageVideoBehaviorHeadingTop() const { return SettingsFirstCardHeadingTop(); }
     RECT GetSettingsImageVideoBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsImageVideoBehaviorHeadingTop(), GetSettingsOptionBounds(1).bottom); }
-    int GetSettingsImageBehaviorHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsImageVideoBehaviorCardBounds()); }
+    int GetSettingsImageBehaviorHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsZoomHudCardBounds()); }
     RECT GetSettingsImageBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsImageBehaviorHeadingTop(), GetSettingsOptionBounds(3).bottom); }
     int GetSettingsImageScalingHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsImageBehaviorCardBounds()); }
     RECT GetSettingsScalingBounds(ImageScaling scaling) const {
@@ -4066,7 +4097,7 @@ public:
     RECT GetSettingsZoomHudBounds() const {
         return GetSettingsGridCellAtTop(1, GetSettingsZoomHudEnabledBounds().top);
     }
-    int GetSettingsZoomHudHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsThemeCardBounds()); }
+    int GetSettingsZoomHudHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsImageVideoBehaviorCardBounds()); }
     RECT GetSettingsZoomHudEnabledBounds() const {
         const int top = GetSettingsZoomHudHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
         return GetSettingsGridCellAtTop(0, top);
@@ -4132,7 +4163,7 @@ public:
         return { control.left, top, control.right, top + height };
     }
     RECT GetSettingsZoomHudMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsZoomHudBounds(), 4); }
-    bool SettingsImageDropdownMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::General && zoomHudPositionMenuOpen_; }
+    bool SettingsImageDropdownMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Image2D && zoomHudPositionMenuOpen_; }
     bool SettingsImageDropdownMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=GetSettingsZoomHudMenuBounds(); return PtInRect(&menu,point) != FALSE; }
     void DismissSettingsImageDropdownMenu() { if (zoomHudPositionMenuOpen_) { zoomHudPositionMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
     RECT GetSettingsUpAxisMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsUpAxisBounds(), 3); }
@@ -4153,7 +4184,7 @@ public:
         if (point.y < SettingsScrollViewportTop() || point.y >= SettingsScrollViewportBottom()) return false;
         point.y += static_cast<LONG>(std::lround(settingsScroll_));
         const auto contains = [&point](const RECT& bounds) { return PtInRect(&bounds, point) != FALSE; };
-        if (settingsPage_ == SettingsPage::General) return contains(GetSettingsZoomHudBounds());
+        if (settingsPage_ == SettingsPage::Image2D) return contains(GetSettingsZoomHudBounds());
         if (settingsPage_ == SettingsPage::Model3D) return contains(GetSettingsUpAxisBounds()) || contains(GetSettingsBuildPlateBounds()) || contains(GetSettingsAxisIndicatorPositionBounds()) || contains(GetSettingsGraphicsAdapterBounds()) || contains(GetSettingsAntiAliasingBounds());
         return false;
     }
@@ -4391,7 +4422,7 @@ public:
         return GetSettingsGridCellAtTop(0, top);
     }
     RECT GetSettingsManagementCardBounds() const { return GetSettingsCardBounds(GetSettingsAdjustmentPersistenceHeadingTop(), GetSettingsResetButtonBounds().bottom); }
-    int GetSettingsFileTypesHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsZoomHudCardBounds()); }
+    int GetSettingsFileTypesHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsThemeCardBounds()); }
     RECT GetSettingsFileTypesCardBounds() const { return GetSettingsCardBounds(GetSettingsFileTypesHeadingTop(), GetSettingsDefaultAppsButtonBounds().bottom); }
     bool SettingsDefaultAppsButtonContains(POINT point) const {
         const RECT button = GetSettingsDefaultAppsButtonBounds();
@@ -4743,13 +4774,10 @@ public:
             settingsPoint.y += static_cast<LONG>(std::lround(settingsScroll_));
             const auto settingsContains = [&settingsPoint](RECT bounds) { return PtInRect(&bounds, settingsPoint) != FALSE; };
             if (settingsPage_ == SettingsPage::General) {
-                if (zoomHudPositionMenuOpen_) { const RECT menu = GetSettingsZoomHudMenuBounds(); if (PtInRect(&menu, settingsPoint)) { const int row = MulDiv(30, GetDpiForWindow(window_), 96); return settingsPoint.y < menu.top + row ? ButtonKind::SettingsZoomHudBottomLeft : settingsPoint.y < menu.top + row * 2 ? ButtonKind::SettingsZoomHudBottomRight : settingsPoint.y < menu.top + row * 3 ? ButtonKind::SettingsZoomHudTopLeft : ButtonKind::SettingsZoomHudTopRight; } }
                 if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsRememberPlacement;
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
                 if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsSwipeToNavigateWhenFit;
-                if (settingsContains(GetSettingsZoomHudEnabledBounds())) return ButtonKind::SettingsShowZoomHud;
-                if (settingsContains(GetSettingsZoomHudBounds())) return ButtonKind::SettingsZoomHudPositionToggle;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -4758,8 +4786,11 @@ public:
                 if (SettingsDefaultAppsButtonContains(point)) return ButtonKind::SettingsDefaultApps;
                 if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
             } else if (settingsPage_ == SettingsPage::Image2D) {
+                if (zoomHudPositionMenuOpen_) { const RECT menu = GetSettingsZoomHudMenuBounds(); if (PtInRect(&menu, settingsPoint)) { const int row = MulDiv(30, GetDpiForWindow(window_), 96); return settingsPoint.y < menu.top + row ? ButtonKind::SettingsZoomHudBottomLeft : settingsPoint.y < menu.top + row * 2 ? ButtonKind::SettingsZoomHudBottomRight : settingsPoint.y < menu.top + row * 3 ? ButtonKind::SettingsZoomHudTopLeft : ButtonKind::SettingsZoomHudTopRight; } }
                 if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsReverseWheelZoom;
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsAnimations;
+                if (settingsContains(GetSettingsZoomHudEnabledBounds())) return ButtonKind::SettingsShowZoomHud;
+                if (settingsContains(GetSettingsZoomHudBounds())) return ButtonKind::SettingsZoomHudPositionToggle;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsReuseImageWindow;
                 if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsAlwaysShowFilmstrip;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
@@ -6875,28 +6906,11 @@ public:
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
-    bool VideoFrameSaveContextAllowed(POINT point) const {
+    bool VideoContextMenuAllowed(POINT point) const {
         if (!VideoActive() || !VideoCanvasContains(point) || FilmstripContains(point)) return false;
         const RECT controls = GetVideoControlsLayout(false).island;
         return !PtInRect(&controls, point) && !VideoAdjustmentsPanelContains(point) && !VideoPlaybackSpeedPanelContains(point) &&
             ButtonAt(point) == ButtonKind::None;
-    }
-    bool OpenVideoFrameContextMenu(POINT point) {
-        if (WelcomeOpen() || TutorialActive() || !VideoFrameSaveContextAllowed(point)) return false;
-        HMENU menu = CreatePopupMenu();
-        if (!menu) return true;
-        constexpr UINT kSaveCurrentFrameCommand = 1;
-        constexpr UINT kAdjustmentsCommand = 2;
-        AppendMenuW(menu, MF_STRING, kAdjustmentsCommand, L"adjustments");
-        AppendMenuW(menu, MF_STRING | (videoPlayer_.HasValidFrame() ? MF_ENABLED : MF_GRAYED), kSaveCurrentFrameCommand, L"Save current frame");
-        POINT screen = point;
-        ClientToScreen(window_, &screen);
-        const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
-            screen.x, screen.y, 0, window_, nullptr);
-        DestroyMenu(menu);
-        if (command == kAdjustmentsCommand) ToggleAdjustments();
-        else if (command == kSaveCurrentFrameCommand) SaveCurrentVideoFrame();
-        return true;
     }
     bool FilmstripHoverPreviewEligible(int index) const {
         return !filmstripWrapFade_.active && FilmstripHoverPreviewsFitWindow() && !filmstripAdjustmentSuppressed_ && !FilmstripHoverSuppressedForImagePan() && index >= 0 && index < static_cast<int>(navigationFiles_.size()) && !currentPath_.empty() &&
@@ -9868,7 +9882,15 @@ private:
         const LONG rowHeight = MulDiv(38, dpi, 96);
         const LONG separatorGap = MulDiv(9, dpi, 96);
         const LONG padding = MulDiv(kContextMenuPaddingDip, dpi, 96);
-        const LONG height = ModelActive() ? padding * 2 + rowHeight : padding * 2 + rowHeight * kContextMenuRowCount + separatorGap * kContextMenuSeparatorCount;
+        LONG height = padding * 2 + rowHeight;
+        if (!ModelActive()) {
+            const ContextMenuItemList menuItems = CurrentContextMenuItems();
+            size_t separatorCount = 0;
+            for (size_t index = 0; index < menuItems.count; ++index) {
+                if (menuItems.items[index].separatorAfter) ++separatorCount;
+            }
+            height = padding * 2 + rowHeight * static_cast<LONG>(menuItems.count) + separatorGap * static_cast<LONG>(separatorCount);
+        }
         if (tutorialContextMenu_) {
             const LONG canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
             const LONG rightInset = MulDiv(24, dpi, 96);
@@ -13855,12 +13877,9 @@ private:
             if (settingsPage_ == SettingsPage::General) {
             drawCard(GetSettingsGeneralBehaviorCardBounds());
             drawCard(GetSettingsThemeCardBounds());
-            drawCard(GetSettingsZoomHudCardBounds());
             drawCard(GetSettingsFileTypesCardBounds());
             drawCard(GetSettingsManagementCardBounds());
             group(L"general behavior", static_cast<float>(GetSettingsGeneralBehaviorHeadingTop() - bounds.top) / dpiScale);
-            const float zoomBoxTop = static_cast<float>(GetSettingsZoomHudHeadingTop() - bounds.top) / dpiScale;
-            const RECT themeBounds = GetSettingsThemeBounds(ThemePreference::System);
             const float adjustmentsDatabaseTop = static_cast<float>(GetSettingsAdjustmentPersistenceHeadingTop() - bounds.top) / dpiScale;
             const RECT resetAdjustmentsBounds = GetSettingsResetAdjustmentsButtonBounds();
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"remember application position and size", rememberWindowPlacement_);
@@ -13868,11 +13887,6 @@ private:
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
             drawToggle(3, ButtonKind::SettingsSwipeToNavigateWhenFit, L"swipe to navigate when fit", swipeToNavigateWhenFit_);
             group(L"theme", static_cast<float>(GetSettingsThemeHeadingTop() - bounds.top) / dpiScale);
-            group(L"zoom box", zoomBoxTop);
-            drawToggleAt(GetSettingsZoomHudEnabledBounds(), ButtonKind::SettingsShowZoomHud, L"enable zoom box", zoomHudEnabled_);
-            const RECT zoomHudBounds = GetSettingsZoomHudBounds();
-            const wchar_t* zoomHudPositionLabel = zoomHudPosition_ == ZoomHudPosition::BottomLeft ? L"bottom left" : zoomHudPosition_ == ZoomHudPosition::BottomRight ? L"bottom right" : zoomHudPosition_ == ZoomHudPosition::TopLeft ? L"top left" : L"top right";
-            drawSettingsDropdown(zoomHudBounds, ButtonKind::SettingsZoomHudPositionToggle, zoomHudPositionLabel, zoomHudPositionMenuOpen_);
             const auto drawTheme = [&](ThemePreference preference, ButtonKind button, const wchar_t* label) {
                 const RECT segmentBounds = GetSettingsThemeBounds(preference);
                 const D2D1_RECT_F segment = D2D1::RectF(static_cast<float>(segmentBounds.left), static_cast<float>(segmentBounds.top), static_cast<float>(segmentBounds.right), static_cast<float>(segmentBounds.bottom));
@@ -13912,12 +13926,18 @@ private:
             DrawOverlayText(L"reset viewtrious preferences", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             } else if (settingsPage_ == SettingsPage::Image2D) {
             drawCard(GetSettingsImageVideoBehaviorCardBounds());
+            drawCard(GetSettingsZoomHudCardBounds());
             drawCard(GetSettingsImageBehaviorCardBounds());
             drawCard(GetSettingsImageScalingCardBounds());
             drawCard(GetSettingsVideoBehaviorCardBounds());
             group(L"image & video behavior", static_cast<float>(GetSettingsImageVideoBehaviorHeadingTop() - bounds.top) / dpiScale);
             drawToggle(0, ButtonKind::SettingsReverseWheelZoom, L"reverse mouse wheel zoom direction", reverseMouseWheelZoom_);
             drawToggle(1, ButtonKind::SettingsAnimations, L"animations and face effects", animationsEnabled_);
+            group(L"zoom box", static_cast<float>(GetSettingsZoomHudHeadingTop() - bounds.top) / dpiScale);
+            drawToggleAt(GetSettingsZoomHudEnabledBounds(), ButtonKind::SettingsShowZoomHud, L"enable zoom box", zoomHudEnabled_);
+            const RECT zoomHudBounds = GetSettingsZoomHudBounds();
+            const wchar_t* zoomHudPositionLabel = zoomHudPosition_ == ZoomHudPosition::BottomLeft ? L"bottom left" : zoomHudPosition_ == ZoomHudPosition::BottomRight ? L"bottom right" : zoomHudPosition_ == ZoomHudPosition::TopLeft ? L"top left" : L"top right";
+            drawSettingsDropdown(zoomHudBounds, ButtonKind::SettingsZoomHudPositionToggle, zoomHudPositionLabel, zoomHudPositionMenuOpen_);
             group(L"image behavior", static_cast<float>(GetSettingsImageBehaviorHeadingTop() - bounds.top) / dpiScale);
             drawToggle(2, ButtonKind::SettingsReuseImageWindow, L"reuse current window for images / GIFs", reuseImageWindow_);
             drawToggle(3, ButtonKind::SettingsAlwaysShowFilmstrip, L"always show the filmstrip", alwaysShowFilmstrip_);
@@ -13972,7 +13992,7 @@ private:
             if (SettingsScrollDownVisible()) drawSettingsScrollIndicator(false);
             renderTarget_->PushAxisAlignedClip(settingsViewport, D2D1_ANTIALIAS_MODE_ALIASED);
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -settingsScroll_));
-            if (settingsPage_ == SettingsPage::General) {
+            if (settingsPage_ == SettingsPage::Image2D) {
                 if (zoomHudPositionMenuOpen_) drawForegroundMenu(GetSettingsZoomHudMenuBounds(), { L"bottom left", L"bottom right", L"top left", L"top right" }, static_cast<int>(zoomHudPosition_), { ButtonKind::SettingsZoomHudBottomLeft, ButtonKind::SettingsZoomHudBottomRight, ButtonKind::SettingsZoomHudTopLeft, ButtonKind::SettingsZoomHudTopRight });
             } else if (settingsPage_ == SettingsPage::Model3D) {
                 if (upAxisMenuOpen_) drawForegroundMenu(GetSettingsUpAxisMenuBounds(), { L"z axis up", L"y axis up", L"x axis up" }, modelUpAxis_ == ModelUpAxis::ZUp ? 0 : modelUpAxis_ == ModelUpAxis::YUp ? 1 : 2, { ButtonKind::SettingsUpAxisZ, ButtonKind::SettingsUpAxisY, ButtonKind::SettingsUpAxisX });
@@ -14224,16 +14244,23 @@ private:
         const UINT dpi = GetDpiForWindow(window_); const int rowHeight = MulDiv(38, dpi, 96); const int gap = MulDiv(9, dpi, 96);
         int top = bounds.top + MulDiv(kContextMenuPaddingDip, dpi, 96);
         const int iconLeft = bounds.left + MulDiv(14, dpi, 96), iconWidth = MulDiv(18, dpi, 96), labelLeft = iconLeft + MulDiv(28, dpi, 96);
-        const auto drawItem = [&](ContextAction action, const wchar_t* label, wchar_t glyph) {
+        const auto drawItem = [&](const ContextMenuItem& item) {
+            const ContextAction action = item.action;
             const bool enabled = ContextActionEnabled(action);
             const D2D1_RECT_F row = D2D1::RectF(static_cast<float>(bounds.left + 1), static_cast<float>(top), static_cast<float>(bounds.right - 1), static_cast<float>(top + rowHeight));
             if (enabled && contextPressed_ == action) renderTarget_->FillRectangle(row, pressedBrush.Get());
             else if (enabled && contextHovered_ == action) renderTarget_->FillRectangle(row, hoverBrush.Get());
-            const int rightPadding = action == ContextAction::OpenWith ? MulDiv(48, dpi, 96) : MulDiv(14, dpi, 96);
+            const int rightPadding = item.submenu ? MulDiv(48, dpi, 96) : MulDiv(14, dpi, 96);
             ID2D1Brush* itemBrush = enabled ? textBrush.Get() : disabledBrush.Get();
+            const wchar_t glyph = action == ContextAction::Fullscreen ? (fullscreen_ ? L'\uE73F' : L'\uE740') : item.glyph;
+            const wchar_t* label = action == ContextAction::Fullscreen ? (fullscreen_ ? L"Exit Fullscreen" : L"Fullscreen") : item.label;
             DrawMenuGlyph(glyph, static_cast<float>(iconLeft), static_cast<float>(top), static_cast<float>(iconWidth), static_cast<float>(rowHeight), itemBrush, action == ContextAction::RotateLeft);
             DrawOverlayText(label, static_cast<float>(labelLeft), static_cast<float>(top), static_cast<float>(bounds.right - labelLeft - rightPadding),
                 static_cast<float>(rowHeight), 13.0f, DWRITE_FONT_WEIGHT_NORMAL, itemBrush, true);
+            if (item.submenu) {
+                DrawOverlayText(L">", static_cast<float>(bounds.right - MulDiv(28, dpi, 96)), static_cast<float>(top), static_cast<float>(MulDiv(16, dpi, 96)),
+                    static_cast<float>(rowHeight), 14.0f, DWRITE_FONT_WEIGHT_NORMAL, itemBrush, true, true);
+            }
             top += rowHeight;
         };
         const auto separator = [&] {
@@ -14241,16 +14268,12 @@ private:
             renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(bounds.left + MulDiv(12, dpi, 96)), y), D2D1::Point2F(static_cast<float>(bounds.right - MulDiv(12, dpi, 96)), y), borderBrush.Get());
             top += gap;
         };
-        drawItem(ContextAction::Fullscreen, fullscreen_ ? L"Exit Fullscreen" : L"Fullscreen", fullscreen_ ? L'\uE73F' : L'\uE740');
-        drawItem(ContextAction::Adjustments, L"adjustments", L'\uE713'); separator();
-        drawItem(ContextAction::RotateLeft, L"Rotate Left", L'\uE7AD');
-        drawItem(ContextAction::RotateRight, L"Rotate Right", L'\uE7AD'); separator();
-        const int openWithTop = top;
-        drawItem(ContextAction::OpenWith, L"Open With", L'\uE8A7');
-        DrawOverlayText(L">", static_cast<float>(bounds.right - MulDiv(28, dpi, 96)), static_cast<float>(openWithTop), static_cast<float>(MulDiv(16, dpi, 96)),
-            static_cast<float>(rowHeight), 14.0f, DWRITE_FONT_WEIGHT_NORMAL, ContextActionEnabled(ContextAction::OpenWith) ? textBrush.Get() : disabledBrush.Get(), true, true);
-        drawItem(ContextAction::Copy, L"copy media", L'\uE8C8'); drawItem(ContextAction::Print, L"Print", L'\uE749'); separator();
-        drawItem(ContextAction::SetBackground, L"Set as Desktop Background", L'\uE7F4'); separator(); drawItem(ContextAction::Delete, L"Delete", L'\uE74D');
+        const ContextMenuItemList menuItems = CurrentContextMenuItems();
+        for (size_t index = 0; index < menuItems.count; ++index) {
+            const ContextMenuItem& item = menuItems.items[index];
+            drawItem(item);
+            if (item.separatorAfter) separator();
+        }
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 
@@ -15939,7 +15962,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->ComponentsPanelContains(point)) return 0;
         viewer->HideFilmstripHoverPreviewImmediately();
         viewer->SetFilmstripHover({ -1, -1 });
-        if (!viewer->TutorialActive() && viewer->OpenVideoFrameContextMenu(point)) return 0;
+        if (viewer->VideoActive()) {
+            if (!viewer->TutorialActive() && viewer->VideoContextMenuAllowed(point)) viewer->OpenContextMenu(point);
+            return 0;
+        }
         if (!viewer->TutorialActive()) { if (viewer->ModelActive() && viewer->SelectModelFace(point)) viewer->SelectComponentsPanelRange(viewer->ModelObjectRangeAt(point), true); viewer->OpenContextMenu(point); }
         return 0;
     }
@@ -16080,7 +16106,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     HANDLE primaryMutex = CreateMutexW(nullptr, FALSE, kPrimaryMutexName);
     const bool firstReuseTarget = primaryMutex && GetLastError() != ERROR_ALREADY_EXISTS;
     gPrimaryReuseTarget = primaryMutex != nullptr;
-    if (path.size() && !firstReuseTarget && ShouldReuseExistingWindowForExternalOpen(path) && ForwardExternalOpenToPrimary(path)) {
+    const std::optional<ExternalOpenMediaFamily> reuseFamily = ExternalOpenReuseFamily(path);
+    if (path.size() && !firstReuseTarget && reuseFamily && ForwardExternalOpenToPrimary(path, *reuseFamily)) {
         if (primaryMutex) CloseHandle(primaryMutex);
         OleUninitialize();
         CoUninitialize();

@@ -5,6 +5,7 @@
 #include <bcrypt.h>
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include <cwctype>
 #include <deque>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -93,7 +95,9 @@ bool ReadMetadata(HANDLE file, FileMetadata& metadata) {
     return true;
 }
 
-bool HashFile(const std::wstring& path, std::array<unsigned char, 32>& output, FileMetadata& metadata) {
+bool HashFile(const std::wstring& path, std::array<unsigned char, 32>& output, FileMetadata& metadata,
+    const std::function<bool()>& cancelled) {
+    if (cancelled()) return false;
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
@@ -107,12 +111,13 @@ bool HashFile(const std::wstring& path, std::array<unsigned char, 32>& output, F
     if (ok) ok = BCryptCreateHash(algorithm, &hash, object.data(), objectLength, nullptr, 0, 0) == 0;
     std::array<unsigned char, 128 * 1024> buffer{};
     while (ok) {
+        if (cancelled()) { ok = false; break; }
         DWORD read = 0;
         if (!ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr)) { ok = false; break; }
         if (!read) break;
         if (BCryptHashData(hash, buffer.data(), read, 0) != 0) { ok = false; break; }
     }
-    if (ok) ok = BCryptFinishHash(hash, output.data(), static_cast<ULONG>(output.size()), 0) == 0;
+    if (ok && !cancelled()) ok = BCryptFinishHash(hash, output.data(), static_cast<ULONG>(output.size()), 0) == 0;
     FileMetadata after{};
     ok = ok && ReadMetadata(file, after) && after.size == metadata.size && after.mtime == metadata.mtime;
     if (hash) BCryptDestroyHash(hash);
@@ -126,15 +131,17 @@ bool IsNeutral(const ImageAdjustments& value) { return value.IsNeutral(); }
 } // namespace
 
 struct ImageAdjustmentPersistence::Impl {
-    enum class TaskKind { Resolve, Save };
+    enum class TaskKind { Resolve, Save, Reset };
     struct Task {
         TaskKind kind = TaskKind::Resolve;
         AdjustmentMediaKind mediaKind = AdjustmentMediaKind::Image;
         std::wstring path;
         uint64_t mediaGeneration = 0;
         uint64_t editGeneration = 0;
+        uint64_t persistenceGeneration = 0;
         std::array<unsigned char, 32> hash{};
         ImageAdjustments adjustments{};
+        std::shared_ptr<std::promise<bool>> resetCompletion;
     };
 
     HMODULE module = nullptr;
@@ -146,10 +153,13 @@ struct ImageAdjustmentPersistence::Impl {
     SqliteBusyTimeout busyTimeout = nullptr;
     std::function<void(ImageAdjustmentPersistenceResult&&)> completion;
     std::mutex mutex;
+    std::mutex operationMutex;
     std::condition_variable wake;
     std::deque<Task> tasks;
     std::thread thread;
     bool stopping = false;
+    std::atomic<bool> enabled{ true };
+    std::atomic<uint64_t> persistenceGeneration{ 1 };
 
     template<typename T> bool ResolveProc(T& target, const char* name) {
         target = reinterpret_cast<T>(GetProcAddress(module, name));
@@ -263,8 +273,13 @@ struct ImageAdjustmentPersistence::Impl {
         finalize(statement);
     }
 
+    bool TaskCurrent(const Task& task) const {
+        return enabled.load(std::memory_order_acquire) &&
+            persistenceGeneration.load(std::memory_order_acquire) == task.persistenceGeneration;
+    }
+
     void ResolveMedia(const Task& task) {
-        if (!database) return;
+        if (!database || !TaskCurrent(task)) return;
         const std::wstring normalized = NormalizedPath(task.path);
         HANDLE file = CreateFileW(task.path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         FileMetadata metadata{};
@@ -272,16 +287,22 @@ struct ImageAdjustmentPersistence::Impl {
         CloseHandle(file);
         std::array<unsigned char, 32> hash{};
         const std::string path = Utf8(normalized);
+        if (!TaskCurrent(task)) return;
         if (ReadCache(path, metadata, hash)) Trace(L"[Viewtrious] ADJUST_HASH_CACHE_HIT");
         else {
             Trace(L"[Viewtrious] ADJUST_HASH_CACHE_MISS"); Trace(L"[Viewtrious] ADJUST_HASH_BEGIN");
-            if (!HashFile(task.path, hash, metadata)) { Trace(L"[Viewtrious] ADJUST_HASH_STALE_FILE"); return; }
+            if (!HashFile(task.path, hash, metadata, [this, &task] { return !TaskCurrent(task); })) {
+                if (TaskCurrent(task)) Trace(L"[Viewtrious] ADJUST_HASH_STALE_FILE");
+                return;
+            }
+            if (!TaskCurrent(task)) return;
             WriteCache(path, metadata, hash); Trace(L"[Viewtrious] ADJUST_HASH_COMPLETE");
         }
+        if (!TaskCurrent(task)) return;
         ImageAdjustmentPersistenceResult result{};
         result.mediaKind = task.mediaKind; result.path = task.path; result.mediaGeneration = task.mediaGeneration; result.editGeneration = task.editGeneration;
         result.hash = hash; result.hashResolved = true; result.hasAdjustments = ReadAdjustments(hash, result.adjustments, task.mediaKind);
-        if (completion) completion(std::move(result));
+        if (TaskCurrent(task) && completion) completion(std::move(result));
     }
 
     void Run() {
@@ -289,8 +310,16 @@ struct ImageAdjustmentPersistence::Impl {
         for (;;) {
             Task task;
             { std::unique_lock lock(mutex); wake.wait(lock, [this] { return stopping || !tasks.empty(); }); if (tasks.empty() && stopping) break; task = std::move(tasks.front()); tasks.pop_front(); }
-            if (!available) continue;
-            if (task.kind == TaskKind::Resolve) ResolveMedia(task); else SaveAdjustments(task.hash, task.adjustments, task.mediaKind);
+            std::lock_guard operationLock(operationMutex);
+            if (task.kind == TaskKind::Reset) {
+                bool reset = available && Execute("BEGIN IMMEDIATE; DELETE FROM image_adjustments; DELETE FROM video_adjustments; DELETE FROM file_hash_cache; COMMIT;");
+                if (available && !reset) Execute("ROLLBACK;");
+                if (task.resetCompletion) task.resetCompletion->set_value(reset);
+                continue;
+            }
+            if (!available || !TaskCurrent(task)) continue;
+            if (task.kind == TaskKind::Resolve) ResolveMedia(task);
+            else if (TaskCurrent(task)) SaveAdjustments(task.hash, task.adjustments, task.mediaKind);
         }
         CloseDatabase();
     }
@@ -304,16 +333,50 @@ void ImageAdjustmentPersistence::Start(std::function<void(ImageAdjustmentPersist
     impl_->completion = std::move(completion); impl_->stopping = false; impl_->thread = std::thread([impl = impl_] { impl->Run(); });
 }
 
+void ImageAdjustmentPersistence::SetEnabled(bool enabled) {
+    if (!impl_) return;
+    {
+        std::lock_guard lock(impl_->mutex);
+        impl_->enabled.store(enabled, std::memory_order_release);
+        impl_->persistenceGeneration.fetch_add(1, std::memory_order_acq_rel);
+        impl_->tasks.erase(std::remove_if(impl_->tasks.begin(), impl_->tasks.end(), [](const Impl::Task& task) {
+            return task.kind != Impl::TaskKind::Reset;
+        }), impl_->tasks.end());
+    }
+    impl_->wake.notify_one();
+    if (!enabled) {
+        std::lock_guard operationLock(impl_->operationMutex);
+    }
+}
+
 void ImageAdjustmentPersistence::Resolve(const std::wstring& path, uint64_t mediaGeneration, uint64_t editGeneration, AdjustmentMediaKind mediaKind) {
-    if (!impl_ || path.empty()) return;
-    { std::lock_guard lock(impl_->mutex); if (impl_->stopping) return; Impl::Task task{}; task.kind = Impl::TaskKind::Resolve; task.mediaKind = mediaKind; task.path = path; task.mediaGeneration = mediaGeneration; task.editGeneration = editGeneration; impl_->tasks.push_back(std::move(task)); }
+    if (!impl_ || path.empty() || !impl_->enabled.load(std::memory_order_acquire)) return;
+    { std::lock_guard lock(impl_->mutex); if (impl_->stopping || !impl_->enabled.load(std::memory_order_relaxed)) return; Impl::Task task{}; task.kind = Impl::TaskKind::Resolve; task.mediaKind = mediaKind; task.path = path; task.mediaGeneration = mediaGeneration; task.editGeneration = editGeneration; task.persistenceGeneration = impl_->persistenceGeneration.load(std::memory_order_relaxed); impl_->tasks.push_back(std::move(task)); }
     impl_->wake.notify_one();
 }
 
 void ImageAdjustmentPersistence::Save(const std::array<unsigned char, 32>& hash, const ImageAdjustments& adjustments, AdjustmentMediaKind mediaKind) {
-    if (!impl_) return;
-    { std::lock_guard lock(impl_->mutex); if (impl_->stopping) return; Impl::Task task{}; task.kind = Impl::TaskKind::Save; task.mediaKind = mediaKind; task.hash = hash; task.adjustments = adjustments; impl_->tasks.push_back(std::move(task)); }
+    if (!impl_ || !impl_->enabled.load(std::memory_order_acquire)) return;
+    { std::lock_guard lock(impl_->mutex); if (impl_->stopping || !impl_->enabled.load(std::memory_order_relaxed)) return; Impl::Task task{}; task.kind = Impl::TaskKind::Save; task.mediaKind = mediaKind; task.hash = hash; task.adjustments = adjustments; task.persistenceGeneration = impl_->persistenceGeneration.load(std::memory_order_relaxed); impl_->tasks.push_back(std::move(task)); }
     impl_->wake.notify_one();
+}
+
+bool ImageAdjustmentPersistence::Reset() {
+    if (!impl_ || !impl_->thread.joinable()) return false;
+    auto completion = std::make_shared<std::promise<bool>>();
+    std::future<bool> result = completion->get_future();
+    {
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->stopping) return false;
+        impl_->persistenceGeneration.fetch_add(1, std::memory_order_acq_rel);
+        impl_->tasks.clear();
+        Impl::Task task{};
+        task.kind = Impl::TaskKind::Reset;
+        task.resetCompletion = std::move(completion);
+        impl_->tasks.push_back(std::move(task));
+    }
+    impl_->wake.notify_one();
+    return result.get();
 }
 
 void ImageAdjustmentPersistence::Shutdown() {

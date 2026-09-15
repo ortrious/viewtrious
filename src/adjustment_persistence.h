@@ -30,8 +30,10 @@ public:
     ImageAdjustmentPersistence& operator=(const ImageAdjustmentPersistence&) = delete;
 
     void Start(std::function<void(ImageAdjustmentPersistenceResult&&)> completion);
+    void SetEnabled(bool enabled);
     void Resolve(const std::wstring& path, uint64_t mediaGeneration, uint64_t editGeneration, AdjustmentMediaKind mediaKind = AdjustmentMediaKind::Image);
     void Save(const std::array<unsigned char, 32>& hash, const ImageAdjustments& adjustments, AdjustmentMediaKind mediaKind = AdjustmentMediaKind::Image);
+    bool Reset();
     void Shutdown();
 
 private:

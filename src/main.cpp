@@ -1496,11 +1496,21 @@ public:
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
     }
 
-    void SetCommittedMediaWindowTitle(const std::wstring& path) {
+    void SetCommittedMediaWindowTitle(const std::wstring& path, bool force = false) {
         const std::wstring filename = path.empty() ? std::wstring{} : fs::path(path).filename().wstring();
         const std::wstring title = filename.empty() ? kWindowTitle : filename;
-        if (!window_ || nativeWindowTitle_ == title) return;
+        if (!window_ || (!force && nativeWindowTitle_ == title)) return;
         if (SetWindowTextW(window_, title.c_str())) nativeWindowTitle_ = title;
+    }
+
+    void RefreshWindowTitleFromCommittedMedia() {
+        if (!displayedPath_.empty()) {
+            SetCommittedMediaWindowTitle(displayedPath_, true);
+        } else if ((VideoActive() && videoPlayer_.HasValidFrame()) || ModelActive()) {
+            SetCommittedMediaWindowTitle(currentPath_, true);
+        } else {
+            SetCommittedMediaWindowTitle(L"", true);
+        }
     }
 
     void SetWindow(HWND window) {
@@ -14286,7 +14296,7 @@ private:
         DrawTitleText(tutorialMetadata ? L"1.2 MB" : hideTutorialMetadata ? L"" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);
         const float filenameWidth = static_cast<float>(std::max(0L,
             frame.titleBarContent.right - frame.filenameLeft - MulDiv(8, GetDpiForWindow(window_), 96)));
-        DrawTitleText(EmptyStatePresentationActive() ? L"" : L"viewtrious", static_cast<float>(frame.filenameLeft), filenameWidth,
+        DrawTitleText(tutorialMetadata ? L"viewtrious.png" : hideTutorialMetadata ? L"" : filenameText_, static_cast<float>(frame.filenameLeft), filenameWidth,
             tutorialMetadata ? tutorialMetadataBrush.Get() : filenameBrush.Get(), true, false);
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
@@ -14953,6 +14963,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->SetWindow(window);
     }
     if (!viewer) return DefWindowProcW(window, message, wParam, lParam);
+    if (message == WM_CREATE) {
+        const LRESULT result = DefWindowProcW(window, message, wParam, lParam);
+        viewer->RefreshWindowTitleFromCommittedMedia();
+        return result;
+    }
     if (message == gPrimaryWindowQueryMessage) return gPrimaryReuseTarget ? static_cast<LRESULT>(kPrimaryWindowMagic) : 0;
     if (message == WM_COPYDATA) {
         if (!gPrimaryReuseTarget) return FALSE;

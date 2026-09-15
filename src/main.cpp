@@ -3949,7 +3949,7 @@ public:
         return { left, top, right, top + height };
     }
     int SettingsContentBottom() const {
-        if (settingsPage_ == SettingsPage::General) return GetSettingsFileTypesCardBounds().bottom - GetOverlayBounds().top;
+        if (settingsPage_ == SettingsPage::General) return GetSettingsManagementCardBounds().bottom - GetOverlayBounds().top;
         if (settingsPage_ == SettingsPage::Image2D) return GetSettingsImageScalingCardBounds().bottom - GetOverlayBounds().top;
         if (settingsPage_ == SettingsPage::Video2D) return GetSettingsVideoCardBounds().bottom - GetOverlayBounds().top;
         if (settingsPage_ == SettingsPage::Model3D) return GetSettingsInputCardBounds().bottom - GetOverlayBounds().top;
@@ -4357,9 +4357,9 @@ public:
     void SetModelAntiAliasing(ModelAntiAliasing mode) { if(modelAntiAliasing_==mode){antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE);return;}modelAntiAliasing_=mode;WriteSetting(L"ModelAntiAliasing",static_cast<DWORD>(mode));if(ModelActive())modelViewport_.SetAntiAliasing(mode);antiAliasingMenuOpen_=false;InvalidateRect(window_,nullptr,FALSE); }
     RECT GetSettingsResetButtonBounds() const {
         const UINT dpi = GetDpiForWindow(window_);
-        const int description = MeasureSettingsTextHeight(L"restore all application preferences to defaults", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        const int top = GetSettingsResetAdjustmentsButtonBounds().bottom + SettingsStackGap() + description + MulDiv(8, dpi, 96);
-        return { SettingsContentLeft(), top, SettingsContentLeft() + MulDiv(140, dpi, 96), top + MulDiv(36, dpi, 96) };
+        const int top = GetSettingsResetAdjustmentsButtonBounds().bottom + SettingsRowGap();
+        const int width = std::max(MulDiv(140, dpi, 96), MeasureSettingsTextWidth(L"reset viewtrious preferences", 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD) + MulDiv(28, dpi, 96));
+        return { SettingsContentLeft(), top, SettingsContentLeft() + width, top + MulDiv(36, dpi, 96) };
     }
     void SetZoomHudPosition(ZoomHudPosition position) { zoomHudPosition_ = position; WriteSetting(L"ZoomHudPosition", static_cast<DWORD>(position)); zoomHudPositionMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); }
     RECT GetSettingsDefaultAppsButtonBounds() const {
@@ -4368,7 +4368,7 @@ public:
         const int top = GetSettingsFileTypesHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap() + description + MulDiv(8, dpi, 96);
         return { SettingsContentLeft(), top, SettingsContentLeft() + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
-    int GetSettingsAdjustmentPersistenceHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsZoomHudCardBounds()); }
+    int GetSettingsAdjustmentPersistenceHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsFileTypesCardBounds()); }
     RECT GetSettingsAdjustmentPersistenceBounds() const {
         const int top = GetSettingsAdjustmentPersistenceHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
         return GetSettingsSingleColumnBounds(top, L"enable adjustments database");
@@ -4376,12 +4376,12 @@ public:
     RECT GetSettingsResetAdjustmentsButtonBounds() const {
         const UINT dpi = GetDpiForWindow(window_);
         const RECT toggle = GetSettingsAdjustmentPersistenceBounds();
-        const int description = MeasureSettingsTextHeight(L"clear saved image and video adjustments", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        const int top = toggle.bottom + SettingsStackGap() + description + MulDiv(8, dpi, 96);
-        return { SettingsContentLeft(), top, SettingsContentLeft() + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
+        const int top = toggle.bottom + SettingsRowGap();
+        const int width = std::max(MulDiv(210, dpi, 96), MeasureSettingsTextWidth(L"reset adjustments database", 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD) + MulDiv(28, dpi, 96));
+        return { SettingsContentLeft(), top, SettingsContentLeft() + width, top + MulDiv(36, dpi, 96) };
     }
     RECT GetSettingsManagementCardBounds() const { return GetSettingsCardBounds(GetSettingsAdjustmentPersistenceHeadingTop(), GetSettingsResetButtonBounds().bottom); }
-    int GetSettingsFileTypesHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsManagementCardBounds()); }
+    int GetSettingsFileTypesHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsZoomHudCardBounds()); }
     RECT GetSettingsFileTypesCardBounds() const { return GetSettingsCardBounds(GetSettingsFileTypesHeadingTop(), GetSettingsDefaultAppsButtonBounds().bottom); }
     bool SettingsDefaultAppsButtonContains(POINT point) const {
         const RECT button = GetSettingsDefaultAppsButtonBounds();
@@ -13772,8 +13772,8 @@ private:
             DrawOverlayText(L"settings", settingsLeft, static_cast<float>(bounds.top) + 18.0f * dpiScale,
                 settingsWidth, 32.0f * dpiScale, 24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             const auto group = [&](const wchar_t* label, float top) {
-                DrawOverlayText(label, settingsLeft, static_cast<float>(bounds.top) + top * dpiScale, settingsWidth,
-                    20.0f * dpiScale, 15.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+                DrawOverlayText(label, settingsLeft, static_cast<float>(bounds.top) + (top - 1.0f) * dpiScale, settingsWidth,
+                    24.0f * dpiScale, 15.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
             };
             ComPtr<ID2D1SolidColorBrush> accent, accentHover, accentPressed, checkmark, rowHover, segmentIdle, segmentHover, cardFill;
             if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f / 255, 120.f / 255, 212.f / 255), &accent)) ||
@@ -13851,8 +13851,8 @@ private:
             drawCard(GetSettingsGeneralBehaviorCardBounds());
             drawCard(GetSettingsThemeCardBounds());
             drawCard(GetSettingsZoomHudCardBounds());
-            drawCard(GetSettingsManagementCardBounds());
             drawCard(GetSettingsFileTypesCardBounds());
+            drawCard(GetSettingsManagementCardBounds());
             group(L"general behavior", static_cast<float>(GetSettingsGeneralBehaviorHeadingTop() - bounds.top) / dpiScale);
             const float zoomBoxTop = static_cast<float>(GetSettingsZoomHudHeadingTop() - bounds.top) / dpiScale;
             const RECT themeBounds = GetSettingsThemeBounds(ThemePreference::System);
@@ -13894,24 +13894,17 @@ private:
             DrawOverlayText(L"change file type defaults", defaultAppsButton.left, defaultAppsButton.top, defaultAppsButton.right - defaultAppsButton.left, defaultAppsButton.bottom - defaultAppsButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             group(L"reset and database management", adjustmentsDatabaseTop);
             drawToggleAt(GetSettingsAdjustmentPersistenceBounds(), ButtonKind::SettingsAdjustmentsDatabase, L"enable adjustments database", adjustmentPersistenceEnabled_);
-            const int resetAdjustmentsDescriptionHeight = MeasureSettingsTextHeight(L"clear saved image and video adjustments", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-            DrawOverlayText(L"clear saved image and video adjustments", settingsLeft,
-                static_cast<float>(GetSettingsAdjustmentPersistenceBounds().bottom + SettingsStackGap()), settingsWidth, static_cast<float>(resetAdjustmentsDescriptionHeight),
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             const D2D1_RECT_F resetAdjustmentsButton = D2D1::RectF(static_cast<float>(resetAdjustmentsBounds.left), static_cast<float>(resetAdjustmentsBounds.top), static_cast<float>(resetAdjustmentsBounds.right), static_cast<float>(resetAdjustmentsBounds.bottom));
             if (pressedButton_ == ButtonKind::SettingsResetAdjustmentsDatabase) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetAdjustmentsButton, 5.0f * dpiScale, 5.0f * dpiScale), segmentHover.Get());
             else if (hoveredButton_ == ButtonKind::SettingsResetAdjustmentsDatabase) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetAdjustmentsButton, 5.0f * dpiScale, 5.0f * dpiScale), rowHover.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetAdjustmentsButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"clear saved adjustments", resetAdjustmentsButton.left, resetAdjustmentsButton.top, resetAdjustmentsButton.right - resetAdjustmentsButton.left, resetAdjustmentsButton.bottom - resetAdjustmentsButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
-            const int resetDescriptionHeight = MeasureSettingsTextHeight(L"restore all application preferences to defaults", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
+            DrawOverlayText(L"reset adjustments database", resetAdjustmentsButton.left, resetAdjustmentsButton.top, resetAdjustmentsButton.right - resetAdjustmentsButton.left, resetAdjustmentsButton.bottom - resetAdjustmentsButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             const RECT resetBounds = GetSettingsResetButtonBounds();
-            DrawOverlayText(L"restore all application preferences to defaults", settingsLeft,
-                static_cast<float>(resetBounds.top - resetDescriptionHeight - MulDiv(8, GetDpiForWindow(window_), 96)), settingsWidth, static_cast<float>(resetDescriptionHeight), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             const D2D1_RECT_F resetButton = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top), static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
             if (pressedButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), segmentHover.Get());
             else if (hoveredButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), rowHover.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"restore defaults", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            DrawOverlayText(L"reset viewtrious preferences", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             } else if (settingsPage_ == SettingsPage::Video2D) {
             drawCard(GetSettingsVideoCardBounds());
             group(L"video", static_cast<float>(GetSettingsVideoHeadingTop() - bounds.top) / dpiScale);

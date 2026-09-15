@@ -446,6 +446,11 @@ void VideoPlayer::SetDisplayAdjustments(const ImageAdjustments& adjustments) {
     if (hasValidFrame_ && !displayAdjustments_.IsNeutral()) adjustedFrameValid_ = adjustmentProcessor_.ProcessImage(frameTexture_.Get(), videoWidth_, videoHeight_, displayAdjustments_);
 }
 
+bool VideoPlayer::CopyCachedFramePixels(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const {
+    // Read the already cached frame; do not acquire a new frame or seek for drag feedback.
+    return CopyCurrentFrameBgra(pixels, width, height);
+}
+
 bool VideoPlayer::CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const {
     pixels.clear(); width = height = 0;
     if (!hasValidFrame_ || !frameTexture_ || !device_ || !videoWidth_ || !videoHeight_) return false;

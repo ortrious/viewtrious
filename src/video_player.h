@@ -40,6 +40,7 @@ public:
     void SetDisplayAdjustments(const ImageAdjustments& adjustments);
     void SetDisplayAdjustmentsBypassed(bool bypassed) { displayAdjustmentsBypassed_ = bypassed; }
     bool CopyCurrentFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
+    bool CopyCachedFramePixels(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
     bool CopyCurrentDisplayedFrameBgra(std::vector<unsigned char>& pixels, UINT& width, UINT& height) const;
     bool SetPreferredPlaybackRate(double rate);
     bool PlaybackRateSupported(double rate) const;

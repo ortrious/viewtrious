@@ -13946,10 +13946,18 @@ private:
             sample.highlights = -0.08f;
             sample.saturation = 0.12f;
             sample.sharpness = 0.30f;
-            if (tutorialStep_ == TutorialStep::ZoomBox) {
-                DrawZoomHud(GetImageZoomHudLayout(true), 1.0f, 1.0f, true, true);
-            } else {
+            const ZoomHudLayout hud = GetImageZoomHudLayout(true);
+            DrawZoomHud(hud, 1.0f, 1.0f, true, tutorialStep_ == TutorialStep::ZoomBox);
+            if (tutorialStep_ == TutorialStep::Adjustments) {
                 DrawAdjustmentPanel(GetImageAdjustmentsPanelTargetLayout(true), sample, 1.0f, AdjustmentSource::None, false, true);
+                const float highlightInset = 3.0f * scale;
+                const D2D1_RECT_F highlight = D2D1::RectF(static_cast<float>(hud.adjustments.left) - highlightInset,
+                    static_cast<float>(hud.adjustments.top) - highlightInset, static_cast<float>(hud.adjustments.right) + highlightInset,
+                    static_cast<float>(hud.adjustments.bottom) + highlightInset);
+                pencil->SetOpacity(0.18f);
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(highlight, 7.0f * scale, 7.0f * scale), pencil.Get());
+                pencil->SetOpacity(1.0f);
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(highlight, 7.0f * scale, 7.0f * scale), pencil.Get(), 2.0f * scale);
             }
         }
         const auto scribble = [&](const RECT& target) {
@@ -14024,8 +14032,8 @@ private:
             DrawOverlayText(L"see the current zoom and open adjustments here", note.left, note.top + 34.0f * scale,
                 note.right - note.left, 38.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, false, false, true);
             straightArrow(D2D1::Point2F(note.right, note.bottom - 8.0f * scale),
-                D2D1::Point2F(static_cast<float>(hud.combined.left),
-                    (hud.combined.top + hud.combined.bottom) * 0.5f), 2.2f);
+                D2D1::Point2F(static_cast<float>(hud.zoom.left) + 18.0f * scale,
+                    static_cast<float>(hud.zoom.top)), 2.2f);
         } else if (tutorialStep_ == TutorialStep::Adjustments) {
             const VideoAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelTargetLayout(true);
             const D2D1_RECT_F note = annotationBoundsFor(panel.panel, 250.0f * scale, 72.0f * scale);

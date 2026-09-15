@@ -141,6 +141,99 @@ constexpr UINT_PTR kImageAdjustmentPersistenceTimer = 21;
 constexpr UINT_PTR kVideoAdjustmentPersistenceTimer = 26;
 constexpr UINT_PTR kVideoFrameSaveToastTimer = 34;
 constexpr ULONGLONG kVideoFrameSaveToastDurationMs = 3000;
+constexpr UINT_PTR kExternalMediaDragIntentTimer = 35;
+constexpr int kExternalMediaDragOutsideMarginDip = 24;
+constexpr ULONGLONG kExternalMediaDragOutsideDwellMs = 140;
+
+class CopyFileDropSource final : public IDropSource {
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (!object) return E_POINTER;
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_IDropSource) {
+            *object = static_cast<IDropSource*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG references = --references_;
+        if (!references) delete this;
+        return references;
+    }
+    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escapePressed, DWORD keyState) override {
+        if (escapePressed) return DRAGDROP_S_CANCEL;
+        return (keyState & MK_LBUTTON) ? S_OK : DRAGDROP_S_DROP;
+    }
+    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
+private:
+    ULONG references_ = 1;
+};
+
+class FileDropDataObject final : public IDataObject {
+public:
+    explicit FileDropDataObject(std::wstring path) : path_(std::move(path)) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (!object) return E_POINTER;
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_IDataObject) {
+            *object = static_cast<IDataObject*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG references = --references_;
+        if (!references) delete this;
+        return references;
+    }
+    HRESULT STDMETHODCALLTYPE GetData(FORMATETC* format, STGMEDIUM* medium) override {
+        if (!medium) return E_POINTER;
+        const HRESULT accepted = QueryGetData(format);
+        if (FAILED(accepted)) return accepted;
+        const size_t bytes = sizeof(DROPFILES) + (path_.size() + 2) * sizeof(wchar_t);
+        HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+        if (!data) return E_OUTOFMEMORY;
+        auto* drop = static_cast<DROPFILES*>(GlobalLock(data));
+        if (!drop) { GlobalFree(data); return E_OUTOFMEMORY; }
+        drop->pFiles = sizeof(DROPFILES);
+        drop->fWide = TRUE;
+        auto* paths = reinterpret_cast<wchar_t*>(reinterpret_cast<BYTE*>(drop) + drop->pFiles);
+        memcpy(paths, path_.c_str(), (path_.size() + 1) * sizeof(wchar_t));
+        GlobalUnlock(data);
+        ZeroMemory(medium, sizeof(*medium));
+        medium->tymed = TYMED_HGLOBAL;
+        medium->hGlobal = data;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return DATA_E_FORMATETC; }
+    HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override {
+        if (!format) return E_INVALIDARG;
+        return format->cfFormat == CF_HDROP && format->dwAspect == DVASPECT_CONTENT && format->lindex == -1 &&
+            (format->tymed & TYMED_HGLOBAL) ? S_OK : DV_E_FORMATETC;
+    }
+    HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC* out) override {
+        if (out) out->ptd = nullptr;
+        return E_NOTIMPL;
+    }
+    HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD direction, IEnumFORMATETC** formats) override {
+        if (!formats) return E_POINTER;
+        if (direction != DATADIR_GET) return E_NOTIMPL;
+        FORMATETC format{ CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        return CreateStdEnumFmtEtc(1, &format, formats);
+    }
+    HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
+private:
+    ULONG references_ = 1;
+    std::wstring path_;
+};
 
 D2D1_COLOR_F AdjustmentSurfaceFill(bool dark, float opacity = 1.0f) {
     return D2D1::ColorF(dark ? 35.0f / 255.0f : 246.0f / 255.0f, dark ? 38.0f / 255.0f : 246.0f / 255.0f,
@@ -1282,6 +1375,7 @@ public:
     }
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true, const wchar_t* route = L"internal") {
+        CancelExternalMediaDragArming();
         const wchar_t* mediaKind = IsModelPath(path) ? L"model" : IsVideoPath(path) ? L"video" : IsGifPath(path) ? L"gif" : L"image";
         activeOpenAttemptId_ = FileOpenDiagnostics::Begin(path, route, mediaKind);
         FileOpenDiagnostics::Log(activeOpenAttemptId_, L"load-content-dispatch");
@@ -7725,6 +7819,93 @@ public:
             point.y >= topLeft.y && point.y < topLeft.y + imageHeight_ * scale;
     }
 
+    bool ExternalMediaDragSourceAvailable() const {
+        if (currentPath_.empty()) return false;
+        const DWORD attributes = GetFileAttributesW(currentPath_.c_str());
+        return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+    }
+    bool ExternalMediaDragEligibleAt(POINT point) const {
+        if (ModelActive() || !ExternalMediaDragSourceAvailable()) return false;
+        return VideoActive() ? VideoContains(point) : contentKind_ == ContentKind::Image2D && ImageContains(point);
+    }
+    void CancelExternalMediaDragArming() {
+        KillTimer(window_, kExternalMediaDragIntentTimer);
+        externalMediaDragArmed_ = false;
+        externalMediaDragOutsideSince_ = 0;
+        externalMediaDragPath_.clear();
+        externalMediaDragOpenAttemptId_ = 0;
+    }
+    void ArmExternalMediaDrag(POINT point) {
+        CancelExternalMediaDragArming();
+        externalMediaDragConsumed_ = false;
+        if (!ExternalMediaDragEligibleAt(point)) return;
+        externalMediaDragArmed_ = true;
+        std::error_code error;
+        const fs::path absolutePath = fs::absolute(fs::path(currentPath_), error);
+        externalMediaDragPath_ = error ? currentPath_ : absolutePath.wstring();
+        externalMediaDragOpenAttemptId_ = activeOpenAttemptId_;
+    }
+    bool ConsumeExternalMediaDragGesture() {
+        if (!externalMediaDragConsumed_) return false;
+        externalMediaDragConsumed_ = false;
+        return true;
+    }
+    void ClearExternalMediaDragGestureConsumption() { externalMediaDragConsumed_ = false; }
+    bool OutsideExternalMediaDragGate(POINT screenPoint) const {
+        RECT outer{};
+        if (!GetWindowRect(window_, &outer)) return false;
+        const LONG margin = MulDiv(kExternalMediaDragOutsideMarginDip, GetDpiForWindow(window_), 96);
+        InflateRect(&outer, margin, margin);
+        return !PtInRect(&outer, screenPoint);
+    }
+    void BeginExternalMediaFileDrag() {
+        if (!externalMediaDragArmed_ || !ExternalMediaDragSourceAvailable() ||
+            externalMediaDragOpenAttemptId_ != activeOpenAttemptId_) {
+            CancelExternalMediaDragArming();
+            return;
+        }
+
+        const std::wstring path = externalMediaDragPath_;
+        externalMediaDragArmed_ = false;
+        externalMediaDragOutsideSince_ = 0;
+        KillTimer(window_, kExternalMediaDragIntentTimer);
+        externalMediaDragConsumed_ = true;
+        CancelSwipeNavigation();
+        EndPan();
+        if (GetCapture() == window_) ReleaseCapture();
+
+        ComPtr<IDataObject> dataObject;
+        dataObject.Attach(new FileDropDataObject(path));
+        ComPtr<IDropSource> dropSource;
+        dropSource.Attach(new CopyFileDropSource());
+        DWORD effect = DROPEFFECT_NONE;
+        DoDragDrop(dataObject.Get(), dropSource.Get(), DROPEFFECT_COPY, &effect);
+    }
+    bool UpdateExternalMediaDragIntent() {
+        if (!externalMediaDragArmed_) return false;
+        if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000) || !ExternalMediaDragSourceAvailable() ||
+            externalMediaDragOpenAttemptId_ != activeOpenAttemptId_) {
+            CancelExternalMediaDragArming();
+            return false;
+        }
+        POINT screenPoint{};
+        if (!GetCursorPos(&screenPoint)) return false;
+        if (!OutsideExternalMediaDragGate(screenPoint)) {
+            externalMediaDragOutsideSince_ = 0;
+            KillTimer(window_, kExternalMediaDragIntentTimer);
+            return false;
+        }
+        const ULONGLONG now = GetTickCount64();
+        if (!externalMediaDragOutsideSince_) {
+            externalMediaDragOutsideSince_ = now;
+            SetTimer(window_, kExternalMediaDragIntentTimer, 16, nullptr);
+            return false;
+        }
+        if (now - externalMediaDragOutsideSince_ < kExternalMediaDragOutsideDwellMs) return false;
+        BeginExternalMediaFileDrag();
+        return externalMediaDragConsumed_;
+    }
+
     void BeginPan(POINT point) {
         if (swipeToNavigateWhenFit_ && !CanPan()) return;
         if (VideoActive()) {
@@ -8356,6 +8537,7 @@ public:
 
     void Shutdown() {
         shuttingDown_ = true;
+        CancelExternalMediaDragArming();
         CancelLowerUiMorph();
         FlushImageAdjustmentPersistence();
         if (VideoActive()) FlushVideoAdjustmentPersistence();
@@ -14053,6 +14235,7 @@ private:
     D2D1_RECT_F lanczosDestination_{};
     std::wstring currentPath_;
     std::wstring displayedPath_;
+    std::wstring externalMediaDragPath_;
     FileIdentity currentFileIdentity_{};
     std::wstring resolutionText_;
     std::wstring titleResolutionWidthText_;
@@ -14119,6 +14302,7 @@ private:
     ULONGLONG adjustmentFooterHoverStartedAt_ = 0;
     ULONGLONG adjustmentFooterSaveConfirmedAt_ = 0;
     uint64_t activeOpenAttemptId_ = 0;
+    uint64_t externalMediaDragOpenAttemptId_ = 0;
     ImageAdjustments imageAdjustments_;
     AdjustmentSource imageAdjustmentSource_ = AdjustmentSource::None;
     ImageAdjustmentPersistence adjustmentPersistence_;
@@ -14210,6 +14394,9 @@ private:
     bool committingGifFrame_ = false;
     bool dragging_ = false;
     bool swipeNavigationPending_ = false;
+    bool externalMediaDragArmed_ = false;
+    bool externalMediaDragConsumed_ = false;
+    ULONGLONG externalMediaDragOutsideSince_ = 0;
     bool dissolveAwaitingTarget_ = false;
     bool dissolveActive_ = false;
     LONGLONG dissolveStartQpc_ = 0;
@@ -14745,6 +14932,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_LBUTTONDOWN: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        viewer->ClearExternalMediaDragGestureConsumption();
         if (viewer->TutorialActive()) {
             const ButtonKind button = viewer->ButtonAt(point);
             if (button == ButtonKind::TutorialSkip || button == ButtonKind::TutorialNext) {
@@ -14875,6 +15063,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->SetHamburgerPressed(true);
             SetCapture(window);
         } else {
+            viewer->ArmExternalMediaDrag(point);
             if (viewer->ModelActive()) { viewer->BeginModelOrbit({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }); SetCapture(window); }
             else if (!viewer->BeginSwipeNavigation(point)) viewer->BeginPan(point);
         }
@@ -14912,6 +15101,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_MOUSEMOVE: {
         viewer->SetVideoFrameSaveToastHover({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         viewer->UpdateTriangleCountTooltipHover({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+        if (viewer->UpdateExternalMediaDragIntent()) return 0;
         if (viewer->TutorialActive()) {
             viewer->SetButtonHover(viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) }));
             return 0;
@@ -14998,6 +15188,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->ClearComponentsPanelHover(); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->UpdateGifControlsMouse({ -1, -1 }); viewer->VideoControlsMouseLeave(); return 0;
     case WM_LBUTTONUP: {
+        if (viewer->ConsumeExternalMediaDragGesture()) return 0;
+        viewer->CancelExternalMediaDragArming();
         if (viewer->ComponentsPanelInteractionActive()) {
             viewer->EndComponentsPanelInteraction();
             if (GetCapture() == window) ReleaseCapture();
@@ -15092,7 +15284,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         break;
     }
     case WM_CAPTURECHANGED:
-        viewer->EndPan(); viewer->EndModelDrag(); viewer->EndComponentsPanelInteraction(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelGifControlsInteraction(); viewer->CancelVideoControlsInteraction(); viewer->CancelImageAdjustmentsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
+        viewer->CancelExternalMediaDragArming(); viewer->EndPan(); viewer->EndModelDrag(); viewer->EndComponentsPanelInteraction(); viewer->CancelFilmstripInteraction(); viewer->CancelSwipeNavigation(); viewer->CancelCanvasNavigationClick(); viewer->CancelGifControlsInteraction(); viewer->CancelVideoControlsInteraction(); viewer->CancelImageAdjustmentsInteraction(); viewer->ClearCaptionButtonPressed(); viewer->ClearButtonPressed(); viewer->SetHamburgerPressed(false); viewer->ClearDropdownPressed(); viewer->ClearContextPressed(); return 0;
     case WM_RBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (viewer->ComponentsPanelContains(point)) return 0;
@@ -15115,6 +15307,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kImageAdjustmentPersistenceTimer) { KillTimer(window, kImageAdjustmentPersistenceTimer); viewer->ImageAdjustmentPersistenceTimer(); return 0; }
         if (wParam == kVideoAdjustmentPersistenceTimer) { KillTimer(window, kVideoAdjustmentPersistenceTimer); viewer->VideoAdjustmentPersistenceTimer(); return 0; }
         if (wParam == kVideoFrameSaveToastTimer) { viewer->UpdateVideoFrameSaveToast(); return 0; }
+        if (wParam == kExternalMediaDragIntentTimer) { viewer->UpdateExternalMediaDragIntent(); return 0; }
         if (wParam == kShellRotationCheckTimer) { viewer->ShellRotationTimer(); return 0; }
         if (wParam == kLanczosSettleTimer) { KillTimer(window, kLanczosSettleTimer); viewer->LanczosRefinementTimer(); return 0; }
         if (wParam == kModelHomeAnimationTimer) { viewer->UpdateAnimatedModelHome(); return 0; }
@@ -15145,6 +15338,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         } else {
             viewer->SetVideoPlaybackSpeedPanelOpen(false);
             viewer->CancelVideoControlsInteraction();
+            viewer->CancelExternalMediaDragArming();
         }
         break;
     case WM_SHOWWINDOW:
@@ -15224,6 +15418,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     StartupTimer timer;
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(com)) return 1;
+    const HRESULT ole = OleInitialize(nullptr);
+    if (FAILED(ole)) { CoUninitialize(); return 1; }
 
     int argumentCount = 0;
     LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
@@ -15235,6 +15431,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     gPrimaryReuseTarget = primaryMutex && GetLastError() != ERROR_ALREADY_EXISTS;
     if (path.size() && !gPrimaryReuseTarget && ShouldReuseExistingWindowForExternalOpen(path) && ForwardExternalOpenToPrimary(path)) {
         if (primaryMutex) CloseHandle(primaryMutex);
+        OleUninitialize();
         CoUninitialize();
         return 0;
     }
@@ -15276,7 +15473,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     HWND window = CreateWindowExW(0, kWindowClass, kWindowTitle, windowStyle,
         bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
         nullptr, nullptr, instance, &viewer);
-    if (!window) { if (primaryMutex) CloseHandle(primaryMutex); CoUninitialize(); return 1; }
+    if (!window) { if (primaryMutex) CloseHandle(primaryMutex); OleUninitialize(); CoUninitialize(); return 1; }
 
     SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(windowClass.hIcon));
     SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(windowClass.hIconSm));
@@ -15297,6 +15494,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         DispatchMessageW(&message);
     }
     if (primaryMutex) CloseHandle(primaryMutex);
+    OleUninitialize();
     CoUninitialize();
     return static_cast<int>(message.wParam);
 }

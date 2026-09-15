@@ -13596,11 +13596,16 @@ private:
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
         const int width = std::min(desiredWidth, availableWidth);
         if (overlay_ == OverlayKind::Settings) {
-            const RECT probe{ (client.right - width) / 2, top, (client.right - width) / 2 + width, top + MulDiv(2000, dpi, 96) };
-            settingsLayoutProbeBounds_ = probe;
-            const int naturalContentBottom = std::max(SettingsContentBottom(SettingsPage::General), SettingsContentBottom(SettingsPage::Image2D));
-            settingsLayoutProbeBounds_.reset();
-            desiredHeight = naturalContentBottom + MulDiv(18, dpi, 96);
+            if (settingsPreferredHeightDpi_ != dpi || settingsPreferredHeightWidth_ != width) {
+                const RECT probe{ (client.right - width) / 2, top, (client.right - width) / 2 + width, top + MulDiv(2000, dpi, 96) };
+                settingsLayoutProbeBounds_ = probe;
+                const int naturalContentBottom = std::max(SettingsContentBottom(SettingsPage::General), SettingsContentBottom(SettingsPage::Image2D));
+                settingsLayoutProbeBounds_.reset();
+                settingsPreferredHeightDpi_ = dpi;
+                settingsPreferredHeightWidth_ = width;
+                settingsPreferredHeight_ = naturalContentBottom + MulDiv(18, dpi, 96);
+            }
+            desiredHeight = settingsPreferredHeight_;
         }
         const int height = std::min(desiredHeight, availableHeight);
         const int left = (client.right - width) / 2;
@@ -15456,6 +15461,9 @@ private:
     SettingsPage settingsPage_ = SettingsPage::General;
     float settingsScroll_ = 0.0f;
     mutable std::optional<RECT> settingsLayoutProbeBounds_;
+    mutable UINT settingsPreferredHeightDpi_ = 0;
+    mutable int settingsPreferredHeightWidth_ = 0;
+    mutable int settingsPreferredHeight_ = 0;
     std::array<SettingsToggleVisualState, static_cast<size_t>(ButtonKind::Count)> settingsToggleVisuals_{};
     float componentPanelScroll_ = 0.0f;
     mutable int componentPanelHoverRow_ = -1;

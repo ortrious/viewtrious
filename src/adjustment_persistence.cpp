@@ -1,8 +1,8 @@
 #include "adjustment_persistence.h"
+#include "application_paths.h"
 
 #include <windows.h>
 #include <bcrypt.h>
-#include <shlobj_core.h>
 
 #include <algorithm>
 #include <condition_variable>
@@ -57,58 +57,6 @@ void TraceSqliteError(const wchar_t* context, int result) {
     wchar_t message[160]{};
     swprintf_s(message, L"[Viewtrious] SQLITE_ERROR %s rc=%d", context, result);
     Trace(message);
-}
-
-std::wstring ModuleDirectory() {
-    std::vector<wchar_t> buffer(MAX_PATH);
-    for (;;) {
-        const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-        if (!length) return {};
-        if (length < buffer.size()) return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path().wstring();
-        buffer.resize(buffer.size() * 2);
-    }
-}
-
-bool ResolveDatabasePath(std::filesystem::path& databasePath) {
-    PWSTR localAppData = nullptr;
-    const HRESULT result = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData);
-    if (FAILED(result)) {
-        if (localAppData) CoTaskMemFree(localAppData);
-        Trace(L"[Viewtrious] SQLITE_PERSISTENCE_UNAVAILABLE LocalAppData path");
-        return false;
-    }
-    if (!localAppData) {
-        Trace(L"[Viewtrious] SQLITE_PERSISTENCE_UNAVAILABLE LocalAppData path");
-        return false;
-    }
-    const std::filesystem::path directory = std::filesystem::path(localAppData) / L"Viewtrious";
-    CoTaskMemFree(localAppData);
-
-    std::error_code error;
-    std::filesystem::create_directories(directory, error);
-    if (error) {
-        Trace(L"[Viewtrious] SQLITE_PERSISTENCE_UNAVAILABLE LocalAppData directory");
-        return false;
-    }
-
-    databasePath = directory / L"Viewtrious.db";
-    const bool destinationExists = std::filesystem::exists(databasePath, error);
-    if (error) {
-        Trace(L"[Viewtrious] SQLITE_PERSISTENCE_UNAVAILABLE LocalAppData database");
-        return false;
-    }
-    if (destinationExists) return true;
-
-    const std::wstring moduleDirectory = ModuleDirectory();
-    if (moduleDirectory.empty()) return true;
-    const std::filesystem::path legacyPath = std::filesystem::path(moduleDirectory) / L"Viewtrious.db";
-    const bool legacyExists = std::filesystem::exists(legacyPath, error);
-    if (error || !legacyExists) return true;
-
-    std::filesystem::copy_file(legacyPath, databasePath, std::filesystem::copy_options::none, error);
-    if (error) Trace(L"[Viewtrious] SQLITE_LEGACY_MIGRATION_FAILED");
-    else Trace(L"[Viewtrious] SQLITE_LEGACY_MIGRATION_COMPLETE");
-    return true;
 }
 
 std::wstring NormalizedPath(const std::wstring& path) {
@@ -210,7 +158,7 @@ struct ImageAdjustmentPersistence::Impl {
 
     bool OpenDatabase() {
         std::filesystem::path databasePath;
-        if (!ResolveDatabasePath(databasePath)) return false;
+        if (!ViewtriousPaths::ResolveSettingsDatabasePath(databasePath)) return false;
         module = LoadLibraryExW(L"winsqlite3.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!module) { Trace(L"[Viewtrious] WINSQLITE_RUNTIME_UNAVAILABLE system runtime"); return false; }
         if (!ResolveProc(openV2, "sqlite3_open_v2") || !ResolveProc(close, "sqlite3_close") || !ResolveProc(exec, "sqlite3_exec") || !ResolveProc(free, "sqlite3_free") ||
@@ -230,10 +178,10 @@ struct ImageAdjustmentPersistence::Impl {
         int version = 0;
         if (!Prepare("PRAGMA user_version;", &statement) || step(statement) != kSqliteRow) { if (statement) finalize(statement); CloseDatabase(); return false; }
         version = columnInt(statement, 0); finalize(statement);
-        if (version > 3) { Trace(L"[Viewtrious] SQLITE_ERROR newer schema"); CloseDatabase(); return false; }
-        if (!Execute("PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS file_hash_cache (path TEXT PRIMARY KEY, file_size INTEGER NOT NULL, file_mtime INTEGER NOT NULL, sha256 BLOB NOT NULL); CREATE TABLE IF NOT EXISTS image_adjustments (sha256 BLOB PRIMARY KEY, adjustment_version INTEGER NOT NULL, exposure REAL NOT NULL, brightness REAL NOT NULL, contrast REAL NOT NULL, shadows REAL NOT NULL, highlights REAL NOT NULL, saturation REAL NOT NULL, sharpness REAL NOT NULL DEFAULT 0, updated_utc INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS video_adjustments (sha256 BLOB PRIMARY KEY, adjustment_version INTEGER NOT NULL, exposure REAL NOT NULL, brightness REAL NOT NULL, contrast REAL NOT NULL, shadows REAL NOT NULL, highlights REAL NOT NULL, saturation REAL NOT NULL, sharpness REAL NOT NULL DEFAULT 0, updated_utc INTEGER NOT NULL);")) { CloseDatabase(); return false; }
-        if (version == 1 && !Execute("BEGIN IMMEDIATE; ALTER TABLE image_adjustments ADD COLUMN sharpness REAL NOT NULL DEFAULT 0; PRAGMA user_version=3; COMMIT;")) { CloseDatabase(); return false; }
-        if (version < 3 && version != 1 && !Execute("PRAGMA user_version=3;")) { CloseDatabase(); return false; }
+        if (version > 4) { Trace(L"[Viewtrious] SQLITE_ERROR newer schema"); CloseDatabase(); return false; }
+        if (!Execute("PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS file_hash_cache (path TEXT PRIMARY KEY, file_size INTEGER NOT NULL, file_mtime INTEGER NOT NULL, sha256 BLOB NOT NULL); CREATE TABLE IF NOT EXISTS image_adjustments (sha256 BLOB PRIMARY KEY, adjustment_version INTEGER NOT NULL, exposure REAL NOT NULL, brightness REAL NOT NULL, contrast REAL NOT NULL, shadows REAL NOT NULL, highlights REAL NOT NULL, saturation REAL NOT NULL, sharpness REAL NOT NULL DEFAULT 0, updated_utc INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS video_adjustments (sha256 BLOB PRIMARY KEY, adjustment_version INTEGER NOT NULL, exposure REAL NOT NULL, brightness REAL NOT NULL, contrast REAL NOT NULL, shadows REAL NOT NULL, highlights REAL NOT NULL, saturation REAL NOT NULL, sharpness REAL NOT NULL DEFAULT 0, updated_utc INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value INTEGER NOT NULL);")) { CloseDatabase(); return false; }
+        if (version == 1 && !Execute("BEGIN IMMEDIATE; ALTER TABLE image_adjustments ADD COLUMN sharpness REAL NOT NULL DEFAULT 0; PRAGMA user_version=4; COMMIT;")) { CloseDatabase(); return false; }
+        if (version < 4 && version != 1 && !Execute("PRAGMA user_version=4;")) { CloseDatabase(); return false; }
         Trace(L"[Viewtrious] WINSQLITE_RUNTIME_LOADED"); Trace(L"[Viewtrious] SQLITE_DB_OPEN"); Trace(L"[Viewtrious] SQLITE_SCHEMA_READY");
         return true;
     }

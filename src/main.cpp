@@ -27,6 +27,8 @@
 #include "three_mf_loader.h"
 #include "ai_addon_loader.h"
 #include "adjustment_persistence.h"
+#include "application_paths.h"
+#include "application_settings.h"
 
 #include <algorithm>
 #include <atomic>
@@ -307,7 +309,6 @@ constexpr std::array<const wchar_t*, 6> kAntiAliasingOptions{ L"Off", L"2x MSAA"
 constexpr std::array<const wchar_t*, 7> kAntiAliasingDisplayOptions{ L"Off", L"2x MSAA", L"4x MSAA", L"8x MSAA", L"1.5x SSAA", L"2x SSAA", L"8x MSAA (Wireframe fallback)" };
 constexpr std::array<const wchar_t*, 2> kProjectionOptions{ L"Perspective", L"Orthographic" };
 constexpr std::array<const wchar_t*, 3> kVisualStyleOptions{ L"Shaded", L"Shaded with Visible Edges", L"Wireframe" };
-constexpr wchar_t kSettingsKey[] = L"Software\\Viewtrious";
 constexpr wchar_t kRegisteredApplicationName[] = L"viewtrious";
 constexpr wchar_t kCapabilitiesPath[] = L"Software\\Viewtrious\\Capabilities";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
@@ -822,15 +823,11 @@ bool SameFileIdentity(const FileIdentity& left, const FileIdentity& right) {
 }
 
 bool ReadSetting(const wchar_t* name, DWORD& value) {
-    DWORD size = sizeof(value);
-    return RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, name, RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS;
+    return ApplicationSettings::ReadDword(name, value);
 }
 
 void WriteSetting(const wchar_t* name, DWORD value) {
-    HKEY key = nullptr;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
-    RegSetValueExW(key, name, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&value), sizeof(value));
-    RegCloseKey(key);
+    ApplicationSettings::WriteDword(name, value);
 }
 
 ExternalOpenBehavior ReadExternalOpenBehavior(const wchar_t* name) {
@@ -880,34 +877,7 @@ bool ForwardExternalOpenToPrimary(const std::wstring& path) {
 
 void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const wchar_t* name, LONG error);
 
-bool DeleteSettingsValues() {
-    HKEY key = nullptr;
-    LONG result = RegOpenKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &key);
-    if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return true;
-    if (result != ERROR_SUCCESS) { TraceRegistryFailure(L"open for reset", kSettingsKey, L"", result); return false; }
-
-    DWORD maximumNameLength = 0;
-    result = RegQueryInfoKeyW(key, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &maximumNameLength, nullptr, nullptr, nullptr);
-    if (result != ERROR_SUCCESS) {
-        RegCloseKey(key);
-        TraceRegistryFailure(L"query for reset", kSettingsKey, L"", result);
-        return false;
-    }
-
-    std::vector<wchar_t> name(maximumNameLength + 1);
-    while (true) {
-        DWORD nameLength = static_cast<DWORD>(name.size());
-        result = RegEnumValueW(key, 0, name.data(), &nameLength, nullptr, nullptr, nullptr, nullptr);
-        if (result == ERROR_NO_MORE_ITEMS) break;
-        if (result != ERROR_SUCCESS) break;
-        result = RegDeleteValueW(key, name.data());
-        if (result != ERROR_SUCCESS) break;
-    }
-    RegCloseKey(key);
-    if (result == ERROR_NO_MORE_ITEMS) return true;
-    TraceRegistryFailure(L"delete setting", kSettingsKey, L"", result);
-    return false;
-}
+bool DeleteSettingsValues() { return ApplicationSettings::Clear(); }
 
 void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const wchar_t* name, LONG error) {
 #ifdef _DEBUG
@@ -1275,6 +1245,7 @@ public:
     explicit Viewer(const StartupTimer& timer) : timer_(timer) {}
 
     HRESULT Initialize(const std::wstring& path) {
+        ApplicationSettings::Initialize();
         HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
             IID_PPV_ARGS(&wicFactory_));
         if (FAILED(hr)) {
@@ -2603,11 +2574,7 @@ public:
         }
         WriteSetting(L"UserAdjustmentPresetSaved", neutral ? 0 : 1);
         if (neutral) {
-            HKEY key = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
-                for (const wchar_t* name : names) RegDeleteValueW(key, name);
-                RegCloseKey(key);
-            }
+            for (const wchar_t* name : names) ApplicationSettings::DeleteDword(name);
             userAdjustmentPreset_ = {};
             userAdjustmentPresetSaved_ = false;
             if (imageAdjustmentSource_ == AdjustmentSource::User) imageAdjustmentSource_ = AdjustmentSource::None;
@@ -8717,17 +8684,11 @@ public:
         else if (fullscreen_) placement = fullscreenPlacement_;
         else if (!GetWindowPlacement(window_, &placement)) return;
         const RECT& rect = placement.rcNormalPosition;
-        HKEY key = nullptr;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
-        const auto write = [key](const wchar_t* name, DWORD value) {
-            RegSetValueExW(key, name, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&value), sizeof(value));
-        };
-        write(L"WindowLeft", static_cast<DWORD>(rect.left));
-        write(L"WindowTop", static_cast<DWORD>(rect.top));
-        write(L"WindowWidth", static_cast<DWORD>(rect.right - rect.left));
-        write(L"WindowHeight", static_cast<DWORD>(rect.bottom - rect.top));
-        write(L"WindowMaximized", placement.showCmd == SW_SHOWMAXIMIZED ? 1 : 0);
-        RegCloseKey(key);
+        WriteSetting(L"WindowLeft", static_cast<DWORD>(rect.left));
+        WriteSetting(L"WindowTop", static_cast<DWORD>(rect.top));
+        WriteSetting(L"WindowWidth", static_cast<DWORD>(rect.right - rect.left));
+        WriteSetting(L"WindowHeight", static_cast<DWORD>(rect.bottom - rect.top));
+        WriteSetting(L"WindowMaximized", placement.showCmd == SW_SHOWMAXIMIZED ? 1 : 0);
     }
 
     void Shutdown() {
@@ -9911,11 +9872,9 @@ private:
     }
 
     HRESULT GetWallpaperStagingDirectory(fs::path& directory) const {
-        PWSTR localAppData = nullptr;
-        const HRESULT result = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData);
-        if (FAILED(result)) return result;
-        directory = fs::path(localAppData) / L"Viewtrious" / L"Wallpaper";
-        CoTaskMemFree(localAppData);
+        directory = ViewtriousPaths::CacheDirectory();
+        if (directory.empty()) return E_FAIL;
+        directory /= L"Wallpaper";
         return S_OK;
     }
 

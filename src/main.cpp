@@ -14333,7 +14333,7 @@ private:
         const bool tutorialMetadata = tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails;
         const bool hideTutorialMetadata = tutorialPresentation_ && !tutorialMetadata;
         ID2D1Brush* activeMetadataBrush = tutorialMetadata ? tutorialMetadataBrush.Get() : metadataBrush.Get();
-        if (tutorialMetadata) DrawPresentationTitleMetadata(frame, activeMetadataBrush, L"1920", L"1080", kTopBarResolutionSeparator, L"24 fps");
+        if (tutorialMetadata) DrawPresentationTitleMetadata(frame, activeMetadataBrush, L"1920", L"1080", kTopBarResolutionSeparator, L"24-bit");
         else if (!hideTutorialMetadata && (VideoActive() || contentKind_ == ContentKind::Image2D || titleMetadataHandoffActive_) && !titleResolutionWidthText_.empty()) DrawPresentationTitleMetadata(frame, activeMetadataBrush);
         else DrawTitleText(hideTutorialMetadata ? L"" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
         DrawTitleText(tutorialMetadata ? L"1.2 MB" : hideTutorialMetadata ? L"" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);

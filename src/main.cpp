@@ -1636,9 +1636,12 @@ public:
         else if (item == DropdownItem::Close) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
     }
     void OpenFile() {
-        CancelVideoAutoPlayNextCountdown();
+        CancelVideoAutoPlayNextCountdown(false);
         ComPtr<IFileOpenDialog> dialog;
-        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
+        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
         static const COMDLG_FILTERSPEC filters[] = {
             { L"Supported files", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.dng;*.cr2;*.cr3;*.nef;*.arw;*.raf;*.mp4;*.mov;*.mkv;*.stl;*.3mf" },
             { L"All files", L"*.*" },
@@ -8128,13 +8131,13 @@ public:
         }
         return std::nullopt;
     }
-    void CancelVideoAutoPlayNextCountdown() {
+    void CancelVideoAutoPlayNextCountdown(bool invalidate = true) {
         if (!videoAutoPlayNextCountdownActive_) return;
         KillTimer(window_, kVideoAutoPlayNextCountdownTimer);
         videoAutoPlayNextCountdownActive_ = false;
         videoAutoPlayNextCountdownSourcePath_.clear();
         videoAutoPlayNextCountdownTargetPath_.clear();
-        InvalidateRect(window_, nullptr, FALSE);
+        if (invalidate) InvalidateRect(window_, nullptr, FALSE);
     }
     void BeginVideoAutoPlayNextCountdown() {
         if (!videoAutoPlayNext_ || videoAutoPlayNextCountdownActive_ || !VideoActive() || !videoPlayer_.Ended()) return;
@@ -9418,6 +9421,7 @@ private:
         }
         const std::wstring executable(modulePath);
         const std::wstring command = L"\"" + executable + L"\" \"%1\"";
+        const std::wstring applicationIcon = executable + L",-" + std::to_wstring(kApplicationIconGroupResourceId);
         const struct Association { const wchar_t* extension; const wchar_t* progId; const wchar_t* description; int iconResourceId; } associations[] = {
             { L".jpg", L"Viewtrious.jpg", L"JPG File", 101 },
             { L".jpeg", L"Viewtrious.jpeg", L"JPEG File", 101 },
@@ -9469,11 +9473,12 @@ private:
         for (const Association& association : associations) success &= registerAssociation(association);
         success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
         success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"viewtrious image viewer");
+        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationIcon", applicationIcon);
         success &= WriteRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
         success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
         success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"viewtrious image viewer");
+        success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationIcon", applicationIcon);
         success &= VerifyRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
-        if (success) success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", L"Viewtrious");
         bool thumbnailProviderChanged = false;
         success &= RegisterStlThumbnailProvider(executable, thumbnailProviderChanged);
         bool autoProgIdChanged = false;
@@ -13315,10 +13320,10 @@ private:
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::DefaultAppsHelper) {
             DrawProductName(L"viewtrious", left, static_cast<float>(bounds.top) + 24.0f * dpiScale, contentWidth, 24.0f * dpiScale,
-                17.0f, primaryBrush.Get(), false);
+                17.0f, primaryBrush.Get(), true);
             DrawOverlayText(L"choose which file types should open with viewtrious.", left,
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
             constexpr float formatPanelTop = 102.0f, formatPanelHeight = 200.0f, formatPanelPadding = 12.0f;
             constexpr float categoryLineHeight = 20.0f, formatLineHeight = 18.0f, labelToFormatsGap = 6.0f, familyGap = 12.0f, closingTop = 318.0f;
             ComPtr<ID2D1SolidColorBrush> formatPanelBrush;
@@ -13346,7 +13351,7 @@ private:
             drawFormatFamily(L"3D", L"STL, 3MF", modelsTop);
             DrawOverlayText(L"close Windows Settings when you are finished.", left,
                 static_cast<float>(bounds.top) + closingTop * dpiScale, contentWidth, 24.0f * dpiScale,
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
             const RECT cancelBounds = GetDefaultAppsHelperButtonBounds(false), openBounds = GetDefaultAppsHelperButtonBounds(true);
             const D2D1_RECT_F cancel = D2D1::RectF(static_cast<float>(cancelBounds.left), static_cast<float>(cancelBounds.top), static_cast<float>(cancelBounds.right), static_cast<float>(cancelBounds.bottom));
             const D2D1_RECT_F open = D2D1::RectF(static_cast<float>(openBounds.left), static_cast<float>(openBounds.top), static_cast<float>(openBounds.right), static_cast<float>(openBounds.bottom));
@@ -15039,8 +15044,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
-        if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (viewer->TutorialActive()) {
+            const ButtonKind button = viewer->ButtonAt(point);
+            if (button == ButtonKind::TutorialSkip || button == ButtonKind::TutorialNext) {
+                viewer->SetButtonPressed(button);
+                SetCapture(window);
+            }
+            return 0;
+        }
+        if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         if (viewer->ComponentsPanelContains(point)) return 0;
         if (viewer->FilmstripContains(point)) return 0;
         if (viewer->ButtonAt(point) == ButtonKind::ImageAdjustments) {

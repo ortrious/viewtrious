@@ -321,12 +321,12 @@ constexpr float kSignedAdjustmentSliderMaximum = 1.0f;
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError, RegistrationError };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
-enum class ButtonKind { None, EmptyOpenFile, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
+enum class ButtonKind { None, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments, ViewBarBuildPlateSize, ViewBarPlateWidth, ViewBarPlateDepth, ViewBarPlateLink, ViewBarPlateReset };
-enum class TutorialStep { None, OpenImages, ResizeWindow, MenuSettings, ImageDetails, ContextMenu, Shortcuts };
+enum class TutorialStep { None, OpenImages, ImageDetails, ZoomAdjustments, ResizeWindow, MenuSettings, ContextMenu, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
 enum class VideoWindowSizing : DWORD { FitToWindow = 0, ResizeWindowToVideo = 1 };
@@ -2636,15 +2636,17 @@ public:
         remainder %= WHEEL_DELTA;
         return steps;
     }
-    ZoomHudLayout GetZoomHudLayout(const RECT& canvas, bool includeAdjustmentButton) const {
+    ZoomHudLayout GetZoomHudLayout(const RECT& canvas, bool includeAdjustmentButton, bool forceZoomPercentage = false,
+        std::optional<ZoomHudPosition> positionOverride = std::nullopt) const {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        const int zoomWidth = showZoomPercentage_ ? static_cast<int>(std::lround(72.0f * scale)) : 0;
+        const int zoomWidth = (showZoomPercentage_ || forceZoomPercentage) ? static_cast<int>(std::lround(72.0f * scale)) : 0;
         const int height = static_cast<int>(std::lround(30.0f * scale));
         const int buttonWidth = height;
         const int gap = static_cast<int>(std::lround(2.0f * scale));
         const int margin = static_cast<int>(std::lround(14.0f * scale));
-        const bool left = zoomHudPosition_ == ZoomHudPosition::BottomLeft || zoomHudPosition_ == ZoomHudPosition::TopLeft;
-        const bool top = zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight;
+        const ZoomHudPosition position = positionOverride.value_or(zoomHudPosition_);
+        const bool left = position == ZoomHudPosition::BottomLeft || position == ZoomHudPosition::TopLeft;
+        const bool top = position == ZoomHudPosition::TopLeft || position == ZoomHudPosition::TopRight;
         const int totalWidth = (includeAdjustmentButton ? buttonWidth : 0) + (zoomWidth ? (includeAdjustmentButton ? gap : 0) + zoomWidth : 0);
         const LONG defaultX = left ? canvas.left + margin : canvas.right - margin - totalWidth;
         const LONG defaultY = top ? canvas.top + margin : canvas.bottom - margin - height;
@@ -2655,13 +2657,14 @@ public:
         const RECT adjustments = includeAdjustmentButton ? (left ? RECT{ zoom.right + (zoomWidth ? gap : 0), y, combined.right, y + height } : RECT{ x, y, x + buttonWidth, y + height }) : RECT{};
         return { combined, zoom, adjustments, zoomWidth != 0 };
     }
-    ZoomHudLayout GetImageZoomHudLayout() const {
+    ZoomHudLayout GetImageZoomHudLayout(bool tutorialPreview = false) const {
         const D2D1_RECT_F bounds = ImageCanvasBounds();
-        return GetZoomHudLayout({ static_cast<LONG>(bounds.left), static_cast<LONG>(bounds.top), static_cast<LONG>(bounds.right), static_cast<LONG>(bounds.bottom) }, true);
+        return GetZoomHudLayout({ static_cast<LONG>(bounds.left), static_cast<LONG>(bounds.top), static_cast<LONG>(bounds.right), static_cast<LONG>(bounds.bottom) },
+            true, tutorialPreview, tutorialPreview ? std::optional(ZoomHudPosition::BottomRight) : std::nullopt);
     }
     ZoomHudLayout GetVideoZoomHudLayout() const { return GetZoomHudLayout(ModelCanvasBounds(), true); }
-    ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelTargetLayout() const {
-        const ZoomHudLayout hud = GetImageZoomHudLayout();
+    ImageAdjustmentsPanelLayout GetImageAdjustmentsPanelTargetLayout(bool tutorialPreview = false) const {
+        const ZoomHudLayout hud = GetImageZoomHudLayout(tutorialPreview);
         const D2D1_RECT_F canvas = ImageCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
         const int gap = MulDiv(8, dpi, 96);
@@ -2671,12 +2674,12 @@ public:
         const int height = std::min(MulDiv(238, dpi, 96), std::max(1, bottom - (static_cast<int>(canvas.top) + gap)));
         return MakeVideoAdjustmentsPanelLayout({ panelLeft, bottom - height, panelLeft + width, bottom }, false);
     }
-    AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel) const {
+    AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel, bool tutorialPreview = false) const {
         if (drawingHeldAdjustmentPanel_) return adjustmentPanelNavigation_.lip;
         // The lipped silhouette is intended for the bottom-right HUD anchor. Other HUD
         // positions retain the established rounded rectangle rather than forcing a foot
         // through a constrained or unrelated lower-overlay layout.
-        const bool hudAtBottomRight = zoomHudPosition_ == ZoomHudPosition::BottomRight;
+        const bool hudAtBottomRight = tutorialPreview || zoomHudPosition_ == ZoomHudPosition::BottomRight;
         if (!hudAtBottomRight) return {};
 
         const UINT dpi = GetDpiForWindow(window_);
@@ -2684,14 +2687,14 @@ public:
         const LONG clearance = MulDiv(8, dpi, 96);
         const LONG minimumFootWidth = MulDiv(220, dpi, 96);
         // Video translates the finished image panel, including its footer, as one unit.
-        const auto normal = VideoActive() ? GetImageAdjustmentsPanelTargetLayout() : panel;
-        const ZoomHudLayout hud = GetImageZoomHudLayout();
+        const auto normal = VideoActive() || tutorialPreview ? GetImageAdjustmentsPanelTargetLayout(tutorialPreview) : panel;
+        const ZoomHudLayout hud = GetImageZoomHudLayout(tutorialPreview);
         const LONG footLeft = normal.panel.left;
         const LONG footRight = std::min(normal.panel.right - radius * 2, hud.combined.left - clearance);
         if (footRight - footLeft < minimumFootWidth) return {};
 
         LONG footBottom = normal.panel.bottom;
-        if (VideoActive()) {
+        if (VideoActive() || tutorialPreview) {
             // Match the image filmstrip's 16-DIP canvas-bottom anchor. Videos have no
             // source_, so FilmstripEligible()/GetFilmstripBounds() cannot supply it.
             footBottom = static_cast<LONG>(ImageCanvasBounds().bottom) - MulDiv(16, dpi, 96);
@@ -3639,10 +3642,11 @@ public:
         tutorialPlacementSuppressed_ = false;
     }
     void AdvanceTutorial() {
-        if (tutorialStep_ == TutorialStep::OpenImages) SetTutorialStep(TutorialStep::ResizeWindow);
+        if (tutorialStep_ == TutorialStep::OpenImages) SetTutorialStep(TutorialStep::ImageDetails);
+        else if (tutorialStep_ == TutorialStep::ImageDetails) SetTutorialStep(TutorialStep::ZoomAdjustments);
+        else if (tutorialStep_ == TutorialStep::ZoomAdjustments) SetTutorialStep(TutorialStep::ResizeWindow);
         else if (tutorialStep_ == TutorialStep::ResizeWindow) SetTutorialStep(TutorialStep::MenuSettings);
-        else if (tutorialStep_ == TutorialStep::MenuSettings) SetTutorialStep(TutorialStep::ImageDetails);
-        else if (tutorialStep_ == TutorialStep::ImageDetails) SetTutorialStep(TutorialStep::ContextMenu);
+        else if (tutorialStep_ == TutorialStep::MenuSettings) SetTutorialStep(TutorialStep::ContextMenu);
         else if (tutorialStep_ == TutorialStep::ContextMenu) SetTutorialStep(TutorialStep::Shortcuts);
         else StopTutorial();
     }
@@ -4489,7 +4493,6 @@ public:
         if (helpTopic >= 0) { helpTopicHit_ = helpTopic; return ButtonKind::HelpTopic; }
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
-        if (EmptyStateActive() && EmptyOpenFileButtonContains(point)) return ButtonKind::EmptyOpenFile;
         if (overlay_ == OverlayKind::Settings) {
             const auto containsNavigation = [&point, this](SettingsPage page) {
                 const RECT navigation = GetSettingsNavigationBounds(page);
@@ -4672,8 +4675,7 @@ public:
         if (invalidate) InvalidateRect(window_, nullptr, FALSE);
     }
     void InvokeButton(ButtonKind button) {
-        if (button == ButtonKind::EmptyOpenFile) OpenFile();
-        else if (button == ButtonKind::CanvasPrevious) Navigate(-1);
+        if (button == ButtonKind::CanvasPrevious) Navigate(-1);
         else if (button == ButtonKind::CanvasNext) Navigate(1);
         else if (button == ButtonKind::SettingsGeneralPage) { settingsPage_ = SettingsPage::General; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsImage2DPage) { settingsPage_ = SettingsPage::Image2D; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
@@ -4834,11 +4836,6 @@ public:
         CloseHandle(process.hProcess);
         DestroyWindow(window_);
     }
-    bool EmptyOpenFileButtonContains(POINT point) const {
-        if (!EmptyStateActive() || tutorialPresentation_ || HasOverlay() || dropdownOpen_ || contextMenuOpen_) return false;
-        const RECT bounds = GetEmptyOpenFileButtonBounds();
-        return PtInRect(&bounds, point);
-    }
     void ToggleVideoFullscreen() {
         if (!VideoActive()) return;
         ToggleFullscreen();
@@ -4930,6 +4927,7 @@ public:
             if (!tutorialPresentation_) DrawVideoFrameSaveToast();
             if (!tutorialPresentation_) DrawCopyFeedback();
             DrawTutorial();
+            DrawResizeAffordance();
             const HRESULT hr = graphicsHost_.EndDraw();
             if (SUCCEEDED(hr) && (bitmap_ || VideoActive()) && !tutorialPresentation_) MarkFirstPresentation();
             if (hr == D2DERR_RECREATE_TARGET) DiscardRenderResources();
@@ -9573,10 +9571,11 @@ private:
         const int skipWidth = MeasureTutorialButtonWidth(L"Skip");
         const int height = MulDiv(36, dpi, 96);
         const int gap = MulDiv(10, dpi, 96);
-        const int right = client.right - MulDiv(24, dpi, 96);
+        const int groupWidth = skipWidth + gap + nextWidth;
+        const int left = (client.right - groupWidth) / 2;
         const int top = client.bottom - MulDiv(22, dpi, 96) - height;
-        if (next) return { right - nextWidth, top, right, top + height };
-        return { right - nextWidth - gap - skipWidth, top, right - nextWidth - gap, top + height };
+        if (next) return { left + skipWidth + gap, top, left + groupWidth, top + height };
+        return { left, top, left + skipWidth, top + height };
     }
 
     bool TutorialButtonContains(POINT point, bool next) const {
@@ -12105,9 +12104,10 @@ private:
         }
     }
 
-    void DrawAdjustmentPanelContent(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float opacity,
+    void DrawAdjustmentPanelContent(const VideoAdjustmentsPanelLayout& panel, const AdjustmentPanelLipLayout& lip,
+        const ImageAdjustments& adjustments, float opacity,
         AdjustmentSource source, bool originalActive, ID2D1SolidColorBrush* text, ID2D1SolidColorBrush* accent, ID2D1SolidColorBrush* orange,
-        ID2D1SolidColorBrush* track, ID2D1SolidColorBrush* hover) {
+        ID2D1SolidColorBrush* track, ID2D1SolidColorBrush* hover, bool interactive = true) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const std::array<const wchar_t*, 7> labels{ L"exposure", L"brightness", L"contrast", L"shadows", L"highlights", L"saturation", L"sharpness" };
         const std::array<float, 7> values{ adjustments.exposure * 0.5f, adjustments.brightness, adjustments.contrast, adjustments.shadows, adjustments.highlights, adjustments.saturation, adjustments.sharpness / kSharpnessSliderMaximum };
@@ -12132,8 +12132,8 @@ private:
         }
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         const auto drawButton = [&](const RECT& bounds, const wchar_t* label, AdjustmentFooterButton button, ID2D1SolidColorBrush* glyph, bool enabled = true) {
-            const bool pressed = adjustmentFooterPressed_ == button;
-            const float hoverOpacity = opacity * (0.72f + 0.28f * (adjustmentFooterHovered_ == button ? adjustmentFooterHoverProgress_ : 0.0f));
+            const bool pressed = interactive && adjustmentFooterPressed_ == button;
+            const float hoverOpacity = opacity * (0.72f + 0.28f * (interactive && adjustmentFooterHovered_ == button ? adjustmentFooterHoverProgress_ : 0.0f));
             hover->SetOpacity(hoverOpacity);
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(bounds), 5.0f * scale, 5.0f * scale), pressed ? accent : hover);
             hover->SetOpacity(opacity);
@@ -12141,10 +12141,11 @@ private:
             DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, glyph, true, false, true);
             glyph->SetOpacity(opacity);
         };
-        const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
+        const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, lip);
         drawButton(actions.autoButton, L"AUTO", AdjustmentFooterButton::Auto, source == AdjustmentSource::Auto ? orange : text);
-        drawButton(actions.userButton, L"USER", AdjustmentFooterButton::User, source == AdjustmentSource::User ? orange : (userAdjustmentPresetSaved_ ? accent : text), userAdjustmentPresetSaved_);
-        const bool saveConfirmed = adjustmentFooterSaveConfirmedAt_ != 0 && GetTickCount64() - adjustmentFooterSaveConfirmedAt_ < 260;
+        const bool userPresetAvailable = interactive && userAdjustmentPresetSaved_;
+        drawButton(actions.userButton, L"USER", AdjustmentFooterButton::User, source == AdjustmentSource::User ? orange : (userPresetAvailable ? accent : text), userPresetAvailable);
+        const bool saveConfirmed = interactive && adjustmentFooterSaveConfirmedAt_ != 0 && GetTickCount64() - adjustmentFooterSaveConfirmedAt_ < 260;
         drawButton(actions.saveButton, L"SAVE", AdjustmentFooterButton::Save, saveConfirmed ? accent : text);
         drawButton(actions.originalButton, L"", AdjustmentFooterButton::Original, text);
         DrawAdjustmentOriginalEyeIcon(actions.originalButton, originalActive, text, scale);
@@ -12209,12 +12210,12 @@ private:
     }
 
     void DrawAdjustmentPanelShell(const VideoAdjustmentsPanelLayout& panel, const AdjustmentPanelLipLayout& lip,
-        ID2D1Brush* surface, ID2D1Brush* border, float scale) {
+        ID2D1Brush* surface, ID2D1Brush* border, float scale, bool allowDocking = true) {
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         const float radius = 10.0f * scale;
         RECT join{};
         float morph = 0.0f;
-        if (GetAdjustmentDockMorph(join, morph) && lip.active && join.bottom == lip.bounds.bottom &&
+        if (allowDocking && GetAdjustmentDockMorph(join, morph) && lip.active && join.bottom == lip.bounds.bottom &&
             join.left == panel.panel.left && join.right == panel.panel.right) {
             // The separately drawn bottom band morphs during approach; keep the
             // unchanged shared content above it without double-filling that band.
@@ -12306,7 +12307,8 @@ private:
         renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
     }
 
-    void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float reveal, AdjustmentSource source, bool originalActive) {
+    void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float reveal,
+        AdjustmentSource source, bool originalActive, bool tutorialPreview = false) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const bool dark = UseDarkAppMode();
         const float panelOpacity = AdjustmentPanelPresentationOpacity(reveal);
@@ -12319,12 +12321,12 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * panelOpacity), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, panelOpacity), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
-        const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(panel);
+        const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(panel, tutorialPreview);
         const RECT revealed = AdjustmentPanelRenderedRevealBounds(panel, reveal, lip);
         if (revealed.bottom <= revealed.top) return;
         renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        DrawAdjustmentPanelShell(panel, lip, surface.Get(), border.Get(), scale);
-        DrawAdjustmentPanelContent(panel, adjustments, panelOpacity, source, originalActive, text.Get(), accent.Get(), orange.Get(), track.Get(), hover.Get());
+        DrawAdjustmentPanelShell(panel, lip, surface.Get(), border.Get(), scale, !tutorialPreview);
+        DrawAdjustmentPanelContent(panel, lip, adjustments, panelOpacity, source, originalActive, text.Get(), accent.Get(), orange.Get(), track.Get(), hover.Get(), !tutorialPreview);
         renderTarget_->PopAxisAlignedClip();
     }
 
@@ -12921,8 +12923,10 @@ private:
         renderTarget_->PopAxisAlignedClip();
     }
 
-    void DrawPresentationTitleMetadata(const FrameMetrics& frame, ID2D1Brush* brush) {
-        if (titleResolutionWidthText_.empty() || titleResolutionHeightText_.empty() || !EnsureTitleMetadataGeometry(frame)) return;
+    void DrawPresentationTitleMetadata(const FrameMetrics& frame, ID2D1Brush* brush,
+        const std::wstring& widthText, const std::wstring& heightText,
+        const std::wstring& separatorText, const std::wstring& detailText) {
+        if (widthText.empty() || heightText.empty() || !EnsureTitleMetadataGeometry(frame)) return;
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
         const float dotGap = kTopBarMetadataDotGapDip * scale;
         const float outerLeft = static_cast<float>(frame.hamburgerSeparator.right);
@@ -12932,11 +12936,16 @@ private:
         const float multiplyLeft = outerLeft + geometry.multiplyLeft;
         const float heightLeft = outerLeft + geometry.heightLeft;
         const float dotLeft = outerLeft + geometry.dotLeft;
-        DrawTitleMetadataText(titleResolutionWidthText_, widthRight - geometry.dimensionWidth, widthRight, brush, DWRITE_TEXT_ALIGNMENT_TRAILING);
-        DrawTitleMetadataText(titleResolutionSeparatorText_, multiplyLeft, multiplyLeft + geometry.multiplyWidth, brush);
-        DrawTitleMetadataText(titleResolutionHeightText_, heightLeft, heightLeft + geometry.dimensionWidth, brush);
+        DrawTitleMetadataText(widthText, widthRight - geometry.dimensionWidth, widthRight, brush, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        DrawTitleMetadataText(separatorText, multiplyLeft, multiplyLeft + geometry.multiplyWidth, brush);
+        DrawTitleMetadataText(heightText, heightLeft, heightLeft + geometry.dimensionWidth, brush);
         DrawTitleMetadataText(L"\x2022", dotLeft, dotLeft + geometry.dotWidth, brush);
-        DrawTitleMetadataText(titleDetailText_, dotLeft + geometry.dotWidth + dotGap, outerRight - dotGap, brush, DWRITE_TEXT_ALIGNMENT_CENTER);
+        DrawTitleMetadataText(detailText, dotLeft + geometry.dotWidth + dotGap, outerRight - dotGap, brush, DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+
+    void DrawPresentationTitleMetadata(const FrameMetrics& frame, ID2D1Brush* brush) {
+        DrawPresentationTitleMetadata(frame, brush, titleResolutionWidthText_, titleResolutionHeightText_,
+            titleResolutionSeparatorText_, titleDetailText_);
     }
 
     static std::wstring FormatExactTriangleCount(uint64_t count) {
@@ -13214,44 +13223,29 @@ private:
         return true;
     }
 
-    RECT GetEmptyOpenFileButtonBounds() const {
+    RECT GetEmptyStateInstructionBounds() const {
         RECT client{};
         GetClientRect(window_, &client);
         const UINT dpi = GetDpiForWindow(window_);
-        const int width = MulDiv(132, dpi, 96);
-        const int height = MulDiv(38, dpi, 96);
-        const int canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
-        const int top = canvasTop + std::max(0L, (client.bottom - canvasTop - height) / 2);
-        const int left = (client.right - width) / 2;
+        const LONG horizontalInset = MulDiv(24, dpi, 96);
+        const LONG width = std::min<LONG>(MulDiv(520, dpi, 96), std::max<LONG>(1, client.right - horizontalInset * 2));
+        const LONG height = MulDiv(58, dpi, 96);
+        const LONG canvasTop = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
+        const LONG top = canvasTop + std::max<LONG>(0, (client.bottom - canvasTop - height) / 2);
+        const LONG left = (client.right - width) / 2;
         return { left, top, left + width, top + height };
     }
 
     void DrawEmptyState() {
         if (!EmptyStatePresentationActive() || HasOverlay()) return;
         const bool dark = UseDarkAppMode();
-        ComPtr<ID2D1SolidColorBrush> primary, secondary, button, buttonHover, buttonPressed, buttonText;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(D2D1::ColorF::White) : D2D1::ColorF(30.f/255,30.f/255,30.f/255), &primary)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(205.f/255,208.f/255,214.f/255) : D2D1::ColorF(78.f/255,78.f/255,78.f/255), &secondary)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,120.f/255,212.f/255), &button)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,139.f/255,244.f/255), &buttonHover)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f/255,94.f/255,168.f/255), &buttonPressed)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &buttonText))) return;
-        const UINT dpi = GetDpiForWindow(window_);
-        const float scale = static_cast<float>(dpi) / 96.0f;
-        const D2D1_SIZE_F target = ClientSize();
-        const float top = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
-        const RECT buttonBounds = GetEmptyOpenFileButtonBounds();
-        const float textTop = std::max(top, static_cast<float>(buttonBounds.top) - 38.0f * scale);
-        DrawOverlayText(error_.empty() ? L"drag and drop an image here or open a file" : error_.c_str(), 24.0f * scale,
-            textTop, target.width - 48.0f * scale, 30.0f * scale, 16.0f,
-            DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true, false, true);
-        const D2D1_RECT_F buttonRect = D2D1::RectF(static_cast<float>(buttonBounds.left), static_cast<float>(buttonBounds.top),
-            static_cast<float>(buttonBounds.right), static_cast<float>(buttonBounds.bottom));
-        ID2D1Brush* buttonBrush = pressedButton_ == ButtonKind::EmptyOpenFile ? buttonPressed.Get() :
-            hoveredButton_ == ButtonKind::EmptyOpenFile ? buttonHover.Get() : button.Get();
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(buttonRect, 5.0f * scale, 5.0f * scale), buttonBrush);
-        DrawOverlayText(L"open file", buttonRect.left, buttonRect.top, buttonRect.right - buttonRect.left,
-            buttonRect.bottom - buttonRect.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
+        ComPtr<ID2D1SolidColorBrush> secondary;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(205.f/255,208.f/255,214.f/255) : D2D1::ColorF(78.f/255,78.f/255,78.f/255), &secondary))) return;
+        const RECT bounds = GetEmptyStateInstructionBounds();
+        const wchar_t* instruction = L"open images normally from Windows File Explorer\nor drag and drop an image here";
+        DrawOverlayText(error_.empty() ? instruction : error_.c_str(), static_cast<float>(bounds.left), static_cast<float>(bounds.top),
+            static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 16.0f,
+            DWRITE_FONT_WEIGHT_NORMAL, secondary.Get(), true, false, true, true);
     }
 
     void DrawOverlay() {
@@ -13942,6 +13936,18 @@ private:
         GetClientRect(window_, &client);
         const float canvasTop = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
         renderTarget_->FillRectangle(D2D1::RectF(0, canvasTop, static_cast<float>(client.right), static_cast<float>(client.bottom)), veil.Get());
+        if (tutorialStep_ == TutorialStep::ZoomAdjustments) {
+            ImageAdjustments sample;
+            sample.exposure = 0.20f;
+            sample.brightness = 0.08f;
+            sample.contrast = 0.15f;
+            sample.shadows = 0.10f;
+            sample.highlights = -0.08f;
+            sample.saturation = 0.12f;
+            sample.sharpness = 0.30f;
+            DrawZoomHud(GetImageZoomHudLayout(true), 1.0f, 1.0f, true, true);
+            DrawAdjustmentPanel(GetImageAdjustmentsPanelTargetLayout(true), sample, 1.0f, AdjustmentSource::None, false, true);
+        }
         const auto scribble = [&](const RECT& target) {
             const float left = static_cast<float>(target.left) - 8.0f * scale, right = static_cast<float>(target.right) + 8.0f * scale;
             const float top = static_cast<float>(target.top) - 7.0f * scale, bottom = static_cast<float>(target.bottom) + 7.0f * scale;
@@ -13968,13 +13974,13 @@ private:
         };
         const FrameMetrics frame = GetFrameMetrics(window_);
         if (tutorialStep_ == TutorialStep::OpenImages) {
-            const RECT target = GetEmptyOpenFileButtonBounds();
-            const float annotationWidth = std::min(340.0f * scale, static_cast<float>(client.right) - 32.0f * scale);
+            const RECT target = GetEmptyStateInstructionBounds();
+            const float annotationWidth = std::min(430.0f * scale, static_cast<float>(client.right) - 32.0f * scale);
             const float annotationLeft = (static_cast<float>(target.left + target.right) - annotationWidth) / 2.0f;
             const float headingTop = static_cast<float>(target.bottom) + 24.0f * scale;
             DrawHandwrittenText(L"open images", annotationLeft, headingTop, annotationWidth, 32.0f * scale, 24.0f, pencil.Get(), true);
-            DrawOverlayText(L"use open file or drag and drop", annotationLeft, headingTop + 31.0f * scale,
-                annotationWidth, 24.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, false, true);
+            DrawOverlayText(L"open normally from Windows File Explorer\nor drag and drop onto viewtrious", annotationLeft, headingTop + 31.0f * scale,
+                annotationWidth, 48.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, false, true, true);
             scribble(target);
             const float arrowX = (target.left + target.right) / 2.0f;
             const float arrowTipY = static_cast<float>(target.bottom) + 4.0f * scale;
@@ -13997,15 +14003,37 @@ private:
                 straightArrow(D2D1::Point2F(circleX + arrowStarts[index] * scale, tipY - 52.0f * scale),
                     D2D1::Point2F(tipX, tipY), 1.8f);
             }
+        } else if (tutorialStep_ == TutorialStep::ZoomAdjustments) {
+            const VideoAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelTargetLayout(true);
+            const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(panel, true);
+            const ZoomHudLayout hud = GetImageZoomHudLayout(true);
+            const RECT panelTarget{ panel.panel.left, panel.panel.top, panel.panel.right,
+                lip.active ? lip.bounds.bottom : panel.panel.bottom };
+            const float noteWidth = std::min(390.0f * scale, std::max(240.0f * scale,
+                static_cast<float>(panelTarget.left) - 56.0f * scale));
+            const float noteLeft = 28.0f * scale;
+            const float noteTop = canvasTop + 180.0f * scale;
+            DrawHandwrittenText(L"zoom & adjustments", noteLeft, noteTop, noteWidth, 36.0f * scale, 23.0f, pencil.Get());
+            DrawOverlayText(L"check zoom here and open adjustments for fine control", noteLeft, noteTop + 37.0f * scale,
+                noteWidth, 50.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, false, false, true);
+            arrow(D2D1::Point2F(noteLeft + noteWidth * 0.72f, noteTop + 89.0f * scale),
+                D2D1::Point2F(static_cast<float>(panelTarget.left) - 5.0f * scale,
+                    static_cast<float>(panelTarget.top) + 30.0f * scale), 2.4f);
+            arrow(D2D1::Point2F(noteLeft + noteWidth * 0.60f, noteTop + 112.0f * scale),
+                D2D1::Point2F(static_cast<float>(hud.combined.left) - 5.0f * scale,
+                    (hud.combined.top + hud.combined.bottom) * 0.5f), 2.2f);
+            scribble(panelTarget);
+            scribble(hud.combined);
         } else if (tutorialStep_ == TutorialStep::ResizeWindow) {
             const float noteWidth = std::min(310.0f * scale, static_cast<float>(client.right) - 36.0f * scale);
-            const float noteLeft = 20.0f * scale;
+            const float noteLeft = static_cast<float>(client.right) - 20.0f * scale - noteWidth;
             const float noteTop = static_cast<float>(client.bottom) - 136.0f * scale;
             DrawHandwrittenText(L"resize the window", noteLeft, noteTop, noteWidth, 34.0f * scale, 23.0f, pencil.Get());
             DrawOverlayText(L"drag the app corners to resize the app", noteLeft, noteTop + 33.0f * scale,
                 noteWidth, 26.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true);
-            arrow(D2D1::Point2F(noteLeft + noteWidth * 0.38f, noteTop + 66.0f * scale),
-                D2D1::Point2F(5.0f * scale, static_cast<float>(client.bottom) - 5.0f * scale), 2.5f);
+            arrow(D2D1::Point2F(noteLeft + noteWidth * 0.62f, noteTop + 66.0f * scale),
+                D2D1::Point2F(static_cast<float>(client.right) - 7.0f * scale,
+                    static_cast<float>(client.bottom) - 7.0f * scale), 2.5f);
         } else if (tutorialStep_ == TutorialStep::MenuSettings) {
             const float lineLeft = static_cast<float>(frame.hamburger.right) + 4.0f * scale;
             const float headingLeft = lineLeft + 72.0f * scale;
@@ -14061,6 +14089,36 @@ private:
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(next, 5.0f * scale, 5.0f * scale), nextBrush);
         DrawOverlayText(L"skip", skip.left, skip.top, skip.right - skip.left, skip.bottom - skip.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, pencil.Get(), true, false, true);
         DrawOverlayText(tutorialStep_ == TutorialStep::Shortcuts ? L"finish" : L"next", next.left, next.top, next.right - next.left, next.bottom - next.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
+    }
+
+    void DrawResizeAffordance() {
+        if (fullscreen_ || IsZoomed(window_) || !(GetWindowLongPtrW(window_, GWL_STYLE) & WS_THICKFRAME)) return;
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        const D2D1_SIZE_F size = VisibleClientSize();
+        const float inset = 7.0f * scale;
+        const float arm = 13.0f * scale;
+        const float radius = 4.0f * scale;
+        const float right = size.width - inset;
+        const float bottom = size.height - inset;
+        ComPtr<ID2D1SolidColorBrush> brush;
+        if (FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.68f), &brush))) return;
+        ComPtr<ID2D1PathGeometry> geometry;
+        ComPtr<ID2D1GeometrySink> sink;
+        if (FAILED(d2dFactory_->CreatePathGeometry(&geometry)) || FAILED(geometry->Open(&sink))) return;
+        sink->BeginFigure(D2D1::Point2F(right - arm, bottom), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine(D2D1::Point2F(right - radius, bottom));
+        sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(
+            D2D1::Point2F(right, bottom), D2D1::Point2F(right, bottom - radius)));
+        sink->AddLine(D2D1::Point2F(right, bottom - arm));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        if (FAILED(sink->Close())) return;
+        D2D1_STROKE_STYLE_PROPERTIES properties = D2D1::StrokeStyleProperties();
+        properties.startCap = D2D1_CAP_STYLE_ROUND;
+        properties.endCap = D2D1_CAP_STYLE_ROUND;
+        properties.lineJoin = D2D1_LINE_JOIN_ROUND;
+        ComPtr<ID2D1StrokeStyle> roundedStroke;
+        if (FAILED(d2dFactory_->CreateStrokeStyle(properties, nullptr, 0, &roundedStroke))) return;
+        renderTarget_->DrawGeometry(geometry.Get(), brush.Get(), 1.5f * scale, roundedStroke.Get());
     }
 
     void DrawVideoFrameSaveToast() {
@@ -14256,7 +14314,7 @@ private:
         const bool tutorialMetadata = tutorialPresentation_ && tutorialStep_ == TutorialStep::ImageDetails;
         const bool hideTutorialMetadata = tutorialPresentation_ && !tutorialMetadata;
         ID2D1Brush* activeMetadataBrush = tutorialMetadata ? tutorialMetadataBrush.Get() : metadataBrush.Get();
-        if (tutorialMetadata) DrawTitleText(std::wstring(L"1920 ") + kTopBarResolutionSeparator + L" 1080", static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
+        if (tutorialMetadata) DrawPresentationTitleMetadata(frame, activeMetadataBrush, L"1920", L"1080", kTopBarResolutionSeparator, L"24 fps");
         else if (!hideTutorialMetadata && (VideoActive() || contentKind_ == ContentKind::Image2D || titleMetadataHandoffActive_) && !titleResolutionWidthText_.empty()) DrawPresentationTitleMetadata(frame, activeMetadataBrush);
         else DrawTitleText(hideTutorialMetadata ? L"" : resolutionText_, static_cast<float>(frame.resolutionLeft), static_cast<float>(frame.resolutionWidth), activeMetadataBrush, false, true);
         DrawTitleText(tutorialMetadata ? L"1.2 MB" : hideTutorialMetadata ? L"" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);
@@ -15020,6 +15078,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_MOUSEWHEEL: {
         POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(window, &point);
+        if (viewer->TutorialActive()) return 0;
         if (viewer->SettingsContains(point)) {
             const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
             viewer->ScrollSettings(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
@@ -15411,10 +15470,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->PressedButton() != ButtonKind::None) {
             const ButtonKind pressed = viewer->PressedButton();
             const ButtonKind released = viewer->ButtonAt({ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
-            const bool openingFile = pressed == ButtonKind::EmptyOpenFile && pressed == released;
-            viewer->ClearButtonPressed(!openingFile);
+            viewer->ClearButtonPressed();
             if (GetCapture() == window) ReleaseCapture();
-            if (!openingFile) viewer->SetButtonHover(released);
+            viewer->SetButtonHover(released);
             if (pressed == released) viewer->InvokeButton(pressed);
             return 0;
         }

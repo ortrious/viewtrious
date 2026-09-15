@@ -3116,7 +3116,7 @@ public:
         const RECT island = GetVideoControlsLayout().island;
         return VideoAdjustmentsPanelContains(point) || VideoPlaybackSpeedPanelContains(point) || PtInRect(&island, point);
     }
-    bool VideoCursorMayHide() const { return !HasOverlay() && !TutorialActive() && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_; }
+    bool VideoCursorMayHide() const { return !HasOverlay() && !TutorialActive() && !contextMenuOpen_ && !videoAdjustmentsPanelOpen_ && !videoPlaybackSpeedPanelOpen_; }
     void RestoreVideoCursor() {
         if (!videoCursorHidden_) return;
         ShowCursor(TRUE);
@@ -3545,6 +3545,7 @@ public:
     void OpenContextMenu(POINT point) {
         if (WelcomeOpen() || TutorialActive()) return;
         if (!HasImage() && !VideoActive() && !(ModelActive() && modelFaceSelected_)) return;
+        if (VideoActive()) RestoreVideoCursor();
         if (HasImage()) RefreshHeifShellRotationCapability();
         DismissTriangleCountTooltip(false);
         DismissDropdown();
@@ -3561,6 +3562,7 @@ public:
         openWithSubmenuOpen_ = false;
         contextHovered_ = ContextAction::None;
         contextPressed_ = ContextAction::None;
+        if (VideoActive()) HideVideoCursorIfAppropriate();
         InvalidateRect(window_, nullptr, FALSE);
     }
     ContextAction ContextActionAt(POINT point) const {

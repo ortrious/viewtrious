@@ -314,6 +314,8 @@ constexpr wchar_t kCapabilitiesPath[] = L"Software\\Viewtrious\\Capabilities";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
 constexpr float kSharpnessSliderMaximum = 2.0f;
+constexpr float kSignedAdjustmentSliderMinimum = -1.0f;
+constexpr float kSignedAdjustmentSliderMaximum = 1.0f;
 
 
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError, RegistrationError };
@@ -503,7 +505,7 @@ bool ComputeAutoImageAdjustments(const AiImageBuffer& image, ImageAdjustments& a
     const float contrastBiasPosition = std::clamp((0.60f - tonalSpread) / 0.10f, 0.0f, 1.0f);
     const float contrastBiasTaper = contrastBiasPosition * contrastBiasPosition * (3.0f - 2.0f * contrastBiasPosition);
     const float positiveContrastBias = contrastBase > 0.0f ? 0.06f * contrastBiasTaper : 0.0f;
-    adjustments.contrast = std::clamp(contrastBase + positiveContrastBias, -0.12f, 0.42f);
+    adjustments.contrast = std::clamp(contrastBase + positiveContrastBias, kSignedAdjustmentSliderMinimum, kSignedAdjustmentSliderMaximum);
     adjustments.saturation = chroma < 0.30f ? std::clamp((0.34f - chroma) * 1.05f + lowKeyNeed * 0.12f, 0.0f, 0.40f) : 0.0f;
     if (std::abs(mean - 0.50f) < 0.08f && tonalSpread > 0.52f && chroma >= 0.25f) adjustments = {};
     return true;

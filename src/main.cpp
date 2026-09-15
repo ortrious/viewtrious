@@ -343,6 +343,7 @@ enum class ZoomHudPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 
 enum class SettingsPage { General, Image2D, Model3D, AddOns };
 enum class ContentKind { None, Image2D, Model3D, Video2D };
 enum class ExternalOpenBehavior : DWORD { NewWindow = 0, SameWindow = 1 };
+enum class ExternalOpenMediaFamily : WPARAM { ImageOrGif = 1, Video = 2 };
 enum class FilmstripVisibilityState { Hidden, Revealing, Holding, Fading };
 
 struct SettingsToggleVisualState {
@@ -859,16 +860,20 @@ bool ShouldReuseExistingWindowForExternalOpen(const std::wstring& path) {
     return ReadExternalOpenBehavior(IsVideoPath(path) ? L"VideoExternalOpenBehavior" : L"ImageExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
 }
 
+ExternalOpenMediaFamily ExternalOpenFamilyForPath(const std::wstring& path) {
+    return IsVideoPath(path) ? ExternalOpenMediaFamily::Video : ExternalOpenMediaFamily::ImageOrGif;
+}
+
 UINT gPrimaryWindowQueryMessage = 0;
 bool gPrimaryReuseTarget = false;
 
-struct PrimaryWindowSearch { HWND window = nullptr; };
+struct PrimaryWindowSearch { HWND window = nullptr; ExternalOpenMediaFamily family = ExternalOpenMediaFamily::ImageOrGif; };
 BOOL CALLBACK FindPrimaryWindowProc(HWND window, LPARAM parameter) {
     auto* search = reinterpret_cast<PrimaryWindowSearch*>(parameter);
     wchar_t className[64]{};
     if (!GetClassNameW(window, className, 64) || wcscmp(className, kWindowClass) != 0) return TRUE;
     DWORD_PTR response = 0;
-    if (SendMessageTimeoutW(window, gPrimaryWindowQueryMessage, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 200, &response) && response == kPrimaryWindowMagic) {
+    if (SendMessageTimeoutW(window, gPrimaryWindowQueryMessage, static_cast<WPARAM>(search->family), 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 200, &response) && response == kPrimaryWindowMagic) {
         search->window = window;
         return FALSE;
     }
@@ -878,7 +883,7 @@ BOOL CALLBACK FindPrimaryWindowProc(HWND window, LPARAM parameter) {
 bool ForwardExternalOpenToPrimary(const std::wstring& path) {
     if (!gPrimaryWindowQueryMessage || path.empty() || path.size() >= 32768) return false;
     for (int attempt = 0; attempt < 4; ++attempt) {
-        PrimaryWindowSearch search{};
+        PrimaryWindowSearch search{ nullptr, ExternalOpenFamilyForPath(path) };
         EnumWindows(FindPrimaryWindowProc, reinterpret_cast<LPARAM>(&search));
         if (search.window) {
             COPYDATASTRUCT data{};
@@ -1337,9 +1342,9 @@ public:
         modelBuildPlateWidthMm_ = buildPlateWidth >= 50 && buildPlateWidth <= 5000 ? static_cast<float>(buildPlateWidth) : 256.0f;
         modelBuildPlateDepthMm_ = buildPlateDepth >= 50 && buildPlateDepth <= 5000 ? static_cast<float>(buildPlateDepth) : 256.0f;
         DWORD buildPlateLinked = 1; ReadSetting(L"ModelBuildPlateSizeLinked", buildPlateLinked); buildPlateSizeLinked_ = buildPlateLinked != 0;
-        DWORD axisIndicatorPosition = static_cast<DWORD>(AxisIndicatorPosition::BottomRight);
+        DWORD axisIndicatorPosition = static_cast<DWORD>(AxisIndicatorPosition::TopRight);
         ReadSetting(L"AxisIndicatorPosition", axisIndicatorPosition);
-        axisIndicatorPosition_ = axisIndicatorPosition <= static_cast<DWORD>(AxisIndicatorPosition::TopRight) ? static_cast<AxisIndicatorPosition>(axisIndicatorPosition) : AxisIndicatorPosition::BottomRight;
+        axisIndicatorPosition_ = axisIndicatorPosition <= static_cast<DWORD>(AxisIndicatorPosition::TopRight) ? static_cast<AxisIndicatorPosition>(axisIndicatorPosition) : AxisIndicatorPosition::TopRight;
         DWORD renderingApi = static_cast<DWORD>(ModelRenderingApi::Direct3D11); ReadSetting(L"ModelRenderingApi", renderingApi); modelRenderingApi_ = ModelRenderingApi::Direct3D11;
         DWORD graphicsAdapterAuto = 1, graphicsAdapterLuidLow = 0, graphicsAdapterLuidHigh = 0;
         ReadSetting(L"GraphicsAdapterAuto", graphicsAdapterAuto); ReadSetting(L"GraphicsAdapterLuidLow", graphicsAdapterLuidLow); ReadSetting(L"GraphicsAdapterLuidHigh", graphicsAdapterLuidHigh);
@@ -1409,6 +1414,9 @@ public:
         contentKind_ = ContentKind::Image2D;
         const HRESULT result = LoadImage(path, resetNavigation);
         return result;
+    }
+    bool CanReuseExternalOpen(ExternalOpenMediaFamily family) const {
+        return family == ExternalOpenMediaFamily::Video ? VideoActive() : contentKind_ == ContentKind::Image2D && source_;
     }
     void QueueExternalOpen(std::wstring path) {
         if (!IsExternalOpenPath(path)) return;
@@ -2413,7 +2421,7 @@ public:
         } else if (VideoActive() && VideoAdjustmentsPanelVisible()) {
             DrawAdjustmentPanel(GetVideoAdjustmentsPanelPresentedLayout(), videoAdjustments_, videoAdjustmentsPanelOpacity_,
                 videoAdjustmentSource_, videoAdjustmentsOriginalPreviewActive_);
-        } else if (source_ && TransitionOverlayActive() && ImageAdjustmentsPanelVisible()) {
+        } else if (source_ && ImageAdjustmentsPanelVisible()) {
             DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, imageAdjustmentsPanelOpacity_,
                 imageAdjustmentSource_, imageAdjustmentsOriginalPreviewActive_);
         }
@@ -4086,9 +4094,8 @@ public:
     }
     RECT GetSettingsUpAxisBounds() const { return GetSettingsGridCellAtTop(0, SettingsViewFirstControlTop()); }
     RECT GetSettingsBuildPlateBounds() const { return GetSettingsGridCellAtTop(1, SettingsViewFirstControlTop()); }
-    RECT GetSettingsProjectionBounds() const { return GetSettingsGridCellAtTop(0, SettingsNextControlTop(GetSettingsUpAxisBounds(), L"projection", 0)); }
-    RECT GetSettingsAxisIndicatorPositionBounds() const { return GetSettingsGridCellAtTop(1, SettingsNextControlTop(GetSettingsBuildPlateBounds(), L"axis indicator position", 1)); }
-    int GetSettingsViewBottom() const { return std::max(GetSettingsProjectionBounds().bottom, GetSettingsAxisIndicatorPositionBounds().bottom); }
+    RECT GetSettingsAxisIndicatorPositionBounds() const { return GetSettingsGridCellAtTop(0, SettingsNextControlTop(GetSettingsUpAxisBounds(), L"axis indicator position", 0)); }
+    int GetSettingsViewBottom() const { return GetSettingsAxisIndicatorPositionBounds().bottom; }
     RECT GetSettingsViewCardBounds() const { return GetSettingsCardBounds(SettingsViewHeadingTop(), GetSettingsViewBottom()); }
     int GetSettingsRenderHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsViewCardBounds()); }
     int GetSettingsRenderControlTop() const {
@@ -4131,7 +4138,6 @@ public:
     RECT GetSettingsUpAxisMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsUpAxisBounds(), 3); }
     RECT GetSettingsBuildPlateMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsBuildPlateBounds(), 3); }
     RECT GetSettingsAxisIndicatorPositionMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsAxisIndicatorPositionBounds(), 4); }
-    RECT GetSettingsProjectionMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsProjectionBounds(), 2); }
     bool SettingsGraphicsAdapterMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Model3D && graphicsAdapterMenuOpen_; }
     bool SettingsGraphicsAdapterMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=GetSettingsGraphicsAdapterMenuBounds(); return PtInRect(&menu,point) != FALSE; }
     void DismissSettingsGraphicsAdapterMenu() { if (graphicsAdapterMenuOpen_) { graphicsAdapterMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
@@ -4139,16 +4145,16 @@ public:
     bool SettingsAntiAliasingMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Model3D && antiAliasingMenuOpen_; }
     bool SettingsAntiAliasingMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=GetSettingsAntiAliasingMenuBounds(); return PtInRect(&menu,point) != FALSE; }
     void DismissSettingsAntiAliasingMenu() { if (antiAliasingMenuOpen_) { antiAliasingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
-    bool SettingsSimpleDropdownMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Model3D && (upAxisMenuOpen_ || buildPlateMenuOpen_ || axisIndicatorPositionMenuOpen_ || projectionMenuOpen_); }
-    bool SettingsSimpleDropdownMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=upAxisMenuOpen_?GetSettingsUpAxisMenuBounds():buildPlateMenuOpen_?GetSettingsBuildPlateMenuBounds():axisIndicatorPositionMenuOpen_?GetSettingsAxisIndicatorPositionMenuBounds():GetSettingsProjectionMenuBounds(); return PtInRect(&menu,point) != FALSE; }
-    void DismissSettingsSimpleDropdownMenu() { if (upAxisMenuOpen_ || buildPlateMenuOpen_ || axisIndicatorPositionMenuOpen_ || projectionMenuOpen_) { upAxisMenuOpen_=buildPlateMenuOpen_=axisIndicatorPositionMenuOpen_=projectionMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
+    bool SettingsSimpleDropdownMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Model3D && (upAxisMenuOpen_ || buildPlateMenuOpen_ || axisIndicatorPositionMenuOpen_); }
+    bool SettingsSimpleDropdownMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=upAxisMenuOpen_?GetSettingsUpAxisMenuBounds():buildPlateMenuOpen_?GetSettingsBuildPlateMenuBounds():GetSettingsAxisIndicatorPositionMenuBounds(); return PtInRect(&menu,point) != FALSE; }
+    void DismissSettingsSimpleDropdownMenu() { if (upAxisMenuOpen_ || buildPlateMenuOpen_ || axisIndicatorPositionMenuOpen_) { upAxisMenuOpen_=buildPlateMenuOpen_=axisIndicatorPositionMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
     bool SettingsDropdownControlContains(POINT point) const {
         if (overlay_ != OverlayKind::Settings) return false;
         if (point.y < SettingsScrollViewportTop() || point.y >= SettingsScrollViewportBottom()) return false;
         point.y += static_cast<LONG>(std::lround(settingsScroll_));
         const auto contains = [&point](const RECT& bounds) { return PtInRect(&bounds, point) != FALSE; };
         if (settingsPage_ == SettingsPage::General) return contains(GetSettingsZoomHudBounds());
-        if (settingsPage_ == SettingsPage::Model3D) return contains(GetSettingsUpAxisBounds()) || contains(GetSettingsBuildPlateBounds()) || contains(GetSettingsAxisIndicatorPositionBounds()) || contains(GetSettingsProjectionBounds()) || contains(GetSettingsGraphicsAdapterBounds()) || contains(GetSettingsAntiAliasingBounds());
+        if (settingsPage_ == SettingsPage::Model3D) return contains(GetSettingsUpAxisBounds()) || contains(GetSettingsBuildPlateBounds()) || contains(GetSettingsAxisIndicatorPositionBounds()) || contains(GetSettingsGraphicsAdapterBounds()) || contains(GetSettingsAntiAliasingBounds());
         return false;
     }
     int ModelViewBarProjectionWidth() const { return DropdownWidth(kProjectionOptions, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD); }
@@ -4766,13 +4772,11 @@ public:
                 if (upAxisMenuOpen_) { const RECT menu=GetSettingsUpAxisMenuBounds(); if (PtInRect(&menu,settingsPoint)) return settingsPoint.y < menu.top+row ? ButtonKind::SettingsUpAxisZ : settingsPoint.y < menu.top+row*2 ? ButtonKind::SettingsUpAxisY : ButtonKind::SettingsUpAxisX; }
                 if (buildPlateMenuOpen_) { const RECT menu=GetSettingsBuildPlateMenuBounds(); if (PtInRect(&menu,settingsPoint)) return settingsPoint.y < menu.top+row ? ButtonKind::SettingsBuildPlateAuto : settingsPoint.y < menu.top+row*2 ? ButtonKind::SettingsBuildPlateOn : ButtonKind::SettingsBuildPlateOff; }
                 if (axisIndicatorPositionMenuOpen_) { const RECT menu=GetSettingsAxisIndicatorPositionMenuBounds(); if (PtInRect(&menu,settingsPoint)) return settingsPoint.y < menu.top+row ? ButtonKind::SettingsAxisIndicatorBottomLeft : settingsPoint.y < menu.top+row*2 ? ButtonKind::SettingsAxisIndicatorBottomRight : settingsPoint.y < menu.top+row*3 ? ButtonKind::SettingsAxisIndicatorTopLeft : ButtonKind::SettingsAxisIndicatorTopRight; }
-                if (projectionMenuOpen_) { const RECT menu=GetSettingsProjectionMenuBounds(); if (PtInRect(&menu,settingsPoint)) return settingsPoint.y < menu.top+row ? ButtonKind::SettingsProjectionPerspective : ButtonKind::SettingsProjectionOrthographic; }
                 if (graphicsAdapterMenuOpen_) { const RECT menu=GetSettingsGraphicsAdapterMenuBounds();if(PtInRect(&menu,settingsPoint)){const int option=(settingsPoint.y-menu.top)/row;if(graphicsAdapterMenuOption_!=option){graphicsAdapterMenuOption_=option;InvalidateRect(window_,nullptr,FALSE);}return ButtonKind::SettingsGraphicsAdapterOption;} }
                 if (antiAliasingMenuOpen_) { const RECT menu=GetSettingsAntiAliasingMenuBounds();if(PtInRect(&menu,settingsPoint)) { const int index=(settingsPoint.y-menu.top)/row;if(modelVisualStyle_==ModelVisualStyle::Wireframe&&index>=4)return ButtonKind::None;return index==0?ButtonKind::SettingsAntiAliasingOff:index==1?ButtonKind::SettingsAntiAliasing2x:index==2?ButtonKind::SettingsAntiAliasing4x:index==3?ButtonKind::SettingsAntiAliasing8x:index==4?ButtonKind::SettingsAntiAliasingSsaa1_5x:ButtonKind::SettingsAntiAliasingSsaa2x; } }
                 if (settingsContains(GetSettingsUpAxisBounds())) return ButtonKind::SettingsUpAxisToggle;
                 if (settingsContains(GetSettingsBuildPlateBounds())) return ButtonKind::SettingsBuildPlateToggle;
                 if (settingsContains(GetSettingsAxisIndicatorPositionBounds())) return ButtonKind::SettingsAxisIndicatorPositionToggle;
-                if (settingsContains(GetSettingsProjectionBounds())) return ButtonKind::SettingsProjectionToggle;
                 if (spaceMouseRuntimeAvailable_ && settingsContains(GetSettingsSpaceMouseBounds())) return ButtonKind::SettingsSpaceMouse;
                 if (settingsContains(GetSettingsModelReverseWheelZoomBounds())) return ButtonKind::SettingsModelReverseWheelZoom;
                 if (settingsContains(GetSettingsGraphicsAdapterBounds())) return ButtonKind::SettingsGraphicsAdapterToggle;
@@ -5078,7 +5082,7 @@ public:
         modelBuildPlateWidthMm_ = 256.0f;
         modelBuildPlateDepthMm_ = 256.0f;
         buildPlateSizeLinked_ = true;
-        axisIndicatorPosition_ = AxisIndicatorPosition::BottomRight;
+        axisIndicatorPosition_ = AxisIndicatorPosition::TopRight;
         modelAntiAliasing_ = ModelAntiAliasing::Msaa4x;
         graphicsAdapterAuto_ = true;
         graphicsAdapterLuid_ = {};
@@ -5123,7 +5127,7 @@ public:
         WriteSetting(L"ModelBuildPlateWidthMm", 256);
         WriteSetting(L"ModelBuildPlateDepthMm", 256);
         WriteSetting(L"ModelBuildPlateSizeLinked", 1);
-        WriteSetting(L"AxisIndicatorPosition", static_cast<DWORD>(AxisIndicatorPosition::BottomRight));
+        WriteSetting(L"AxisIndicatorPosition", static_cast<DWORD>(AxisIndicatorPosition::TopRight));
         WriteSetting(L"ModelRenderingApi", static_cast<DWORD>(ModelRenderingApi::Direct3D11));
         WriteSetting(L"GraphicsAdapterAuto", 1);
         WriteSetting(L"GraphicsAdapterLuidLow", 0);
@@ -12405,7 +12409,6 @@ private:
             renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(left, topEdge, left + width, topEdge + height), 5.0f * scale, 5.0f * scale), backing.Get());
             DrawOverlayText(L"adjustments", left, topEdge, width, height, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, text.Get(), true, false, true);
         }
-        if (!adjustmentPanelNavigation_.pending && ImageAdjustmentsPanelVisible()) DrawAdjustmentPanel(GetImageAdjustmentsPanelLayout(), imageAdjustments_, imageAdjustmentsPanelOpacity_, imageAdjustmentSource_, imageAdjustmentsOriginalPreviewActive_);
     }
 
     void DrawAdjustmentOriginalEyeIcon(const RECT& bounds, bool closed, ID2D1Brush* brush, float scale) {
@@ -13934,12 +13937,10 @@ private:
             group(L"VIEW", static_cast<float>(SettingsViewHeadingTop() - bounds.top) / dpiScale);
             label(L"up axis",0,static_cast<float>(SettingsViewFirstControlTop() - bounds.top) / dpiScale); drawDropdown(GetSettingsUpAxisBounds(),ButtonKind::SettingsUpAxisToggle,modelUpAxis_==ModelUpAxis::ZUp?L"z axis up":modelUpAxis_==ModelUpAxis::YUp?L"y axis up":L"x axis up",upAxisMenuOpen_);
             label(L"3D printer build plate",1,static_cast<float>(SettingsViewFirstControlTop() - bounds.top) / dpiScale); drawDropdown(GetSettingsBuildPlateBounds(),ButtonKind::SettingsBuildPlateToggle,modelBuildPlate_==ModelBuildPlate::Auto?L"auto":modelBuildPlate_==ModelBuildPlate::On?L"on":L"off",buildPlateMenuOpen_);
-            label(L"projection",0,static_cast<float>(GetSettingsProjectionBounds().top - bounds.top) / dpiScale); drawDropdown(GetSettingsProjectionBounds(),ButtonKind::SettingsProjectionToggle,modelProjectionMode_==ModelProjectionMode::Perspective?L"perspective":L"orthographic",projectionMenuOpen_);
-            label(L"axis indicator position",1,static_cast<float>(GetSettingsAxisIndicatorPositionBounds().top - bounds.top) / dpiScale); const wchar_t* axisPositionLabel=axisIndicatorPosition_==AxisIndicatorPosition::BottomLeft?L"bottom left":axisIndicatorPosition_==AxisIndicatorPosition::BottomRight?L"bottom right":axisIndicatorPosition_==AxisIndicatorPosition::TopLeft?L"top left":L"top right"; drawDropdown(GetSettingsAxisIndicatorPositionBounds(),ButtonKind::SettingsAxisIndicatorPositionToggle,axisPositionLabel,axisIndicatorPositionMenuOpen_);
+            label(L"axis indicator position",0,static_cast<float>(GetSettingsAxisIndicatorPositionBounds().top - bounds.top) / dpiScale); const wchar_t* axisPositionLabel=axisIndicatorPosition_==AxisIndicatorPosition::BottomLeft?L"bottom left":axisIndicatorPosition_==AxisIndicatorPosition::BottomRight?L"bottom right":axisIndicatorPosition_==AxisIndicatorPosition::TopLeft?L"top left":L"top right"; drawDropdown(GetSettingsAxisIndicatorPositionBounds(),ButtonKind::SettingsAxisIndicatorPositionToggle,axisPositionLabel,axisIndicatorPositionMenuOpen_);
             if(upAxisMenuOpen_)drawMenu(GetSettingsUpAxisMenuBounds(),{L"z axis up",L"y axis up",L"x axis up"},modelUpAxis_==ModelUpAxis::ZUp?0:modelUpAxis_==ModelUpAxis::YUp?1:2);
             if(buildPlateMenuOpen_)drawMenu(GetSettingsBuildPlateMenuBounds(),{L"auto",L"on",L"off"},static_cast<int>(modelBuildPlate_));
             if(axisIndicatorPositionMenuOpen_)drawMenu(GetSettingsAxisIndicatorPositionMenuBounds(),{L"bottom left",L"bottom right",L"top left",L"top right"},static_cast<int>(axisIndicatorPosition_));
-            if(projectionMenuOpen_)drawMenu(GetSettingsProjectionMenuBounds(),{L"perspective",L"orthographic"},static_cast<int>(modelProjectionMode_));
             group(L"RENDER", static_cast<float>(GetSettingsRenderHeadingTop() - bounds.top) / dpiScale);
             label(L"graphics adapter",0,static_cast<float>(GetSettingsRenderControlTop() - bounds.top) / dpiScale); drawDropdown(GetSettingsGraphicsAdapterBounds(),ButtonKind::SettingsGraphicsAdapterToggle,GraphicsAdapterLabel().c_str(),graphicsAdapterMenuOpen_);
             label(L"anti-aliasing",1,static_cast<float>(GetSettingsRenderControlTop() - bounds.top) / dpiScale); const bool fallback=modelVisualStyle_==ModelVisualStyle::Wireframe&&IsModelAntiAliasingSsaa(modelAntiAliasing_); const ModelAntiAliasing displayed=EffectiveModelAntiAliasing(modelAntiAliasing_,modelVisualStyle_); const wchar_t* aaLabel=fallback?L"8x MSAA (Wireframe fallback)":displayed==ModelAntiAliasing::Off?L"Off":displayed==ModelAntiAliasing::Msaa2x?L"2x MSAA":displayed==ModelAntiAliasing::Msaa4x?L"4x MSAA":displayed==ModelAntiAliasing::Msaa8x?L"8x MSAA":displayed==ModelAntiAliasing::Ssaa1_5x?L"1.5x SSAA":L"2x SSAA"; drawDropdown(GetSettingsAntiAliasingBounds(),ButtonKind::SettingsAntiAliasingToggle,aaLabel,antiAliasingMenuOpen_);
@@ -13977,7 +13978,6 @@ private:
                 if (upAxisMenuOpen_) drawForegroundMenu(GetSettingsUpAxisMenuBounds(), { L"z axis up", L"y axis up", L"x axis up" }, modelUpAxis_ == ModelUpAxis::ZUp ? 0 : modelUpAxis_ == ModelUpAxis::YUp ? 1 : 2, { ButtonKind::SettingsUpAxisZ, ButtonKind::SettingsUpAxisY, ButtonKind::SettingsUpAxisX });
                 if (buildPlateMenuOpen_) drawForegroundMenu(GetSettingsBuildPlateMenuBounds(), { L"auto", L"on", L"off" }, static_cast<int>(modelBuildPlate_), { ButtonKind::SettingsBuildPlateAuto, ButtonKind::SettingsBuildPlateOn, ButtonKind::SettingsBuildPlateOff });
                 if (axisIndicatorPositionMenuOpen_) drawForegroundMenu(GetSettingsAxisIndicatorPositionMenuBounds(), { L"bottom left", L"bottom right", L"top left", L"top right" }, static_cast<int>(axisIndicatorPosition_), { ButtonKind::SettingsAxisIndicatorBottomLeft, ButtonKind::SettingsAxisIndicatorBottomRight, ButtonKind::SettingsAxisIndicatorTopLeft, ButtonKind::SettingsAxisIndicatorTopRight });
-                if (projectionMenuOpen_) drawForegroundMenu(GetSettingsProjectionMenuBounds(), { L"perspective", L"orthographic" }, static_cast<int>(modelProjectionMode_), { ButtonKind::SettingsProjectionPerspective, ButtonKind::SettingsProjectionOrthographic });
                 if (graphicsAdapterMenuOpen_) { std::vector<const wchar_t*> items{L"Auto (High Performance)"}; int selected=graphicsAdapterAuto_?0:-1; for(int i=0;i<(int)graphicsAdapters_.size();++i){items.push_back(graphicsAdapters_[i].name.c_str());if(!graphicsAdapterAuto_&&SameGraphicsAdapterLuid(graphicsAdapters_[i].luid,graphicsAdapterLuid_))selected=i+1;} drawForegroundMenu(GetSettingsGraphicsAdapterMenuBounds(),items,selected,{},hoveredButton_==ButtonKind::SettingsGraphicsAdapterOption?graphicsAdapterMenuOption_:-1); }
                 if (antiAliasingMenuOpen_) drawForegroundMenu(GetSettingsAntiAliasingMenuBounds(),std::vector<const wchar_t*>(kAntiAliasingOptions.begin(),kAntiAliasingOptions.end()),static_cast<int>(EffectiveModelAntiAliasing(modelAntiAliasing_,modelVisualStyle_)),{ ButtonKind::SettingsAntiAliasingOff, ButtonKind::SettingsAntiAliasing2x, ButtonKind::SettingsAntiAliasing4x, ButtonKind::SettingsAntiAliasing8x, ButtonKind::SettingsAntiAliasingSsaa1_5x, ButtonKind::SettingsAntiAliasingSsaa2x });
             }
@@ -15250,7 +15250,7 @@ private:
     int buildPlateSizeEdit_ = 0;
     std::wstring buildPlateSizeText_;
     ModelRenderingApi modelRenderingApi_ = ModelRenderingApi::Direct3D11;
-    AxisIndicatorPosition axisIndicatorPosition_ = AxisIndicatorPosition::BottomRight;
+    AxisIndicatorPosition axisIndicatorPosition_ = AxisIndicatorPosition::TopRight;
     ModelAntiAliasing modelAntiAliasing_ = ModelAntiAliasing::Msaa4x;
     bool graphicsAdapterMenuOpen_ = false;
     mutable int graphicsAdapterMenuOption_ = -1;
@@ -15388,7 +15388,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         viewer->RefreshWindowTitleFromCommittedMedia();
         return result;
     }
-    if (message == gPrimaryWindowQueryMessage) return gPrimaryReuseTarget ? static_cast<LRESULT>(kPrimaryWindowMagic) : 0;
+    if (message == gPrimaryWindowQueryMessage)
+        return gPrimaryReuseTarget && viewer->CanReuseExternalOpen(static_cast<ExternalOpenMediaFamily>(wParam)) ? static_cast<LRESULT>(kPrimaryWindowMagic) : 0;
     if (message == WM_COPYDATA) {
         if (!gPrimaryReuseTarget) return FALSE;
         const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lParam);
@@ -16077,8 +16078,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
 
     gPrimaryWindowQueryMessage = RegisterWindowMessageW(L"Viewtrious.PrimaryReuseTarget.Query.v1");
     HANDLE primaryMutex = CreateMutexW(nullptr, FALSE, kPrimaryMutexName);
-    gPrimaryReuseTarget = primaryMutex && GetLastError() != ERROR_ALREADY_EXISTS;
-    if (path.size() && !gPrimaryReuseTarget && ShouldReuseExistingWindowForExternalOpen(path) && ForwardExternalOpenToPrimary(path)) {
+    const bool firstReuseTarget = primaryMutex && GetLastError() != ERROR_ALREADY_EXISTS;
+    gPrimaryReuseTarget = primaryMutex != nullptr;
+    if (path.size() && !firstReuseTarget && ShouldReuseExistingWindowForExternalOpen(path) && ForwardExternalOpenToPrimary(path)) {
         if (primaryMutex) CloseHandle(primaryMutex);
         OleUninitialize();
         CoUninitialize();

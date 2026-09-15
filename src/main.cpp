@@ -225,7 +225,7 @@ public:
         if (!formats) return E_POINTER;
         if (direction != DATADIR_GET) return E_NOTIMPL;
         FORMATETC format{ CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-        return CreateStdEnumFmtEtc(1, &format, formats);
+        return SHCreateStdEnumFmtEtc(1, &format, formats);
     }
     HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }

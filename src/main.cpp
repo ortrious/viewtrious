@@ -9874,7 +9874,7 @@ private:
     HRESULT GetWallpaperStagingDirectory(fs::path& directory) const {
         directory = ViewtriousPaths::CacheDirectory();
         if (directory.empty()) return E_FAIL;
-        directory /= L"Wallpaper";
+        directory /= L"wallpaper";
         return S_OK;
     }
 

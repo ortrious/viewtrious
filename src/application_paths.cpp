@@ -50,20 +50,20 @@ bool LocalAppDataRoot(std::filesystem::path& path) {
     return !path.empty();
 }
 
-std::filesystem::path AppDirectory() { const std::filesystem::path root = RootFromKnownFolder(); return root.empty() ? std::filesystem::path{} : root / L"App"; }
-std::filesystem::path ShellExtensionsDirectory() { const std::filesystem::path app = AppDirectory(); return app.empty() ? std::filesystem::path{} : app / L"ShellExtensions"; }
-std::filesystem::path AddonsDirectory() { const std::filesystem::path app = AppDirectory(); return app.empty() ? std::filesystem::path{} : app / L"Addons"; }
-std::filesystem::path LicensesDirectory() { const std::filesystem::path app = AppDirectory(); return app.empty() ? std::filesystem::path{} : app / L"Licenses"; }
-std::filesystem::path DataDirectory() { const std::filesystem::path root = RootFromKnownFolder(); return root.empty() ? std::filesystem::path{} : root / L"Data"; }
-std::filesystem::path CacheDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"Cache"; }
-std::filesystem::path LogsDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"Logs"; }
-std::filesystem::path DiagnosticsDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"Diagnostics"; }
-std::filesystem::path AiModelsDirectory() { const std::filesystem::path root = RootFromKnownFolder(); return root.empty() ? std::filesystem::path{} : root / L"AI" / L"Models"; }
+std::filesystem::path AppDirectory() { const std::filesystem::path root = RootFromKnownFolder(); return root.empty() ? std::filesystem::path{} : root / L"app"; }
+std::filesystem::path ShellExtensionsDirectory() { const std::filesystem::path app = AppDirectory(); return app.empty() ? std::filesystem::path{} : app / L"shellextensions"; }
+std::filesystem::path AddonsDirectory() { const std::filesystem::path app = AppDirectory(); return app.empty() ? std::filesystem::path{} : app / L"addons"; }
+std::filesystem::path LicensesDirectory() { const std::filesystem::path app = AppDirectory(); return app.empty() ? std::filesystem::path{} : app / L"licenses"; }
+std::filesystem::path DataDirectory() { const std::filesystem::path root = RootFromKnownFolder(); return root.empty() ? std::filesystem::path{} : root / L"data"; }
+std::filesystem::path CacheDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"cache"; }
+std::filesystem::path LogsDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"logs"; }
+std::filesystem::path DiagnosticsDirectory() { const std::filesystem::path data = DataDirectory(); return data.empty() ? std::filesystem::path{} : data / L"diagnostics"; }
+std::filesystem::path AiModelsDirectory() { const std::filesystem::path root = RootFromKnownFolder(); return root.empty() ? std::filesystem::path{} : root / L"ai" / L"models"; }
 
 bool SettingsDirectory(std::filesystem::path& path) {
     const std::filesystem::path data = DataDirectory();
     if (data.empty()) return false;
-    path = data / L"Settings";
+    path = data / L"settings";
     std::error_code error;
     std::filesystem::create_directories(path, error);
     return !error;
@@ -72,21 +72,21 @@ bool SettingsDirectory(std::filesystem::path& path) {
 bool ResolveSettingsDatabasePath(std::filesystem::path& path) {
     std::filesystem::path settings;
     if (!SettingsDirectory(settings)) return false;
-    path = settings / L"Viewtrious.db";
+    path = settings / L"viewtrious.db";
     std::error_code error;
     const bool targetExists = std::filesystem::exists(path, error);
     if (error) return false;
     std::filesystem::path root;
     if (!LocalAppDataRoot(root)) return false;
     if (!targetExists) {
-        const std::filesystem::path legacyLocalAppDataDatabase = root / L"Viewtrious.db";
+        const std::filesystem::path legacyLocalAppDataDatabase = root / L"viewtrious.db";
         if (std::filesystem::exists(legacyLocalAppDataDatabase, error) && !error) {
             if (!MoveOrCopyDatabase(legacyLocalAppDataDatabase, path)) return false;
         } else if (error) {
             return false;
         } else {
             const std::filesystem::path moduleDirectory = ModuleDirectory();
-            const std::filesystem::path legacyModuleDatabase = moduleDirectory.empty() ? std::filesystem::path{} : moduleDirectory / L"Viewtrious.db";
+            const std::filesystem::path legacyModuleDatabase = moduleDirectory.empty() ? std::filesystem::path{} : moduleDirectory / L"viewtrious.db";
             if (!legacyModuleDatabase.empty() && std::filesystem::exists(legacyModuleDatabase, error) && !error) {
                 std::filesystem::copy_file(legacyModuleDatabase, path, std::filesystem::copy_options::none, error);
                 if (error) return false;

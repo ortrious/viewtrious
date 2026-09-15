@@ -9431,15 +9431,14 @@ private:
         const LONG width = MulDiv(videoFrameSaveToastSucceeded_ ? 238 : 184, dpi, 96);
         const LONG height = MulDiv(42, dpi, 96);
         const LONG inset = MulDiv(16, dpi, 96);
-        LONG bottom = client.bottom - inset;
-        if (VideoActive() && videoControlsOpacity_ > 0.05f) {
-            const RECT controls = GetVideoControlsLayout(false).island;
-            bottom = std::min(bottom, controls.top - inset);
-        }
+        const LONG lowerUiClearance = MulDiv(152, dpi, 96);
+        LONG bottom = client.bottom - lowerUiClearance;
         const LONG topLimit = fullscreen_ ? inset : GetFrameMetrics(window_).titleBarHeight + inset;
         bottom = std::max(bottom, topLimit + height);
-        return { std::max(client.left + inset, client.right - inset - width), bottom - height,
-            client.right - inset, bottom };
+        const LONG minLeft = client.left + inset;
+        const LONG maxLeft = std::max(minLeft, client.right - inset - width);
+        const LONG left = std::clamp((client.left + client.right - width) / 2, minLeft, maxLeft);
+        return { left, bottom - height, left + width, bottom };
     }
     RECT VideoFrameSaveToastOpenFolderBounds() const {
         const RECT toast = VideoFrameSaveToastBounds();

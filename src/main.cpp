@@ -499,7 +499,11 @@ bool ComputeAutoImageAdjustments(const AiImageBuffer& image, ImageAdjustments& a
     adjustments.highlights = -std::clamp(lowKeyNeed * (0.18f + 0.48f * highlightRisk) + highKeyNeed * (0.18f + 0.30f * highlightRisk), 0.0f, 0.65f);
     adjustments.shadows = intentionalLowKey ? -std::clamp(0.03f + darkFraction * 0.08f, 0.0f, 0.12f)
         : crushedShadows ? std::clamp((0.12f - p10) * 1.25f, 0.0f, 0.25f) : 0.0f;
-    adjustments.contrast = std::clamp((0.60f - tonalSpread) * 0.86f + lowKeyNeed * 0.15f + highKeyNeed * 0.10f, -0.12f, 0.42f);
+    const float contrastBase = (0.60f - tonalSpread) * 0.86f + lowKeyNeed * 0.15f + highKeyNeed * 0.10f;
+    const float contrastBiasPosition = std::clamp((0.60f - tonalSpread) / 0.10f, 0.0f, 1.0f);
+    const float contrastBiasTaper = contrastBiasPosition * contrastBiasPosition * (3.0f - 2.0f * contrastBiasPosition);
+    const float positiveContrastBias = contrastBase > 0.0f ? 0.06f * contrastBiasTaper : 0.0f;
+    adjustments.contrast = std::clamp(contrastBase + positiveContrastBias, -0.12f, 0.42f);
     adjustments.saturation = chroma < 0.30f ? std::clamp((0.34f - chroma) * 1.05f + lowKeyNeed * 0.12f, 0.0f, 0.40f) : 0.0f;
     if (std::abs(mean - 0.50f) < 0.08f && tonalSpread > 0.52f && chroma >= 0.25f) adjustments = {};
     return true;

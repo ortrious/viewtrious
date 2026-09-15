@@ -21,7 +21,6 @@
 #include "lanczos_resampler.h"
 #include "d3d11_model_viewport.h"
 #include "video_player.h"
-#include "file_open_diagnostics.h"
 #include "shell_thumbnail_reader.h"
 #include "video_hover_frame_stream.h"
 #include "stl_loader.h"
@@ -1387,11 +1386,9 @@ public:
         return S_OK;
     }
 
-    HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true, const wchar_t* route = L"internal") {
+    HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
         CancelExternalMediaDragArming();
-        const wchar_t* mediaKind = IsModelPath(path) ? L"model" : IsVideoPath(path) ? L"video" : IsGifPath(path) ? L"gif" : L"image";
-        activeOpenAttemptId_ = FileOpenDiagnostics::Begin(path, route, mediaKind);
-        FileOpenDiagnostics::Log(activeOpenAttemptId_, L"load-content-dispatch");
+        ++activeOpenAttemptId_;
         BeginLowerUiNavigation(path, !resetNavigation);
         BeginAdjustmentPanelNavigation(path);
         CancelVideoAutoPlayNextCountdown();
@@ -1413,7 +1410,6 @@ public:
         DeactivateModel();
         contentKind_ = ContentKind::Image2D;
         const HRESULT result = LoadImage(path, resetNavigation);
-        FileOpenDiagnostics::Log(activeOpenAttemptId_, SUCCEEDED(result) ? L"nonvideo-open-complete" : L"nonvideo-open-failed", L"hr=0x" + std::to_wstring(static_cast<unsigned int>(result)));
         return result;
     }
     void QueueExternalOpen(std::wstring path) {
@@ -1428,7 +1424,7 @@ public:
         if (IsIconic(window_)) ShowWindow(window_, SW_RESTORE);
         BringWindowToTop(window_);
         SetForegroundWindow(window_);
-        LoadContent(path, true, L"same-window-ipc");
+        LoadContent(path, true);
         if (!externalOpenQueue_.empty()) PostMessageW(window_, kExternalOpenMessage, 0, 0);
     }
 
@@ -1524,7 +1520,7 @@ public:
         EnsureRenderTarget();
         InitializeSpaceMouse();
         ActivateGifPlayback();
-        if (!startupPath_.empty()) LoadContent(std::exchange(startupPath_, {}), true, L"startup");
+        if (!startupPath_.empty()) LoadContent(std::exchange(startupPath_, {}), true);
     }
     void InitializeSpaceMouse() {
         if (!window_ || spaceMouse_) return;
@@ -1684,7 +1680,7 @@ public:
         ComPtr<IShellItem> item;
         PWSTR path = nullptr;
         if (SUCCEEDED(dialog->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-            LoadContent(path, true, L"open-file");
+            LoadContent(path, true);
             CoTaskMemFree(path);
         }
         InvalidateRect(window_, nullptr, FALSE);
@@ -5025,7 +5021,7 @@ public:
             std::wstring path(length + 1, L'\0');
             DragQueryFileW(drop, 0, path.data(), length + 1);
             path.resize(length);
-            LoadContent(path, true, L"drag-drop");
+            LoadContent(path, true);
             InvalidateRect(window_, nullptr, FALSE);
         }
         DragFinish(drop);
@@ -6477,7 +6473,7 @@ public:
         filmstripClickedRevealTarget_ = static_cast<size_t>(index);
         const std::wstring path = navigationFiles_[index].wstring();
         if (!PathsEqual(fs::path(path), fs::path(currentPath_))) {
-            if (FAILED(LoadContent(path, false, L"filmstrip"))) filmstripClickedRevealTarget_.reset();
+            if (FAILED(LoadContent(path, false))) filmstripClickedRevealTarget_.reset();
             else if (!imageDecodePending_) RevealClickedFilmstripItem();
         }
         else RevealClickedFilmstripItem();
@@ -7644,7 +7640,7 @@ public:
         if (!skipWrapFade && BeginFilmstripWrapFade(direction, immediatePaint)) return;
         if (BeginStillDissolveNavigation(direction)) {
             if (VideoActive() || IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) {
-                LoadContent(dissolveTargetPath_, false, L"next-previous");
+                LoadContent(dissolveTargetPath_, false);
                 if (immediatePaint) UpdateWindow(window_);
             } else SelectNavigationTarget(dissolveTargetPath_, direction, immediatePaint);
             return;
@@ -7652,12 +7648,12 @@ public:
         const std::optional<std::wstring> path = NavigationTargetPath(direction);
         if (!path) return;
         if (VideoActive() && BeginVideoSiblingDissolve(*path)) {
-            LoadContent(*path, false, L"next-previous");
+            LoadContent(*path, false);
             if (immediatePaint) UpdateWindow(window_);
             return;
         }
         ClearStillDissolve();
-        LoadContent(*path, false, L"next-previous");
+        LoadContent(*path, false);
         if (immediatePaint) UpdateWindow(window_);
     }
 
@@ -8193,7 +8189,7 @@ public:
         if (elapsed < 5000) { InvalidateRect(window_, nullptr, FALSE); return; }
         const std::wstring nextPath = videoAutoPlayNextCountdownTargetPath_;
         CancelVideoAutoPlayNextCountdown();
-        LoadContent(nextPath, false, L"auto-play-next");
+        LoadContent(nextPath, false);
     }
 
     bool BeginSwipeNavigation(POINT point) {
@@ -8224,7 +8220,7 @@ public:
             if (BeginFilmstripWrapFade(direction, true)) {
                 return true;
             } else if (BeginStillDissolveNavigation(direction)) {
-                if (VideoActive() || IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) LoadContent(dissolveTargetPath_, false, L"swipe-navigation");
+                if (VideoActive() || IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) LoadContent(dissolveTargetPath_, false);
                 else SelectNavigationTarget(dissolveTargetPath_, direction);
             }
             else Navigate(direction);
@@ -9102,7 +9098,6 @@ private:
         if (contentKind_ == ContentKind::Model3D) contentKind_ = ContentKind::None;
     }
     void BeginVideoLoad(const std::wstring& path, uint64_t openAttemptId, bool resetNavigation) {
-        FileOpenDiagnostics::Log(openAttemptId, L"video-load-begin");
         const bool preserveNavigation = !resetNavigation &&
             PathsEqual(fs::path(path).parent_path(), fs::path(currentPath_).parent_path());
         const bool replacingVideo = VideoActive();
@@ -9136,7 +9131,6 @@ private:
             contentKind_ = ContentKind::None;
             resolutionText_.clear();
             error_ = videoError.empty() ? L"viewtrious could not open this video." : videoError;
-            FileOpenDiagnostics::Log(openAttemptId, L"video-load-failed", L"message=\"" + error_ + L"\"");
             RestoreVideoWindowBounds();
             SetCommittedMediaWindowTitle(L"");
         } else {
@@ -9162,11 +9156,8 @@ private:
     }
 public:
     void VideoMediaEngineEvent(DWORD event, uint64_t callbackOpenAttemptId) {
-        if (!VideoActive()) { FileOpenDiagnostics::Log(callbackOpenAttemptId, L"media-engine-callback-ignored", L"reason=no-active-video"); return; }
+        if (!VideoActive()) return;
         if (callbackOpenAttemptId != activeOpenAttemptId_ || !videoPlayer_.OwnsOpenAttempt(callbackOpenAttemptId)) {
-            FileOpenDiagnostics::Log(callbackOpenAttemptId, L"media-engine-callback-stale",
-                L"active-open=" + std::to_wstring(activeOpenAttemptId_) + L" player-open=" +
-                std::to_wstring(videoPlayer_.OpenAttemptId()) + L" action=ignored");
             return;
         }
         const bool wasPlaying = videoPlayer_.Playing();
@@ -10612,7 +10603,7 @@ private:
             const std::wstring candidatePath = navigationFiles_[candidate].wstring();
             const bool dissolve = BeginStillDissolveToTarget(candidatePath);
             if (IsVideoPath(candidatePath)) {
-                LoadContent(candidatePath, false, L"delete-continuation");
+                LoadContent(candidatePath, false);
                 return;
             }
             if (IsGifPath(navigationFiles_[candidate].wstring())) {
@@ -10691,7 +10682,7 @@ private:
         }
         const bool heldPresentation = !ModelActive() &&
             (VideoActive() ? BeginVideoSiblingDissolve(restoredPath) : BeginStillDissolveToTarget(restoredPath));
-        if (FAILED(LoadContent(restoredPath, !hasCurrentMedia, L"delete-undo"))) {
+        if (FAILED(LoadContent(restoredPath, !hasCurrentMedia))) {
             if (heldPresentation) ClearStillDissolve();
             ShowActionError(L"viewtrious restored the file but couldn't open it.");
         }

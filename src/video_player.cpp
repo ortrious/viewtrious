@@ -1,5 +1,4 @@
 #include "video_player.h"
-#include "file_open_diagnostics.h"
 
 #include <shlwapi.h>
 
@@ -13,31 +12,6 @@ namespace {
 
 constexpr wchar_t kMissingMediaFeaturesMessage[] =
     L"Media features are unavailable on this Windows installation. Windows 11 N users may need to install the Microsoft Media Feature Pack.";
-
-const wchar_t* MediaEventName(DWORD event) {
-    switch (event) {
-    case MF_MEDIA_ENGINE_EVENT_LOADSTART: return L"LOADSTART";
-    case MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA: return L"LOADEDMETADATA";
-    case MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY: return L"FIRSTFRAMEREADY";
-    case MF_MEDIA_ENGINE_EVENT_CANPLAY: return L"CANPLAY";
-    case MF_MEDIA_ENGINE_EVENT_PLAYING: return L"PLAYING";
-    case MF_MEDIA_ENGINE_EVENT_ENDED: return L"ENDED";
-    case MF_MEDIA_ENGINE_EVENT_ERROR: return L"ERROR";
-    default: return L"OTHER";
-    }
-}
-
-bool IsOpenLifecycleEvent(DWORD event) {
-    return event == MF_MEDIA_ENGINE_EVENT_LOADSTART || event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA ||
-        event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY || event == MF_MEDIA_ENGINE_EVENT_CANPLAY ||
-        event == MF_MEDIA_ENGINE_EVENT_PLAYING || event == MF_MEDIA_ENGINE_EVENT_ENDED || event == MF_MEDIA_ENGINE_EVENT_ERROR;
-}
-
-std::wstring HresultDetail(HRESULT result) {
-    wchar_t text[32]{};
-    swprintf_s(text, L"hr=0x%08X", static_cast<unsigned int>(result));
-    return text;
-}
 
 class MediaEngineNotify final : public IMFMediaEngineNotify {
 public:
@@ -172,19 +146,13 @@ void VideoPlayer::RecordFramePacingEventAtQpc(FramePacingEvent, LONGLONG, LONGLO
 bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& path, uint64_t openAttemptId, std::wstring& error) {
     Shutdown();
     openAttemptId_ = openAttemptId;
-    openStartedAtMs_ = GetTickCount64();
-    lastMediaEvent_ = 0;
-    lastSuccessfulLifecycleEvent_ = 0;
-    firstFrameLogged_ = false;
-    FileOpenDiagnostics::Log(openAttemptId_, L"video-open-begin");
     ResetFramePacingDiagnostics();
-    if (!window || !device) { error = L"The video graphics device is unavailable."; FileOpenDiagnostics::Log(openAttemptId_, L"video-open-failed", L"stage=graphics-device"); return false; }
+    if (!window || !device) { error = L"The video graphics device is unavailable."; return false; }
     const HRESULT startup = MFStartup(MF_VERSION);
-    FileOpenDiagnostics::Log(openAttemptId_, L"mf-startup", HresultDetail(startup));
     if (FAILED(startup)) { error = kMissingMediaFeaturesMessage; return false; }
     mediaFoundationStarted_ = true;
     ReadNominalFrameRate(path);
-    if (!RebindDevice(device, error)) { FileOpenDiagnostics::Log(openAttemptId_, L"video-open-failed", L"stage=device-bind"); Shutdown(); return false; }
+    if (!RebindDevice(device, error)) { Shutdown(); return false; }
     ComPtr<IMFAttributes> attributes;
     ComPtr<IMFMediaEngineClassFactory> factory;
     ComPtr<IMFMediaEngineNotify> notify = new (std::nothrow) MediaEngineNotify(window, openAttemptId_);
@@ -196,24 +164,20 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
     if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_MFMediaEngineClassFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
     if (SUCCEEDED(hr)) hr = factory->CreateInstance(0, attributes.Get(), &engine_);
     if (SUCCEEDED(hr)) hr = engine_.As(&engineEx_);
-    FileOpenDiagnostics::Log(openAttemptId_, L"media-engine-create", HresultDetail(hr));
     if (FAILED(hr)) {
         error = hr == REGDB_E_CLASSNOTREG ? kMissingMediaFeaturesMessage : L"Windows could not prepare this video for playback.";
         Shutdown();
         return false;
     }
     negativePlaybackRateSupported_ = engineEx_ && engineEx_->IsPlaybackRateSupported(-1.0) != FALSE;
-    FileOpenDiagnostics::Log(openAttemptId_, L"video-negative-rate-support", L"rate=-1 supported=" + std::to_wstring(negativePlaybackRateSupported_ ? 1 : 0));
     if (!SetSourceFromPath(path, error)) {
         Shutdown();
         return false;
     }
-    FileOpenDiagnostics::Log(openAttemptId_, L"video-open-awaiting-events");
     return true;
 }
 
 void VideoPlayer::Shutdown() {
-    if (openAttemptId_) FileOpenDiagnostics::Log(openAttemptId_, L"video-shutdown-begin");
     FlushFramePacingDiagnostics();
     playing_ = ended_ = ready_ = failed_ = hasValidFrame_ = adjustedFrameValid_ = hasTransferredPts_ = hasFramesPerSecond_ = negativePlaybackRateSupported_ = false;
     displayAdjustmentsBypassed_ = false;
@@ -225,7 +189,6 @@ void VideoPlayer::Shutdown() {
     engine_.Reset(); deviceManager_.Reset(); device_.Reset();
     videoWidth_ = videoHeight_ = 0;
     if (mediaFoundationStarted_) { MFShutdown(); mediaFoundationStarted_ = false; }
-    if (openAttemptId_) FileOpenDiagnostics::Log(openAttemptId_, L"video-shutdown-complete");
     openAttemptId_ = 0;
 }
 
@@ -275,11 +238,10 @@ bool VideoPlayer::EnsureMultithreadProtection(ID3D11Device* device, std::wstring
 bool VideoPlayer::SetSourceFromPath(const std::wstring& path, std::wstring& error) {
     const std::wstring url = FileUrl(path);
     BSTR source = SysAllocString(url.c_str());
-    if (!source) { error = L"viewtrious could not prepare the video path."; FileOpenDiagnostics::Log(openAttemptId_, L"video-open-failed", L"stage=source-allocate"); return false; }
+    if (!source) { error = L"viewtrious could not prepare the video path."; return false; }
     const HRESULT set = engine_->SetSource(source);
     SysFreeString(source);
     const HRESULT load = SUCCEEDED(set) ? engine_->Load() : set;
-    FileOpenDiagnostics::Log(openAttemptId_, L"media-engine-source", L"set=" + HresultDetail(set) + L" load=" + HresultDetail(load));
     if (FAILED(set) || FAILED(load)) { error = L"viewtrious could not open this video."; return false; }
     return true;
 }
@@ -299,12 +261,6 @@ bool VideoPlayer::CreateFrameTexture(std::wstring& error) {
 
 bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
     if (!engine_) return false;
-    lastMediaEvent_ = event;
-    const ULONGLONG elapsed = openStartedAtMs_ ? GetTickCount64() - openStartedAtMs_ : 0;
-    if (IsOpenLifecycleEvent(event)) {
-        FileOpenDiagnostics::Log(openAttemptId_, L"media-engine-event", std::wstring(MediaEventName(event)) + L" event=" + std::to_wstring(event) + L" elapsed-ms=" + std::to_wstring(elapsed));
-        if (event != MF_MEDIA_ENGINE_EVENT_ERROR) lastSuccessfulLifecycleEvent_ = event;
-    }
     if (event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA || event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY) {
         const HRESULT size = engine_->GetNativeVideoSize(&videoWidth_, &videoHeight_);
         if (FAILED(size) || !videoWidth_ || !videoHeight_ || !CreateFrameTexture(error)) {
@@ -312,26 +268,17 @@ bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
             failed_ = true;
         } else {
             ready_ = true;
-            FileOpenDiagnostics::Log(openAttemptId_, L"video-metadata-ready", L"size=" + std::to_wstring(videoWidth_) + L"x" + std::to_wstring(videoHeight_) + L" fps=" + std::to_wstring(framesPerSecond_));
         }
     } else if (event == MF_MEDIA_ENGINE_EVENT_CANPLAY && !failed_) {
         ApplyPreferredPlaybackRate();
         const HRESULT play = engine_->Play();
-        if (FAILED(play)) { error = L"viewtrious could not start video playback."; FileOpenDiagnostics::Log(openAttemptId_, L"video-open-failed", L"stage=play " + HresultDetail(play)); failed_ = true; }
-        else { playing_ = true; FileOpenDiagnostics::Log(openAttemptId_, L"video-open-ready", L"elapsed-ms=" + std::to_wstring(elapsed)); RecordFramePacingEvent(FramePacingEvent::PlaybackBegin); }
+        if (FAILED(play)) { error = L"viewtrious could not start video playback."; failed_ = true; }
+        else { playing_ = true; RecordFramePacingEvent(FramePacingEvent::PlaybackBegin); }
     } else if (event == MF_MEDIA_ENGINE_EVENT_PLAYING) {
         playing_ = true; ended_ = false; RecordFramePacingEvent(FramePacingEvent::PlaybackResume);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ENDED) {
         playing_ = false; ended_ = true; engine_->Pause(); RecordFramePacingEvent(FramePacingEvent::PlaybackEnd);
     } else if (event == MF_MEDIA_ENGINE_EVENT_ERROR) {
-        ComPtr<IMFMediaError> mediaError;
-        USHORT code = 0;
-        HRESULT extended = S_OK;
-        if (SUCCEEDED(engine_->GetError(mediaError.GetAddressOf())) && mediaError) {
-            code = mediaError->GetErrorCode();
-            extended = mediaError->GetExtendedErrorCode();
-        }
-        FileOpenDiagnostics::Log(openAttemptId_, L"media-engine-error", L"code=" + std::to_wstring(code) + L" extended=" + HresultDetail(extended) + L" last-successful-event=" + std::to_wstring(lastSuccessfulLifecycleEvent_) + L" elapsed-ms=" + std::to_wstring(elapsed));
         error = L"viewtrious could not decode this video. It may be corrupt or use an unsupported codec.";
         failed_ = true; playing_ = false;
     }
@@ -554,10 +501,6 @@ bool VideoPlayer::UpdateFrame(FrameAcquisitionReason reason) {
             adjustedFrameValid_ = !displayAdjustments_.IsNeutral() && adjustmentProcessor_.ProcessImage(frameTexture_.Get(), videoWidth_, videoHeight_, displayAdjustments_);
             RecordFramePacingEvent(FramePacingEvent::CachePublish, pts);
             transferred = true;
-            if (!firstFrameLogged_) {
-                firstFrameLogged_ = true;
-                FileOpenDiagnostics::Log(openAttemptId_, L"video-first-frame", L"elapsed-ms=" + std::to_wstring(openStartedAtMs_ ? GetTickCount64() - openStartedAtMs_ : 0));
-            }
         }
     }
     return transferred;

@@ -57,7 +57,6 @@ public:
     bool Ended() const { return ended_; }
     bool Active() const { return engine_ != nullptr; }
     bool OwnsOpenAttempt(uint64_t openAttemptId) const { return engine_ && openAttemptId_ == openAttemptId; }
-    uint64_t OpenAttemptId() const { return openAttemptId_; }
     bool Failed() const { return failed_; }
     bool HasValidFrame() const { return hasValidFrame_; }
 
@@ -99,13 +98,9 @@ private:
     bool hasTransferredPts_ = false;
     bool hasFramesPerSecond_ = false;
     bool negativePlaybackRateSupported_ = false;
-    bool firstFrameLogged_ = false;
     float framesPerSecond_ = 0.0f;
     LONGLONG lastTransferredPts_ = 0;
     uint64_t openAttemptId_ = 0;
-    ULONGLONG openStartedAtMs_ = 0;
-    DWORD lastMediaEvent_ = 0;
-    DWORD lastSuccessfulLifecycleEvent_ = 0;
 #if defined(_DEBUG)
     static constexpr size_t kFramePacingRecordCapacity = 8192;
     std::array<FramePacingRecord, kFramePacingRecordCapacity> framePacingRecords_{};

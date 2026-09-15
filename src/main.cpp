@@ -64,7 +64,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"ViewtriousWindow";
-constexpr wchar_t kWindowTitle[] = L"Viewtrious";
+constexpr wchar_t kWindowTitle[] = L"viewtrious";
 constexpr wchar_t kPrimaryMutexName[] = L"Local\\Viewtrious.PrimaryReuseTarget.v1";
 constexpr ULONG_PTR kExternalOpenCopyDataMagic = 0x5654524F00010001ull;
 constexpr DWORD_PTR kPrimaryWindowMagic = 0x5654524Fu;
@@ -309,7 +309,7 @@ constexpr std::array<const wchar_t*, 7> kAntiAliasingDisplayOptions{ L"Off", L"2
 constexpr std::array<const wchar_t*, 2> kProjectionOptions{ L"Perspective", L"Orthographic" };
 constexpr std::array<const wchar_t*, 3> kVisualStyleOptions{ L"Shaded", L"Shaded with Visible Edges", L"Wireframe" };
 constexpr wchar_t kSettingsKey[] = L"Software\\Viewtrious";
-constexpr wchar_t kRegisteredApplicationName[] = L"Viewtrious";
+constexpr wchar_t kRegisteredApplicationName[] = L"viewtrious";
 constexpr wchar_t kCapabilitiesPath[] = L"Software\\Viewtrious\\Capabilities";
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
@@ -340,8 +340,8 @@ struct ShortcutEntry { const wchar_t* shortcut; const wchar_t* description; };
 struct HelpSection { const wchar_t* heading; const wchar_t* body; };
 struct HelpTopic { const wchar_t* title; const HelpSection* sections; size_t sectionCount; const wchar_t* body; };
 constexpr std::array<HelpSection, 3> kGettingStartedSections{{
-    { L"open a file", L"use open file, drag and drop a supported file into Viewtrious, or open an associated file from Windows Explorer." },
-    { L"browse the folder", L"after opening a file, Viewtrious can move between other supported sibling files in that folder." },
+    { L"open a file", L"use open file, drag and drop a supported file into viewtrious, or open an associated file from Windows Explorer." },
+    { L"browse the folder", L"after opening a file, viewtrious can move between other supported sibling files in that folder." },
     { L"learn the controls", L"use quick tutorial for the visual walkthrough and keyboard shortcuts for the complete shortcut reference." },
 }};
 constexpr std::array<HelpSection, 3> kSpaceMouseSections{{
@@ -361,15 +361,15 @@ constexpr std::array<HelpSection, 4> kSettingsSections{{
     { L"3D settings", L"options affecting model viewing, navigation, and SpaceMouse support." },
 }};
 constexpr std::array<HelpSection, 2> kFeedbackAndAboutSections{{
-    { L"feedback", L"use feedback from the main menu for the current Viewtrious feedback and project links." },
-    { L"about", L"use about for the Viewtrious version and application information." },
+    { L"feedback", L"use feedback from the main menu for the current viewtrious feedback and project links." },
+    { L"about", L"use about for the viewtrious version and application information." },
 }};
 constexpr std::array<HelpSection, 5> kTroubleshootingSections{{
     { L"a file will not open", L"confirm that the file type is supported and that the file itself can be read normally by Windows." },
-    { L"video will not play", L"a video file can contain a codec unavailable through the Windows media components used by Viewtrious. a supported extension does not guarantee every codec can be decoded." },
+    { L"video will not play", L"a video file can contain a codec unavailable through the Windows media components used by viewtrious. a supported extension does not guarantee every codec can be decoded." },
     { L"a 3D model will not open", L"confirm that the format is supported and that the file contains valid model geometry." },
     { L"SpaceMouse does not respond", L"confirm that SpaceMouse is enabled under 3D settings and that 3Dconnexion software recognizes the device." },
-    { L"Viewtrious behaves unexpectedly", L"use feedback from the main menu and include the file type and steps to reproduce the problem." },
+    { L"viewtrious behaves unexpectedly", L"use feedback from the main menu and include the file type and steps to reproduce the problem." },
 }};
 constexpr std::array<HelpTopic, 7> kHelpTopics{{
     { L"getting started", kGettingStartedSections.data(), kGettingStartedSections.size(), L"" },
@@ -633,7 +633,7 @@ protected:
 constexpr std::array<ShortcutEntry, 13> kKeyboardShortcutEntries{{
     { L"Ctrl + O", L"Open file" }, { L"Ctrl + C", L"Copy media" }, { L"Ctrl + P", L"Print" }, { L"Delete", L"Move media to Recycle Bin" },
     { L"Ctrl + Z", L"Restore last deleted media" },
-    { L"Esc", L"Exit fullscreen, or close Viewtrious" }, { L"Left Arrow", L"Previous media" }, { L"Right Arrow", L"Next media" }, { L"+", L"Zoom in" },
+    { L"Esc", L"Exit fullscreen, or close viewtrious" }, { L"Left Arrow", L"Previous media" }, { L"Right Arrow", L"Next media" }, { L"+", L"Zoom in" },
     { L"-", L"Zoom out" }, { L"0", L"Reset zoom to center" }, { L"F11", L"Fullscreen" }, { L"Space", L"Play / pause video" },
 }};
 constexpr std::array<ShortcutEntry, 4> kMouseNavigationEntries{{
@@ -1465,6 +1465,7 @@ public:
             navigationFiles_.clear();
             navigationBuilt_ = false;
             error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
+            SetCommittedMediaWindowTitle(L"");
         }
         return hr;
     }
@@ -1476,13 +1477,13 @@ public:
         if (shuttingDown_ || result->generation != modelLoadGeneration_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_))) return;
         StopModelLoadingAnimation();
         modelLoading_ = false;
-        if (!result->IsSuccess()) { contentKind_ = ContentKind::None; error_ = result->error; InvalidateRect(window_, nullptr, FALSE); return; }
+        if (!result->IsSuccess()) { contentKind_ = ContentKind::None; error_ = result->error; SetCommittedMediaWindowTitle(L""); InvalidateRect(window_, nullptr, FALSE); return; }
         modelDocument_ = result->document;
         std::wstring viewportError;
         EnsureRenderTarget();
         const bool centerOnBuildPlate=modelBuildPlate_==ModelBuildPlate::On||(modelBuildPlate_==ModelBuildPlate::Auto&&modelDocument_->sourceFormat==ModelSourceFormat::ThreeMf);
         if (!graphicsHost_.Ready() || (!modelViewport_.Active() && !modelViewport_.Create(graphicsHost_, modelDocument_, viewportError, ModelUpVector(), centerOnBuildPlate))) {
-            modelDocument_.reset(); contentKind_ = ContentKind::None; error_ = viewportError; InvalidateRect(window_, nullptr, FALSE); return;
+            modelDocument_.reset(); contentKind_ = ContentKind::None; error_ = viewportError; SetCommittedMediaWindowTitle(L""); InvalidateRect(window_, nullptr, FALSE); return;
         }
         modelViewport_.SetProjectionMode(modelProjectionMode_);
         modelViewport_.SetVisualStyle(modelVisualStyle_);
@@ -1491,7 +1492,15 @@ public:
         modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector(), modelBuildPlateWidthMm_, modelBuildPlateDepthMm_);
         modelTriangleCount_ = modelDocument_->geometries.front().indices.size() / 3;
         resolutionText_ = FormatCompactTriangleCount(modelTriangleCount_) + L" triangles";
+        SetCommittedMediaWindowTitle(result->path);
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
+    }
+
+    void SetCommittedMediaWindowTitle(const std::wstring& path) {
+        const std::wstring filename = path.empty() ? std::wstring{} : fs::path(path).filename().wstring();
+        const std::wstring title = filename.empty() ? kWindowTitle : filename;
+        if (!window_ || nativeWindowTitle_ == title) return;
+        if (SetWindowTextW(window_, title.c_str())) nativeWindowTitle_ = title;
     }
 
     void SetWindow(HWND window) {
@@ -4790,7 +4799,7 @@ public:
             DismissOverlay();
             const wchar_t* url = button == ButtonKind::FeedbackBug ? kBugReportUrl : kFeatureRequestUrl;
             if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", url, nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
-                ShowActionError(L"Viewtrious couldn't open the feedback page.");
+                ShowActionError(L"viewtrious couldn't open the feedback page.");
         }
         else if (button == ButtonKind::HelpClose) DismissOverlay();
         else if (button == ButtonKind::HelpTopic) SetHelpTopic(helpTopicHit_);
@@ -4817,7 +4826,7 @@ public:
         resetInProgress_ = true;
         if (!DeleteSettingsValues()) {
             resetInProgress_ = false;
-            ShowActionError(L"Viewtrious could not reset its preferences.");
+            ShowActionError(L"viewtrious could not reset its preferences.");
             return;
         }
         CleanupWallpaperStaging();
@@ -4840,7 +4849,7 @@ public:
         STARTUPINFOW startup{ sizeof(startup) };
         PROCESS_INFORMATION process{};
         if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process)) {
-            ShowActionError(L"Viewtrious preferences were reset. Please close and reopen Viewtrious to continue.");
+            ShowActionError(L"viewtrious preferences were reset. Please close and reopen viewtrious to continue.");
             return;
         }
         CloseHandle(process.hThread);
@@ -5043,6 +5052,7 @@ public:
                         currentPath_ = candidate.wstring();
                         filenameText_ = candidate.filename().wstring();
                         fileSizeText_ = FormatFileSize(currentPath_);
+                        SetCommittedMediaWindowTitle(currentPath_);
                         currentRenamed = true;
                     }
                     break;
@@ -9063,7 +9073,7 @@ private:
                     loaded.document = std::move(result.document); loaded.error = std::move(result.error);
                 }
             } else {
-                loaded.error = L"Viewtrious could not initialize the model loading worker.";
+                loaded.error = L"viewtrious could not initialize the model loading worker.";
             }
             if (SUCCEEDED(com)) CoUninitialize();
             auto* result = new ModelLoadResult(std::move(loaded));
@@ -9113,9 +9123,10 @@ private:
             CancelLowerUiMorph();
             contentKind_ = ContentKind::None;
             resolutionText_.clear();
-            error_ = videoError.empty() ? L"Viewtrious could not open this video." : videoError;
+            error_ = videoError.empty() ? L"viewtrious could not open this video." : videoError;
             FileOpenDiagnostics::Log(openAttemptId, L"video-load-failed", L"message=\"" + error_ + L"\"");
             RestoreVideoWindowBounds();
+            SetCommittedMediaWindowTitle(L"");
         } else {
             SetVideoVolume(videoVolume_, false);
             videoPlayer_.SetDisplayAdjustments(videoAdjustments_);
@@ -9162,7 +9173,7 @@ public:
             videoPan_ = D2D1::Point2F();
         }
         if (!videoError.empty()) error_ = videoError;
-        if (videoPlayer_.Failed()) { CancelLowerUiMorph(); DeactivateVideo(); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (videoPlayer_.Failed()) { CancelLowerUiMorph(); DeactivateVideo(); SetCommittedMediaWindowTitle(L""); InvalidateRect(window_, nullptr, FALSE); return; }
         if (videoStepHoldTransportActive_ && !videoPlayer_.Playing()) StopVideoStepHold();
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoStepHoldSeekInFlight_) CompleteVideoStepHoldSeek();
@@ -9172,6 +9183,7 @@ public:
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
         }
         if (videoPlayer_.HasValidFrame()) {
+            SetCommittedMediaWindowTitle(currentPath_);
             CommitLowerUiNavigation(currentPath_, true);
             CommitAdjustmentPanelNavigation(currentPath_);
             BeginStillDissolveIfReady(currentPath_);
@@ -9308,8 +9320,9 @@ private:
         return SetWaitableTimer(videoPlaybackTimer_, &due, 0, nullptr, nullptr, FALSE) != FALSE;
     }
     void FailVideoPlaybackScheduler() {
-        error_ = L"Viewtrious could not start video playback.";
+        error_ = L"viewtrious could not start video playback.";
         DeactivateVideo();
+        SetCommittedMediaWindowTitle(L"");
         InvalidateRect(window_, nullptr, FALSE);
     }
     double videoPlaybackQpcFrequency() const {
@@ -9491,11 +9504,12 @@ private:
         success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\.stp\\OpenWithProgids", L"Viewtrious.stp");
         for (const Association& association : associations) success &= registerAssociation(association);
         success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
-        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"Viewtrious image viewer");
+        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"viewtrious image viewer");
         success &= WriteRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
         success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
-        success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"Viewtrious image viewer");
+        success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"viewtrious image viewer");
         success &= VerifyRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
+        if (success) success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", L"Viewtrious");
         bool thumbnailProviderChanged = false;
         success &= RegisterStlThumbnailProvider(executable, thumbnailProviderChanged);
         bool autoProgIdChanged = false;
@@ -9508,7 +9522,7 @@ private:
     void OpenRegisteredDefaultApps(bool verifyRegistration = true) {
         if (verifyRegistration && !RegisterDefaultAppCapabilities()) { ShowOverlay(OverlayKind::RegistrationError); return; }
         INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
-            L"ms-settings:defaultapps?registeredAppUser=Viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
+            L"ms-settings:defaultapps?registeredAppUser=viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
         if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
         if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
     }
@@ -9649,9 +9663,9 @@ private:
         const UINT stride = imageWidth_ * 4;
         const size_t pixelBytes = static_cast<size_t>(stride) * imageHeight_;
         HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPV5HEADER) + pixelBytes);
-        if (!memory) { ShowActionError(L"Viewtrious could not allocate clipboard memory."); return; }
+        if (!memory) { ShowActionError(L"viewtrious could not allocate clipboard memory."); return; }
         auto* header = static_cast<BITMAPV5HEADER*>(GlobalLock(memory));
-        if (!header) { GlobalFree(memory); ShowActionError(L"Viewtrious could not access clipboard memory."); return; }
+        if (!header) { GlobalFree(memory); ShowActionError(L"viewtrious could not access clipboard memory."); return; }
         *header = {};
         header->bV5Size = sizeof(BITMAPV5HEADER);
         header->bV5Width = static_cast<LONG>(imageWidth_);
@@ -9662,7 +9676,7 @@ private:
         header->bV5BlueMask = 0x000000FF; header->bV5AlphaMask = 0xFF000000; header->bV5CSType = LCS_sRGB;
         const HRESULT copy = source_->CopyPixels(nullptr, stride, static_cast<UINT>(pixelBytes), reinterpret_cast<BYTE*>(header + 1));
         GlobalUnlock(memory);
-        if (FAILED(copy)) { GlobalFree(memory); ShowActionError(L"Viewtrious could not copy this media to the clipboard."); return; }
+        if (FAILED(copy)) { GlobalFree(memory); ShowActionError(L"viewtrious could not copy this media to the clipboard."); return; }
         const size_t dropBytes = sizeof(DROPFILES) + (currentPath_.size() + 2) * sizeof(wchar_t);
         HGLOBAL fileDrop = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, dropBytes);
         if (fileDrop) {
@@ -9678,7 +9692,7 @@ private:
         }
         if (!OpenClipboard(window_)) { GlobalFree(memory); if (fileDrop) GlobalFree(fileDrop); ShowActionError(L"the clipboard is currently unavailable."); return; }
         EmptyClipboard();
-        if (!SetClipboardData(CF_DIBV5, memory)) { CloseClipboard(); GlobalFree(memory); if (fileDrop) GlobalFree(fileDrop); ShowActionError(L"Viewtrious could not publish the media to the clipboard."); return; }
+        if (!SetClipboardData(CF_DIBV5, memory)) { CloseClipboard(); GlobalFree(memory); if (fileDrop) GlobalFree(fileDrop); ShowActionError(L"viewtrious could not publish the media to the clipboard."); return; }
         if (fileDrop && !SetClipboardData(CF_HDROP, fileDrop)) GlobalFree(fileDrop);
         CloseClipboard();
         StartCopyFeedback();
@@ -9864,7 +9878,7 @@ private:
 
     void ShowWallpaperFailure(const wchar_t* stage, HRESULT hr) const {
         const std::wstring message = std::wstring(stage) + L"\n\n" + DescribeWallpaperFailure(hr);
-        MessageBoxW(window_, message.c_str(), L"Viewtrious", MB_OK | MB_ICONWARNING);
+        MessageBoxW(window_, message.c_str(), kWindowTitle, MB_OK | MB_ICONWARNING);
     }
 
     static bool SourcePathRejectedByWallpaper(HRESULT hr) {
@@ -9887,7 +9901,7 @@ private:
 
         std::wstring wallpaperPath;
         const HRESULT stagingResult = ExportDesktopWallpaper(wallpaperPath);
-        if (FAILED(stagingResult)) { ShowWallpaperFailure(L"Viewtrious could not create a compatible desktop background.", stagingResult); return; }
+        if (FAILED(stagingResult)) { ShowWallpaperFailure(L"viewtrious could not create a compatible desktop background.", stagingResult); return; }
         const HRESULT fallbackResult = wallpaper->SetWallpaper(nullptr, wallpaperPath.c_str());
         if (FAILED(fallbackResult)) { ShowWallpaperFailure(L"Windows could not apply the compatible desktop background.", fallbackResult); return; }
         StartCopyFeedback(L"Desktop background updated", true);
@@ -10511,7 +10525,7 @@ private:
         if (FAILED(hr)) {
             if (IsJpegPath(currentPath_) || IsPngPath(currentPath_))
                 ShowRotationFailure(failedStage ? failedStage : L"unknown rotation stage", hr, failedWin32Error);
-            else ShowActionError(L"Viewtrious could not safely rotate this image. The original file was not replaced.");
+            else ShowActionError(L"viewtrious could not safely rotate this image. The original file was not replaced.");
             InvalidateRect(window_, nullptr, FALSE);
             return;
         }
@@ -10541,6 +10555,7 @@ private:
         source_.Reset(); bitmap_.Reset(); imageWidth_ = imageHeight_ = 0;
         displayedPixels_.reset();
         currentPath_.clear(); displayedPath_.clear(); currentFileIdentity_ = {}; resolutionText_.clear(); ClearPresentationTitleMetadata(); fileSizeText_.clear(); filenameText_.clear();
+        SetCommittedMediaWindowTitle(L"");
         CancelQueuedFilmstripThumbnails();
         navigationFiles_.clear(); navigationBuilt_ = false; navigationBuildQueued_ = false;
         filmstripClickedRevealTarget_.reset();
@@ -10559,7 +10574,7 @@ private:
         StopFilmstripScrollAnimation();
         filmstripOpacity_ = 0.0f; filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer();
         fitToWindow_ = true; zoom_ = 1.0f; pan_ = D2D1::Point2F();
-        error_ = L"Drop an image here, or launch Viewtrious with an image path.";
+        error_ = L"Drop an image here, or launch viewtrious with an image path.";
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -10630,12 +10645,12 @@ private:
         const fs::path parent = original.parent_path();
         const DWORD originalAttributes = GetFileAttributesW(original.c_str());
         if (originalAttributes != INVALID_FILE_ATTRIBUTES) {
-            ShowActionError(L"Viewtrious couldn't restore the deleted file because its original path is in use.");
+            ShowActionError(L"viewtrious couldn't restore the deleted file because its original path is in use.");
             return;
         }
         const DWORD parentAttributes = GetFileAttributesW(parent.c_str());
         if (parentAttributes == INVALID_FILE_ATTRIBUTES || !(parentAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            ShowActionError(L"Viewtrious couldn't restore the deleted file because its original folder is unavailable.");
+            ShowActionError(L"viewtrious couldn't restore the deleted file because its original folder is unavailable.");
             return;
         }
         ComPtr<IShellItem> destination;
@@ -10650,7 +10665,7 @@ private:
         BOOL aborted = FALSE;
         if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
         if (FAILED(hr) || aborted) {
-            ShowActionError(L"Viewtrious couldn't restore the deleted file from the Recycle Bin.");
+            ShowActionError(L"viewtrious couldn't restore the deleted file from the Recycle Bin.");
             return;
         }
 
@@ -10666,7 +10681,7 @@ private:
             (VideoActive() ? BeginVideoSiblingDissolve(restoredPath) : BeginStillDissolveToTarget(restoredPath));
         if (FAILED(LoadContent(restoredPath, !hasCurrentMedia, L"delete-undo"))) {
             if (heldPresentation) ClearStillDissolve();
-            ShowActionError(L"Viewtrious restored the file but couldn't open it.");
+            ShowActionError(L"viewtrious restored the file but couldn't open it.");
         }
     }
 
@@ -10730,7 +10745,7 @@ private:
             CommitImage(currentPath_, source, width, height, false);
             InvalidateRect(window_, nullptr, FALSE);
         } else {
-            ShowActionError(L"The image was changed, but Viewtrious could not reload it.");
+            ShowActionError(L"The image was changed, but viewtrious could not reload it.");
         }
         return hr;
     }
@@ -11674,11 +11689,12 @@ private:
                 if (SUCCEEDED(hr)) {
                     CommitImage(result->request.path, bitmap, result->width, result->height, false, result->hasTransparency);
                     displayedPixels_ = result->pixels;
-                } else { CancelLowerUiMorph(); error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec."; }
+                } else { CancelLowerUiMorph(); error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec."; SetCommittedMediaWindowTitle(L""); }
             } else {
                 CancelLowerUiMorph();
                 source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); displayedPath_.clear(); imageWidth_ = imageHeight_ = 0;
                 error_ = L"Unable to open this image. It may be corrupt or use an unsupported codec.";
+                SetCommittedMediaWindowTitle(L"");
             }
             InvalidateRect(window_, nullptr, FALSE);
             if (result->deliveredSynchronously) UpdateWindow(window_);
@@ -11714,6 +11730,7 @@ private:
         fileSizeText_ = FormatFileSize(path);
         SetPresentationTitleMetadata(std::to_wstring(width), std::to_wstring(height), kTopBarResolutionSeparator, ReadImageSecondaryMetadata(path));
         filenameText_ = fs::path(path).filename().wstring();
+        SetCommittedMediaWindowTitle(path);
         error_.clear();
         fitToWindow_ = true;
         zoom_ = 1.0f;
@@ -11764,6 +11781,7 @@ private:
             !modelViewport_.Create(graphicsHost_, modelDocument_, error, ModelUpVector(), modelBuildPlate_==ModelBuildPlate::On||(modelBuildPlate_==ModelBuildPlate::Auto&&modelDocument_->sourceFormat==ModelSourceFormat::ThreeMf))) {
             contentKind_ = ContentKind::None;
             error_ = error;
+            SetCommittedMediaWindowTitle(L"");
         }
         if (contentKind_ == ContentKind::Model3D && modelViewport_.Active()) { modelViewport_.SetProjectionMode(modelProjectionMode_); modelViewport_.SetBuildPlate(BuildPlateVisible(), ModelUpVector(), modelBuildPlateWidthMm_, modelBuildPlateDepthMm_); }
         timer_.Log(L"shared graphics/window initialization complete");
@@ -13297,7 +13315,7 @@ private:
                 const float logoTop = std::round(static_cast<float>(bounds.top) + 20.0f * dpiScale);
                 renderTarget_->DrawBitmap(aboutLogo_.Get(), D2D1::RectF(logoLeft, logoTop, logoLeft + logoSize, logoTop + logoSize));
             }
-            DrawOverlayText(L"make Viewtrious the default for common media formats?", left, static_cast<float>(bounds.top) + 94.0f * dpiScale,
+            DrawOverlayText(L"make viewtrious the default for common media formats?", left, static_cast<float>(bounds.top) + 94.0f * dpiScale,
                 contentWidth, 26.0f * dpiScale, 19.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
             const RECT secondaryBounds = GetWelcomeButtonBounds(false), primaryBounds = GetWelcomeButtonBounds(true);
             const D2D1_RECT_F secondaryButton = D2D1::RectF(static_cast<float>(secondaryBounds.left), static_cast<float>(secondaryBounds.top),
@@ -13327,7 +13345,7 @@ private:
         } else if (overlay_ == OverlayKind::DefaultAppsHelper) {
             DrawProductName(L"viewtrious", left, static_cast<float>(bounds.top) + 24.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 17.0f, primaryBrush.Get(), false);
-            DrawOverlayText(L"choose which file types should open with Viewtrious.", left,
+            DrawOverlayText(L"choose which file types should open with viewtrious.", left,
                 static_cast<float>(bounds.top) + 68.0f * dpiScale, contentWidth, 24.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             constexpr float formatPanelTop = 102.0f, formatPanelHeight = 200.0f, formatPanelPadding = 12.0f;
@@ -13547,7 +13565,7 @@ private:
             else if (hoveredButton_ == ButtonKind::SettingsDefaultApps) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), rowHover.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"change file type defaults", defaultAppsButton.left, defaultAppsButton.top, defaultAppsButton.right - defaultAppsButton.left, defaultAppsButton.bottom - defaultAppsButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
-            group(L"RESET VIEWTRIOUS", resetTop);
+            group(L"RESET viewtrious", resetTop);
             const int resetDescriptionHeight = MeasureSettingsTextHeight(L"removes preferences and app-owned data", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
             DrawOverlayText(L"removes preferences and app-owned data", settingsLeft,
                 static_cast<float>(bounds.top) + (resetTop + 22.0f) * dpiScale, settingsWidth, static_cast<float>(resetDescriptionHeight), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
@@ -13629,9 +13647,9 @@ private:
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
             renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::ResetConfirm) {
-            DrawOverlayText(L"Reset Viewtrious to defaults?", left, static_cast<float>(bounds.top) + panelPadding,
+            DrawOverlayText(L"Reset viewtrious to defaults?", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 36.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            DrawOverlayText(L"This removes Viewtrious preferences, saved window placement, and Viewtrious-owned app data.", left,
+            DrawOverlayText(L"This removes viewtrious preferences, saved window placement, and viewtrious-owned app data.", left,
                 static_cast<float>(bounds.top) + panelPadding + 45.0f * dpiScale, contentWidth, 48.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             DrawOverlayText(L"Your images will not be touched.", left, static_cast<float>(bounds.top) + panelPadding + 96.0f * dpiScale,
@@ -13708,9 +13726,9 @@ private:
             const RECT dismissBounds = GetPrintErrorDismissButtonBounds();
             const bool registrationError = overlay_ == OverlayKind::RegistrationError;
             const bool dngPrintError = overlay_ == OverlayKind::PrintError && printErrorForDng_;
-            DrawOverlayText(registrationError ? L"unable to register Viewtrious file types" : dngPrintError ? L"unable to print this DNG file" : L"unable to print this file", left, static_cast<float>(bounds.top) + panelPadding,
+            DrawOverlayText(registrationError ? L"unable to register viewtrious file types" : dngPrintError ? L"unable to print this DNG file" : L"unable to print this file", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, registrationError ? 52.0f * dpiScale : 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
-            DrawOverlayText(registrationError ? L"Viewtrious could not prepare Windows file associations." : dngPrintError ? L"DNG files contain raw camera image data and cannot be printed directly by the standard Windows print path. Save or export the image to a standard image format before printing." : L"Windows could not start printing this file.", left, static_cast<float>(bounds.top) + panelPadding + (registrationError ? 62.0f : 46.0f) * dpiScale,
+            DrawOverlayText(registrationError ? L"viewtrious could not prepare Windows file associations." : dngPrintError ? L"DNG files contain raw camera image data and cannot be printed directly by the standard Windows print path. Save or export the image to a standard image format before printing." : L"Windows could not start printing this file.", left, static_cast<float>(bounds.top) + panelPadding + (registrationError ? 62.0f : 46.0f) * dpiScale,
                 contentWidth, dngPrintError ? 100.0f * dpiScale : 42.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
             const D2D1_RECT_F dismiss = D2D1::RectF(static_cast<float>(dismissBounds.left), static_cast<float>(dismissBounds.top),
                 static_cast<float>(dismissBounds.right), static_cast<float>(dismissBounds.bottom));
@@ -13831,7 +13849,7 @@ private:
         drawItem(DropdownItem::Feedback, top, L"feedback", L'\uE939'); top += rowHeight;
         drawItem(DropdownItem::About, top, L"about", L'\uE946'); top += rowHeight;
         separator();
-        drawItem(DropdownItem::Close, top, L"close Viewtrious", 0, true);
+        drawItem(DropdownItem::Close, top, L"close viewtrious", 0, true);
         renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(menu, 7.0f, 7.0f), borderBrush.Get(), 1.0f);
     }
 
@@ -14268,7 +14286,7 @@ private:
         DrawTitleText(tutorialMetadata ? L"1.2 MB" : hideTutorialMetadata ? L"" : fileSizeText_, static_cast<float>(frame.fileSizeLeft), static_cast<float>(frame.fileSizeWidth), activeMetadataBrush, false, true);
         const float filenameWidth = static_cast<float>(std::max(0L,
             frame.titleBarContent.right - frame.filenameLeft - MulDiv(8, GetDpiForWindow(window_), 96)));
-        DrawTitleText(tutorialMetadata ? L"viewtrious.png" : hideTutorialMetadata ? L"" : filenameText_, static_cast<float>(frame.filenameLeft), filenameWidth,
+        DrawTitleText(EmptyStatePresentationActive() ? L"" : L"viewtrious", static_cast<float>(frame.filenameLeft), filenameWidth,
             tutorialMetadata ? tutorialMetadataBrush.Get() : filenameBrush.Get(), true, false);
 
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
@@ -14336,6 +14354,7 @@ private:
 
     const StartupTimer& timer_;
     HWND window_ = nullptr;
+    std::wstring nativeWindowTitle_ = kWindowTitle;
     ComPtr<IWICImagingFactory> wicFactory_;
     ComPtr<ID2D1Factory1> d2dFactory_;
     ComPtr<IDWriteFactory> dwriteFactory_;

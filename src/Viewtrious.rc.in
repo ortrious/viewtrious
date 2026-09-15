@@ -25,12 +25,12 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName", "Viewtrious"
-            VALUE "FileDescription", "Viewtrious"
+            VALUE "CompanyName", "viewtrious"
+            VALUE "FileDescription", "viewtrious"
             VALUE "FileVersion", "@PROJECT_VERSION@"
             VALUE "InternalName", "Viewtrious"
             VALUE "OriginalFilename", "Viewtrious.exe"
-            VALUE "ProductName", "Viewtrious"
+            VALUE "ProductName", "viewtrious"
             VALUE "ProductVersion", "@PROJECT_VERSION@"
         END
     END

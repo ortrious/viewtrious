@@ -5487,11 +5487,11 @@ public:
         return client.bottom - canvasTop < MulDiv(560, GetDpiForWindow(window_), 96) ?
             MulDiv(96, GetDpiForWindow(window_), 96) : MulDiv(112, GetDpiForWindow(window_), 96);
     }
-    int FilmstripThumbnailHeight() const {
-        return std::max(1, std::min(MulDiv(92, GetDpiForWindow(window_), 96), FilmstripHeight() - MulDiv(20, GetDpiForWindow(window_), 96)));
+    int FilmstripThumbnailHeight(bool prospective = false) const {
+        return std::max(1, std::min(MulDiv(92, GetDpiForWindow(window_), 96), FilmstripHeight(prospective) - MulDiv(20, GetDpiForWindow(window_), 96)));
     }
-    int FilmstripThumbnailMinimumWidth() const { return static_cast<int>(std::lround(FilmstripThumbnailHeight() * 2.0f / 3.0f)); }
-    int FilmstripThumbnailMaximumWidth() const { return static_cast<int>(std::lround(FilmstripThumbnailHeight() * 16.0f / 9.0f)); }
+    int FilmstripThumbnailMinimumWidth(bool prospective = false) const { return static_cast<int>(std::lround(FilmstripThumbnailHeight(prospective) * 2.0f / 3.0f)); }
+    int FilmstripThumbnailMaximumWidth(bool prospective = false) const { return static_cast<int>(std::lround(FilmstripThumbnailHeight(prospective) * 16.0f / 9.0f)); }
     int FilmstripGap() const { return MulDiv(22, GetDpiForWindow(window_), 96); }
     int FilmstripPadding() const { return MulDiv(14, GetDpiForWindow(window_), 96); }
     LONG FilmstripMinimumUsableWidth() const {
@@ -5658,9 +5658,12 @@ public:
         const size_t count = navigationFiles_.size();
         filmstripItemWidths_.resize(count);
         filmstripItemOffsets_.resize(count + 1);
-        const float height = static_cast<float>(FilmstripThumbnailHeight());
-        const float minimum = static_cast<float>(FilmstripThumbnailMinimumWidth());
-        const float maximum = static_cast<float>(FilmstripThumbnailMaximumWidth());
+        // A settings-triggered membership refresh runs while the overlay suppresses
+        // filmstrip visibility. Keep its slot geometry at the normal prospective
+        // size rather than collapsing it to the ineligible zero-height layout.
+        const float height = static_cast<float>(FilmstripThumbnailHeight(true));
+        const float minimum = static_cast<float>(FilmstripThumbnailMinimumWidth(true));
+        const float maximum = static_cast<float>(FilmstripThumbnailMaximumWidth(true));
         float offset = static_cast<float>(FilmstripPadding());
         for (size_t index = 0; index < count; ++index) {
             filmstripItemOffsets_[index] = offset;

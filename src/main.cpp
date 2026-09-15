@@ -295,12 +295,11 @@ constexpr float kSettingsColumnGapDips = 24.0f;
 constexpr float kSettingsRowGapDips = 12.0f;
 constexpr float kSettingsCheckboxRowGapDips = 6.0f;
 constexpr float kSettingsLabelToControlGapDips = 6.0f;
-constexpr float kSettingsMajorSectionGapDips = 24.0f;
+constexpr float kSettingsMajorSectionGapDips = 32.0f;
 constexpr float kSettingsControlHeightDips = 32.0f;
 constexpr float kSettingsSectionHeadingHeightDips = 20.0f;
 constexpr float kSettingsLabelHeightDips = 20.0f;
 constexpr float kSettingsRowHeightDips = kSettingsLabelHeightDips + kSettingsLabelToControlGapDips + kSettingsControlHeightDips;
-constexpr float kSettingsFirstRowTopDips = 76.0f;
 constexpr int kDropdownLeftPaddingDips = 12;
 constexpr int kDropdownChevronReserveDips = 28;
 constexpr int kDropdownChevronHalfWidthDips = 4;
@@ -321,7 +320,7 @@ constexpr float kSignedAdjustmentSliderMaximum = 1.0f;
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, ResetAdjustmentsConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError, RegistrationError };
 enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, Adjustments, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
-enum class ButtonKind { None, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsAddOnsPage, SettingsRememberPlacement, SettingsIncludeHidden,
+enum class ButtonKind { None, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsVideoPage, SettingsModel3DPage, SettingsAddOnsPage, SettingsClose, SettingsRememberPlacement, SettingsIncludeHidden,
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAdjustmentsDatabase, SettingsResetAdjustmentsDatabase, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, ResetAdjustmentsConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
@@ -1267,13 +1266,13 @@ public:
         DWORD rememberPlacement = 1;
         ReadSetting(L"RememberWindowPlacement", rememberPlacement);
         rememberWindowPlacement_ = rememberPlacement != 0;
-        DWORD includeHidden = 1;
+        DWORD includeHidden = 0;
         ReadSetting(L"IncludeHiddenImages", includeHidden);
         includeHiddenImages_ = includeHidden != 0;
         DWORD confirmDelete = 1;
         ReadSetting(L"ConfirmBeforeDeleting", confirmDelete);
         confirmBeforeDeleting_ = confirmDelete != 0;
-        DWORD swipeToNavigateWhenFit = 0;
+        DWORD swipeToNavigateWhenFit = 1;
         ReadSetting(L"SwipeToNavigateWhenFit", swipeToNavigateWhenFit);
         swipeToNavigateWhenFit_ = swipeToNavigateWhenFit != 0;
         DWORD showZoomHud = 1;
@@ -2148,6 +2147,7 @@ public:
     }
     void SynchronizeVideoAdjustmentsPanelPresentedLayout(bool animatePlacement = false) {
         if (adjustmentPanelNavigation_.pending) return;
+        if (!animationsEnabled_) animatePlacement = false;
         const VideoAdjustmentsPanelLayout target = GetVideoAdjustmentsPanelTargetLayout();
         if (!animatePlacement || videoAdjustmentsDragging_ >= 0) {
             StopVideoAdjustmentsPanelMotion();
@@ -2406,6 +2406,15 @@ public:
             float& fadeStartOpacity, ULONGLONG& fadeStartedAt, bool open) {
         if (open == panelOpen && !fadeActive) return;
         panelOpen = open;
+        if (!animationsEnabled_) {
+            fadeActive = false;
+            opacity = open ? 1.0f : 0.0f;
+            fadeStartOpacity = opacity;
+            fadeStartedAt = GetTickCount64();
+            if (!imageAdjustmentsPanelFadeActive_ && !videoAdjustmentsPanelFadeActive_)
+                KillTimer(window_, kVideoAdjustmentsFadeTimer);
+            return;
+        }
         fadeStartOpacity = opacity;
         fadeStartedAt = GetTickCount64();
         fadeActive = open ? opacity < 0.999f : opacity > 0.001f;
@@ -3705,10 +3714,8 @@ public:
     }
     float SettingsMaximumScroll() const {
         if (overlay_ != OverlayKind::Settings) return 0.0f;
-        const RECT bounds = GetOverlayBounds();
-        const UINT dpi = GetDpiForWindow(window_);
         const float contentBottom = static_cast<float>(SettingsContentBottom());
-        const float viewportBottom = static_cast<float>(bounds.bottom - bounds.top - MulDiv(18, dpi, 96));
+        const float viewportBottom = static_cast<float>(SettingsScrollViewportBottom() - GetOverlayBounds().top);
         return std::max(0.0f, contentBottom - viewportBottom);
     }
     bool SettingsContains(POINT point) const {
@@ -3812,6 +3819,8 @@ public:
         const int top = up ? bounds.top + MulDiv(64, dpi, 96) : bounds.bottom - MulDiv(18, dpi, 96) - height;
         return { left, top, left + width, top + height };
     }
+    int SettingsScrollViewportTop() const { return GetOverlayBounds().top + MulDiv(92, GetDpiForWindow(window_), 96); }
+    int SettingsScrollViewportBottom() const { return GetOverlayBounds().bottom - MulDiv(46, GetDpiForWindow(window_), 96); }
     bool SettingsScrollIndicatorContains(POINT point, bool up) const { const RECT bounds = GetSettingsScrollIndicatorBounds(up); return PtInRect(&bounds, point) != FALSE; }
     RECT GetSettingsNavigationBounds(SettingsPage page) const {
         const RECT bounds = GetOverlayBounds();
@@ -3819,6 +3828,12 @@ public:
         const int left = bounds.left + MulDiv(18, dpi, 96);
         const int top = bounds.top + MulDiv(66 + static_cast<int>(page) * 38, dpi, 96);
         return { left, top, left + MulDiv(164, dpi, 96), top + MulDiv(32, dpi, 96) };
+    }
+    RECT GetSettingsCloseBounds() const {
+        const RECT bounds = GetOverlayBounds(); const UINT dpi = GetDpiForWindow(window_);
+        const int left = bounds.left + MulDiv(18, dpi, 96);
+        const int bottom = bounds.bottom - MulDiv(18, dpi, 96);
+        return { left, bottom - MulDiv(32, dpi, 96), left + MulDiv(164, dpi, 96), bottom };
     }
     int SettingsContentLeft() const {
         const RECT bounds = GetOverlayBounds();
@@ -3861,21 +3876,19 @@ public:
         return { left, top, right, top + height };
     }
     int SettingsContentBottom() const {
-        if (settingsPage_ == SettingsPage::General) return GetSettingsResetButtonBounds().bottom - GetOverlayBounds().top;
+        if (settingsPage_ == SettingsPage::General) return GetSettingsDefaultAppsButtonBounds().bottom - GetOverlayBounds().top;
         if (settingsPage_ == SettingsPage::Image2D) return GetSettingsScalingBounds(ImageScaling::Performance).bottom - GetOverlayBounds().top;
         if (settingsPage_ == SettingsPage::Video2D) return GetSettingsOptionBounds(0).bottom - GetOverlayBounds().top;
         if (settingsPage_ == SettingsPage::Model3D) return GetSettingsSpaceMouseBounds().bottom - GetOverlayBounds().top;
         return MulDiv(120, GetDpiForWindow(window_), 96);
     }
     RECT GetSettingsVideoSizingBounds(VideoWindowSizing sizing) const {
-        const RECT bounds = GetOverlayBounds();
         const int labelHeight = MeasureSettingsTextHeight(L"video sizing", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        const int top = bounds.top + MulDiv(static_cast<int>(kSettingsFirstRowTopDips), GetDpiForWindow(window_), 96) + labelHeight + SettingsLabelToControlGap();
+        const int top = SettingsScrollViewportTop() + labelHeight + SettingsLabelToControlGap();
         return GetSettingsGridCellAtTop(sizing == VideoWindowSizing::FitToWindow ? 0 : 1, top);
     }
     RECT GetSettingsOptionBounds(int option) const {
-        const RECT bounds = GetOverlayBounds();
-        const int firstTop = bounds.top + MulDiv(static_cast<int>(kSettingsFirstRowTopDips), GetDpiForWindow(window_), 96);
+        const int firstTop = SettingsScrollViewportTop();
         if (settingsPage_ == SettingsPage::General) {
             const RECT remember = GetSettingsSingleColumnBounds(firstTop, L"remember application position and size");
             const RECT include = GetSettingsSingleColumnBounds(remember.bottom + SettingsStackGap(), L"include hidden files in current folder");
@@ -3941,7 +3954,7 @@ public:
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
         const int buttonWidth = MulDiv(76, GetDpiForWindow(window_), 96), gap = MulDiv(8, GetDpiForWindow(window_), 96);
         const int left = SettingsContentLeft() + static_cast<int>(preference) * (buttonWidth + gap);
-        const int headingTop = GetSettingsZoomHudBounds().bottom + SettingsSectionGap();
+        const int headingTop = GetSettingsOptionBounds(3).bottom + SettingsStackGap();
         RECT result{ left, headingTop + MeasureSettingsTextHeight(L"theme", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL) + SettingsLabelToControlGap(), left + buttonWidth, 0 };
         result.bottom = result.top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96);
         return result;
@@ -3960,22 +3973,18 @@ public:
         return { left, top, left + width, top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96) };
     }
     RECT GetSettingsZoomHudBounds() const {
-        const RECT enabled = GetSettingsZoomHudEnabledBounds();
-        const int labelHeight = MeasureSettingsTextHeight(L"position", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        const int top = enabled.bottom + SettingsStackGap() + labelHeight + SettingsLabelToControlGap();
-        const int width = std::max(MulDiv(140, GetDpiForWindow(window_), 96), (SettingsContentRight() - SettingsContentLeft()) / 3);
-        return { SettingsContentLeft(), top, SettingsContentLeft() + width, top + MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96) };
+        return GetSettingsGridCellAtTop(1, GetSettingsZoomHudEnabledBounds().top);
     }
-    int GetSettingsZoomHudHeadingTop() const { return GetSettingsOptionBounds(3).bottom + SettingsSectionGap(); }
+    int GetSettingsZoomHudHeadingTop() const { return GetSettingsThemeBounds(ThemePreference::System).bottom + SettingsSectionGap(); }
     RECT GetSettingsZoomHudEnabledBounds() const {
         const int top = GetSettingsZoomHudHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
-        return GetSettingsSingleColumnBounds(top, L"enable zoom box");
+        return GetSettingsGridCellAtTop(0, top);
     }
     int SettingsHeadingToControlGap() const { return MulDiv(10, GetDpiForWindow(window_), 96); }
     int SettingsLabelToControlGap() const { return MulDiv(static_cast<int>(kSettingsLabelToControlGapDips), GetDpiForWindow(window_), 96); }
     int SettingsControlHeight() const { return MulDiv(static_cast<int>(kSettingsControlHeightDips), GetDpiForWindow(window_), 96); }
     int SettingsSectionHeadingHeight() const { return MulDiv(static_cast<int>(kSettingsSectionHeadingHeightDips), GetDpiForWindow(window_), 96); }
-    int SettingsViewHeadingTop() const { return GetOverlayBounds().top + MulDiv(76, GetDpiForWindow(window_), 96); }
+    int SettingsViewHeadingTop() const { return SettingsScrollViewportTop(); }
     int SettingsViewFirstControlTop() const {
         const int labels = std::max(MeasureSettingsTextHeight(L"up axis", GetSettingsGridCell(0, 0).right - GetSettingsGridCell(0, 0).left, 16.0f, DWRITE_FONT_WEIGHT_NORMAL),
             MeasureSettingsTextHeight(L"3D printer build plate", GetSettingsGridCell(1, 0).right - GetSettingsGridCell(1, 0).left, 16.0f, DWRITE_FONT_WEIGHT_NORMAL));
@@ -4020,8 +4029,7 @@ public:
     RECT GetSettingsGraphicsAdapterMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsGraphicsAdapterBounds(), static_cast<int>(graphicsAdapters_.size() + 1)); }
     RECT GetSettingsDropdownMenuBounds(RECT control, int itemCount) const {
         const int row = MulDiv(30, GetDpiForWindow(window_), 96), gap = MulDiv(4, GetDpiForWindow(window_), 96), height = row * itemCount;
-        const RECT bounds = GetOverlayBounds();
-        const int viewportBottom = bounds.bottom - MulDiv(18, GetDpiForWindow(window_), 96) + static_cast<int>(std::lround(settingsScroll_));
+        const int viewportBottom = SettingsScrollViewportBottom() + static_cast<int>(std::lround(settingsScroll_));
         const int top = control.bottom + gap + height > viewportBottom ? control.top - gap - height : control.bottom + gap;
         return { control.left, top, control.right, top + height };
     }
@@ -4085,6 +4093,7 @@ public:
         navigationFiles_.clear();
         navigationBuilt_ = false;
         navigationBuildQueued_ = false;
+        BuildNavigation(true);
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleRememberWindowPlacement() {
@@ -4171,6 +4180,14 @@ public:
     void ToggleAnimationsAndFadeEffects() {
         animationsEnabled_ = !animationsEnabled_;
         WriteSetting(L"AnimationsAndFadeEffects", animationsEnabled_ ? 1 : 0);
+        if (!animationsEnabled_) {
+            StopVideoAdjustmentsPanelMotion();
+            imageAdjustmentsPanelFadeActive_ = false;
+            videoAdjustmentsPanelFadeActive_ = false;
+            imageAdjustmentsPanelOpacity_ = imageAdjustmentsPanelOpen_ ? 1.0f : 0.0f;
+            videoAdjustmentsPanelOpacity_ = videoAdjustmentsPanelOpen_ ? 1.0f : 0.0f;
+            if (VideoActive()) SynchronizeVideoAdjustmentsPanelPresentedLayout(false);
+        }
         UpdateCanvasNavigationOpacity();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -4246,21 +4263,20 @@ public:
     RECT GetSettingsResetButtonBounds() const {
         const UINT dpi = GetDpiForWindow(window_);
         const int description = MeasureSettingsTextHeight(L"restore all application preferences to defaults", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        const int top = GetSettingsResetAdjustmentsButtonBounds().bottom + SettingsSectionGap() + MulDiv(20, dpi, 96) + description + MulDiv(8, dpi, 96);
-        return { SettingsContentLeft(), top, SettingsContentLeft() + MulDiv(100, dpi, 96), top + MulDiv(36, dpi, 96) };
+        const int top = GetSettingsResetAdjustmentsButtonBounds().bottom + SettingsStackGap() + description + MulDiv(8, dpi, 96);
+        return { SettingsContentLeft(), top, SettingsContentLeft() + MulDiv(140, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
     void SetZoomHudPosition(ZoomHudPosition position) { zoomHudPosition_ = position; WriteSetting(L"ZoomHudPosition", static_cast<DWORD>(position)); zoomHudPositionMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); }
     RECT GetSettingsDefaultAppsButtonBounds() const {
         const UINT dpi = GetDpiForWindow(window_);
-        const RECT theme = GetSettingsThemeBounds(ThemePreference::System);
         const int description = MeasureSettingsTextHeight(L"choose which file types open with viewtrious", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        const int top = theme.bottom + SettingsSectionGap() + description + MulDiv(8, dpi, 96);
+        const int top = GetSettingsResetButtonBounds().bottom + SettingsSectionGap() + description + MulDiv(8, dpi, 96);
         return { SettingsContentLeft(), top, SettingsContentLeft() + MulDiv(210, dpi, 96), top + MulDiv(36, dpi, 96) };
     }
-    int GetSettingsAdjustmentPersistenceHeadingTop() const { return GetSettingsDefaultAppsButtonBounds().bottom + SettingsSectionGap(); }
+    int GetSettingsAdjustmentPersistenceHeadingTop() const { return std::max(GetSettingsZoomHudEnabledBounds().bottom, GetSettingsZoomHudBounds().bottom) + SettingsSectionGap(); }
     RECT GetSettingsAdjustmentPersistenceBounds() const {
         const int top = GetSettingsAdjustmentPersistenceHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
-        return GetSettingsSingleColumnBounds(top, L"enable adjustment persistence");
+        return GetSettingsSingleColumnBounds(top, L"enable adjustments database");
     }
     RECT GetSettingsResetAdjustmentsButtonBounds() const {
         const UINT dpi = GetDpiForWindow(window_);
@@ -4611,6 +4627,10 @@ public:
             if (containsNavigation(SettingsPage::Video2D)) return ButtonKind::SettingsVideoPage;
             if (containsNavigation(SettingsPage::Model3D)) return ButtonKind::SettingsModel3DPage;
             if (containsNavigation(SettingsPage::AddOns)) return ButtonKind::SettingsAddOnsPage;
+            const RECT closeBounds = GetSettingsCloseBounds();
+            if (PtInRect(&closeBounds, point)) return ButtonKind::SettingsClose;
+            if (SettingsScrollUpVisible() && SettingsScrollIndicatorContains(point, true)) return ButtonKind::SettingsScrollUp;
+            if (SettingsScrollDownVisible() && SettingsScrollIndicatorContains(point, false)) return ButtonKind::SettingsScrollDown;
             POINT settingsPoint = point;
             settingsPoint.y += static_cast<LONG>(std::lround(settingsScroll_));
             const auto settingsContains = [&settingsPoint](RECT bounds) { return PtInRect(&bounds, settingsPoint) != FALSE; };
@@ -4630,8 +4650,6 @@ public:
                 if (SettingsDefaultAppsButtonContains(point)) return ButtonKind::SettingsDefaultApps;
                 if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
             } else if (settingsPage_ == SettingsPage::Image2D) {
-                if (SettingsScrollUpVisible() && SettingsScrollIndicatorContains(point, true)) return ButtonKind::SettingsScrollUp;
-                if (SettingsScrollDownVisible() && SettingsScrollIndicatorContains(point, false)) return ButtonKind::SettingsScrollDown;
                 if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsReuseImageWindow;
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsAnimations;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsReverseWheelZoom;
@@ -4794,6 +4812,7 @@ public:
         else if (button == ButtonKind::SettingsVideoPage) { settingsPage_ = SettingsPage::Video2D; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsModel3DPage) { settingsPage_ = SettingsPage::Model3D; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsAddOnsPage) { settingsPage_ = SettingsPage::AddOns; settingsScroll_ = 0.0f; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::SettingsClose) DismissOverlay();
         else if (button == ButtonKind::SettingsRememberPlacement) ToggleRememberWindowPlacement();
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
@@ -4926,9 +4945,9 @@ public:
             return;
         }
         rememberWindowPlacement_ = true;
-        includeHiddenImages_ = true;
+        includeHiddenImages_ = false;
         confirmBeforeDeleting_ = true;
-        swipeToNavigateWhenFit_ = false;
+        swipeToNavigateWhenFit_ = true;
         showZoomPercentage_ = true;
         zoomHudEnabled_ = true;
         zoomHudPosition_ = ZoomHudPosition::BottomRight;
@@ -4976,9 +4995,9 @@ public:
         tourPending_ = false;
         SetAdjustmentPersistenceEnabled(true, false);
         WriteSetting(L"RememberWindowPlacement", 1);
-        WriteSetting(L"IncludeHiddenImages", 1);
+        WriteSetting(L"IncludeHiddenImages", 0);
         WriteSetting(L"ConfirmBeforeDeleting", 1);
-        WriteSetting(L"SwipeToNavigateWhenFit", 0);
+        WriteSetting(L"SwipeToNavigateWhenFit", 1);
         WriteSetting(L"ShowZoomPercentage", 1);
         WriteSetting(L"ZoomHudEnabled", 1);
         WriteSetting(L"ZoomHudPosition", static_cast<DWORD>(ZoomHudPosition::BottomRight));
@@ -5011,11 +5030,16 @@ public:
         WriteSetting(L"EnableSpaceMouse", 1);
         WriteSetting(L"OnboardingVersion", 0);
         WriteSetting(L"TourPending", 0);
+        navigationBuilt_ = false;
+        navigationBuildQueued_ = false;
+        BuildNavigation(true);
         ApplyTitleBarTheme(window_);
-        overlay_ = OverlayKind::Settings;
+        ResetWindowPlacementToDefault();
+        overlay_ = OverlayKind::None;
         settingsPage_ = SettingsPage::General;
         settingsScroll_ = 0.0f;
         resetInProgress_ = false;
+        ShowWelcomeIfNeeded();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleVideoFullscreen() {
@@ -8861,6 +8885,20 @@ public:
         const RECT bounds = videoPreResizePlacement_.rcNormalPosition;
         videoWindowResizeSequenceActive_ = false;
         SetWindowPos(window_, nullptr, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    void ResetWindowPlacementToDefault() {
+        if (fullscreen_) ToggleFullscreen();
+        if (IsZoomed(window_)) ShowWindow(window_, SW_RESTORE);
+        RECT target{ 0, 0, 1200, 900 };
+        const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(window_, GWL_STYLE));
+        const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(window_, GWL_EXSTYLE));
+        AdjustWindowRectEx(&target, style, FALSE, exStyle);
+        MONITORINFO monitor{ sizeof(monitor) };
+        GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor);
+        const int width = target.right - target.left, height = target.bottom - target.top;
+        const int left = monitor.rcWork.left + ((monitor.rcWork.right - monitor.rcWork.left) - width) / 2;
+        const int top = monitor.rcWork.top + ((monitor.rcWork.bottom - monitor.rcWork.top) - height) / 2;
+        SetWindowPos(window_, nullptr, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
     void SaveWindowPlacement() const {
         if (resetInProgress_ || tutorialPlacementSuppressed_ || !rememberWindowPlacement_) return;
@@ -13654,10 +13692,17 @@ private:
                     navigation.bottom - navigation.top, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, selected ? checkmark.Get() : primaryBrush.Get(), true);
             };
             drawNavigation(SettingsPage::General, ButtonKind::SettingsGeneralPage, L"GENERAL");
-            drawNavigation(SettingsPage::Image2D, ButtonKind::SettingsImage2DPage, L"2D SETTINGS");
-            drawNavigation(SettingsPage::Video2D, ButtonKind::SettingsVideoPage, L"VIDEO SETTINGS");
-            drawNavigation(SettingsPage::Model3D, ButtonKind::SettingsModel3DPage, L"3D SETTINGS");
+            drawNavigation(SettingsPage::Image2D, ButtonKind::SettingsImage2DPage, L"IMAGE");
+            drawNavigation(SettingsPage::Video2D, ButtonKind::SettingsVideoPage, L"VIDEO");
+            drawNavigation(SettingsPage::Model3D, ButtonKind::SettingsModel3DPage, L"3D");
             drawNavigation(SettingsPage::AddOns, ButtonKind::SettingsAddOnsPage, L"ADD-ONS");
+            const RECT closeBounds = GetSettingsCloseBounds();
+            const D2D1_RECT_F closeNavigation = D2D1::RectF(static_cast<float>(closeBounds.left), static_cast<float>(closeBounds.top), static_cast<float>(closeBounds.right), static_cast<float>(closeBounds.bottom));
+            if (hoveredButton_ == ButtonKind::SettingsClose || pressedButton_ == ButtonKind::SettingsClose)
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(closeNavigation, 4.0f * dpiScale, 4.0f * dpiScale), rowHover.Get());
+            DrawOverlayText(L"close settings", closeNavigation.left + 10.0f * dpiScale, closeNavigation.top,
+                closeNavigation.right - closeNavigation.left - 20.0f * dpiScale, closeNavigation.bottom - closeNavigation.top,
+                13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
             const float dividerX = static_cast<float>(bounds.left) + 194.0f * dpiScale;
             renderTarget_->DrawLine(D2D1::Point2F(dividerX, static_cast<float>(bounds.top) + 58.0f * dpiScale),
                 D2D1::Point2F(dividerX, static_cast<float>(bounds.bottom) - 18.0f * dpiScale), borderBrush.Get(), 1.0f);
@@ -13682,8 +13727,8 @@ private:
                 drawToggleAt(GetSettingsOptionBounds(index), button, label, checked, enabled);
             };
             const D2D1_RECT_F settingsViewport = D2D1::RectF(static_cast<float>(bounds.left),
-                static_cast<float>(bounds.top) + 60.0f * dpiScale, static_cast<float>(bounds.right),
-                static_cast<float>(bounds.bottom) - 18.0f * dpiScale);
+                static_cast<float>(SettingsScrollViewportTop()), static_cast<float>(bounds.right),
+                static_cast<float>(SettingsScrollViewportBottom()));
             renderTarget_->PushAxisAlignedClip(settingsViewport, D2D1_ANTIALIAS_MODE_ALIASED);
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -settingsScroll_));
             const auto drawForegroundMenu = [&](RECT menu, const std::vector<const wchar_t*>& items, int selected, const std::vector<ButtonKind>& buttons, int hoveredItem = -1) {
@@ -13697,10 +13742,8 @@ private:
             if (settingsPage_ == SettingsPage::General) {
             const float zoomBoxTop = static_cast<float>(GetSettingsZoomHudHeadingTop() - bounds.top) / dpiScale;
             const RECT themeBounds = GetSettingsThemeBounds(ThemePreference::System);
-            const RECT defaultAppsLayoutBounds = GetSettingsDefaultAppsButtonBounds();
             const float adjustmentsDatabaseTop = static_cast<float>(GetSettingsAdjustmentPersistenceHeadingTop() - bounds.top) / dpiScale;
             const RECT resetAdjustmentsBounds = GetSettingsResetAdjustmentsButtonBounds();
-            const float resetTop = static_cast<float>(resetAdjustmentsBounds.bottom - bounds.top + SettingsSectionGap()) / dpiScale;
             drawToggle(0, ButtonKind::SettingsRememberPlacement, L"remember application position and size", rememberWindowPlacement_);
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden files in current folder", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
@@ -13708,11 +13751,9 @@ private:
             group(L"zoom box", zoomBoxTop);
             drawToggleAt(GetSettingsZoomHudEnabledBounds(), ButtonKind::SettingsShowZoomHud, L"enable zoom box", zoomHudEnabled_);
             const RECT zoomHudBounds = GetSettingsZoomHudBounds();
-            const int zoomLabelHeight = MeasureSettingsTextHeight(L"position", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
             const wchar_t* zoomHudPositionLabel = zoomHudPosition_ == ZoomHudPosition::BottomLeft ? L"bottom left" : zoomHudPosition_ == ZoomHudPosition::BottomRight ? L"bottom right" : zoomHudPosition_ == ZoomHudPosition::TopLeft ? L"top left" : L"top right";
-            DrawOverlayText(L"position", settingsLeft, static_cast<float>(zoomHudBounds.top - zoomLabelHeight - SettingsLabelToControlGap()), settingsWidth, static_cast<float>(zoomLabelHeight), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             drawSettingsDropdown(zoomHudBounds, ButtonKind::SettingsZoomHudPositionToggle, zoomHudPositionLabel, zoomHudPositionMenuOpen_);
-            const float themeTop = static_cast<float>(GetSettingsZoomHudBounds().bottom - bounds.top + SettingsSectionGap()) / dpiScale;
+            const float themeTop = static_cast<float>(themeBounds.top - bounds.top - SettingsLabelToControlGap() - SettingsSectionHeadingHeight()) / dpiScale;
             DrawOverlayText(L"theme", settingsLeft, static_cast<float>(bounds.top) + themeTop * dpiScale, settingsWidth,
                 20.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             const auto drawTheme = [&](ThemePreference preference, ButtonKind button, const wchar_t* label) {
@@ -13728,18 +13769,18 @@ private:
             drawTheme(ThemePreference::Light, ButtonKind::SettingsThemeLight, L"light");
             drawTheme(ThemePreference::Dark, ButtonKind::SettingsThemeDark, L"dark");
             const int defaultTypesDescriptionHeight = MeasureSettingsTextHeight(L"choose which file types open with viewtrious", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-            DrawOverlayText(L"choose which file types open with viewtrious", settingsLeft,
-                static_cast<float>(themeBounds.bottom + SettingsSectionGap()), settingsWidth, static_cast<float>(defaultTypesDescriptionHeight),
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             const RECT defaultAppsBounds = GetSettingsDefaultAppsButtonBounds();
+            DrawOverlayText(L"choose which file types open with viewtrious", settingsLeft,
+                static_cast<float>(defaultAppsBounds.top - defaultTypesDescriptionHeight - MulDiv(8, GetDpiForWindow(window_), 96)), settingsWidth, static_cast<float>(defaultTypesDescriptionHeight),
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             const D2D1_RECT_F defaultAppsButton = D2D1::RectF(static_cast<float>(defaultAppsBounds.left), static_cast<float>(defaultAppsBounds.top),
                 static_cast<float>(defaultAppsBounds.right), static_cast<float>(defaultAppsBounds.bottom));
             if (pressedButton_ == ButtonKind::SettingsDefaultApps) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), segmentHover.Get());
             else if (hoveredButton_ == ButtonKind::SettingsDefaultApps) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), rowHover.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(defaultAppsButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
             DrawOverlayText(L"change file type defaults", defaultAppsButton.left, defaultAppsButton.top, defaultAppsButton.right - defaultAppsButton.left, defaultAppsButton.bottom - defaultAppsButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
-            group(L"adjustments database", adjustmentsDatabaseTop);
-            drawToggleAt(GetSettingsAdjustmentPersistenceBounds(), ButtonKind::SettingsAdjustmentsDatabase, L"enable adjustment persistence", adjustmentPersistenceEnabled_);
+            group(L"reset and database management", adjustmentsDatabaseTop);
+            drawToggleAt(GetSettingsAdjustmentPersistenceBounds(), ButtonKind::SettingsAdjustmentsDatabase, L"enable adjustments database", adjustmentPersistenceEnabled_);
             const int resetAdjustmentsDescriptionHeight = MeasureSettingsTextHeight(L"clear saved image and video adjustments", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
             DrawOverlayText(L"clear saved image and video adjustments", settingsLeft,
                 static_cast<float>(GetSettingsAdjustmentPersistenceBounds().bottom + SettingsStackGap()), settingsWidth, static_cast<float>(resetAdjustmentsDescriptionHeight),
@@ -13748,17 +13789,16 @@ private:
             if (pressedButton_ == ButtonKind::SettingsResetAdjustmentsDatabase) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetAdjustmentsButton, 5.0f * dpiScale, 5.0f * dpiScale), segmentHover.Get());
             else if (hoveredButton_ == ButtonKind::SettingsResetAdjustmentsDatabase) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetAdjustmentsButton, 5.0f * dpiScale, 5.0f * dpiScale), rowHover.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetAdjustmentsButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"reset adjustments database", resetAdjustmentsButton.left, resetAdjustmentsButton.top, resetAdjustmentsButton.right - resetAdjustmentsButton.left, resetAdjustmentsButton.bottom - resetAdjustmentsButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
-            group(L"RESET viewtrious", resetTop);
+            DrawOverlayText(L"clear saved adjustments", resetAdjustmentsButton.left, resetAdjustmentsButton.top, resetAdjustmentsButton.right - resetAdjustmentsButton.left, resetAdjustmentsButton.bottom - resetAdjustmentsButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             const int resetDescriptionHeight = MeasureSettingsTextHeight(L"restore all application preferences to defaults", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-            DrawOverlayText(L"restore all application preferences to defaults", settingsLeft,
-                static_cast<float>(bounds.top) + (resetTop + 22.0f) * dpiScale, settingsWidth, static_cast<float>(resetDescriptionHeight), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             const RECT resetBounds = GetSettingsResetButtonBounds();
+            DrawOverlayText(L"restore all application preferences to defaults", settingsLeft,
+                static_cast<float>(resetBounds.top - resetDescriptionHeight - MulDiv(8, GetDpiForWindow(window_), 96)), settingsWidth, static_cast<float>(resetDescriptionHeight), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             const D2D1_RECT_F resetButton = D2D1::RectF(static_cast<float>(resetBounds.left), static_cast<float>(resetBounds.top), static_cast<float>(resetBounds.right), static_cast<float>(resetBounds.bottom));
             if (pressedButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), segmentHover.Get());
             else if (hoveredButton_ == ButtonKind::SettingsReset) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), rowHover.Get());
             renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(resetButton, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-            DrawOverlayText(L"reset", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            DrawOverlayText(L"restore defaults", resetButton.left, resetButton.top, resetButton.right - resetButton.left, resetButton.bottom - resetButton.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             } else if (settingsPage_ == SettingsPage::Video2D) {
             const RECT sizingBounds = GetSettingsVideoSizingBounds(VideoWindowSizing::FitToWindow);
             const int sizingLabelHeight = MeasureSettingsTextHeight(L"video sizing", static_cast<int>(settingsWidth), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
@@ -13804,10 +13844,11 @@ private:
             group(L"INPUT", static_cast<float>(GetSettingsInputHeadingTop() - bounds.top) / dpiScale);
             drawToggle(6, ButtonKind::SettingsSpaceMouse, L"enable 3Dconnexion SpaceMouse", spaceMouseRuntimeAvailable_ && spaceMouseEnabled_, spaceMouseRuntimeAvailable_);
             } else {
-            DrawOverlayText(L"no add-ons installed", settingsLeft, static_cast<float>(bounds.top) + 76.0f * dpiScale,
+            DrawOverlayText(L"no add-ons installed", settingsLeft, static_cast<float>(SettingsScrollViewportTop()),
                 settingsWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
             }
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+            renderTarget_->PopAxisAlignedClip();
             const auto drawSettingsScrollIndicator = [&](bool up) {
                 const RECT indicatorBounds = GetSettingsScrollIndicatorBounds(up);
                 const D2D1_RECT_F indicator = D2D1::RectF(static_cast<float>(indicatorBounds.left), static_cast<float>(indicatorBounds.top), static_cast<float>(indicatorBounds.right), static_cast<float>(indicatorBounds.bottom));
@@ -13820,6 +13861,7 @@ private:
             };
             if (SettingsScrollUpVisible()) drawSettingsScrollIndicator(true);
             if (SettingsScrollDownVisible()) drawSettingsScrollIndicator(false);
+            renderTarget_->PushAxisAlignedClip(settingsViewport, D2D1_ANTIALIAS_MODE_ALIASED);
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -settingsScroll_));
             if (settingsPage_ == SettingsPage::General) {
                 if (zoomHudPositionMenuOpen_) drawForegroundMenu(GetSettingsZoomHudMenuBounds(), { L"bottom left", L"bottom right", L"top left", L"top right" }, static_cast<int>(zoomHudPosition_), { ButtonKind::SettingsZoomHudBottomLeft, ButtonKind::SettingsZoomHudBottomRight, ButtonKind::SettingsZoomHudTopLeft, ButtonKind::SettingsZoomHudTopRight });
@@ -15042,9 +15084,9 @@ private:
     std::thread directoryWatcherThread_;
     std::atomic<bool> directoryWatcherStopping_{ false };
     bool rememberWindowPlacement_ = true;
-    bool includeHiddenImages_ = true;
+    bool includeHiddenImages_ = false;
     bool confirmBeforeDeleting_ = true;
-    bool swipeToNavigateWhenFit_ = false;
+    bool swipeToNavigateWhenFit_ = true;
     bool deleteWarningSuppressOnConfirm_ = false;
     std::deque<DeletedMediaUndoRecord> deleteUndoStack_;
     bool showZoomPercentage_ = true;

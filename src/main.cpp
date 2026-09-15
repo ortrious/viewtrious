@@ -326,7 +326,7 @@ enum class ButtonKind { None, CanvasPrevious, CanvasNext, SettingsGeneralPage, S
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingFit, SettingsVideoSizingResize, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments, ViewBarBuildPlateSize, ViewBarPlateWidth, ViewBarPlateDepth, ViewBarPlateLink, ViewBarPlateReset };
-enum class TutorialStep { None, OpenImages, ImageDetails, ZoomAdjustments, ResizeWindow, MenuSettings, ContextMenu, Shortcuts };
+enum class TutorialStep { None, OpenImage, MenuSettings, ImageDetails, ContextMenu, ZoomBox, Adjustments, ResizeApp, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
 enum class VideoWindowSizing : DWORD { FitToWindow = 0, ResizeWindowToVideo = 1 };
@@ -3583,7 +3583,7 @@ public:
     void StartTutorial() {
         if (TutorialActive()) return;
         BeginTutorialPresentation();
-        SetTutorialStep(TutorialStep::OpenImages);
+        SetTutorialStep(TutorialStep::OpenImage);
     }
     void ResumePendingTour() {
         if (tourPending_ && !TutorialActive() && !HasOverlay()) StartPendingTour();
@@ -3642,12 +3642,13 @@ public:
         tutorialPlacementSuppressed_ = false;
     }
     void AdvanceTutorial() {
-        if (tutorialStep_ == TutorialStep::OpenImages) SetTutorialStep(TutorialStep::ImageDetails);
-        else if (tutorialStep_ == TutorialStep::ImageDetails) SetTutorialStep(TutorialStep::ZoomAdjustments);
-        else if (tutorialStep_ == TutorialStep::ZoomAdjustments) SetTutorialStep(TutorialStep::ResizeWindow);
-        else if (tutorialStep_ == TutorialStep::ResizeWindow) SetTutorialStep(TutorialStep::MenuSettings);
-        else if (tutorialStep_ == TutorialStep::MenuSettings) SetTutorialStep(TutorialStep::ContextMenu);
-        else if (tutorialStep_ == TutorialStep::ContextMenu) SetTutorialStep(TutorialStep::Shortcuts);
+        if (tutorialStep_ == TutorialStep::OpenImage) SetTutorialStep(TutorialStep::MenuSettings);
+        else if (tutorialStep_ == TutorialStep::MenuSettings) SetTutorialStep(TutorialStep::ImageDetails);
+        else if (tutorialStep_ == TutorialStep::ImageDetails) SetTutorialStep(TutorialStep::ContextMenu);
+        else if (tutorialStep_ == TutorialStep::ContextMenu) SetTutorialStep(TutorialStep::ZoomBox);
+        else if (tutorialStep_ == TutorialStep::ZoomBox) SetTutorialStep(TutorialStep::Adjustments);
+        else if (tutorialStep_ == TutorialStep::Adjustments) SetTutorialStep(TutorialStep::ResizeApp);
+        else if (tutorialStep_ == TutorialStep::ResizeApp) SetTutorialStep(TutorialStep::Shortcuts);
         else StopTutorial();
     }
     void ShowOverlay(OverlayKind overlay) {
@@ -13936,7 +13937,7 @@ private:
         GetClientRect(window_, &client);
         const float canvasTop = fullscreen_ ? 0.0f : static_cast<float>(GetFrameMetrics(window_).titleBarHeight);
         renderTarget_->FillRectangle(D2D1::RectF(0, canvasTop, static_cast<float>(client.right), static_cast<float>(client.bottom)), veil.Get());
-        if (tutorialStep_ == TutorialStep::ZoomAdjustments) {
+        if (tutorialStep_ == TutorialStep::ZoomBox || tutorialStep_ == TutorialStep::Adjustments) {
             ImageAdjustments sample;
             sample.exposure = 0.20f;
             sample.brightness = 0.08f;
@@ -13945,8 +13946,11 @@ private:
             sample.highlights = -0.08f;
             sample.saturation = 0.12f;
             sample.sharpness = 0.30f;
-            DrawZoomHud(GetImageZoomHudLayout(true), 1.0f, 1.0f, true, true);
-            DrawAdjustmentPanel(GetImageAdjustmentsPanelTargetLayout(true), sample, 1.0f, AdjustmentSource::None, false, true);
+            if (tutorialStep_ == TutorialStep::ZoomBox) {
+                DrawZoomHud(GetImageZoomHudLayout(true), 1.0f, 1.0f, true, true);
+            } else {
+                DrawAdjustmentPanel(GetImageAdjustmentsPanelTargetLayout(true), sample, 1.0f, AdjustmentSource::None, false, true);
+            }
         }
         const auto scribble = [&](const RECT& target) {
             const float left = static_cast<float>(target.left) - 8.0f * scale, right = static_cast<float>(target.right) + 8.0f * scale;
@@ -13972,8 +13976,18 @@ private:
             renderTarget_->DrawLine(to, D2D1::Point2F(to.x - ux * wing - uy * wing * 0.55f, to.y - uy * wing + ux * wing * 0.55f), pencil.Get(), thickness * scale);
             renderTarget_->DrawLine(to, D2D1::Point2F(to.x - ux * wing + uy * wing * 0.55f, to.y - uy * wing - ux * wing * 0.55f), pencil.Get(), thickness * scale);
         };
+        const auto annotationBoundsFor = [&](const RECT& target, float preferredWidth, float height) {
+            const float inset = 16.0f * scale;
+            const float gap = 16.0f * scale;
+            const float width = std::min(preferredWidth, std::max(1.0f, static_cast<float>(client.right) - inset * 2.0f));
+            const float left = std::clamp(static_cast<float>(target.left) - gap - width, inset,
+                std::max(inset, static_cast<float>(client.right) - inset - width));
+            const float top = std::clamp(static_cast<float>(target.top) - gap - height, canvasTop + inset,
+                std::max(canvasTop + inset, static_cast<float>(client.bottom) - inset - height));
+            return D2D1::RectF(left, top, left + width, top + height);
+        };
         const FrameMetrics frame = GetFrameMetrics(window_);
-        if (tutorialStep_ == TutorialStep::OpenImages) {
+        if (tutorialStep_ == TutorialStep::OpenImage) {
             const RECT target = GetEmptyStateInstructionBounds();
             const float annotationWidth = std::min(430.0f * scale, static_cast<float>(client.right) - 32.0f * scale);
             const float annotationLeft = (static_cast<float>(target.left + target.right) - annotationWidth) / 2.0f;
@@ -14003,28 +14017,25 @@ private:
                 straightArrow(D2D1::Point2F(circleX + arrowStarts[index] * scale, tipY - 52.0f * scale),
                     D2D1::Point2F(tipX, tipY), 1.8f);
             }
-        } else if (tutorialStep_ == TutorialStep::ZoomAdjustments) {
-            const VideoAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelTargetLayout(true);
-            const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(panel, true);
+        } else if (tutorialStep_ == TutorialStep::ZoomBox) {
             const ZoomHudLayout hud = GetImageZoomHudLayout(true);
-            const RECT panelTarget{ panel.panel.left, panel.panel.top, panel.panel.right,
-                lip.active ? lip.bounds.bottom : panel.panel.bottom };
-            const float noteWidth = std::min(390.0f * scale, std::max(240.0f * scale,
-                static_cast<float>(panelTarget.left) - 56.0f * scale));
-            const float noteLeft = 28.0f * scale;
-            const float noteTop = canvasTop + 180.0f * scale;
-            DrawHandwrittenText(L"zoom & adjustments", noteLeft, noteTop, noteWidth, 36.0f * scale, 23.0f, pencil.Get());
-            DrawOverlayText(L"check zoom here and open adjustments for fine control", noteLeft, noteTop + 37.0f * scale,
-                noteWidth, 50.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, false, false, true);
-            arrow(D2D1::Point2F(noteLeft + noteWidth * 0.72f, noteTop + 89.0f * scale),
-                D2D1::Point2F(static_cast<float>(panelTarget.left) - 5.0f * scale,
-                    static_cast<float>(panelTarget.top) + 30.0f * scale), 2.4f);
-            arrow(D2D1::Point2F(noteLeft + noteWidth * 0.60f, noteTop + 112.0f * scale),
-                D2D1::Point2F(static_cast<float>(hud.combined.left) - 5.0f * scale,
+            const D2D1_RECT_F note = annotationBoundsFor(hud.combined, 250.0f * scale, 72.0f * scale);
+            DrawHandwrittenText(L"zoom box", note.left, note.top, note.right - note.left, 34.0f * scale, 23.0f, pencil.Get());
+            DrawOverlayText(L"see the current zoom and open adjustments here", note.left, note.top + 34.0f * scale,
+                note.right - note.left, 38.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, false, false, true);
+            straightArrow(D2D1::Point2F(note.right, note.bottom - 8.0f * scale),
+                D2D1::Point2F(static_cast<float>(hud.combined.left),
                     (hud.combined.top + hud.combined.bottom) * 0.5f), 2.2f);
-            scribble(panelTarget);
-            scribble(hud.combined);
-        } else if (tutorialStep_ == TutorialStep::ResizeWindow) {
+        } else if (tutorialStep_ == TutorialStep::Adjustments) {
+            const VideoAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelTargetLayout(true);
+            const D2D1_RECT_F note = annotationBoundsFor(panel.panel, 250.0f * scale, 72.0f * scale);
+            DrawHandwrittenText(L"adjustments", note.left, note.top, note.right - note.left, 34.0f * scale, 23.0f, pencil.Get());
+            DrawOverlayText(L"make image and video corrections here", note.left, note.top + 34.0f * scale,
+                note.right - note.left, 38.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true, false, false, true);
+            straightArrow(D2D1::Point2F(note.right, note.bottom - 8.0f * scale),
+                D2D1::Point2F(static_cast<float>(panel.panel.left),
+                    static_cast<float>(panel.panel.top) + 24.0f * scale), 2.2f);
+        } else if (tutorialStep_ == TutorialStep::ResizeApp) {
             const float noteWidth = std::min(310.0f * scale, static_cast<float>(client.right) - 36.0f * scale);
             const float noteLeft = static_cast<float>(client.right) - 20.0f * scale - noteWidth;
             const float noteTop = static_cast<float>(client.bottom) - 136.0f * scale;
@@ -14032,8 +14043,8 @@ private:
             DrawOverlayText(L"drag the app corners to resize the app", noteLeft, noteTop + 33.0f * scale,
                 noteWidth, 26.0f * scale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, pencil.Get(), true);
             arrow(D2D1::Point2F(noteLeft + noteWidth * 0.62f, noteTop + 66.0f * scale),
-                D2D1::Point2F(static_cast<float>(client.right) - 7.0f * scale,
-                    static_cast<float>(client.bottom) - 7.0f * scale), 2.5f);
+                D2D1::Point2F(static_cast<float>(client.right) - 18.0f * scale,
+                    static_cast<float>(client.bottom) - 18.0f * scale), 2.5f);
         } else if (tutorialStep_ == TutorialStep::MenuSettings) {
             const float lineLeft = static_cast<float>(frame.hamburger.right) + 4.0f * scale;
             const float headingLeft = lineLeft + 72.0f * scale;

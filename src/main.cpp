@@ -13825,8 +13825,9 @@ private:
             const float rowHeight = std::clamp((cardsBottom - cardsTop - rightFixedHeight) / std::max(1.0f, rightRows),
                 16.0f * dpiScale, 25.0f * dpiScale);
             const float rowFontSize = rowHeight < 21.0f * dpiScale ? 10.5f : 12.5f;
-            const float bindingWidth = std::clamp(columnWidth * 0.37f, 72.0f * dpiScale, 152.0f * dpiScale);
-            const auto drawRows = [&](const auto& entries, float x, float y, float width) {
+            const float navigationBindingWidth = std::clamp(columnWidth * 0.37f, 72.0f * dpiScale, 152.0f * dpiScale);
+            const float keyboardBindingWidth = std::clamp(columnWidth * 0.30f, 72.0f * dpiScale, 120.0f * dpiScale);
+            const auto drawRows = [&](const auto& entries, float x, float y, float width, float bindingWidth) {
                 for (const ShortcutEntry& line : entries) {
                     DrawOverlayText(line.shortcut, x, y, bindingWidth, rowHeight, rowFontSize,
                         DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
@@ -13836,7 +13837,7 @@ private:
                 }
                 return y;
             };
-            const auto drawCard = [&](const D2D1_RECT_F& card, const wchar_t* heading, const auto& entries, const wchar_t* footer) {
+            const auto drawCard = [&](const D2D1_RECT_F& card, const wchar_t* heading, const auto& entries, const wchar_t* footer, float bindingWidth) {
                 renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(card, 10.0f * dpiScale, 10.0f * dpiScale), cardFill.Get());
                 renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(card, 10.0f * dpiScale, 10.0f * dpiScale), borderBrush.Get(), dpiScale);
                 float y = card.top + cardPadding;
@@ -13845,7 +13846,7 @@ private:
                         cardHeadingHeight, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
                     y += cardHeadingHeight;
                 }
-                y = drawRows(entries, card.left + cardPadding, y, card.right - card.left - cardPadding * 2.0f);
+                y = drawRows(entries, card.left + cardPadding, y, card.right - card.left - cardPadding * 2.0f, bindingWidth);
                 if (footer) DrawOverlayText(footer, card.left + cardPadding, y, card.right - card.left - cardPadding * 2.0f,
                     16.0f * dpiScale, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), true);
             };
@@ -13856,20 +13857,20 @@ private:
                 columnWidth, headingHeight, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
             DrawOverlayText(L"mouse navigation", rightColumn, static_cast<float>(bounds.top) + panelPadding,
                 columnWidth, headingHeight, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
-            drawCard(keyboardCard, nullptr, kKeyboardShortcutEntries, nullptr);
+            drawCard(keyboardCard, nullptr, kKeyboardShortcutEntries, nullptr, keyboardBindingWidth);
             float rightY = cardsTop;
             const auto cardHeight = [&](size_t rows, bool footer = false) {
                 return cardPadding * 2.0f + cardHeadingHeight + rowHeight * static_cast<float>(rows) + (footer ? 16.0f * dpiScale : 0.0f);
             };
             const float mouse2DHeight = cardHeight(kMouse2DNavigationEntries.size());
-            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse2DHeight), L"2D", kMouse2DNavigationEntries, nullptr);
+            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse2DHeight), L"2D", kMouse2DNavigationEntries, nullptr, navigationBindingWidth);
             rightY += mouse2DHeight + cardGap;
             const float filmstripHeight = cardHeight(kFilmstripNavigationEntries.size(), true);
             drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + filmstripHeight), L"FILMSTRIP",
-                kFilmstripNavigationEntries, L"requires swipe mode; always show filmstrip off.");
+                kFilmstripNavigationEntries, L"requires swipe mode; always show filmstrip off.", navigationBindingWidth);
             rightY += filmstripHeight + cardGap;
             const float mouse3DHeight = cardHeight(kMouse3DNavigationEntries.size());
-            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse3DHeight), L"3D", kMouse3DNavigationEntries, nullptr);
+            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse3DHeight), L"3D", kMouse3DNavigationEntries, nullptr, navigationBindingWidth);
             renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::Settings) {
             const float settingsLeft = static_cast<float>(SettingsContentLeft());

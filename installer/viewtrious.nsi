@@ -4,7 +4,7 @@ RequestExecutionLevel user
 !include "FileFunc.nsh"
 
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.9.40.0"
+  !define PRODUCT_VERSION "1.0.0.0"
 !endif
 !ifndef RELEASE_DIR
   !error "RELEASE_DIR must name the Release artifact directory."

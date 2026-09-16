@@ -10,7 +10,7 @@
 #include <cmath>
 #include <cstring>
 using Microsoft::WRL::ComPtr;
-struct VideoHoverFrameStream::Impl { ComPtr<IMFSourceReader> reader; ComPtr<IMFMediaType> type; bool mf = false; UINT max = 768, skippedBeforeStart = 0; };
+struct VideoHoverFrameStream::Impl { ComPtr<IMFSourceReader> reader; ComPtr<IMFMediaType> type; bool mf = false; UINT max = 768; };
 VideoHoverFrameStream::VideoHoverFrameStream() = default;
 VideoHoverFrameStream::~VideoHoverFrameStream() { Close(); }
 void VideoHoverFrameStream::Close() { if (!impl_) return; impl_->reader.Reset(); impl_->type.Reset(); if (impl_->mf) MFShutdown(); impl_.reset(); generation_ = nullptr; }
@@ -32,9 +32,6 @@ HRESULT VideoHoverFrameStream::Open(const VideoHoverPreviewRequest& r, const std
         if (SUCCEEDED(p->reader->SetCurrentPosition(GUID_NULL, v))) requestedStartTimestamp_ = v.hVal.QuadPart;
         else { startSeconds_ = 0.0; v.hVal.QuadPart = 0; p->reader->SetCurrentPosition(GUID_NULL, v); }
     }
-#ifdef _DEBUG
-    wchar_t trace[256]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_SEEK_POLICY duration=%.3fs start=%.3fs path=%ls\\n", durationSeconds_, startSeconds_, r.path.c_str()); OutputDebugStringW(trace);
-#endif
     if (FAILED(hr)) { if (p->mf) MFShutdown(); return hr; } impl_ = std::move(p); generation_ = g; requestGeneration_ = r.generation; return S_OK;
 }
 HRESULT VideoHoverFrameStream::ReadNext(VideoHoverPreviewFrame& f) {
@@ -53,10 +50,6 @@ HRESULT VideoHoverFrameStream::ReadNext(VideoHoverPreviewFrame& f) {
         }
         if (!sample) continue; // A seek may surface a stream tick without a media sample.
         if (f.timestamp >= requestedStartTimestamp_) break;
-        ++impl_->skippedBeforeStart;
-#ifdef _DEBUG
-        if (impl_->skippedBeforeStart == 1 || impl_->skippedBeforeStart % 30 == 0) { wchar_t trace[224]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_SEEK_DISCARD timestamp=%lld target=%lld count=%u\\n", f.timestamp, requestedStartTimestamp_, impl_->skippedBeforeStart); OutputDebugStringW(trace); }
-#endif
     }
     GUID subtype{};
     UINT w=0,h=0;
@@ -73,8 +66,5 @@ HRESULT VideoHoverFrameStream::ReadNext(VideoHoverPreviewFrame& f) {
     auto raw=std::make_shared<std::vector<BYTE>>(static_cast<size_t>(w)*h*4); const BYTE* row = src; if (!hasTwoDimensionalLayout && sourceStride < 0) row += sourcePitch * (h - 1);
     for (UINT y = 0; y < h; ++y) { BYTE* destination = raw->data() + static_cast<size_t>(y) * w * 4; std::memcpy(destination, row, static_cast<size_t>(w) * 4); for (UINT x = 0; x < w; ++x) destination[x * 4 + 3] = 255; row += sourceStride; }
     if (hasTwoDimensionalLayout) twoDimensional->Unlock2D(); else b->Unlock();
-#ifdef _DEBUG
-    wchar_t trace[192]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_MF_DECODE timestamp=%lld format=BGRX-to-PBGRA stride=%d alpha=%u\\n", f.timestamp, sourceStride, (*raw)[3]); OutputDebugStringW(trace);
-#endif
     ComPtr<IWICImagingFactory> wf; ComPtr<IWICBitmap> wb; ComPtr<IWICBitmapScaler> sc; hr=CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&wf)); if(SUCCEEDED(hr))hr=wf->CreateBitmapFromMemory(w,h,GUID_WICPixelFormat32bppPBGRA,w*4,static_cast<UINT>(raw->size()),raw->data(),&wb); if(SUCCEEDED(hr))hr=wf->CreateBitmapScaler(&sc); if(SUCCEEDED(hr))hr=sc->Initialize(wb.Get(),f.width,f.height,WICBitmapInterpolationModeFant); f.pixels=std::make_shared<std::vector<BYTE>>(static_cast<size_t>(f.stride)*f.height); if(SUCCEEDED(hr))hr=sc->CopyPixels(nullptr,f.stride,static_cast<UINT>(f.pixels->size()),f.pixels->data()); if(SUCCEEDED(hr))for(size_t pixel=3;pixel<f.pixels->size();pixel+=4)(*f.pixels)[pixel]=255; if(FAILED(hr))f={}; return hr;
 }

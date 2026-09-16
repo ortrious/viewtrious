@@ -376,9 +376,9 @@ constexpr std::array<HelpSection, 3> kSupportedFileTypeSections{{
 }};
 constexpr std::array<HelpSection, 4> kSettingsSections{{
     { L"general", L"application-wide behavior." },
-    { L"2D settings", L"options affecting image and other 2D viewing." },
-    { L"video settings", L"Video2D-specific options will appear here as they are added." },
-    { L"3D settings", L"options affecting model viewing, navigation, and SpaceMouse support." },
+    { L"image & video", L"options affecting image, GIF, and video viewing." },
+    { L"3D", L"options affecting model viewing, navigation, and SpaceMouse support." },
+    { L"add-ons", L"status for optional viewtrious add-ons." },
 }};
 constexpr std::array<HelpSection, 2> kFeedbackAndAboutSections{{
     { L"feedback", L"use feedback from the main menu for the current viewtrious feedback and project links." },
@@ -391,6 +391,23 @@ constexpr std::array<HelpSection, 5> kTroubleshootingSections{{
     { L"SpaceMouse does not respond", L"confirm that SpaceMouse is enabled under 3D settings and that 3Dconnexion software recognizes the device." },
     { L"viewtrious behaves unexpectedly", L"use feedback from the main menu and include the file type and steps to reproduce the problem." },
 }};
+constexpr wchar_t kThirdPartyNotices[] =
+    L"3D input device development tools and related technology are provided under license from 3Dconnexion. "
+    L"\u00A9 3Dconnexion 1992 - 2025. All rights reserved.\n\n"
+    L"miniz\n\n"
+    L"Copyright 2013-2014 RAD Game Tools and Valve Software\n"
+    L"Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC\n\n"
+    L"All Rights Reserved.\n\n"
+    L"Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated "
+    L"documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation "
+    L"the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and "
+    L"to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\n"
+    L"The above copyright notice and this permission notice shall be included in all copies or substantial portions "
+    L"of the Software.\n\n"
+    L"THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED "
+    L"TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE "
+    L"AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, "
+    L"TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.";
 constexpr std::array<HelpTopic, 7> kHelpTopics{{
     { L"getting started", kGettingStartedSections.data(), kGettingStartedSections.size(), L"" },
     { L"SpaceMouse", kSpaceMouseSections.data(), kSpaceMouseSections.size(), L"" },
@@ -398,7 +415,7 @@ constexpr std::array<HelpTopic, 7> kHelpTopics{{
     { L"settings", kSettingsSections.data(), kSettingsSections.size(), L"" },
     { L"troubleshooting", kTroubleshootingSections.data(), kTroubleshootingSections.size(), L"" },
     { L"feedback and about", kFeedbackAndAboutSections.data(), kFeedbackAndAboutSections.size(), L"" },
-    { L"third-party notices", nullptr, 0, L"3D input device development tools and related technology are provided under license from 3Dconnexion. (c) 3Dconnexion 1992 - 2025. All rights reserved." },
+    { L"third-party notices", nullptr, 0, kThirdPartyNotices },
 }};
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
 struct DeletedMediaUndoRecord {
@@ -574,7 +591,6 @@ struct FilmstripHoverPreviewResult : PixelBuffer {
     HRESULT result = E_FAIL;
     bool videoFrame = false;
     bool videoFinished = false;
-    LONGLONG videoTimestamp = 0;
 };
 struct FilmstripHoverPreviewEntry : PixelBuffer {
     std::wstring path;
@@ -5705,27 +5721,6 @@ public:
         }
         return std::nullopt;
     }
-#ifdef _DEBUG
-    void TraceFilmstripAspectRelayoutBegin(size_t pendingCount, const std::optional<FilmstripLayoutAnchor>& anchor,
-        double oldScroll, float oldContentWidth) const {
-        wchar_t message[768]{};
-        const std::wstring path = anchor && anchor->index < navigationFiles_.size() ? navigationFiles_[anchor->index].wstring() : L"";
-        swprintf_s(message, L"[Viewtrious] FILMSTRIP_ASPECT_RELAYOUT_BEGIN pending=%zu anchor=%zu path=%ls oldScroll=%.3f oldContentX=%.3f oldRenderedX=%.3f oldContentWidth=%.3f\n",
-            pendingCount, anchor ? anchor->index : static_cast<size_t>(-1), path.c_str(), oldScroll,
-            anchor ? anchor->contentX : 0.0f, anchor ? anchor->renderedX : 0.0, oldContentWidth);
-        OutputDebugStringW(message);
-    }
-    void TraceFilmstripAspectRelayoutEnd(const std::optional<FilmstripLayoutAnchor>& anchor, double scrollBeforeCompensation,
-        double compensation, double compensatedScroll, double clampedScroll, double renderedX, float contentWidth, bool boundPrevented) const {
-        wchar_t message[768]{};
-        const double renderedDelta = anchor ? renderedX - anchor->renderedX : 0.0;
-        const float contentX = anchor && anchor->index < filmstripItemOffsets_.size() ? filmstripItemOffsets_[anchor->index] : 0.0f;
-        swprintf_s(message, L"[Viewtrious] FILMSTRIP_ASPECT_RELAYOUT_END newScrollBefore=%.3f newContentX=%.3f compensation=%.3f compensatedScroll=%.3f clampedScroll=%.3f newRenderedX=%.3f renderedDelta=%.3f newContentWidth=%.3f boundPrevented=%d\n",
-            scrollBeforeCompensation, contentX, compensation, compensatedScroll, clampedScroll, renderedX, renderedDelta, contentWidth,
-            boundPrevented ? 1 : 0);
-        OutputDebugStringW(message);
-    }
-#endif
     void ApplyFilmstripAspectRelayout(bool queueThumbnails = true, bool force = false) {
         const size_t pendingCount = static_cast<size_t>(std::count(filmstripAspectRelayoutPending_.begin(), filmstripAspectRelayoutPending_.end(), true));
         if (!pendingCount && !force) return;
@@ -5734,10 +5729,6 @@ public:
         const std::optional<FilmstripLayoutAnchor> anchor = !wrapAnchor && !filmstripSelectionAnchorActive_ ? CaptureFilmstripLayoutAnchor() : std::nullopt;
         const RECT oldBounds = GetFilmstripBounds();
         const double oldScroll = filmstripScroll_;
-#ifdef _DEBUG
-        const float oldContentWidth = FilmstripContentWidth();
-        TraceFilmstripAspectRelayoutBegin(pendingCount, anchor, oldScroll, oldContentWidth);
-#endif
         for (size_t index = 0; index < filmstripLayoutAspects_.size() && index < filmstripKnownAspects_.size(); ++index) {
             if (index < filmstripAspectRelayoutPending_.size() && filmstripAspectRelayoutPending_[index])
                 filmstripLayoutAspects_[index] = filmstripKnownAspects_[index];
@@ -5745,9 +5736,6 @@ public:
         std::fill(filmstripAspectRelayoutPending_.begin(), filmstripAspectRelayoutPending_.end(), false);
         filmstripLayoutRebuildPending_ = false;
         RebuildFilmstripLayout(false, queueThumbnails);
-#ifdef _DEBUG
-        const double scrollBeforeCompensation = filmstripScroll_;
-#endif
         double compensatedScroll = filmstripScroll_;
         if (wrapAnchor && filmstripWrapAnchor_.index < filmstripItemOffsets_.size()) {
             const RECT newBounds = GetFilmstripBounds();
@@ -5769,14 +5757,6 @@ public:
         if ((filmstripScroll_ <= 0.0 && filmstripScrollVelocity_ < 0.0) ||
             (filmstripScroll_ >= FilmstripMaximumScroll() && filmstripScrollVelocity_ > 0.0)) filmstripScrollVelocity_ = 0.0;
         ReleaseFilmstripWrapAnchorIfSettled();
-#ifdef _DEBUG
-        const bool boundPrevented = std::abs(clampedScroll - compensatedScroll) > 0.01;
-        const double renderedX = anchor && anchor->index < filmstripItemOffsets_.size()
-            ? static_cast<double>(GetFilmstripBounds().left) + filmstripItemOffsets_[anchor->index] - filmstripScroll_ : 0.0;
-        TraceFilmstripAspectRelayoutEnd(anchor, scrollBeforeCompensation, compensatedScroll - scrollBeforeCompensation,
-            compensatedScroll, clampedScroll, renderedX, FilmstripContentWidth(), boundPrevented);
-        if (filmstripPostStopPosition_ && !filmstripScrollAnimating_) filmstripPostStopPosition_ = filmstripScroll_;
-#endif
     }
     bool UpdateFilmstripKnownAspect(size_t index, float aspect) {
         if (index >= filmstripKnownAspects_.size() || index >= filmstripAspectAuthoritative_.size() ||
@@ -5802,34 +5782,6 @@ public:
         while (last < navigationFiles_.size() && filmstripItemOffsets_[last] <= visibleRight) ++last;
         return { first, last };
     }
-    void TraceFilmstripThumbnailJob(const wchar_t* event, const FilmstripThumbnailRequest& request, HRESULT result = S_OK) const {
-#ifdef _DEBUG
-        wchar_t message[768]{};
-        swprintf_s(message, L"[Viewtrious] %ls tid=%lu hr=0x%08X path=%ls\n", event, GetCurrentThreadId(),
-            static_cast<unsigned int>(result), request.path.c_str());
-        OutputDebugStringW(message);
-#else
-        (void)event; (void)request; (void)result;
-#endif
-    }
-#ifdef _DEBUG
-    void TraceFilmstripThumbnailStage(const wchar_t* event, const std::wstring& path, ULONGLONG started, HRESULT result) const {
-        wchar_t message[768]{};
-        swprintf_s(message, L"[Viewtrious] %ls tid=%lu elapsed=%llums hr=0x%08X path=%ls\n", event, GetCurrentThreadId(),
-            static_cast<unsigned long long>(GetTickCount64() - started), static_cast<unsigned int>(result), path.c_str());
-        OutputDebugStringW(message);
-    }
-    void TraceFilmstripThumbnailPublication(size_t index, const FilmstripThumbnailEntry& entry, bool layoutChanged, bool layoutDeferred) const {
-        const float slotWidth = index < filmstripItemWidths_.size() ? filmstripItemWidths_[index] : 0.0f;
-        const float contentWidth = filmstripItemOffsets_.empty() ? 0.0f : filmstripItemOffsets_.back() - FilmstripGap() + FilmstripPadding();
-        wchar_t message[512]{};
-        const wchar_t* layout = layoutDeferred ? L"deferred" : layoutChanged ? L"rebuild" : L"unchanged";
-        swprintf_s(message, L"[Viewtrious] THUMB_RAM_PUBLISHED_UI index=%zu slotWidth=%.2f bitmap=%ux%u aspect=%.3f contentWidth=%.2f scroll=%.3f layout=%ls path=%ls\n",
-            index, slotWidth, entry.width, entry.height, entry.aspect, contentWidth, filmstripScroll_,
-            layout, entry.path.c_str());
-        OutputDebugStringW(message);
-    }
-#endif
     void StartFilmstripThumbnailWorker() {
         if (shuttingDown_ || filmstripThumbnailStopping_.load(std::memory_order_acquire) || filmstripThumbnailWorkers_.front().joinable()) return;
         filmstripThumbnailStopping_.store(false, std::memory_order_release);
@@ -5850,7 +5802,6 @@ public:
                     }
                     if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) continue;
                     if (request.folderGeneration != filmstripThumbnailFolderGeneration_.load(std::memory_order_acquire)) continue;
-                    TraceFilmstripThumbnailJob(L"THUMB_JOB_DEQUEUED", request);
                     auto* result = new FilmstripThumbnailResult{};
                     result->request = request;
                     if (IsVideoPath(request.path)) {
@@ -5865,11 +5816,8 @@ public:
                     }
                     // Both decode paths release all source objects before returning, so only copied
                     // Viewtrious-owned RAM pixels can cross onto the UI thread.
-                    TraceFilmstripThumbnailJob(SUCCEEDED(result->result) ? L"THUMB_JOB_SUCCESS" : L"THUMB_JOB_FAILED", request, result->result);
                     if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) delete result;
-                    else if (PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result)))
-                        TraceFilmstripThumbnailJob(L"THUMB_RAM_PUBLISHED", request, result->result);
-                    else delete result;
+                    else if (!PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
                 }
                 if (SUCCEEDED(apartment)) CoUninitialize();
             });
@@ -5922,10 +5870,6 @@ public:
                     LARGE_INTEGER qpcFrequency{};
                     LARGE_INTEGER qpcStart{};
                     QueryPerformanceFrequency(&qpcFrequency);
-                    UINT decodedFrames = 0;
-                    UINT publishedFrames = 0;
-                    UINT droppedFrames = 0;
-                    LONGLONG lastSourceTimestamp = 0;
                     const auto waitForSourceTime = [&](LONGLONG sourceTime) {
                         for (;;) {
                             if (filmstripHoverPreviewStopping_.load(std::memory_order_acquire) ||
@@ -5945,42 +5889,27 @@ public:
                     const auto publish = [&](VideoHoverPreviewFrame&& frame, LONGLONG presentationTime) {
                         if (!waitForSourceTime(presentationTime)) return false;
                         auto* video = result ? result : new FilmstripHoverPreviewResult{};
-                        video->request = request; video->result = S_OK; video->videoFrame = true; video->videoTimestamp = frame.timestamp;
+                        video->request = request; video->result = S_OK; video->videoFrame = true;
                         video->width = frame.width; video->height = frame.height; video->stride = frame.stride; video->pixels = std::move(frame.pixels);
                         if (!PostMessageW(window_, kFilmstripHoverPreviewCompleteMessage, 0, reinterpret_cast<LPARAM>(video))) { delete video; return false; }
                         result = nullptr;
-                        ++publishedFrames;
-#ifdef _DEBUG
-                        if (publishedFrames <= 3 || publishedFrames % 24 == 0) {
-                            LARGE_INTEGER now{}; QueryPerformanceCounter(&now);
-                            const double sourceMs = static_cast<double>(frame.timestamp - timelineStart) / 10000.0;
-                            const double wallMs = static_cast<double>(now.QuadPart - qpcStart.QuadPart) * 1000.0 / qpcFrequency.QuadPart;
-                            wchar_t trace[256]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_FRAME_TIMING frame=%u source=%.1fms wall=%.1fms action=publish\\n", publishedFrames, sourceMs, wallMs); OutputDebugStringW(trace);
-                        }
-#endif
                         return true;
                     };
                     for (; SUCCEEDED(opened) && !filmstripHoverPreviewStopping_.load(std::memory_order_acquire);) {
                         VideoHoverPreviewFrame frame;
                         const HRESULT next = stream.ReadNext(frame);
                         if (next != S_OK) break;
-                        ++decodedFrames;
-                        lastSourceTimestamp = frame.timestamp;
                         if (!timelineStarted) {
                             timelineStarted = true;
                             timelineStart = frame.timestamp;
                             nextPresentationTime = timelineStart + kVideoHoverPresentationInterval;
                             QueryPerformanceCounter(&qpcStart);
-#ifdef _DEBUG
-                            wchar_t trace[512]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_CLOCK_START timestamp=%lld qpc=%lld path=%ls\\n", timelineStart, qpcStart.QuadPart, request.path.c_str()); OutputDebugStringW(trace);
-#endif
                             if (!publish(std::move(frame), 0)) break;
                             continue;
                         }
                         const LONGLONG sourceTime = std::max<LONGLONG>(0, frame.timestamp - timelineStart);
                         if (stream.DurationSeconds() > 4.0 && sourceTime >= 3 * kVideoHoverHnsPerSecond) break;
                         if (frame.timestamp < nextPresentationTime) {
-                            if (pendingFrame.pixels) ++droppedFrames;
                             pendingFrame = std::move(frame); // Keep only the newest source frame before the 24 fps presentation deadline.
                             continue;
                         }
@@ -5999,13 +5928,6 @@ public:
                         videoHoverPreviewGeneration_.load(std::memory_order_acquire) == request.hoverGeneration)
                         publish(std::move(pendingFrame), nextPresentationTime - timelineStart);
                     stream.Close();
-#ifdef _DEBUG
-                    LARGE_INTEGER qpcEnd{}; QueryPerformanceCounter(&qpcEnd);
-                    const double sourceElapsedMs = timelineStarted ? static_cast<double>(lastSourceTimestamp - timelineStart) / 10000.0 : 0.0;
-                    const double wallElapsedMs = timelineStarted && qpcFrequency.QuadPart > 0 ? static_cast<double>(qpcEnd.QuadPart - qpcStart.QuadPart) * 1000.0 / qpcFrequency.QuadPart : 0.0;
-                    wchar_t summary[320]{}; swprintf_s(summary, L"[Viewtrious] VIDEO_HOVER_SPEED_SUMMARY decoded=%u published=%u dropped=%u source=%.1fms wall=%.1fms\\n", decodedFrames, publishedFrames, droppedFrames, sourceElapsedMs, wallElapsedMs); OutputDebugStringW(summary);
-                    OutputDebugStringW(L"[Viewtrious] VIDEO_HOVER_STREAM_RELEASED_BEFORE_FADE\\n");
-#endif
                     auto* finished = new FilmstripHoverPreviewResult{};
                     finished->request = request; finished->result = S_OK; finished->videoFinished = true;
                     if (!PostMessageW(window_, kFilmstripHoverPreviewCompleteMessage, 0, reinterpret_cast<LPARAM>(finished))) delete finished;
@@ -6054,9 +5976,6 @@ public:
             const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
                 D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), RenderTargetDpi(), RenderTargetDpi());
             if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(entry.width, entry.height), entry.pixels->data(), entry.stride, properties, &entry.bitmap))) return nullptr;
-#ifdef _DEBUG
-            wchar_t trace[192]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_D2D_BITMAP_REPLACED timestamp=%lld alpha=%u\\n", filmstripVideoHoverTimestamp_, (*entry.pixels)[3]); OutputDebugStringW(trace);
-#endif
         }
         return entry.bitmap.Get();
     }
@@ -6092,9 +6011,6 @@ public:
         filmstripVideoHoverFadeStartQpc_ = now.QuadPart;
         filmstripVideoHoverFadeActive_ = true;
         SetTimer(window_, kFilmstripVideoHoverFadeTimer, 16, nullptr);
-#ifdef _DEBUG
-        OutputDebugStringW(L"[Viewtrious] VIDEO_HOVER_FADE_BEGIN duration=175ms source-released=1\n");
-#endif
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -6145,9 +6061,6 @@ public:
         }
         if (FilmstripVideoHoverFadeProgress() >= 1.0f) {
             CancelFilmstripVideoHoverFade();
-#ifdef _DEBUG
-            OutputDebugStringW(L"[Viewtrious] VIDEO_HOVER_FADE_COMPLETE static-thumbnail-only=1\n");
-#endif
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -6174,15 +6087,8 @@ public:
                 FilmstripHoverPreviewEntry entry{};
                 entry.path = result->request.path; entry.itemGeneration = result->request.itemGeneration;
                 entry.width = result->width; entry.height = result->height; entry.stride = result->stride; entry.pixels = std::move(result->pixels);
-                filmstripVideoHoverTimestamp_ = result->videoTimestamp;
                 filmstripVideoHoverPreview_ = std::move(entry);
-#ifdef _DEBUG
-                wchar_t trace[192]{}; swprintf_s(trace, L"[Viewtrious] VIDEO_HOVER_UI_FRAME_ACCEPTED timestamp=%lld alpha=%u\\n", filmstripVideoHoverTimestamp_, (*filmstripVideoHoverPreview_->pixels)[3]); OutputDebugStringW(trace);
-#endif
                 InvalidateRect(window_, nullptr, FALSE);
-#ifdef _DEBUG
-                OutputDebugStringW(L"[Viewtrious] VIDEO_HOVER_REPAINT_REQUESTED\\n");
-#endif
             }
             delete result; return;
         }
@@ -6267,16 +6173,6 @@ public:
             PruneFilmstripThumbnails();
             const bool aspectChanged = UpdateFilmstripKnownAspect(index, result->aspect);
             const bool layoutDeferred = aspectChanged && filmstripScrollAnimating_;
-#ifdef _DEBUG
-            if (IsVideoPath(result->request.path)) {
-                wchar_t message[768]{};
-                swprintf_s(message, L"[Viewtrious] VIDEO_SHELL_THUMB_PUBLISHED index=%zu size=%ux%u aspect=%.3f path=%ls\n",
-                    index, result->width, result->height, result->aspect, result->request.path.c_str());
-                OutputDebugStringW(message);
-            }
-            const int thumbnail = FindFilmstripThumbnail(result->request.path, result->request.itemGeneration);
-            if (thumbnail >= 0) TraceFilmstripThumbnailPublication(index, filmstripThumbnails_[thumbnail], aspectChanged, layoutDeferred);
-#endif
             if (layoutDeferred) filmstripLayoutRebuildPending_ = true;
             else if (aspectChanged) ApplyFilmstripAspectRelayout();
             ReleaseFilmstripWrapAnchorIfSettled();
@@ -6402,10 +6298,6 @@ public:
         const double dt = std::clamp(static_cast<double>(nowQpc - filmstripScrollLastQpc_) / static_cast<double>(filmstripScrollQpcFrequency_), 0.0, 0.050);
         filmstripScrollLastQpc_ = nowQpc;
         if (dt <= 0.0) return std::abs(filmstripScrollVelocity_) > kFilmstripVelocityStopEpsilon;
-#ifdef _DEBUG
-        const double previousPosition = filmstripScroll_;
-        const double previousVelocity = filmstripScrollVelocity_;
-#endif
         filmstripScroll_ += filmstripScrollVelocity_ * dt;
         const double maximum = FilmstripMaximumScroll();
         bool hitBound = false;
@@ -6417,35 +6309,8 @@ public:
             if (filmstripScrollVelocity_ > 0.0) { filmstripScrollVelocity_ = 0.0; hitBound = true; }
         }
         if (!hitBound) filmstripScrollVelocity_ *= std::exp(-kFilmstripVelocityDampingPerSecond * dt);
-#ifdef _DEBUG
-        filmstripScrollTickCount_++;
-        filmstripScrollTickTotalMs_ += dt * 1000.0;
-        filmstripScrollTickMinimumMs_ = std::min(filmstripScrollTickMinimumMs_, dt * 1000.0);
-        filmstripScrollTickMaximumMs_ = std::max(filmstripScrollTickMaximumMs_, dt * 1000.0);
-        if (hitBound) OutputDebugStringW(L"Viewtrious filmstrip scroll: bound collision\n");
-        wchar_t message[320]{};
-        swprintf_s(message, L"Viewtrious filmstrip scroll: qpc=%lld dt=%.3fms position=%.3f->%.3f delta=%.3f velocity=%.3f->%.3f bound=%d reversed=%d\n",
-            nowQpc, dt * 1000.0, previousPosition, filmstripScroll_, filmstripScroll_ - previousPosition,
-            previousVelocity, filmstripScrollVelocity_, hitBound ? 1 : 0,
-            previousVelocity * filmstripScrollVelocity_ < 0.0 ? 1 : 0);
-        OutputDebugStringW(message);
-#endif
         if (std::abs(filmstripScrollVelocity_) <= kFilmstripVelocityStopEpsilon) {
-#ifdef _DEBUG
-            filmstripPostStopPosition_ = filmstripScroll_;
-            filmstripPostStopPaintCount_ = 0;
-            wchar_t stopMessage[256]{};
-            swprintf_s(stopMessage, L"Viewtrious filmstrip scroll: stop position=%.3f velocity=%.3f->0.000 animating=1->0 timer=1\n",
-                filmstripScroll_, filmstripScrollVelocity_);
-            OutputDebugStringW(stopMessage);
-#endif
             filmstripScrollVelocity_ = 0.0;
-#ifdef _DEBUG
-            wchar_t message[256]{};
-            const double average = filmstripScrollTickCount_ ? filmstripScrollTickTotalMs_ / filmstripScrollTickCount_ : 0.0;
-            swprintf_s(message, L"Viewtrious filmstrip scroll: damping stop ticks=%u avg=%.2fms min=%.2fms max=%.2fms\n", filmstripScrollTickCount_, average, filmstripScrollTickMinimumMs_, filmstripScrollTickMaximumMs_);
-            OutputDebugStringW(message);
-#endif
             return false;
         }
         return true;
@@ -6456,17 +6321,11 @@ public:
         HideFilmstripHoverPreviewImmediately();
         SetFilmstripHover({ -1, -1 });
         if (!filmstripScrollAnimating_) ApplyDeferredFilmstripLayout();
-#ifdef _DEBUG
-        filmstripPostStopPosition_.reset();
-#endif
         LARGE_INTEGER now{}, frequency{};
         if (!QueryPerformanceCounter(&now) || !QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return;
         if (filmstripScrollAnimating_) AdvanceFilmstripScroll(now.QuadPart);
         const double units = -static_cast<double>(rawWheelDelta) / static_cast<double>(WHEEL_DELTA);
         const double scale = static_cast<double>(GetDpiForWindow(window_)) / 96.0;
-#ifdef _DEBUG
-        const double before = filmstripScrollVelocity_;
-#endif
         filmstripScrollVelocity_ = std::clamp(filmstripScrollVelocity_ + units * kFilmstripWheelImpulseDipsPerSecond * scale,
             -kFilmstripMaximumVelocityDipsPerSecond * scale, kFilmstripMaximumVelocityDipsPerSecond * scale);
         if (!filmstripScrollAnimating_) {
@@ -6475,19 +6334,7 @@ public:
             ++filmstripScrollGeneration_;
             filmstripScrollWakePendingGeneration_.store(0, std::memory_order_release);
             filmstripScrollAnimating_ = true;
-#ifdef _DEBUG
-            filmstripScrollTickCount_ = 0;
-            filmstripScrollTickTotalMs_ = 0.0;
-            filmstripScrollTickMinimumMs_ = std::numeric_limits<double>::infinity();
-            filmstripScrollTickMaximumMs_ = 0.0;
-#endif
         }
-#ifdef _DEBUG
-        wchar_t message[256]{};
-        swprintf_s(message, L"Viewtrious filmstrip scroll: qpc=%lld raw=%d units=%.3f position=%.3f velocity=%.1f->%.1f impulse=%.1f\n",
-            now.QuadPart, rawWheelDelta, units, filmstripScroll_, before, filmstripScrollVelocity_, filmstripScrollVelocity_ - before);
-        OutputDebugStringW(message);
-#endif
         if (!EnsureFilmstripScrollScheduler() || !ArmFilmstripScrollWake()) {
             StopFilmstripScrollAnimation();
             ApplyDeferredFilmstripLayout();
@@ -6748,9 +6595,6 @@ public:
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
         CancelFilmstripWrapAnchor();
         CancelVideoAutoPlayNextCountdown();
-#ifdef _DEBUG
-        filmstripPostStopPosition_.reset();
-#endif
         StopFilmstripScrollAnimation();
         const std::wstring path = navigationFiles_[index].wstring();
         if (!PathsEqual(fs::path(path), fs::path(currentPath_))) {
@@ -6828,12 +6672,6 @@ public:
         }
         const int index = FilmstripItemAt(point);
         if (filmstripHoveredIndex_ == index) return;
-#ifdef _DEBUG
-        wchar_t message[512]{};
-        swprintf_s(message, L"[Viewtrious] FILMSTRIP_HOVER_CANDIDATE_%ls point=%ld,%ld index=%d dragging=%d wheel=%d visible=%d\n",
-            index >= 0 ? L"SET" : L"CLEAR", point.x, point.y, index, filmstripDragging_ ? 1 : 0, filmstripScrollAnimating_ ? 1 : 0, FilmstripVisible() ? 1 : 0);
-        OutputDebugStringW(message);
-#endif
         KillTimer(window_, kFilmstripHoverPreviewTimer);
         filmstripHoveredIndex_ = index;
         SetFilmstripHoverVisual(index);
@@ -6843,14 +6681,7 @@ public:
             HideFilmstripHoverPreviewImmediately();
             filmstripVideoHoverIndex_ = index;
             filmstripVideoHoverActive_ = true;
-            const UINT_PTR timer = SetTimer(window_, kFilmstripHoverPreviewTimer, delay, nullptr);
-            (void)timer;
-#ifdef _DEBUG
-            wchar_t timerMessage[256]{};
-            swprintf_s(timerMessage, L"[Viewtrious] FILMSTRIP_VIDEO_HOVER_SETTIMER hwnd=%p returned=%zu delay=%u error=%lu\n",
-                window_, static_cast<size_t>(timer), delay, timer ? ERROR_SUCCESS : GetLastError());
-            OutputDebugStringW(timerMessage);
-#endif
+            SetTimer(window_, kFilmstripHoverPreviewTimer, delay, nullptr);
         } else {
             HideFilmstripHoverPreviewImmediately();
         }
@@ -6883,27 +6714,6 @@ public:
             !FilmstripVideoHoverPreviewEligible(filmstripVideoHoverIndex_) || filmstripDragging_ || filmstripScrollAnimating_) return;
         QueueFilmstripHoverPreview(static_cast<size_t>(filmstripVideoHoverIndex_));
     }
-#ifdef _DEBUG
-    void TraceFilmstripPostStopPaint(const RECT& strip, size_t first, size_t last) {
-        if (!filmstripPostStopPosition_ || filmstripScrollAnimating_) return;
-        const double difference = filmstripScroll_ - *filmstripPostStopPosition_;
-        if (std::abs(difference) > 0.01) {
-            wchar_t mutation[256]{};
-            swprintf_s(mutation, L"Viewtrious FILMSTRIP_POST_STOP_MUTATION old=%.3f new=%.3f delta=%.3f animating=0\n",
-                *filmstripPostStopPosition_, filmstripScroll_, difference);
-            OutputDebugStringW(mutation);
-            filmstripPostStopPosition_ = filmstripScroll_;
-        }
-        if (filmstripPostStopPaintCount_ >= 3) return;
-        const size_t anchor = first < last ? first : 0;
-        const RECT item = anchor < navigationFiles_.size() ? GetFilmstripThumbnailBounds(anchor) : RECT{};
-        wchar_t message[320]{};
-        swprintf_s(message, L"Viewtrious filmstrip scroll: idlePaint=%u position=%.3f clip=[%ld,%ld] anchor=%zu slot=%.3f drawX=%ld\n",
-            ++filmstripPostStopPaintCount_, filmstripScroll_, strip.left, strip.right, anchor,
-            anchor < filmstripItemOffsets_.size() ? filmstripItemOffsets_[anchor] : 0.0f, item.left);
-        OutputDebugStringW(message);
-    }
-#endif
     static D2D1_RECT_F LowerUiRect(const RECT& rect) {
         return D2D1::RectF(static_cast<float>(rect.left), static_cast<float>(rect.top),
             static_cast<float>(rect.right), static_cast<float>(rect.bottom));
@@ -7214,9 +7024,6 @@ public:
         const size_t current = drawingLowerUiContents_ && !capturingFilmstripWrapContents_ ? std::numeric_limits<size_t>::max() :
             CurrentNavigationIndex().value_or(std::numeric_limits<size_t>::max());
         const auto [first, last] = FilmstripVisibleRange();
-#ifdef _DEBUG
-        TraceFilmstripPostStopPaint(strip, first, last);
-#endif
         for (size_t index = first; index < last; ++index) {
             const RECT bounds = GetFilmstripThumbnailBounds(index);
             const D2D1_RECT_F box = D2D1::RectF(static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right), static_cast<float>(bounds.bottom));
@@ -9838,33 +9645,15 @@ private:
         return clockwise ? clockwiseMap[orientation] : counterClockwiseMap[orientation];
     }
 
-    UINT ReadPhotoOrientation(IWICBitmapFrameDecode* frame, const std::wstring* diagnosticPath = nullptr) const {
-#ifndef _DEBUG
-        (void)diagnosticPath;
-#endif
+    UINT ReadPhotoOrientation(IWICBitmapFrameDecode* frame) const {
         ComPtr<IWICMetadataQueryReader> metadata;
         UINT orientation = 1;
-#ifdef _DEBUG
-        const auto trace = [&](const wchar_t* event, ULONGLONG started, HRESULT result) {
-            if (diagnosticPath) TraceFilmstripThumbnailStage(event, *diagnosticPath, started, result);
-        };
-        const ULONGLONG readerStarted = GetTickCount64();
-#endif
         const HRESULT readerResult = frame->GetMetadataQueryReader(&metadata);
-#ifdef _DEBUG
-        trace(L"ORIENTATION_READER_END", readerStarted, readerResult);
-#endif
         if (SUCCEEDED(readerResult)) {
             for (const wchar_t* query : { L"/app1/ifd/{ushort=274}", L"/ifd/{ushort=274}", L"/{ushort=274}" }) {
                 PROPVARIANT value{};
                 PropVariantInit(&value);
-#ifdef _DEBUG
-                const ULONGLONG queryStarted = GetTickCount64();
-#endif
                 const HRESULT result = metadata->GetMetadataByName(query, &value);
-#ifdef _DEBUG
-                trace(query, queryStarted, result);
-#endif
                 if (SUCCEEDED(result)) {
                     if (value.vt == VT_UI2) orientation = value.uiVal;
                     else if (value.vt == VT_UI4) orientation = value.ulVal;
@@ -11042,33 +10831,14 @@ private:
         });
         if (item == navigationFiles_.end()) return;
         const size_t index = static_cast<size_t>(std::distance(navigationFiles_.begin(), item));
-#ifdef _DEBUG
-        const ULONGLONG started = GetTickCount64();
-#endif
         const int thumbnail = FindFilmstripThumbnail(currentPath_, filmstripThumbnailGenerations_[index]);
-        if (thumbnail < 0) {
-#ifdef _DEBUG
-            TraceFilmstripThumbnailStage(L"THUMB_RAM_LIVE_ROTATE_SKIPPED_NOT_RESIDENT", currentPath_, started, S_FALSE);
-#endif
-            return;
-        }
+        if (thumbnail < 0) return;
         FilmstripThumbnailEntry& entry = filmstripThumbnails_[thumbnail];
-#ifdef _DEBUG
-        TraceFilmstripThumbnailStage(L"THUMB_RAM_LIVE_ROTATE_BEGIN", entry.path, started, S_OK);
-#endif
-        if (!ApplyFilmstripThumbnailOrientation(entry, clockwise ? 6u : 8u)) {
-#ifdef _DEBUG
-            TraceFilmstripThumbnailStage(L"THUMB_RAM_LIVE_ROTATE_END", entry.path, started, E_FAIL);
-#endif
-            return;
-        }
+        if (!ApplyFilmstripThumbnailOrientation(entry, clockwise ? 6u : 8u)) return;
         entry.aspect = static_cast<float>(entry.width) / static_cast<float>(entry.height);
         entry.bitmap.Reset();
         // This is a local cache/layout update. It must not create thumbnail worker demand.
         if (UpdateFilmstripKnownAspect(index, entry.aspect)) ApplyFilmstripAspectRelayout(false);
-#ifdef _DEBUG
-        TraceFilmstripThumbnailStage(L"THUMB_RAM_LIVE_ROTATE_END", entry.path, started, S_OK);
-#endif
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -11076,10 +10846,6 @@ private:
         if (targetHeight == 0) return E_INVALIDARG;
         HRESULT hr = E_FAIL;
         UINT orientation = 1;
-#ifdef _DEBUG
-        const ULONGLONG decodeStarted = GetTickCount64();
-        const ULONGLONG decoderStarted = GetTickCount64();
-#endif
         // All WIC objects stay inside this scope. Once it returns, the result contains only
         // Viewtrious-owned PBGRA bytes and has no source-file ownership.
         {
@@ -11088,43 +10854,21 @@ private:
             ComPtr<IWICBitmapFrameDecode> frame;
             hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
             if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
-#ifdef _DEBUG
-            TraceFilmstripThumbnailStage(L"DECODER_CREATE_END", path, decoderStarted, hr);
-            const ULONGLONG frameStarted = GetTickCount64();
-#endif
             if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
-#ifdef _DEBUG
-            TraceFilmstripThumbnailStage(L"GET_FRAME_END", path, frameStarted, hr);
-#endif
             if (FAILED(hr)) return hr;
-#ifdef _DEBUG
-            const ULONGLONG orientationStarted = GetTickCount64();
-#endif
-            orientation = ReadPhotoOrientation(frame.Get(), &path);
-#ifdef _DEBUG
-            TraceFilmstripThumbnailStage(L"ORIENTATION_END", path, orientationStarted, S_OK);
-#endif
+            orientation = ReadPhotoOrientation(frame.Get());
             const auto decodeSource = [&](IWICBitmapSource* source, bool rejectUpscale) -> HRESULT {
                 if (!source) return E_FAIL;
                 UINT sourceWidth = 0, sourceHeight = 0;
                 HRESULT attempt = source->GetSize(&sourceWidth, &sourceHeight);
                 ComPtr<IWICFormatConverter> converter;
-#ifdef _DEBUG
-                const ULONGLONG converterStarted = GetTickCount64();
-#endif
                 if (SUCCEEDED(attempt)) attempt = factory->CreateFormatConverter(&converter);
                 if (SUCCEEDED(attempt)) attempt = converter->Initialize(source, GUID_WICPixelFormat32bppPBGRA,
                     WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-#ifdef _DEBUG
-                TraceFilmstripThumbnailStage(L"CONVERTER_INIT_END", path, converterStarted, attempt);
-#endif
                 // Do not place the EXIF transform in this source-backed WIC chain: metadata-rotated
                 // JPEGs can defer an expensive transform until CopyPixels. Apply it after release instead.
                 ComPtr<IWICBitmapSource> transformed = converter;
                 if (FAILED(attempt) || !sourceWidth || !sourceHeight) return FAILED(attempt) ? attempt : E_FAIL;
-#ifdef _DEBUG
-                const ULONGLONG cropStarted = GetTickCount64();
-#endif
                 const bool swapsAxes = orientation >= 5 && orientation <= 8;
                 const UINT orientedWidth = swapsAxes ? sourceHeight : sourceWidth;
                 const UINT orientedHeight = swapsAxes ? sourceWidth : sourceHeight;
@@ -11144,48 +10888,21 @@ private:
                 // without scaling either source axis upward.
                 if (rejectUpscale && (cropWidth < sourceTargetWidth || cropHeight < sourceTargetHeight))
                     return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
-#ifdef _DEBUG
-                TraceFilmstripThumbnailStage(L"CROP_CALCULATION_END", path, cropStarted, S_OK);
-#endif
                 ComPtr<IWICBitmapClipper> clipper;
-#ifdef _DEBUG
-                const ULONGLONG clipperStarted = GetTickCount64();
-#endif
                 if (SUCCEEDED(attempt)) attempt = factory->CreateBitmapClipper(&clipper);
                 if (SUCCEEDED(attempt)) attempt = clipper->Initialize(transformed.Get(), &crop);
-#ifdef _DEBUG
-                TraceFilmstripThumbnailStage(L"CLIPPER_INIT_END", path, clipperStarted, attempt);
-#endif
                 ComPtr<IWICBitmapScaler> scaler;
-#ifdef _DEBUG
-                const ULONGLONG scalerStarted = GetTickCount64();
-#endif
                 if (SUCCEEDED(attempt)) attempt = factory->CreateBitmapScaler(&scaler);
                 if (SUCCEEDED(attempt)) attempt = scaler->Initialize(clipper.Get(), sourceTargetWidth, sourceTargetHeight, WICBitmapInterpolationModeFant);
-#ifdef _DEBUG
-                TraceFilmstripThumbnailStage(L"SCALER_INIT_END", path, scalerStarted, attempt);
-#endif
                 ComPtr<IWICFormatConverter> finalConverter;
-#ifdef _DEBUG
-                const ULONGLONG finalConverterStarted = GetTickCount64();
-#endif
                 if (SUCCEEDED(attempt)) attempt = factory->CreateFormatConverter(&finalConverter);
                 if (SUCCEEDED(attempt)) attempt = finalConverter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA,
                     WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-#ifdef _DEBUG
-                TraceFilmstripThumbnailStage(L"FINAL_CONVERTER_INIT_END", path, finalConverterStarted, attempt);
-#endif
                 if (FAILED(attempt) || sourceTargetWidth > UINT_MAX / 4 || sourceTargetHeight > UINT_MAX / (sourceTargetWidth * 4)) return FAILED(attempt) ? attempt : E_OUTOFMEMORY;
                 const UINT stride = sourceTargetWidth * 4;
                 const size_t bytes = static_cast<size_t>(stride) * sourceTargetHeight;
                 auto pixels = std::make_shared<std::vector<BYTE>>(bytes);
-#ifdef _DEBUG
-                const ULONGLONG copyStarted = GetTickCount64();
-#endif
                 attempt = finalConverter->CopyPixels(nullptr, stride, static_cast<UINT>(bytes), pixels->data());
-#ifdef _DEBUG
-                TraceFilmstripThumbnailStage(L"COPYPIXELS_END", path, copyStarted, attempt);
-#endif
                 if (SUCCEEDED(attempt)) {
                     decoded.width = sourceTargetWidth;
                     decoded.height = sourceTargetHeight;
@@ -11194,9 +10911,6 @@ private:
                 }
                 return attempt;
             };
-#ifdef _DEBUG
-            const ULONGLONG scaleStarted = GetTickCount64();
-#endif
             if (IsHeifPath(path)) {
                 ComPtr<IWICBitmapSource> embedded;
                 const HRESULT thumbnailResult = frame->GetThumbnail(&embedded);
@@ -11227,22 +10941,9 @@ private:
             } else {
                 hr = decodeSource(frame.Get(), false);
             }
-#ifdef _DEBUG
-            TraceFilmstripThumbnailStage(L"SCALE_END", path, scaleStarted, hr);
-#endif
         }
-#ifdef _DEBUG
-        TraceFilmstripThumbnailStage(L"SOURCE_RELEASED", path, decodeStarted, hr);
-#endif
         if (SUCCEEDED(hr)) {
-#ifdef _DEBUG
-            const ULONGLONG ramOrientationStarted = GetTickCount64();
-            TraceFilmstripThumbnailStage(L"RAM_ORIENTATION_BEGIN", path, ramOrientationStarted, S_OK);
-#endif
             if (!ApplyFilmstripThumbnailOrientation(decoded, orientation)) return E_FAIL;
-#ifdef _DEBUG
-            TraceFilmstripThumbnailStage(L"RAM_ORIENTATION_END", path, ramOrientationStarted, S_OK);
-#endif
             aspect = static_cast<float>(decoded.width) / static_cast<float>(decoded.height);
         }
         return hr;
@@ -14500,14 +14201,6 @@ private:
     std::vector<float> filmstripKnownAspects_;
     std::vector<bool> filmstripAspectAuthoritative_;
     std::vector<bool> filmstripAspectRelayoutPending_;
-#ifdef _DEBUG
-    UINT filmstripScrollTickCount_ = 0;
-    double filmstripScrollTickTotalMs_ = 0.0;
-    double filmstripScrollTickMinimumMs_ = 0.0;
-    double filmstripScrollTickMaximumMs_ = 0.0;
-    std::optional<double> filmstripPostStopPosition_;
-    UINT filmstripPostStopPaintCount_ = 0;
-#endif
     float filmstripOpacity_ = 0.0f;
     float filmstripRevealStartOpacity_ = 0.0f;
     ULONGLONG filmstripVisibilityStart_ = 0;
@@ -14526,7 +14219,6 @@ private:
     uint64_t filmstripHoverPreviewGeneration_ = 0;
     std::atomic<uint64_t> videoHoverPreviewGeneration_{ 0 };
     std::optional<FilmstripHoverPreviewEntry> filmstripVideoHoverPreview_;
-    LONGLONG filmstripVideoHoverTimestamp_ = 0;
     bool filmstripVideoHoverFadeActive_ = false;
     LONGLONG filmstripVideoHoverFadeStartQpc_ = 0;
     LONGLONG filmstripVideoHoverFadeQpcFrequency_ = 0;
@@ -15330,9 +15022,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_TIMER:
-#ifdef _DEBUG
-        { wchar_t timerMessage[128]{}; swprintf_s(timerMessage, L"[Viewtrious] VIEWTRIOUS_WM_TIMER_RECEIVED id=%zu hwnd=%p\n", static_cast<size_t>(wParam), window); OutputDebugStringW(timerMessage); }
-#endif
         if (wParam == kLowerUiMorphTimer) { viewer->UpdateLowerUiMorph(); return 0; }
         if (wParam == kGifPlaybackTimer) { viewer->GifPlaybackTimerMessage(); return 0; }
         if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; }

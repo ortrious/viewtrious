@@ -9,28 +9,10 @@
 
 using Microsoft::WRL::ComPtr;
 
-namespace {
-
-#ifdef _DEBUG
-void TraceShellThumbnail(const wchar_t* event, const std::wstring& path, UINT requestedSize, UINT width, UINT height, HRESULT result, ULONGLONG started) {
-    wchar_t message[768]{};
-    swprintf_s(message, L"[Viewtrious] %ls elapsed=%llums request=%u size=%ux%u hr=0x%08X path=%ls\n", event,
-        static_cast<unsigned long long>(GetTickCount64() - started), requestedSize, width, height,
-        static_cast<unsigned int>(result), path.c_str());
-    OutputDebugStringW(message);
-}
-#endif
-
-} // namespace
-
 HRESULT DecodeShellVideoThumbnailPixels(const std::wstring& path, UINT requestedSize, ShellThumbnailPixels& decoded, float& aspect) {
     decoded = {};
     aspect = 1.0f;
     if (path.empty() || !requestedSize) return E_INVALIDARG;
-#ifdef _DEBUG
-    const ULONGLONG started = GetTickCount64();
-    TraceShellThumbnail(L"VIDEO_SHELL_THUMB_BEGIN", path, requestedSize, 0, 0, S_OK, started);
-#endif
 
     HRESULT hr = E_FAIL;
     UINT width = 0;
@@ -73,22 +55,12 @@ HRESULT DecodeShellVideoThumbnailPixels(const std::wstring& path, UINT requested
                 decoded.height = height;
                 decoded.stride = width * 4;
                 decoded.pixels = std::move(pixels);
-#ifdef _DEBUG
-                TraceShellThumbnail(L"VIDEO_SHELL_THUMB_PIXELS_COPIED", path, requestedSize, width, height, S_OK, started);
-#endif
             }
         }
         if (thumbnail) DeleteObject(thumbnail);
         imageFactory.Reset();
         item.Reset();
-#ifdef _DEBUG
-        TraceShellThumbnail(L"VIDEO_SHELL_THUMB_SOURCE_RELEASED", path, requestedSize, width, height, hr, started);
-#endif
     }
     if (SUCCEEDED(hr) && decoded.pixels) aspect = static_cast<float>(decoded.width) / decoded.height;
-#ifdef _DEBUG
-    TraceShellThumbnail(SUCCEEDED(hr) && decoded.pixels ? L"VIDEO_SHELL_THUMB_RESULT" : L"VIDEO_SHELL_THUMB_FAILED",
-        path, requestedSize, decoded.width, decoded.height, hr, started);
-#endif
     return SUCCEEDED(hr) && decoded.pixels ? S_OK : FAILED(hr) ? hr : E_FAIL;
 }

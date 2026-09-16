@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.9.38.2 LANGUAGES CXX)
+project(Viewtrious VERSION 0.9.39.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -23,6 +23,7 @@ configure_file(assets/Viewtrious.ico "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.ico
 configure_file(assets/ViewtriousVideo.ico "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousVideo.ico" COPYONLY)
 configure_file(assets/Viewtrious3D.ico "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious3D.ico" COPYONLY)
 configure_file(src/Viewtrious.rc.in "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc" @ONLY)
+configure_file(shell/ViewtriousStlThumbnail.rc.in "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousStlThumbnail.rc" @ONLY)
 
 add_executable(Viewtrious WIN32
     src/main.cpp
@@ -44,16 +45,9 @@ add_executable(Viewtrious WIN32
     "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc"
 )
 
-# Investigation-only command-line harness.  It is intentionally not linked into
-# Viewtrious so the production Direct2D canvas remains unchanged.
-add_executable(ViewtriousLanczosBenchmark
-    src/lanczos_benchmark.cpp
-    src/lanczos_resampler.cpp
-)
-
 add_library(ViewtriousStlThumbnail SHARED
     shell/stl_thumbnail_provider.cpp
-    shell/ViewtriousStlThumbnail.rc
+    "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousStlThumbnail.rc"
     shell/ViewtriousStlThumbnail.def
 )
 set_target_properties(ViewtriousStlThumbnail PROPERTIES OUTPUT_NAME ViewtriousStlThumbnail)
@@ -72,7 +66,7 @@ file(GLOB VIEWTRIOUS_CPPWINRT_INCLUDE_CANDIDATES
 find_path(VIEWTRIOUS_CPPWINRT_INCLUDE_DIR winrt/base.h
     HINTS ${VIEWTRIOUS_CPPWINRT_INCLUDE_CANDIDATES})
 if(NOT VIEWTRIOUS_CPPWINRT_INCLUDE_DIR)
-    message(FATAL_ERROR "The installed Windows SDK C++/WinRT projection is required for the Windows.UI.Composition experiment.")
+    message(FATAL_ERROR "The installed Windows SDK C++/WinRT projection is required for the Windows.UI.Composition compositor host.")
 endif()
 target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_CPPWINRT_INCLUDE_DIR}")
 target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 bcrypt d3d11 dxgi dxguid d3dcompiler dcomp xmllite ole32 oleaut32 mfplat mf mfreadwrite mfuuid windowsapp coremessaging "${VIEWTRIOUS_3DXWARE_LIBRARY}")
@@ -80,8 +74,12 @@ target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell
 if(VIEWTRIOUS_BUILD_AI_ADDON)
     set(VIEWTRIOUS_ONNXRUNTIME_INCLUDE_DIR "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/include")
     set(VIEWTRIOUS_ONNXRUNTIME_LIBRARY "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/lib/onnxruntime.lib")
-    if(NOT VIEWTRIOUS_ONNXRUNTIME_ROOT OR NOT EXISTS "${VIEWTRIOUS_ONNXRUNTIME_INCLUDE_DIR}/onnxruntime_cxx_api.h" OR NOT EXISTS "${VIEWTRIOUS_ONNXRUNTIME_LIBRARY}")
-        message(FATAL_ERROR "VIEWTRIOUS_BUILD_AI_ADDON requires VIEWTRIOUS_ONNXRUNTIME_ROOT with the ONNX Runtime SDK.")
+    set(VIEWTRIOUS_ONNXRUNTIME_LICENSE "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/LICENSE")
+    set(VIEWTRIOUS_ONNXRUNTIME_NOTICES "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/ThirdPartyNotices.txt")
+    if(NOT VIEWTRIOUS_ONNXRUNTIME_ROOT OR NOT EXISTS "${VIEWTRIOUS_ONNXRUNTIME_INCLUDE_DIR}/onnxruntime_cxx_api.h" OR
+        NOT EXISTS "${VIEWTRIOUS_ONNXRUNTIME_LIBRARY}" OR NOT EXISTS "${VIEWTRIOUS_ONNXRUNTIME_LICENSE}" OR
+        NOT EXISTS "${VIEWTRIOUS_ONNXRUNTIME_NOTICES}")
+        message(FATAL_ERROR "VIEWTRIOUS_BUILD_AI_ADDON requires the ONNX Runtime SDK, LICENSE, and ThirdPartyNotices.txt.")
     endif()
     add_library(ViewtriousAI SHARED addons/ai/viewtrious_ai_addon.cpp)
     target_compile_features(ViewtriousAI PRIVATE cxx_std_20)
@@ -92,19 +90,17 @@ if(VIEWTRIOUS_BUILD_AI_ADDON)
         target_compile_options(ViewtriousAI PRIVATE /W4 /permissive- /EHsc)
     endif()
     set_target_properties(ViewtriousAI PROPERTIES OUTPUT_NAME ViewtriousAI RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:Viewtrious>/Addons/AI")
-    add_custom_command(TARGET ViewtriousAI POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/lib/onnxruntime.dll" "$<TARGET_FILE_DIR:ViewtriousAI>/onnxruntime.dll" COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/addons/ai/THIRD_PARTY_NOTICES.txt" "$<TARGET_FILE_DIR:ViewtriousAI>/THIRD_PARTY_NOTICES.txt")
+    add_custom_command(TARGET ViewtriousAI POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/lib/onnxruntime.dll" "$<TARGET_FILE_DIR:ViewtriousAI>/onnxruntime.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/addons/ai/THIRD_PARTY_NOTICES.txt" "$<TARGET_FILE_DIR:ViewtriousAI>/THIRD_PARTY_NOTICES.txt"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VIEWTRIOUS_ONNXRUNTIME_LICENSE}" "$<TARGET_FILE_DIR:ViewtriousAI>/ONNXRuntime-LICENSE.txt"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VIEWTRIOUS_ONNXRUNTIME_NOTICES}" "$<TARGET_FILE_DIR:ViewtriousAI>/ONNXRuntime-ThirdPartyNotices.txt")
 endif()
-target_compile_features(ViewtriousLanczosBenchmark PRIVATE cxx_std_20)
-target_compile_definitions(ViewtriousLanczosBenchmark PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(ViewtriousLanczosBenchmark PRIVATE windowscodecs ole32)
-
 if(MSVC)
     target_compile_options(Viewtrious PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(Viewtrious PRIVATE $<$<CONFIG:Release>:/O2 /Gy /Gw>)
     target_link_options(Viewtrious PRIVATE $<$<CONFIG:Release>:/OPT:REF /OPT:ICF>)
-    target_compile_options(ViewtriousLanczosBenchmark PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(ViewtriousStlThumbnail PRIVATE /W4 /permissive- /EHsc)
-    target_compile_options(ViewtriousLanczosBenchmark PRIVATE $<$<CONFIG:Release>:/O2>)
 endif()
 
 set_source_files_properties(third_party/miniz/miniz_tinfl.c PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "/wd4334")

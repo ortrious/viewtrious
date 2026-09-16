@@ -1,9 +1,14 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace ViewtriousPaths {
 
+bool Initialize(std::wstring& errorMessage);
+bool IsPortable();
+std::filesystem::path ExecutableDirectory();
+std::wstring PortableInstanceId();
 bool LocalAppDataRoot(std::filesystem::path& path);
 std::filesystem::path AppDirectory();
 std::filesystem::path ShellExtensionsDirectory();

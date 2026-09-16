@@ -66,6 +66,7 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"ViewtriousWindow";
 constexpr wchar_t kWindowTitle[] = L"viewtrious";
 constexpr wchar_t kPrimaryMutexName[] = L"Local\\Viewtrious.PrimaryReuseTarget.v1";
+constexpr wchar_t kPrimaryWindowQueryName[] = L"Viewtrious.PrimaryReuseTarget.Query.v1";
 constexpr ULONG_PTR kExternalOpenCopyDataMagic = 0x5654524F00010001ull;
 constexpr DWORD_PTR kPrimaryWindowMagic = 0x5654524Fu;
 constexpr UINT kExternalOpenMessage = WM_APP + 16;
@@ -1292,9 +1293,9 @@ class Viewer {
 public:
     explicit Viewer(const StartupTimer& timer) : timer_(timer) {}
 
-    bool RegisterIntegrationForMaintenance() { return RegisterDefaultAppCapabilities(); }
-    bool UnregisterIntegrationForMaintenance() { return UnregisterDefaultAppCapabilities(); }
-    bool CleanupDataForUninstallMaintenance() { return CleanupDataForUninstall(); }
+    bool RegisterIntegrationForMaintenance() { return !ViewtriousPaths::IsPortable() && RegisterDefaultAppCapabilities(); }
+    bool UnregisterIntegrationForMaintenance() { return !ViewtriousPaths::IsPortable() && UnregisterDefaultAppCapabilities(); }
+    bool CleanupDataForUninstallMaintenance() { return !ViewtriousPaths::IsPortable() && CleanupDataForUninstall(); }
 
     HRESULT Initialize(const std::wstring& path) {
         ApplicationSettings::Initialize();
@@ -1315,7 +1316,7 @@ public:
             error_ = L"DirectWrite could not be initialized.";
             return hr;
         }
-        RegisterDefaultAppCapabilities();
+        if (!ViewtriousPaths::IsPortable()) RegisterDefaultAppCapabilities();
         DWORD rememberPlacement = 1;
         ReadSetting(L"RememberWindowPlacement", rememberPlacement);
         rememberWindowPlacement_ = rememberPlacement != 0;
@@ -4975,7 +4976,10 @@ public:
         else if (button == ButtonKind::GifStepBackward) StepGifFrame(-1);
         else if (button == ButtonKind::GifStepForward) StepGifFrame(1);
         else if (button == ButtonKind::ImageAdjustments) ToggleAdjustments();
-        else if (button == ButtonKind::SettingsDefaultApps) OpenRegisteredDefaultApps();
+        else if (button == ButtonKind::SettingsDefaultApps) {
+            if (ViewtriousPaths::IsPortable()) ShowPortableIntegrationUnavailable();
+            else OpenRegisteredDefaultApps();
+        }
         else if (button == ButtonKind::SettingsResetAdjustmentsDatabase) ShowOverlay(OverlayKind::ResetAdjustmentsConfirm);
         else if (button == ButtonKind::SettingsReset) ShowOverlay(OverlayKind::ResetConfirm);
         else if (button == ButtonKind::ResetCancel) DismissOverlay();
@@ -4992,12 +4996,16 @@ public:
             DeleteImage();
         }
         else if (button == ButtonKind::WelcomeSecondary) CompleteWelcome(false);
-        else if (button == ButtonKind::WelcomePrimary) ShowOverlay(OverlayKind::DefaultAppsHelper);
+        else if (button == ButtonKind::WelcomePrimary) {
+            if (ViewtriousPaths::IsPortable()) ShowPortableIntegrationUnavailable();
+            else ShowOverlay(OverlayKind::DefaultAppsHelper);
+        }
         else if (button == ButtonKind::DefaultAppsHelperCancel) {
             overlay_ = OverlayKind::Welcome;
             CompleteWelcome(false);
         }
         else if (button == ButtonKind::DefaultAppsHelperOpen) {
+            if (ViewtriousPaths::IsPortable()) { ShowPortableIntegrationUnavailable(); return; }
             if (!RegisterDefaultAppCapabilities()) { ShowOverlay(OverlayKind::RegistrationError); return; }
             overlay_ = OverlayKind::Welcome;
             CompleteWelcome(true);
@@ -9071,6 +9079,7 @@ private:
     }
 
     bool RegisterDefaultAppCapabilities() {
+        if (ViewtriousPaths::IsPortable()) return false;
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) {
             TraceRegistryFailure(L"resolve executable", L"(module path)", L"", GetLastError());
@@ -9147,6 +9156,7 @@ private:
     }
 
     bool UnregisterDefaultAppCapabilities() {
+        if (ViewtriousPaths::IsPortable()) return false;
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) return false;
         const std::wstring executable(modulePath);
@@ -9200,11 +9210,16 @@ private:
     }
 
     void OpenRegisteredDefaultApps(bool verifyRegistration = true) {
+        if (ViewtriousPaths::IsPortable()) { ShowPortableIntegrationUnavailable(); return; }
         if (verifyRegistration && !RegisterDefaultAppCapabilities()) { ShowOverlay(OverlayKind::RegistrationError); return; }
         INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
             L"ms-settings:defaultapps?registeredAppUser=viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
         if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
         if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
+    }
+
+    void ShowPortableIntegrationUnavailable() const {
+        ShowActionError(L"Windows integration is unavailable in portable mode.\n\nUse an installed copy of viewtrious to change file type defaults.");
     }
 
     void ToggleOpenWithSubmenu() {
@@ -15242,6 +15257,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     const HRESULT ole = OleInitialize(nullptr);
     if (FAILED(ole)) { CoUninitialize(); return 1; }
 
+    std::wstring environmentError;
+    if (!ViewtriousPaths::Initialize(environmentError)) {
+        MessageBoxW(nullptr, environmentError.c_str(), kWindowTitle, MB_OK | MB_ICONERROR);
+        OleUninitialize();
+        CoUninitialize();
+        return 1;
+    }
+
     int argumentCount = 0;
     LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
     const std::wstring path = (arguments && argumentCount > 1) ? arguments[1] : L"";
@@ -15256,8 +15279,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         return success ? 0 : 1;
     }
 
-    gPrimaryWindowQueryMessage = RegisterWindowMessageW(L"Viewtrious.PrimaryReuseTarget.Query.v1");
-    HANDLE primaryMutex = CreateMutexW(nullptr, FALSE, kPrimaryMutexName);
+    std::wstring primaryMutexName = kPrimaryMutexName;
+    std::wstring primaryWindowQueryName = kPrimaryWindowQueryName;
+    if (ViewtriousPaths::IsPortable()) {
+        const std::wstring instanceId = ViewtriousPaths::PortableInstanceId();
+        primaryMutexName = L"Local\\Viewtrious.Portable.PrimaryReuseTarget.v1." + instanceId;
+        primaryWindowQueryName = L"Viewtrious.Portable.PrimaryReuseTarget.Query.v1." + instanceId;
+    }
+    gPrimaryWindowQueryMessage = RegisterWindowMessageW(primaryWindowQueryName.c_str());
+    HANDLE primaryMutex = CreateMutexW(nullptr, FALSE, primaryMutexName.c_str());
     const bool firstReuseTarget = primaryMutex && GetLastError() != ERROR_ALREADY_EXISTS;
     gPrimaryReuseTarget = primaryMutex != nullptr;
     const std::optional<ExternalOpenMediaFamily> reuseFamily = ExternalOpenReuseFamily(path);

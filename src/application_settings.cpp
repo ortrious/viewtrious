@@ -66,8 +66,9 @@ public:
 
     bool Read(const wchar_t* name, DWORD& value) {
         std::lock_guard lock(mutex_);
-        if (!Open()) return ReadLegacyDword(name, value);
-        if (!MigrateLegacyRegistry()) return ReadUnlocked(name, value) || ReadLegacyDword(name, value);
+        if (!Open()) return !ViewtriousPaths::IsPortable() && ReadLegacyDword(name, value);
+        if (!MigrateLegacyRegistry()) return ReadUnlocked(name, value) ||
+            (!ViewtriousPaths::IsPortable() && ReadLegacyDword(name, value));
         return ReadUnlocked(name, value);
     }
 
@@ -163,6 +164,7 @@ private:
     }
 
     bool MigrateLegacyRegistry() {
+        if (ViewtriousPaths::IsPortable()) { migrationComplete_ = true; return true; }
         if (migrationComplete_ || HasMigrationMarker()) { migrationComplete_ = true; return true; }
         struct LegacyValue { const wchar_t* name; DWORD value; };
         std::vector<LegacyValue> legacy;

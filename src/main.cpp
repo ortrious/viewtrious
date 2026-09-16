@@ -397,7 +397,7 @@ constexpr wchar_t kThirdPartyNotices[] =
     L"miniz\n\n"
     L"Copyright 2013-2014 RAD Game Tools and Valve Software\n"
     L"Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC\n\n"
-    L"ZIP/DEFLATE library used for 3MF package handling. The full license is included with Viewtrious.";
+    L"ZIP/DEFLATE library used for 3MF package handling. The full license is included with viewtrious.";
 constexpr std::array<HelpTopic, 7> kHelpTopics{{
     { L"getting started", kGettingStartedSections.data(), kGettingStartedSections.size(), L"" },
     { L"SpaceMouse", kSpaceMouseSections.data(), kSpaceMouseSections.size(), L"" },
@@ -9123,7 +9123,10 @@ private:
         success &= RegisterStlThumbnailProvider(executable, registrationChanged);
         success &= Reconcile3DAutoProgId(L".stl", executable, registrationChanged);
         success &= Reconcile3DAutoProgId(L".3mf", executable, registrationChanged);
-        if (success && registrationChanged) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+        // An updated executable can contain new icon frames while every registry icon reference
+        // remains the same path and resource ID. Notify the Shell after verified registration so
+        // it re-extracts that unchanged reference without touching its caches or UserChoice.
+        if (success) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
         return success;
     }
 

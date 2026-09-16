@@ -8,20 +8,42 @@ $sourceDirectory = Join-Path $root 'new_icons'
 $assetDirectory = Join-Path $root 'assets'
 $sizes = 16, 20, 24, 32, 40, 48, 64, 256
 
-function Get-PngBytes([System.Drawing.Image]$source, [int]$size, [int]$padding) {
-    $bitmap = [System.Drawing.Bitmap]::new($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+function Get-PngBytes([System.Drawing.Image]$source, [int]$size) {
+    $bitmap = [System.Drawing.Bitmap]::new($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppPArgb)
     try {
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        $innerSize = $size - 2
+        if ($innerSize -le 0) { throw "Icon frame leaves no drawable area." }
+        # The master art's circular contour reaches its own canvas edge. Put transparent
+        # overscan around it before downsampling so the resampler preserves the contour
+        # instead of clamping its edge pixels into a visibly flat cut.
+        $sourceScale = [double][Math]::Max($source.Width, $source.Height) / $innerSize
+        # Preserve roughly 1.75 destination pixels of transparent sampling margin per
+        # edge. This avoids leaving faint contour pixels on a frame boundary without
+        # returning to the previous multi-pixel frame-padding policy.
+        $sourcePadding = [int][Math]::Ceiling($sourceScale * 1.85)
+        $sourceCanvas = [System.Drawing.Bitmap]::new($source.Width + 2 * $sourcePadding, $source.Height + 2 * $sourcePadding, [System.Drawing.Imaging.PixelFormat]::Format32bppPArgb)
         try {
-            $graphics.Clear([System.Drawing.Color]::Transparent)
-            $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
-            $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-            $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-            $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-            $innerSize = $size - (2 * $padding)
-            $graphics.DrawImage($source, [System.Drawing.Rectangle]::new($padding, $padding, $innerSize, $innerSize))
+            $sourceGraphics = [System.Drawing.Graphics]::FromImage($sourceCanvas)
+            try {
+                $sourceGraphics.Clear([System.Drawing.Color]::Transparent)
+                $sourceGraphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+                $sourceGraphics.DrawImage($source, [System.Drawing.Rectangle]::new($sourcePadding, $sourcePadding, $source.Width, $source.Height))
+            } finally {
+                $sourceGraphics.Dispose()
+            }
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            try {
+                $graphics.Clear([System.Drawing.Color]::Transparent)
+                $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+                $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+                $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+                $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+                $graphics.DrawImage($sourceCanvas, [System.Drawing.Rectangle]::new(0, 0, $size, $size))
+            } finally {
+                $graphics.Dispose()
+            }
         } finally {
-            $graphics.Dispose()
+            $sourceCanvas.Dispose()
         }
         $stream = [System.IO.MemoryStream]::new()
         try {
@@ -35,25 +57,13 @@ function Get-PngBytes([System.Drawing.Image]$source, [int]$size, [int]$padding) 
     }
 }
 
-function Get-SmallFramePadding([int]$size) {
-    switch ($size) {
-        16 { return 1 }
-        20 { return 2 }
-        24 { return 2 }
-        32 { return 3 }
-        default { return 0 }
-    }
-}
-
-function New-Icon([string]$smallSourceName, [string]$largeSourceName, [string]$outputName) {
-    $small = [System.Drawing.Image]::FromFile((Join-Path $sourceDirectory $smallSourceName))
-    $large = [System.Drawing.Image]::FromFile((Join-Path $sourceDirectory $largeSourceName))
+function New-Icon([string]$sourceName, [string]$outputName) {
+    $source = [System.Drawing.Image]::FromFile((Join-Path $sourceDirectory $sourceName))
     try {
         $frames = foreach ($size in $sizes) {
-            $padding = Get-SmallFramePadding $size
             [pscustomobject]@{
                 Size = $size
-                Bytes = Get-PngBytes $(if ($size -le 32) { $small } else { $large }) $size $padding
+                Bytes = Get-PngBytes $source $size
             }
         }
         $stream = [System.IO.MemoryStream]::new()
@@ -81,11 +91,10 @@ function New-Icon([string]$smallSourceName, [string]$largeSourceName, [string]$o
             $stream.Dispose()
         }
     } finally {
-        $small.Dispose()
-        $large.Dispose()
+        $source.Dispose()
     }
 }
 
-New-Icon 'icon_32.png' 'icon_1024.png' 'Viewtrious.ico'
-New-Icon 'icon_play_32.png' 'icon_play_1024.png' 'ViewtriousVideo.ico'
-New-Icon 'icon_3d_32_new.png' 'icon_3d_1024new.png' 'Viewtrious3D.ico'
+New-Icon 'icon_1024.png' 'Viewtrious.ico'
+New-Icon 'icon_play_1024.png' 'ViewtriousVideo.ico'
+New-Icon 'icon_3d_1024new.png' 'Viewtrious3D.ico'

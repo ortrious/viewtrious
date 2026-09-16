@@ -267,6 +267,8 @@ constexpr UINT kFilmstripHoverPreviewIntentDelayMs = 50;
 constexpr UINT kFilmstripHoverPreviewCloseGraceMs = 175;
 constexpr double kFilmstripWrapFadeOutMs = 100.0;
 constexpr double kFilmstripWrapFadeInMs = 120.0;
+constexpr UINT kFilmstripDismissSwipeThresholdDip = 28;
+constexpr ULONGLONG kFilmstripDismissFadeDurationMs = 140;
 constexpr double kFilmstripHoverVisualDurationMs = 90.0;
 constexpr ULONGLONG kVideoAdjustmentsFadeDurationMs = kStillDissolveDurationMs;
 constexpr ULONGLONG kVideoAdjustmentsPlacementDurationMs = 240;
@@ -6638,6 +6640,9 @@ public:
     bool BeginFilmstripInteraction(POINT point) {
         if (!FilmstripContains(point)) return false;
         filmstripDragCandidate_ = true;
+        filmstripDismissGesture_ = false;
+        filmstripDismissStart_ = point;
+        filmstripDismissStartScroll_ = filmstripScroll_;
         filmstripDragStart_ = point;
         filmstripDragStartScroll_ = filmstripScroll_;
         filmstripDragItem_ = FilmstripItemAt(point);
@@ -6646,8 +6651,17 @@ public:
     }
     bool ContinueFilmstripInteraction(POINT point) {
         if (!filmstripDragCandidate_) return false;
+        if (filmstripDismissGesture_) return true;
         const int dx = point.x - filmstripDragStart_.x;
         const int dy = point.y - filmstripDragStart_.y;
+        const LONG dismissDx = point.x - filmstripDismissStart_.x;
+        const LONG dismissDy = point.y - filmstripDismissStart_.y;
+        const LONG dismissThreshold = MulDiv(kFilmstripDismissSwipeThresholdDip, GetDpiForWindow(window_), 96);
+        if (!alwaysShowFilmstrip_ && dismissDy >= dismissThreshold &&
+            static_cast<long long>(dismissDy) * 4 >= static_cast<long long>(std::abs(dismissDx)) * 5) {
+            DismissFilmstripForDownwardSwipe();
+            return true;
+        }
         if (!filmstripDragging_ && (std::abs(dx) >= GetSystemMetrics(SM_CXDRAG) || std::abs(dy) >= GetSystemMetrics(SM_CYDRAG))) {
             filmstripDragging_ = true;
             CancelFilmstripSelectionAnchor();
@@ -6664,10 +6678,12 @@ public:
         return true;
     }
     bool EndFilmstripInteraction(POINT point) {
+        const bool dismissed = filmstripDismissGesture_;
         const bool dragging = filmstripDragging_;
         const int click = filmstripDragItem_;
-        filmstripDragCandidate_ = filmstripDragging_ = false;
+        filmstripDragCandidate_ = filmstripDragging_ = filmstripDismissGesture_ = false;
         filmstripDragItem_ = -1;
+        if (dismissed) return true;
         if (dragging) {
             UpdateFilmstripThumbnailDemand(true);
             SetFilmstripPointerState(point);
@@ -6679,13 +6695,14 @@ public:
         return true;
     }
     void CancelFilmstripInteraction() {
-        filmstripDragCandidate_ = filmstripDragging_ = false;
+        filmstripDragCandidate_ = filmstripDragging_ = filmstripDismissGesture_ = false;
         filmstripDragItem_ = -1;
     }
     bool FilmstripInteractionActive() const { return filmstripDragCandidate_; }
     void StopFilmstripVisibilityTimer() { KillTimer(window_, kFilmstripVisibilityTimer); }
     void StartFilmstripHold(UINT holdDurationMs = 2000) {
         if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) return;
+        filmstripDismissFadeActive_ = false;
         filmstripOpacity_ = 1.0f;
         filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
         filmstripHoldDurationMs_ = holdDurationMs;
@@ -6696,6 +6713,7 @@ public:
     }
     void StartFilmstripReveal() {
         if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) return;
+        filmstripDismissFadeActive_ = false;
         if (!animationsEnabled_) { StartFilmstripHold(); return; }
         filmstripRevealStartOpacity_ = filmstripOpacity_;
         filmstripVisibilityState_ = FilmstripVisibilityState::Revealing;
@@ -6705,6 +6723,8 @@ public:
     }
     void SynchronizeFilmstripVisibilityToCurrentState() {
         if (!FilmstripEligible() || filmstripAdjustmentSuppressed_) {
+            CancelFilmstripInteraction();
+            filmstripDismissFadeActive_ = false;
             CancelFilmstripVideoHoverFade();
             HideFilmstripHoverPreviewImmediately();
             filmstripOpacity_ = 0.0f;
@@ -6718,10 +6738,39 @@ public:
     }
     void BeginFilmstripFadeSequence() {
         if (filmstripOpacity_ <= 0.001f || filmstripVisibilityState_ == FilmstripVisibilityState::Revealing || alwaysShowFilmstrip_) return;
+        filmstripDismissFadeActive_ = false;
         filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
         filmstripHoldDurationMs_ = 2000;
         filmstripVisibilityStart_ = GetTickCount64();
         SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
+    }
+    void DismissFilmstripForDownwardSwipe() {
+        if (alwaysShowFilmstrip_ || !filmstripDragCandidate_) return;
+        filmstripDismissGesture_ = true;
+        filmstripDragging_ = false;
+        filmstripDragItem_ = -1;
+        CancelFilmstripSelectionAnchor();
+        StopFilmstripScrollAnimation();
+        filmstripScroll_ = std::clamp(filmstripDismissStartScroll_, 0.0, static_cast<double>(FilmstripMaximumScroll()));
+        UpdateFilmstripThumbnailDemand(true);
+        HideFilmstripHoverPreviewImmediately();
+        CancelFilmstripVideoHoverFade();
+        SetFilmstripHoverVisual(-1);
+        filmstripHoveredIndex_ = -1;
+        filmstripPanelHovered_ = false;
+        filmstripRevealHovered_ = false;
+        filmstripHintHovered_ = false;
+        filmstripDismissFadeActive_ = animationsEnabled_;
+        if (!animationsEnabled_) {
+            filmstripOpacity_ = 0.0f;
+            filmstripVisibilityState_ = FilmstripVisibilityState::Hidden;
+            StopFilmstripVisibilityTimer();
+        } else {
+            filmstripVisibilityState_ = FilmstripVisibilityState::Fading;
+            filmstripVisibilityStart_ = GetTickCount64();
+            SetTimer(window_, kFilmstripVisibilityTimer, 16, nullptr);
+        }
+        InvalidateRect(window_, nullptr, FALSE);
     }
     bool FilmstripHoverSuppressedForImagePan() const {
         return dragging_ && source_ && !VideoActive() && !AnimatedGifActive() && !ModelActive();
@@ -6813,10 +6862,11 @@ public:
             if (!animationsEnabled_) opacity = 0.0f;
             else { filmstripVisibilityState_ = FilmstripVisibilityState::Fading; filmstripVisibilityStart_ = GetTickCount64(); }
         } else if (filmstripVisibilityState_ == FilmstripVisibilityState::Fading) {
-            opacity = animationsEnabled_ ? std::max(0.0f, 1.0f - static_cast<float>(elapsed) / 1000.0f) : 0.0f;
+            const float duration = filmstripDismissFadeActive_ ? static_cast<float>(kFilmstripDismissFadeDurationMs) : 1000.0f;
+            opacity = animationsEnabled_ ? std::max(0.0f, 1.0f - static_cast<float>(elapsed) / duration) : 0.0f;
         }
         if (std::abs(opacity - filmstripOpacity_) > 0.001f) { filmstripOpacity_ = opacity; InvalidateRect(window_, nullptr, FALSE); }
-        if (opacity <= 0.001f) { filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; StopFilmstripVisibilityTimer(); }
+        if (opacity <= 0.001f) { filmstripVisibilityState_ = FilmstripVisibilityState::Hidden; filmstripDismissFadeActive_ = false; StopFilmstripVisibilityTimer(); }
     }
     void SelectFilmstripItem(int index) {
         if (index < 0 || index >= static_cast<int>(navigationFiles_.size())) return;
@@ -15172,6 +15222,10 @@ private:
     bool alwaysShowFilmstrip_ = true;
     bool filmstripDragCandidate_ = false;
     bool filmstripDragging_ = false;
+    bool filmstripDismissGesture_ = false;
+    bool filmstripDismissFadeActive_ = false;
+    POINT filmstripDismissStart_{};
+    double filmstripDismissStartScroll_ = 0.0;
     POINT filmstripDragStart_{};
     double filmstripDragStartScroll_ = 0.0;
     int filmstripDragItem_ = -1;
@@ -15981,6 +16035,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kImageAdjustmentPersistenceCompleteMessage: viewer->ImageAdjustmentPersistenceCompleteMessage(reinterpret_cast<ImageAdjustmentPersistenceResult*>(lParam)); return 0;
     case kExternalOpenMessage: viewer->ProcessExternalOpen(); return 0;
     case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE && viewer->FilmstripInteractionActive()) {
+            viewer->CancelFilmstripInteraction();
+            if (GetCapture() == window) ReleaseCapture();
+            return 0;
+        }
         if (wParam == VK_ESCAPE && viewer->BuildPlateSizePopupOpen()) { viewer->CancelBuildPlateSizeEdit(); viewer->DismissBuildPlateSizePopup(); return 0; }
         if (wParam == VK_TAB && viewer->BuildPlateSizePopupOpen()) { viewer->NavigateBuildPlateSize(GetKeyState(VK_SHIFT)<0); return 0; }
         if (wParam == VK_ESCAPE && viewer->ClearModelSelectionForEscape()) return 0;

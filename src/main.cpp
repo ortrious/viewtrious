@@ -4169,6 +4169,7 @@ public:
     }
     void ToggleSwipeToNavigateWhenFit() {
         swipeToNavigateWhenFit_ = !swipeToNavigateWhenFit_;
+        if (!swipeToNavigateWhenFit_) CancelExternalMediaDragArming();
         WriteSetting(L"SwipeToNavigateWhenFit", swipeToNavigateWhenFit_ ? 1 : 0);
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -7455,8 +7456,12 @@ public:
         const DWORD attributes = GetFileAttributesW(currentPath_.c_str());
         return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
     }
+    bool ExternalMediaDragPresentationEligible() const {
+        if (!swipeToNavigateWhenFit_) return false;
+        return VideoActive() ? videoFitToWindow_ : contentKind_ == ContentKind::Image2D && fitToWindow_;
+    }
     bool ExternalMediaDragEligibleAt(POINT point) const {
-        if (ModelActive() || !ExternalMediaDragSourceAvailable()) return false;
+        if (ModelActive() || !ExternalMediaDragSourceAvailable() || !ExternalMediaDragPresentationEligible()) return false;
         return VideoActive() ? VideoContains(point) : contentKind_ == ContentKind::Image2D && ImageContains(point);
     }
     void CancelExternalMediaDragArming() {
@@ -7634,7 +7639,7 @@ public:
         return true;
     }
     bool BeginExternalMediaFileDrag() {
-        if (!externalMediaDragArmed_ || !ExternalMediaDragSourceAvailable() ||
+        if (!externalMediaDragArmed_ || !ExternalMediaDragSourceAvailable() || !ExternalMediaDragPresentationEligible() ||
             externalMediaDragOpenAttemptId_ != activeOpenAttemptId_) {
             CancelExternalMediaDragArming();
             return false;
@@ -7670,7 +7675,7 @@ public:
     }
     bool UpdateExternalMediaDragIntent() {
         if (!externalMediaDragArmed_) return false;
-        if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000) || !ExternalMediaDragSourceAvailable() ||
+        if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000) || !ExternalMediaDragSourceAvailable() || !ExternalMediaDragPresentationEligible() ||
             externalMediaDragOpenAttemptId_ != activeOpenAttemptId_) {
             CancelExternalMediaDragArming();
             return false;

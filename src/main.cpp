@@ -14599,7 +14599,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (viewer->HasOverlay() || viewer->DropdownOpen() || viewer->ContextMenuOpen()) return 0;
         if (viewer->ComponentsPanelContains(point)) return 0;
-        if (viewer->FilmstripContains(point)) return 0;
+        if (viewer->BeginFilmstripInteraction(point)) {
+            SetCapture(window);
+            return 0;
+        }
         if (viewer->ButtonAt(point) == ButtonKind::ImageAdjustments) {
             viewer->SetButtonPressed(ButtonKind::ImageAdjustments);
             SetCapture(window);

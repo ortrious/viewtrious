@@ -3992,10 +3992,7 @@ public:
     RECT GetSettingsImageVideoBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsImageVideoBehaviorHeadingTop(), GetSettingsOptionBounds(SettingsPage::Image2D, 1).bottom); }
     int GetSettingsImageBehaviorHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsZoomHudCardBounds()); }
     int GetSettingsFilmstripDisplayLabelTop() const { return GetSettingsOptionBounds(SettingsPage::Image2D, 2).bottom + SettingsStackGap(); }
-    RECT GetSettingsFilmstripDisplayBounds() const {
-        const int labelHeight = MeasureSettingsTextHeight(L"filmstrip", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
-        return GetSettingsGridCellAtTop(0, GetSettingsFilmstripDisplayLabelTop() + labelHeight + SettingsLabelToControlGap());
-    }
+    RECT GetSettingsFilmstripDisplayBounds() const { return GetSettingsGridCellAtTop(1, GetSettingsFilmstripDisplayLabelTop()); }
     RECT GetSettingsImageBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsImageBehaviorHeadingTop(), GetSettingsFilmstripDisplayBounds().bottom); }
     int GetSettingsImageScalingHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsImageBehaviorCardBounds()); }
     RECT GetSettingsScalingBounds(ImageScaling scaling) const {
@@ -13323,9 +13320,10 @@ private:
             drawToggle(2, ButtonKind::SettingsReuseImageWindow, L"reuse current window for images / GIFs", reuseImageWindow_);
             const RECT filmstripDisplayBounds = GetSettingsFilmstripDisplayBounds();
             const int filmstripLabelTop = GetSettingsFilmstripDisplayLabelTop();
-            DrawOverlayText(L"filmstrip", static_cast<float>(SettingsContentLeft()), static_cast<float>(filmstripLabelTop),
-                static_cast<float>(SettingsContentRight() - SettingsContentLeft()), static_cast<float>(filmstripDisplayBounds.top - filmstripLabelTop - SettingsLabelToControlGap()),
-                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const RECT filmstripLabelBounds = GetSettingsGridCellAtTop(0, filmstripLabelTop);
+            DrawOverlayText(L"filmstrip visibility", static_cast<float>(filmstripLabelBounds.left), static_cast<float>(filmstripLabelBounds.top),
+                static_cast<float>(filmstripLabelBounds.right - filmstripLabelBounds.left), static_cast<float>(filmstripLabelBounds.bottom - filmstripLabelBounds.top),
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), true, false, false, true);
             const wchar_t* filmstripDisplayLabel = filmstripDisplayMode_ == FilmstripDisplayMode::Hidden ? L"hidden" :
                 filmstripDisplayMode_ == FilmstripDisplayMode::Automatic ? L"automatic" : L"always show";
             drawSettingsDropdown(filmstripDisplayBounds, ButtonKind::SettingsFilmstripDisplayToggle, filmstripDisplayLabel, filmstripDisplayMenuOpen_);

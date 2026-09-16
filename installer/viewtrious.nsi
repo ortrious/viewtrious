@@ -19,7 +19,7 @@ ShowInstDetails show
 ShowUninstDetails show
 
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_LICENSE "${SOURCE_DIR}\LICENSE"
+!insertmacro MUI_PAGE_LICENSE "${SOURCE_DIR}\installer\viewtrious-license.txt"
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM

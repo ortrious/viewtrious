@@ -9194,6 +9194,7 @@ private:
                     success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, path.c_str(), L"TypeOverlay", changed);
             }
         }
+        success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, L"Software\\Viewtrious", changed);
         if (success && changed) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
         return success;
     }

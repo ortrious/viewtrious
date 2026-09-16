@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 0.9.40.3 LANGUAGES CXX)
+project(Viewtrious VERSION 0.9.41.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -25,6 +25,11 @@ configure_file(assets/ViewtriousVideo.ico "${CMAKE_CURRENT_BINARY_DIR}/Viewtriou
 configure_file(assets/Viewtrious3D.ico "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious3D.ico" COPYONLY)
 configure_file(src/Viewtrious.rc.in "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc" @ONLY)
 configure_file(shell/ViewtriousStlThumbnail.rc.in "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousStlThumbnail.rc" @ONLY)
+configure_file(assets/Viewtrious.ico "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup.ico" COPYONLY)
+configure_file(LICENSE "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-License.txt" COPYONLY)
+configure_file(NOTICE "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-Notice.txt" COPYONLY)
+configure_file(app/licenses/miniz.txt "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-Miniz.txt" COPYONLY)
+configure_file(installer/ViewtriousSetup.rc.in "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup.rc" @ONLY)
 
 add_executable(Viewtrious WIN32
     src/main.cpp
@@ -51,6 +56,15 @@ add_library(ViewtriousStlThumbnail SHARED
     "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousStlThumbnail.rc"
     shell/ViewtriousStlThumbnail.def
 )
+
+add_executable(ViewtriousSetup WIN32
+    installer/setup_main.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup.rc"
+)
+target_compile_features(ViewtriousSetup PRIVATE cxx_std_20)
+target_compile_definitions(ViewtriousSetup PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX VIEWTRIOUS_SETUP_VERSION=L\"${PROJECT_VERSION}\")
+target_link_libraries(ViewtriousSetup PRIVATE d2d1 dwrite dwmapi windowscodecs bcrypt shell32 ole32 uuid)
+set_property(TARGET ViewtriousSetup PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set_target_properties(ViewtriousStlThumbnail PROPERTIES OUTPUT_NAME ViewtriousStlThumbnail)
 add_custom_command(TARGET ViewtriousStlThumbnail POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/shell/Register-ViewtriousStlThumbnail.ps1" "$<TARGET_FILE_DIR:ViewtriousStlThumbnail>/Register-ViewtriousStlThumbnail.ps1")
 target_compile_features(ViewtriousStlThumbnail PRIVATE cxx_std_20)
@@ -105,6 +119,9 @@ if(MSVC)
     target_compile_options(Viewtrious PRIVATE $<$<CONFIG:Release>:/O2 /Gy /Gw>)
     target_link_options(Viewtrious PRIVATE $<$<CONFIG:Release>:/OPT:REF /OPT:ICF>)
     target_compile_options(ViewtriousStlThumbnail PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(ViewtriousSetup PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(ViewtriousSetup PRIVATE $<$<CONFIG:Release>:/O2 /Gy /Gw>)
+    target_link_options(ViewtriousSetup PRIVATE $<$<CONFIG:Release>:/OPT:REF /OPT:ICF>)
 endif()
 
 set_source_files_properties(third_party/miniz/miniz_tinfl.c PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "/wd4334")

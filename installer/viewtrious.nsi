@@ -1,6 +1,7 @@
 Unicode true
 RequestExecutionLevel user
 !include "MUI2.nsh"
+!include "FileFunc.nsh"
 
 !ifndef PRODUCT_VERSION
   !define PRODUCT_VERSION "0.9.40.0"
@@ -11,9 +12,12 @@ RequestExecutionLevel user
 !ifndef SOURCE_DIR
   !error "SOURCE_DIR must name the repository root."
 !endif
+!ifndef OUTPUT_FILE
+  !define OUTPUT_FILE "${SOURCE_DIR}\out\installer\viewtrious-setup-${PRODUCT_VERSION}.exe"
+!endif
 
 Name "viewtrious"
-OutFile "${SOURCE_DIR}\out\installer\viewtrious-setup-${PRODUCT_VERSION}.exe"
+OutFile "${OUTPUT_FILE}"
 InstallDir "$LOCALAPPDATA\viewtrious"
 ShowInstDetails show
 ShowUninstDetails show
@@ -26,19 +30,46 @@ ShowUninstDetails show
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
+Var CustomUiMode
+Var DesktopShortcut
+
+Function .onInit
+  StrCpy $CustomUiMode "0"
+  StrCpy $DesktopShortcut "0"
+  ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} $0 "/VIEWTRIOUS_CUSTOM_UI" $1
+  IfErrors +2
+    StrCpy $CustomUiMode "1"
+  ClearErrors
+  ${GetOptions} $0 "/DESKTOP_SHORTCUT=" $1
+  IfErrors +2
+    StrCpy $DesktopShortcut $1
+FunctionEnd
+
 Section "Install"
   SetOutPath "$INSTDIR\app\shellextensions"
   ClearErrors
   File "${RELEASE_DIR}\ViewtriousStlThumbnail.dll"
-  IfErrors 0 +3
+  IfErrors 0 shell_extension_written
+  StrCmp $CustomUiMode "1" 0 shell_extension_interactive
+    SetErrorLevel 20
+    Abort
+shell_extension_interactive:
     MessageBox MB_ICONSTOP "The Viewtrious Explorer thumbnail extension is in use. Close File Explorer windows and retry."
     Abort
+shell_extension_written:
   SetOutPath "$INSTDIR\app"
   ClearErrors
   File "${RELEASE_DIR}\Viewtrious.exe"
-  IfErrors 0 +3
+  IfErrors 0 app_written
+  StrCmp $CustomUiMode "1" 0 app_interactive
+    SetErrorLevel 21
+    Abort
+app_interactive:
     MessageBox MB_ICONSTOP "Viewtrious.exe could not be updated. Close viewtrious and retry."
     Abort
+app_written:
   SetOutPath "$INSTDIR\app\addons"
   SetOutPath "$INSTDIR\app\licenses"
   File /oname=viewtrious.txt "${SOURCE_DIR}\LICENSE"
@@ -47,6 +78,9 @@ Section "Install"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   SetOutPath "$INSTDIR\app"
   CreateShortcut "$SMPROGRAMS\viewtrious.lnk" "$INSTDIR\app\Viewtrious.exe" "" "$INSTDIR\app\Viewtrious.exe" 0 SW_SHOWNORMAL
+  Delete "$DESKTOP\viewtrious.lnk"
+  StrCmp $DesktopShortcut "1" 0 +2
+    CreateShortcut "$DESKTOP\viewtrious.lnk" "$INSTDIR\app\Viewtrious.exe" "" "$INSTDIR\app\Viewtrious.exe" 0 SW_SHOWNORMAL
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "DisplayName" "viewtrious"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "DisplayVersion" "${PRODUCT_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "Publisher" "Ortrious"
@@ -57,8 +91,13 @@ Section "Install"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "NoRepair" 1
   ExecWait '"$INSTDIR\app\Viewtrious.exe" --register-integration' $0
-  IntCmp $0 0 +2
+  IntCmp $0 0 integration_registered
+  StrCmp $CustomUiMode "1" 0 integration_interactive
+    SetErrorLevel 22
+    Abort
+integration_interactive:
     Abort "Viewtrious could not register Windows integration (exit $0)."
+integration_registered:
 SectionEnd
 
 Section "Uninstall"
@@ -67,7 +106,9 @@ Section "Uninstall"
   IntCmp $0 0 +2
     MessageBox MB_ICONEXCLAMATION "Viewtrious could not fully remove its application data. It was left in place rather than risking an active desktop wallpaper."
   Delete "$SMPROGRAMS\viewtrious.lnk"
+  Delete "$DESKTOP\viewtrious.lnk"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious"
+  DeleteRegKey HKCU "Software\Viewtrious"
   Delete "$INSTDIR\app\shellextensions\ViewtriousStlThumbnail.dll"
   Delete "$INSTDIR\app\Viewtrious.exe"
   Delete "$INSTDIR\app\licenses\viewtrious.txt"

@@ -1,0 +1,44 @@
+#include <windows.h>
+
+#define IDI_VIEWTRIOUS_SETUP 101
+#define IDR_VIEWTRIOUS_LICENSE 201
+#define IDR_VIEWTRIOUS_NOTICE 202
+#define IDR_MINIZ_LICENSE 203
+
+IDI_VIEWTRIOUS_SETUP ICON "ViewtriousSetup.ico"
+IDR_VIEWTRIOUS_LICENSE RCDATA "ViewtriousSetup-License.txt"
+IDR_VIEWTRIOUS_NOTICE RCDATA "ViewtriousSetup-Notice.txt"
+IDR_MINIZ_LICENSE RCDATA "ViewtriousSetup-Miniz.txt"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @PROJECT_VERSION_COMMAS@
+ PRODUCTVERSION @PROJECT_VERSION_COMMAS@
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS VS_FF_DEBUG
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS VOS__WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Ortrious"
+            VALUE "FileDescription", "Viewtrious setup"
+            VALUE "FileVersion", "@PROJECT_VERSION@"
+            VALUE "InternalName", "ViewtriousSetup"
+            VALUE "LegalCopyright", "Copyright 2026 Dustin Wilson"
+            VALUE "OriginalFilename", "viewtrious-setup-@PROJECT_VERSION@.exe"
+            VALUE "ProductName", "viewtrious"
+            VALUE "ProductVersion", "@PROJECT_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

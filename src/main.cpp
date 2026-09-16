@@ -328,13 +328,14 @@ struct ContextMenuItemList {
     size_t count;
 };
 enum class ButtonKind { None, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsAddOnsPage, SettingsClose, SettingsRememberPlacement, SettingsIncludeHidden,
-    SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAdjustmentsDatabase, SettingsResetAdjustmentsDatabase, SettingsAnimations, SettingsReverseWheelZoom, SettingsAlwaysShowFilmstrip, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
-    SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsImageScalingToggle, SettingsVideoSizingToggle, SettingsScrollUp, SettingsScrollDown,
+    SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAdjustmentsDatabase, SettingsResetAdjustmentsDatabase, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
+    SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsFilmstripDisplayToggle, SettingsFilmstripHidden, SettingsFilmstripAutomatic, SettingsFilmstripAlwaysShow, SettingsImageScalingToggle, SettingsVideoSizingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsModelReverseWheelZoom, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, ResetAdjustmentsConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
     DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments, ViewBarBuildPlateSize, ViewBarPlateWidth, ViewBarPlateDepth, ViewBarPlateLink, ViewBarPlateReset, Count };
 enum class TutorialStep { None, OpenImage, MenuSettings, ImageDetails, ContextMenu, ZoomBox, Adjustments, ResizeApp, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
+enum class FilmstripDisplayMode : DWORD { Hidden = 0, Automatic = 1, AlwaysShow = 2 };
 enum class VideoWindowSizing : DWORD { FitToWindow = 0, ResizeWindowToVideo = 1 };
 enum class CanvasSwipeAction { None, NavigatePrevious, NavigateNext, DismissFilmstrip };
 enum class ModelRenderingApi : DWORD { Direct3D11 = 0 };
@@ -1325,9 +1326,10 @@ public:
         DWORD animations = 1;
         ReadSetting(L"AnimationsAndFadeEffects", animations);
         animationsEnabled_ = animations != 0;
-        DWORD alwaysShowFilmstrip = 1;
-        ReadSetting(L"AlwaysShowFilmstrip", alwaysShowFilmstrip);
-        alwaysShowFilmstrip_ = alwaysShowFilmstrip != 0;
+        DWORD filmstripDisplayMode = static_cast<DWORD>(FilmstripDisplayMode::Automatic);
+        ReadSetting(L"FilmstripDisplayMode", filmstripDisplayMode);
+        filmstripDisplayMode_ = filmstripDisplayMode <= static_cast<DWORD>(FilmstripDisplayMode::AlwaysShow)
+            ? static_cast<FilmstripDisplayMode>(filmstripDisplayMode) : FilmstripDisplayMode::Automatic;
         DWORD reverseWheelZoom = 0;
         ReadSetting(L"ReverseMouseWheelZoom", reverseWheelZoom);
         reverseMouseWheelZoom_ = reverseWheelZoom != 0;
@@ -3925,12 +3927,11 @@ public:
             if (option <= 1) return option == 0 ? reverse : animations;
             const int imageTop = GetSettingsImageBehaviorHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
             const RECT reuseImages = GetSettingsSingleColumnBounds(imageTop, L"reuse current window for images / GIFs");
-            const RECT filmstrip = GetSettingsSingleColumnBounds(reuseImages.bottom + SettingsStackGap(), L"always show the filmstrip");
-            if (option <= 3) return option == 2 ? reuseImages : filmstrip;
+            if (option == 2) return reuseImages;
             const int videoTop = GetSettingsVideoBehaviorHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
             const RECT reuseVideos = GetSettingsSingleColumnBounds(videoTop, L"reuse current window for videos");
             const RECT resizeWindow = GetSettingsSingleColumnBounds(reuseVideos.bottom + SettingsStackGap(), L"resize app window to video size");
-            return option == 4 ? reuseVideos : resizeWindow;
+            return option == 3 ? reuseVideos : resizeWindow;
         }
         return option == 6 ? GetSettingsSpaceMouseBounds() : GetSettingsModelReverseWheelZoomBounds();
     }
@@ -3990,7 +3991,12 @@ public:
     int GetSettingsImageVideoBehaviorHeadingTop() const { return SettingsFirstCardHeadingTop(); }
     RECT GetSettingsImageVideoBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsImageVideoBehaviorHeadingTop(), GetSettingsOptionBounds(SettingsPage::Image2D, 1).bottom); }
     int GetSettingsImageBehaviorHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsZoomHudCardBounds()); }
-    RECT GetSettingsImageBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsImageBehaviorHeadingTop(), GetSettingsOptionBounds(SettingsPage::Image2D, 3).bottom); }
+    int GetSettingsFilmstripDisplayLabelTop() const { return GetSettingsOptionBounds(SettingsPage::Image2D, 2).bottom + SettingsStackGap(); }
+    RECT GetSettingsFilmstripDisplayBounds() const {
+        const int labelHeight = MeasureSettingsTextHeight(L"filmstrip", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);
+        return GetSettingsGridCellAtTop(0, GetSettingsFilmstripDisplayLabelTop() + labelHeight + SettingsLabelToControlGap());
+    }
+    RECT GetSettingsImageBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsImageBehaviorHeadingTop(), GetSettingsFilmstripDisplayBounds().bottom); }
     int GetSettingsImageScalingHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsImageBehaviorCardBounds()); }
     RECT GetSettingsScalingBounds(ImageScaling scaling) const {
         const int top = GetSettingsImageScalingHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
@@ -4005,7 +4011,7 @@ public:
     }
     RECT GetSettingsImageScalingCardBounds() const { return GetSettingsCardBounds(GetSettingsImageScalingHeadingTop(), GetSettingsScalingBounds(ImageScaling::Performance).bottom); }
     int GetSettingsVideoBehaviorHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsImageScalingCardBounds()); }
-    RECT GetSettingsVideoBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsVideoBehaviorHeadingTop(), GetSettingsOptionBounds(SettingsPage::Image2D, 5).bottom); }
+    RECT GetSettingsVideoBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsVideoBehaviorHeadingTop(), GetSettingsOptionBounds(SettingsPage::Image2D, 4).bottom); }
     RECT GetSettingsZoomHudBounds() const {
         return GetSettingsGridCellAtTop(1, GetSettingsZoomHudEnabledBounds().top);
     }
@@ -4075,9 +4081,19 @@ public:
         return { control.left, top, control.right, top + height };
     }
     RECT GetSettingsZoomHudMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsZoomHudBounds(), 4); }
-    bool SettingsImageDropdownMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Image2D && zoomHudPositionMenuOpen_; }
-    bool SettingsImageDropdownMenuContains(POINT point) const { point.y += static_cast<LONG>(std::lround(settingsScroll_)); const RECT menu=GetSettingsZoomHudMenuBounds(); return PtInRect(&menu,point) != FALSE; }
-    void DismissSettingsImageDropdownMenu() { if (zoomHudPositionMenuOpen_) { zoomHudPositionMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); } }
+    RECT GetSettingsFilmstripDisplayMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsFilmstripDisplayBounds(), 3); }
+    bool SettingsImageDropdownMenuOpen() const { return overlay_ == OverlayKind::Settings && settingsPage_ == SettingsPage::Image2D && (zoomHudPositionMenuOpen_ || filmstripDisplayMenuOpen_); }
+    bool SettingsImageDropdownMenuContains(POINT point) const {
+        point.y += static_cast<LONG>(std::lround(settingsScroll_));
+        const RECT menu = filmstripDisplayMenuOpen_ ? GetSettingsFilmstripDisplayMenuBounds() : GetSettingsZoomHudMenuBounds();
+        return PtInRect(&menu, point) != FALSE;
+    }
+    void DismissSettingsImageDropdownMenu() {
+        if (zoomHudPositionMenuOpen_ || filmstripDisplayMenuOpen_) {
+            zoomHudPositionMenuOpen_ = filmstripDisplayMenuOpen_ = false;
+            InvalidateRect(window_, nullptr, FALSE);
+        }
+    }
     RECT GetSettingsUpAxisMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsUpAxisBounds(), 3); }
     RECT GetSettingsBuildPlateMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsBuildPlateBounds(), 3); }
     RECT GetSettingsAxisIndicatorPositionMenuBounds() const { return GetSettingsDropdownMenuBounds(GetSettingsAxisIndicatorPositionBounds(), 4); }
@@ -4096,7 +4112,7 @@ public:
         if (point.y < SettingsScrollViewportTop() || point.y >= SettingsScrollViewportBottom()) return false;
         point.y += static_cast<LONG>(std::lround(settingsScroll_));
         const auto contains = [&point](const RECT& bounds) { return PtInRect(&bounds, point) != FALSE; };
-        if (settingsPage_ == SettingsPage::Image2D) return contains(GetSettingsZoomHudBounds());
+        if (settingsPage_ == SettingsPage::Image2D) return contains(GetSettingsZoomHudBounds()) || contains(GetSettingsFilmstripDisplayBounds());
         if (settingsPage_ == SettingsPage::Model3D) return contains(GetSettingsUpAxisBounds()) || contains(GetSettingsBuildPlateBounds()) || contains(GetSettingsAxisIndicatorPositionBounds()) || contains(GetSettingsGraphicsAdapterBounds()) || contains(GetSettingsAntiAliasingBounds());
         return false;
     }
@@ -4235,11 +4251,14 @@ public:
         UpdateCanvasNavigationOpacity();
         InvalidateRect(window_, nullptr, FALSE);
     }
-    void ToggleAlwaysShowFilmstrip() {
-        alwaysShowFilmstrip_ = !alwaysShowFilmstrip_;
-        WriteSetting(L"AlwaysShowFilmstrip", alwaysShowFilmstrip_ ? 1 : 0);
-        if (alwaysShowFilmstrip_) SynchronizeFilmstripVisibilityToCurrentState();
-        else BeginFilmstripFadeSequence();
+    bool FilmstripAlwaysShows() const { return filmstripDisplayMode_ == FilmstripDisplayMode::AlwaysShow; }
+    void SetFilmstripDisplayMode(FilmstripDisplayMode mode) {
+        filmstripDisplayMenuOpen_ = false;
+        if (filmstripDisplayMode_ == mode) { InvalidateRect(window_, nullptr, FALSE); return; }
+        filmstripDisplayMode_ = mode;
+        WriteSetting(L"FilmstripDisplayMode", static_cast<DWORD>(mode));
+        if (mode == FilmstripDisplayMode::Automatic) BeginFilmstripFadeSequence();
+        else SynchronizeFilmstripVisibilityToCurrentState();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void ToggleReverseMouseWheelZoom() {
@@ -4710,17 +4729,18 @@ public:
                 if (SettingsResetButtonContains(point)) return ButtonKind::SettingsReset;
             } else if (settingsPage_ == SettingsPage::Image2D) {
                 if (zoomHudPositionMenuOpen_) { const RECT menu = GetSettingsZoomHudMenuBounds(); if (PtInRect(&menu, settingsPoint)) { const int row = MulDiv(30, GetDpiForWindow(window_), 96); return settingsPoint.y < menu.top + row ? ButtonKind::SettingsZoomHudBottomLeft : settingsPoint.y < menu.top + row * 2 ? ButtonKind::SettingsZoomHudBottomRight : settingsPoint.y < menu.top + row * 3 ? ButtonKind::SettingsZoomHudTopLeft : ButtonKind::SettingsZoomHudTopRight; } }
+                if (filmstripDisplayMenuOpen_) { const RECT menu = GetSettingsFilmstripDisplayMenuBounds(); if (PtInRect(&menu, settingsPoint)) { const int row = MulDiv(30, GetDpiForWindow(window_), 96); return settingsPoint.y < menu.top + row ? ButtonKind::SettingsFilmstripHidden : settingsPoint.y < menu.top + row * 2 ? ButtonKind::SettingsFilmstripAutomatic : ButtonKind::SettingsFilmstripAlwaysShow; } }
                 if (settingsContains(GetSettingsOptionBounds(0))) return ButtonKind::SettingsReverseWheelZoom;
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsAnimations;
                 if (settingsContains(GetSettingsZoomHudEnabledBounds())) return ButtonKind::SettingsShowZoomHud;
                 if (settingsContains(GetSettingsZoomHudBounds())) return ButtonKind::SettingsZoomHudPositionToggle;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsReuseImageWindow;
-                if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsAlwaysShowFilmstrip;
+                if (settingsContains(GetSettingsFilmstripDisplayBounds())) return ButtonKind::SettingsFilmstripDisplayToggle;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Quality))) return ButtonKind::SettingsScalingQuality;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Hybrid))) return ButtonKind::SettingsScalingHybrid;
                 if (settingsContains(GetSettingsScalingBounds(ImageScaling::Performance))) return ButtonKind::SettingsScalingPerformance;
-                if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsReuseVideoWindow;
-                if (settingsContains(GetSettingsOptionBounds(5))) return ButtonKind::SettingsVideoSizingToggle;
+                if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsReuseVideoWindow;
+                if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsVideoSizingToggle;
             } else if (settingsPage_ == SettingsPage::Model3D) {
                 const int row=MulDiv(30,GetDpiForWindow(window_),96);
                 if (upAxisMenuOpen_) { const RECT menu=GetSettingsUpAxisMenuBounds(); if (PtInRect(&menu,settingsPoint)) return settingsPoint.y < menu.top+row ? ButtonKind::SettingsUpAxisZ : settingsPoint.y < menu.top+row*2 ? ButtonKind::SettingsUpAxisY : ButtonKind::SettingsUpAxisX; }
@@ -4879,16 +4899,19 @@ public:
         else if (button == ButtonKind::SettingsReuseVideoWindow) { reuseVideoWindow_ = !reuseVideoWindow_; WriteSetting(L"VideoExternalOpenBehavior", reuseVideoWindow_ ? 1 : 0); InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsShowZoomHud) ToggleZoomHudEnabled();
         else if (button == ButtonKind::SettingsAdjustmentsDatabase) ToggleAdjustmentPersistence();
-        else if (button == ButtonKind::SettingsZoomHudPositionToggle) { zoomHudPositionMenuOpen_ = !zoomHudPositionMenuOpen_; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::SettingsZoomHudPositionToggle) { zoomHudPositionMenuOpen_ = !zoomHudPositionMenuOpen_; filmstripDisplayMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsZoomHudBottomLeft) SetZoomHudPosition(ZoomHudPosition::BottomLeft);
         else if (button == ButtonKind::SettingsZoomHudBottomRight) SetZoomHudPosition(ZoomHudPosition::BottomRight);
         else if (button == ButtonKind::SettingsZoomHudTopLeft) SetZoomHudPosition(ZoomHudPosition::TopLeft);
         else if (button == ButtonKind::SettingsZoomHudTopRight) SetZoomHudPosition(ZoomHudPosition::TopRight);
+        else if (button == ButtonKind::SettingsFilmstripDisplayToggle) { filmstripDisplayMenuOpen_ = !filmstripDisplayMenuOpen_; zoomHudPositionMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); }
+        else if (button == ButtonKind::SettingsFilmstripHidden) SetFilmstripDisplayMode(FilmstripDisplayMode::Hidden);
+        else if (button == ButtonKind::SettingsFilmstripAutomatic) SetFilmstripDisplayMode(FilmstripDisplayMode::Automatic);
+        else if (button == ButtonKind::SettingsFilmstripAlwaysShow) SetFilmstripDisplayMode(FilmstripDisplayMode::AlwaysShow);
         else if (button == ButtonKind::SettingsScrollUp) ScrollSettings(static_cast<float>(-MulDiv(180, GetDpiForWindow(window_), 96)));
         else if (button == ButtonKind::SettingsScrollDown) ScrollSettings(static_cast<float>(MulDiv(180, GetDpiForWindow(window_), 96)));
         else if (button == ButtonKind::SettingsAnimations) ToggleAnimationsAndFadeEffects();
         else if (button == ButtonKind::SettingsReverseWheelZoom) ToggleReverseMouseWheelZoom();
-        else if (button == ButtonKind::SettingsAlwaysShowFilmstrip) ToggleAlwaysShowFilmstrip();
         else if (button == ButtonKind::SettingsSpaceMouse) ToggleSpaceMouse();
         else if (button == ButtonKind::SettingsModelReverseWheelZoom) ToggleModelReverseMouseWheelZoom();
         else if (button == ButtonKind::SettingsUpAxisToggle) { upAxisMenuOpen_=!upAxisMenuOpen_; buildPlateMenuOpen_=axisIndicatorPositionMenuOpen_=projectionMenuOpen_=graphicsAdapterMenuOpen_=antiAliasingMenuOpen_=false; InvalidateRect(window_,nullptr,FALSE); }
@@ -5010,7 +5033,7 @@ public:
         zoomHudEnabled_ = true;
         zoomHudPosition_ = ZoomHudPosition::BottomRight;
         animationsEnabled_ = true;
-        alwaysShowFilmstrip_ = true;
+        filmstripDisplayMode_ = FilmstripDisplayMode::Automatic;
         reverseMouseWheelZoom_ = false;
         modelReverseMouseWheelZoom_ = false;
         themePreference_ = ThemePreference::System;
@@ -5061,7 +5084,7 @@ public:
         WriteSetting(L"ZoomHudEnabled", 1);
         WriteSetting(L"ZoomHudPosition", static_cast<DWORD>(ZoomHudPosition::BottomRight));
         WriteSetting(L"AnimationsAndFadeEffects", 1);
-        WriteSetting(L"AlwaysShowFilmstrip", 1);
+        WriteSetting(L"FilmstripDisplayMode", static_cast<DWORD>(FilmstripDisplayMode::Automatic));
         WriteSetting(L"ReverseMouseWheelZoom", 0);
         WriteSetting(L"ModelReverseMouseWheelZoom", 0);
         WriteSetting(L"Theme", static_cast<DWORD>(ThemePreference::System));
@@ -5398,7 +5421,7 @@ public:
     bool FilmstripEligible() const {
         const bool hasNavigableSibling = navigationFiles_.size() > 1 ||
             (navigationFiles_.size() == 1 && !PathsEqual(navigationFiles_.front(), fs::path(currentPath_)));
-        return source_ && navigationBuilt_ && hasNavigableSibling && !HasOverlay() && !TutorialActive() && !tutorialPresentation_;
+        return filmstripDisplayMode_ != FilmstripDisplayMode::Hidden && source_ && navigationBuilt_ && hasNavigableSibling && !HasOverlay() && !TutorialActive() && !tutorialPresentation_;
     }
     bool FilmstripVisible() const { const RECT bounds = GetFilmstripBounds(); return FilmstripEligible() && !filmstripAdjustmentSuppressed_ && filmstripOpacity_ > 0.001f && bounds.right > bounds.left; }
     int FilmstripHeight(bool prospective = false) const {
@@ -6568,7 +6591,7 @@ public:
         filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
         filmstripHoldDurationMs_ = holdDurationMs;
         filmstripVisibilityStart_ = GetTickCount64();
-        if (alwaysShowFilmstrip_) StopFilmstripVisibilityTimer();
+        if (FilmstripAlwaysShows()) StopFilmstripVisibilityTimer();
         else SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -6595,10 +6618,10 @@ public:
             return;
         }
         UpdateFilmstripThumbnailDemand(true);
-        if (alwaysShowFilmstrip_) StartFilmstripHold(UINT_MAX);
+        if (FilmstripAlwaysShows()) StartFilmstripHold(UINT_MAX);
     }
     void BeginFilmstripFadeSequence() {
-        if (filmstripOpacity_ <= 0.001f || filmstripVisibilityState_ == FilmstripVisibilityState::Revealing || alwaysShowFilmstrip_) return;
+        if (filmstripOpacity_ <= 0.001f || filmstripVisibilityState_ == FilmstripVisibilityState::Revealing || FilmstripAlwaysShows()) return;
         filmstripDismissFadeActive_ = false;
         filmstripVisibilityState_ = FilmstripVisibilityState::Holding;
         filmstripHoldDurationMs_ = 2000;
@@ -6606,7 +6629,7 @@ public:
         SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
     }
     void DismissFilmstripForCanvasSwipe() {
-        if (alwaysShowFilmstrip_ || !FilmstripVisible()) return;
+        if (FilmstripAlwaysShows() || !FilmstripVisible()) return;
         CancelFilmstripSelectionAnchor();
         StopFilmstripScrollAnimation();
         UpdateFilmstripThumbnailDemand(true);
@@ -6647,7 +6670,7 @@ public:
         filmstripRevealHovered_ = false;
         filmstripHintHovered_ = false;
         if (filmstripVideoHoverIndex_ >= 0) HideFilmstripHoverPreviewImmediately();
-        if (wasHeld && !alwaysShowFilmstrip_ && filmstripVisibilityState_ != FilmstripVisibilityState::Hidden)
+        if (wasHeld && !FilmstripAlwaysShows() && filmstripVisibilityState_ != FilmstripVisibilityState::Hidden)
             SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -6704,7 +6727,7 @@ public:
         else if (wasHeld) BeginFilmstripFadeSequence();
     }
     void UpdateFilmstripVisibility() {
-        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_ || alwaysShowFilmstrip_) { SynchronizeFilmstripVisibilityToCurrentState(); return; }
+        if (!FilmstripEligible() || filmstripAdjustmentSuppressed_ || FilmstripAlwaysShows()) { SynchronizeFilmstripVisibilityToCurrentState(); return; }
         const bool held = filmstripPanelHovered_ || filmstripRevealHovered_ || filmstripHintHovered_;
         const ULONGLONG elapsed = GetTickCount64() - filmstripVisibilityStart_;
         float opacity = filmstripOpacity_;
@@ -7069,7 +7092,7 @@ public:
                 const bool video = state.targetVideo;
                 CancelLowerUiMorph();
                 if (video) ShowVideoControls();
-                else StartFilmstripHold(alwaysShowFilmstrip_ ? UINT_MAX : 2000);
+                else StartFilmstripHold(FilmstripAlwaysShows() ? UINT_MAX : 2000);
             }
         }
         InvalidateRect(window_, nullptr, FALSE);
@@ -7154,7 +7177,7 @@ public:
     void DrawFilmstrip() {
         if (lowerUiMorph_.active && !drawingLowerUiContents_) return;
         if (!drawingLowerUiContents_ && !FilmstripVisible()) {
-            if (FilmstripEligible() && !alwaysShowFilmstrip_ && filmstripOpacity_ <= 0.001f) {
+            if (FilmstripEligible() && !FilmstripAlwaysShows() && filmstripOpacity_ <= 0.001f) {
                 RECT client{}; GetClientRect(window_, &client);
                 const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
                 const float frameWidth = 12.0f * scale, frameHeight = 8.0f * scale, gap = 3.0f * scale;
@@ -13147,7 +13170,7 @@ private:
             rightY += mouse2DHeight + cardGap;
             const float filmstripHeight = cardHeight(kFilmstripNavigationEntries.size(), true);
             drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + filmstripHeight), L"FILMSTRIP",
-                kFilmstripNavigationEntries, L"requires swipe mode; always show filmstrip off.", navigationBindingWidth);
+                kFilmstripNavigationEntries, L"requires swipe mode; filmstrip set to automatic.", navigationBindingWidth);
             rightY += filmstripHeight + cardGap;
             const float mouse3DHeight = cardHeight(kMouse3DNavigationEntries.size());
             drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse3DHeight), L"3D", kMouse3DNavigationEntries, nullptr, navigationBindingWidth);
@@ -13298,13 +13321,20 @@ private:
             drawSettingsDropdown(zoomHudBounds, ButtonKind::SettingsZoomHudPositionToggle, zoomHudPositionLabel, zoomHudPositionMenuOpen_);
             group(L"image behavior", static_cast<float>(GetSettingsImageBehaviorHeadingTop() - bounds.top) / dpiScale);
             drawToggle(2, ButtonKind::SettingsReuseImageWindow, L"reuse current window for images / GIFs", reuseImageWindow_);
-            drawToggle(3, ButtonKind::SettingsAlwaysShowFilmstrip, L"always show the filmstrip", alwaysShowFilmstrip_);
+            const RECT filmstripDisplayBounds = GetSettingsFilmstripDisplayBounds();
+            const int filmstripLabelTop = GetSettingsFilmstripDisplayLabelTop();
+            DrawOverlayText(L"filmstrip", static_cast<float>(SettingsContentLeft()), static_cast<float>(filmstripLabelTop),
+                static_cast<float>(SettingsContentRight() - SettingsContentLeft()), static_cast<float>(filmstripDisplayBounds.top - filmstripLabelTop - SettingsLabelToControlGap()),
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
+            const wchar_t* filmstripDisplayLabel = filmstripDisplayMode_ == FilmstripDisplayMode::Hidden ? L"hidden" :
+                filmstripDisplayMode_ == FilmstripDisplayMode::Automatic ? L"automatic" : L"always show";
+            drawSettingsDropdown(filmstripDisplayBounds, ButtonKind::SettingsFilmstripDisplayToggle, filmstripDisplayLabel, filmstripDisplayMenuOpen_);
             group(L"image scaling", static_cast<float>(GetSettingsImageScalingHeadingTop() - bounds.top) / dpiScale);
             const auto drawScalingButton = [&](ImageScaling value, ButtonKind button, const wchar_t* text) { const RECT control=GetSettingsScalingBounds(value); const D2D1_RECT_F r=D2D1::RectF((float)control.left,(float)control.top,(float)control.right,(float)control.bottom); const bool selected=imageScaling_==value; renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),selected?accent.Get():(hoveredButton_==button?segmentHover.Get():segmentIdle.Get())); renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(r,4*dpiScale,4*dpiScale),selected?accent.Get():borderBrush.Get(),1); DrawOverlayText(text,r.left,r.top,r.right-r.left,r.bottom-r.top,14,DWRITE_FONT_WEIGHT_SEMI_BOLD,selected?checkmark.Get():primaryBrush.Get(),true,false,true); };
             drawScalingButton(ImageScaling::Quality,ButtonKind::SettingsScalingQuality,L"quality"); drawScalingButton(ImageScaling::Hybrid,ButtonKind::SettingsScalingHybrid,L"hybrid"); drawScalingButton(ImageScaling::Performance,ButtonKind::SettingsScalingPerformance,L"performance");
             group(L"video behavior", static_cast<float>(GetSettingsVideoBehaviorHeadingTop() - bounds.top) / dpiScale);
-            drawToggle(4, ButtonKind::SettingsReuseVideoWindow, L"reuse current window for videos", reuseVideoWindow_);
-            drawToggle(5, ButtonKind::SettingsVideoSizingToggle, L"resize app window to video size", videoWindowSizing_ == VideoWindowSizing::ResizeWindowToVideo);
+            drawToggle(3, ButtonKind::SettingsReuseVideoWindow, L"reuse current window for videos", reuseVideoWindow_);
+            drawToggle(4, ButtonKind::SettingsVideoSizingToggle, L"resize app window to video size", videoWindowSizing_ == VideoWindowSizing::ResizeWindowToVideo);
             } else if (settingsPage_ == SettingsPage::Model3D) {
             drawCard(GetSettingsViewCardBounds());
             drawCard(GetSettingsRenderCardBounds());
@@ -13354,6 +13384,7 @@ private:
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -settingsScroll_));
             if (settingsPage_ == SettingsPage::Image2D) {
                 if (zoomHudPositionMenuOpen_) drawForegroundMenu(GetSettingsZoomHudMenuBounds(), { L"bottom left", L"bottom right", L"top left", L"top right" }, static_cast<int>(zoomHudPosition_), { ButtonKind::SettingsZoomHudBottomLeft, ButtonKind::SettingsZoomHudBottomRight, ButtonKind::SettingsZoomHudTopLeft, ButtonKind::SettingsZoomHudTopRight });
+                if (filmstripDisplayMenuOpen_) drawForegroundMenu(GetSettingsFilmstripDisplayMenuBounds(), { L"hidden", L"automatic", L"always show" }, static_cast<int>(filmstripDisplayMode_), { ButtonKind::SettingsFilmstripHidden, ButtonKind::SettingsFilmstripAutomatic, ButtonKind::SettingsFilmstripAlwaysShow });
             } else if (settingsPage_ == SettingsPage::Model3D) {
                 if (upAxisMenuOpen_) drawForegroundMenu(GetSettingsUpAxisMenuBounds(), { L"z axis up", L"y axis up", L"x axis up" }, modelUpAxis_ == ModelUpAxis::ZUp ? 0 : modelUpAxis_ == ModelUpAxis::YUp ? 1 : 2, { ButtonKind::SettingsUpAxisZ, ButtonKind::SettingsUpAxisY, ButtonKind::SettingsUpAxisX });
                 if (buildPlateMenuOpen_) drawForegroundMenu(GetSettingsBuildPlateMenuBounds(), { L"auto", L"on", L"off" }, static_cast<int>(modelBuildPlate_), { ButtonKind::SettingsBuildPlateAuto, ButtonKind::SettingsBuildPlateOn, ButtonKind::SettingsBuildPlateOff });
@@ -14553,7 +14584,7 @@ private:
     bool animationsEnabled_ = true;
     bool reverseMouseWheelZoom_ = false;
     bool modelReverseMouseWheelZoom_ = false;
-    bool alwaysShowFilmstrip_ = true;
+    FilmstripDisplayMode filmstripDisplayMode_ = FilmstripDisplayMode::Automatic;
     bool filmstripDragCandidate_ = false;
     bool filmstripDragging_ = false;
     bool filmstripDismissFadeActive_ = false;
@@ -14606,6 +14637,7 @@ private:
     bool graphicsAdapterMenuOpen_ = false;
     mutable int graphicsAdapterMenuOption_ = -1;
     bool antiAliasingMenuOpen_ = false;
+    bool filmstripDisplayMenuOpen_ = false;
     bool upAxisMenuOpen_ = false;
     bool buildPlateMenuOpen_ = false;
     bool axisIndicatorPositionMenuOpen_ = false;

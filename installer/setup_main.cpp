@@ -496,15 +496,14 @@ void Paint() {
     g_app.renderTarget->BeginDraw();
     g_app.renderTarget->Clear(Color(0x171a1f));
 
-    const auto leftBrush = Brush(Color(0x11151a));
+    const auto leftBrush = Brush(Color(0x101318));
     g_app.renderTarget->FillRectangle(D2D1::RectF(0.0f, 0.0f, 302.0f, kClientHeight), leftBrush.Get());
-    DrawFacet(0.0f, 0.0f, 302.0f, 0.0f, 104.0f, 188.0f, Color(0x073a59, 0.68f));
-    DrawFacet(302.0f, 0.0f, 302.0f, 238.0f, 104.0f, 188.0f, Color(0x123b27, 0.48f));
-    DrawFacet(0.0f, 450.0f, 0.0f, 188.0f, 216.0f, 326.0f, Color(0x4a290e, 0.52f));
-    DrawFacet(302.0f, 450.0f, 216.0f, 326.0f, 302.0f, 238.0f, Color(0x073249, 0.56f));
-    DrawFacet(0.0f, 188.0f, 104.0f, 188.0f, 216.0f, 326.0f, Color(0x162027, 0.82f));
-    FillRounded(D2D1::RectF(54.0f, 106.0f, 248.0f, 300.0f), 97.0f, Color(0x0c1116, 0.72f));
-    StrokeRounded(D2D1::RectF(54.0f, 106.0f, 248.0f, 300.0f), 97.0f, Color(0x1b789f, 0.42f));
+    DrawFacet(0.0f, 0.0f, 158.0f, 0.0f, 0.0f, 104.0f, Color(0x00a8f3, 0.28f));
+    DrawFacet(158.0f, 0.0f, 74.0f, 74.0f, 0.0f, 104.0f, Color(0x00a8f3, 0.12f));
+    DrawFacet(302.0f, 0.0f, 302.0f, 106.0f, 206.0f, 0.0f, Color(0x21d909, 0.26f));
+    DrawFacet(206.0f, 0.0f, 302.0f, 106.0f, 252.0f, 74.0f, Color(0x21d909, 0.12f));
+    DrawFacet(0.0f, 450.0f, 0.0f, 348.0f, 152.0f, 450.0f, Color(0xff7a00, 0.28f));
+    DrawFacet(0.0f, 348.0f, 152.0f, 450.0f, 68.0f, 370.0f, Color(0xff7a00, 0.13f));
     if (g_app.logo) {
         g_app.renderTarget->DrawBitmap(
             g_app.logo.Get(),

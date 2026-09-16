@@ -1138,6 +1138,7 @@ struct VideoAdjustmentsPanelLayout {
     RECT originalButton;
     RECT resetButton;
     bool aboveControls = false;
+    bool opensDownward = false;
 };
 
 struct AdjustmentPanelActionLayout {
@@ -2013,7 +2014,7 @@ public:
         }
         return { { left, top, right, bottom }, rates };
     }
-    VideoAdjustmentsPanelLayout MakeVideoAdjustmentsPanelLayout(RECT panel, bool aboveControls) const {
+    VideoAdjustmentsPanelLayout MakeVideoAdjustmentsPanelLayout(RECT panel, bool aboveControls, bool opensDownward) const {
         const UINT dpi = GetDpiForWindow(window_);
         const LONG left = panel.left;
         const LONG right = panel.right;
@@ -2025,11 +2026,6 @@ public:
         const int sliderLeft = left + labelWidth;
         const int panelPadding = MulDiv(12, dpi, 96);
         const int sliderRight = right - valueWidth - panelPadding;
-        std::array<RECT, 7> sliders{};
-        for (int index = 0; index < 7; ++index) {
-            const int y = top + MulDiv(16, dpi, 96) + index * rowHeight;
-            sliders[index] = { sliderLeft, y, sliderRight, y + MulDiv(20, dpi, 96) };
-        }
         const int footerGap = MulDiv(5, dpi, 96);
         const int autoButtonWidth = MulDiv(42, dpi, 96);
         const int userButtonWidth = MulDiv(38, dpi, 96);
@@ -2037,13 +2033,19 @@ public:
         const int originalButtonWidth = buttonHeight;
         const int saveButtonWidth = MulDiv(42, dpi, 96);
         const int resetButtonWidth = MulDiv(44, dpi, 96);
-        const int buttonBottom = bottom - panelPadding;
+        const int buttonBottom = opensDownward ? top + panelPadding + buttonHeight : bottom - panelPadding;
         const RECT autoButton{ left + panelPadding, buttonBottom - buttonHeight, left + panelPadding + autoButtonWidth, buttonBottom };
         const RECT original{ autoButton.right + footerGap, buttonBottom - buttonHeight, autoButton.right + footerGap + originalButtonWidth, buttonBottom };
         const RECT user{ original.right + footerGap, buttonBottom - buttonHeight, original.right + footerGap + userButtonWidth, buttonBottom };
         const RECT save{ user.right + footerGap, buttonBottom - buttonHeight, user.right + footerGap + saveButtonWidth, buttonBottom };
         const RECT reset{ right - panelPadding - resetButtonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
-        return { panel, sliders, autoButton, user, save, original, reset, aboveControls };
+        const int sliderTop = opensDownward ? buttonBottom + MulDiv(8, dpi, 96) : top + MulDiv(16, dpi, 96);
+        std::array<RECT, 7> sliders{};
+        for (int index = 0; index < 7; ++index) {
+            const int y = sliderTop + index * rowHeight;
+            sliders[index] = { sliderLeft, y, sliderRight, y + MulDiv(20, dpi, 96) };
+        }
+        return { panel, sliders, autoButton, user, save, original, reset, aboveControls, opensDownward };
     }
     int AdjustmentPanelNaturalHeight() const {
         const int dpi = GetDpiForWindow(window_);
@@ -2058,7 +2060,10 @@ public:
     RECT AdjustmentPanelRevealBounds(const VideoAdjustmentsPanelLayout& panel, float reveal) const {
         RECT bounds = panel.panel;
         const float progress = std::clamp(reveal, 0.0f, 1.0f);
-        bounds.top = static_cast<LONG>(std::lround(bounds.bottom + (bounds.top - bounds.bottom) * progress));
+        if (panel.opensDownward)
+            bounds.bottom = static_cast<LONG>(std::lround(bounds.top + (bounds.bottom - bounds.top) * progress));
+        else
+            bounds.top = static_cast<LONG>(std::lround(bounds.bottom + (bounds.top - bounds.bottom) * progress));
         return bounds;
     }
     float AdjustmentPanelPresentationOpacity(float reveal) const {
@@ -2083,10 +2088,10 @@ public:
     VideoAdjustmentsPanelLayout OffsetVideoAdjustmentsPanelLayout(const VideoAdjustmentsPanelLayout& layout, LONG x, LONG y) const {
         RECT panel = layout.panel;
         OffsetRect(&panel, x, y);
-        return MakeVideoAdjustmentsPanelLayout(panel, layout.aboveControls);
+        return MakeVideoAdjustmentsPanelLayout(panel, layout.aboveControls, layout.opensDownward);
     }
     VideoAdjustmentsPanelLayout VideoAdjustmentsPanelAttachmentLayout(const VideoAdjustmentsPanelLayout& target) const {
-        const LONG offset = MulDiv(16, GetDpiForWindow(window_), 96);
+        const LONG offset = MulDiv(target.opensDownward ? -16 : 16, GetDpiForWindow(window_), 96);
         return OffsetVideoAdjustmentsPanelLayout(target, 0, offset);
     }
     void StopVideoAdjustmentsPanelMotion() {
@@ -2178,7 +2183,8 @@ public:
         } else {
             videoAdjustmentsPanelPresentedLayout_ = MakeVideoAdjustmentsPanelLayout(
                 videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Placement ? VideoAdjustmentsPanelMotionRect(progress) :
-                VideoAdjustmentsPanelOpenCloseMotionRect(progress), videoAdjustmentsPanelPlacementTargetLayout_.aboveControls);
+                VideoAdjustmentsPanelOpenCloseMotionRect(progress), videoAdjustmentsPanelPlacementTargetLayout_.aboveControls,
+                videoAdjustmentsPanelPlacementTargetLayout_.opensDownward);
         }
         if (!VideoActive() && ImageAdjustmentsPanelVisible()) SynchronizeFilmstripAdjustmentAvoidance();
         InvalidateRect(window_, nullptr, FALSE);
@@ -2221,20 +2227,23 @@ public:
                 return;
             }
             if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Closing) {
-                if (target.aboveControls != videoAdjustmentsPanelPlacementTargetLayout_.aboveControls)
+                if (target.aboveControls != videoAdjustmentsPanelPlacementTargetLayout_.aboveControls ||
+                    target.opensDownward != videoAdjustmentsPanelPlacementTargetLayout_.opensDownward)
                     BeginVideoAdjustmentsPanelCloseMotion(target);
                 else
                     videoAdjustmentsPanelPlacementTargetLayout_ = VideoAdjustmentsPanelAttachmentLayout(target);
                 return;
             }
             if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Opening) {
-                if (target.aboveControls != videoAdjustmentsPanelPlacementTargetLayout_.aboveControls)
+                if (target.aboveControls != videoAdjustmentsPanelPlacementTargetLayout_.aboveControls ||
+                    target.opensDownward != videoAdjustmentsPanelPlacementTargetLayout_.opensDownward)
                     BeginVideoAdjustmentsPanelOpenMotion(target, true);
                 else
                     videoAdjustmentsPanelPlacementTargetLayout_ = target;
                 return;
             }
-            if (target.aboveControls != videoAdjustmentsPanelPlacementTargetLayout_.aboveControls)
+            if (target.aboveControls != videoAdjustmentsPanelPlacementTargetLayout_.aboveControls ||
+                target.opensDownward != videoAdjustmentsPanelPlacementTargetLayout_.opensDownward)
                 BeginVideoAdjustmentsPanelPlacementMotion(target);
             else
                 videoAdjustmentsPanelPlacementTargetLayout_ = target;
@@ -2244,7 +2253,8 @@ public:
             videoAdjustmentsPanelPresentedLayout_ = target;
             return;
         }
-        if (target.aboveControls != videoAdjustmentsPanelPresentedLayout_.aboveControls)
+        if (target.aboveControls != videoAdjustmentsPanelPresentedLayout_.aboveControls ||
+            target.opensDownward != videoAdjustmentsPanelPresentedLayout_.opensDownward)
             BeginVideoAdjustmentsPanelPlacementMotion(target);
         else
             videoAdjustmentsPanelPresentedLayout_ = target;
@@ -2692,15 +2702,18 @@ public:
         const ZoomHudLayout hud = GetImageZoomHudLayout(tutorialPreview);
         const D2D1_RECT_F canvas = ImageCanvasBounds();
         const UINT dpi = GetDpiForWindow(window_);
+        const bool opensDownward = !tutorialPreview &&
+            (zoomHudPosition_ == ZoomHudPosition::TopLeft || zoomHudPosition_ == ZoomHudPosition::TopRight);
         const int gap = MulDiv(8, dpi, 96);
         const int width = std::min(MulDiv(370, dpi, 96), std::max(MulDiv(220, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
         const int panelLeft = std::clamp(static_cast<int>(hud.combined.right) - width, static_cast<int>(canvas.left) + gap, std::max(static_cast<int>(canvas.left) + gap, static_cast<int>(canvas.right) - gap - width));
         const int height = AdjustmentPanelNaturalHeight();
         const int minimumTop = static_cast<int>(canvas.top) + gap;
         const int maximumTop = std::max(minimumTop, static_cast<int>(canvas.bottom) - gap - height);
-        const int desiredTop = static_cast<int>(hud.combined.top) - gap - height;
+        const int desiredTop = opensDownward ? static_cast<int>(hud.combined.bottom) + gap :
+            static_cast<int>(hud.combined.top) - gap - height;
         const int panelTop = std::clamp(desiredTop, minimumTop, maximumTop);
-        return MakeVideoAdjustmentsPanelLayout({ panelLeft, panelTop, panelLeft + width, panelTop + height }, false);
+        return MakeVideoAdjustmentsPanelLayout({ panelLeft, panelTop, panelLeft + width, panelTop + height }, false, opensDownward);
     }
     AdjustmentPanelActionLayout GetAdjustmentPanelActionLayout(const VideoAdjustmentsPanelLayout& panel) const {
         return { panel.autoButton, panel.userButton, panel.saveButton, panel.originalButton, panel.resetButton };
@@ -4304,7 +4317,21 @@ public:
         const int top = GetSettingsResetAdjustmentsButtonBounds().top;
         return GetSettingsGridCellAtTop(1, top);
     }
-    void SetZoomHudPosition(ZoomHudPosition position) { zoomHudPosition_ = position; WriteSetting(L"ZoomHudPosition", static_cast<DWORD>(position)); zoomHudPositionMenuOpen_ = false; InvalidateRect(window_, nullptr, FALSE); }
+    void SetZoomHudPosition(ZoomHudPosition position) {
+        zoomHudPositionMenuOpen_ = false;
+        if (zoomHudPosition_ == position) { InvalidateRect(window_, nullptr, FALSE); return; }
+        zoomHudPosition_ = position;
+        WriteSetting(L"ZoomHudPosition", static_cast<DWORD>(position));
+        if (VideoActive()) {
+            SynchronizeVideoAdjustmentsPanelPresentedLayout(false);
+        } else if (source_) {
+            imageAdjustmentsPanelTargetLayout_ = GetImageAdjustmentsPanelTargetLayout();
+            StopVideoAdjustmentsPanelMotion();
+            videoAdjustmentsPanelPresentedLayout_ = imageAdjustmentsPanelTargetLayout_;
+            SynchronizeFilmstripAdjustmentAvoidance();
+        }
+        InvalidateRect(window_, nullptr, FALSE);
+    }
     RECT GetSettingsDefaultAppsButtonBounds() const {
         const UINT dpi = GetDpiForWindow(window_);
         const int description = MeasureSettingsTextHeight(L"choose which file types open with viewtrious", SettingsContentRight() - SettingsContentLeft(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL);

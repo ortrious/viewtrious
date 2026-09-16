@@ -13440,35 +13440,38 @@ private:
         renderTarget_->DrawTextLayout(D2D1::Point2F(bounds.left, bounds.top), layout.Get(), foreground.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
+    int SettingsPopupPreferredHeight(int width, UINT dpi, const RECT& client, int top) const {
+        if (settingsPreferredHeightDpi_ != dpi || settingsPreferredHeightWidth_ != width) {
+            const RECT probe{ (client.right - width) / 2, top, (client.right - width) / 2 + width, top + MulDiv(2000, dpi, 96) };
+            settingsLayoutProbeBounds_ = probe;
+            const int naturalContentBottom = std::max(SettingsContentBottom(SettingsPage::General), SettingsContentBottom(SettingsPage::Image2D));
+            settingsLayoutProbeBounds_.reset();
+            settingsPreferredHeightDpi_ = dpi;
+            settingsPreferredHeightWidth_ = width;
+            settingsPreferredHeight_ = naturalContentBottom + MulDiv(18, dpi, 96);
+        }
+        return settingsPreferredHeight_;
+    }
+
     RECT GetOverlayBounds() const {
         if (settingsLayoutProbeBounds_) return *settingsLayoutProbeBounds_;
         RECT client{};
         GetClientRect(window_, &client);
         if (!HasOverlay()) return {};
         const UINT dpi = GetDpiForWindow(window_);
+        const bool usesSettingsPopupSize = overlay_ == OverlayKind::Settings || overlay_ == OverlayKind::Help;
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 920 :
-            overlay_ == OverlayKind::Settings ? 760 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
-            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : overlay_ == OverlayKind::PrintError && printErrorForDng_ ? 500 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
+            usesSettingsPopupSize ? 760 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
+            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::PrintError && printErrorForDng_ ? 500 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? MulDiv(620, dpi, 96)
-            : overlay_ == OverlayKind::Settings ? 0 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(printErrorForDng_ ? 250 : 190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
+            : usesSettingsPopupSize ? 0 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(printErrorForDng_ ? 250 : 190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
         const int width = std::min(desiredWidth, availableWidth);
-        if (overlay_ == OverlayKind::Settings) {
-            if (settingsPreferredHeightDpi_ != dpi || settingsPreferredHeightWidth_ != width) {
-                const RECT probe{ (client.right - width) / 2, top, (client.right - width) / 2 + width, top + MulDiv(2000, dpi, 96) };
-                settingsLayoutProbeBounds_ = probe;
-                const int naturalContentBottom = std::max(SettingsContentBottom(SettingsPage::General), SettingsContentBottom(SettingsPage::Image2D));
-                settingsLayoutProbeBounds_.reset();
-                settingsPreferredHeightDpi_ = dpi;
-                settingsPreferredHeightWidth_ = width;
-                settingsPreferredHeight_ = naturalContentBottom + MulDiv(18, dpi, 96);
-            }
-            desiredHeight = settingsPreferredHeight_;
-        }
+        if (usesSettingsPopupSize) desiredHeight = SettingsPopupPreferredHeight(width, dpi, client, top);
         const int height = std::min(desiredHeight, availableHeight);
         const int left = (client.right - width) / 2;
         const int overlayTop = top + std::max(0L, (client.bottom - top - height) / 2);
@@ -14219,7 +14222,7 @@ private:
             const float textTop = wordmarkTop + wordmarkHeight + aboutTextGap;
             DrawOverlayText(L"version " VIEWTRIOUS_VERSION, static_cast<float>(bounds.left), textTop, static_cast<float>(bounds.right - bounds.left), aboutLineHeight,
                 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
-            DrawOverlayText(L"extremely lightweight image viewer", static_cast<float>(bounds.left), textTop + aboutLineHeight + aboutLineGap, static_cast<float>(bounds.right - bounds.left),
+            DrawOverlayText(L"extremely lightweight media viewer", static_cast<float>(bounds.left), textTop + aboutLineHeight + aboutLineGap, static_cast<float>(bounds.right - bounds.left),
                 aboutLineHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
         }
     }

@@ -662,8 +662,8 @@ protected:
 constexpr std::array<ShortcutEntry, 13> kKeyboardShortcutEntries{{
     { L"ctrl + o", L"open file" }, { L"ctrl + c", L"copy media" }, { L"ctrl + p", L"print" }, { L"delete", L"move media to Recycle Bin" },
     { L"ctrl + z", L"restore last deleted media" },
-    { L"esc", L"close current ui / exit fullscreen / close Viewtrious" }, { L"left arrow", L"previous media" }, { L"right arrow", L"next media" }, { L"+", L"zoom in" },
-    { L"-", L"zoom out" }, { L"0", L"fit media / model" }, { L"f11", L"fullscreen" }, { L"space", L"cancel auto-play next / play or pause video" },
+    { L"esc", L"close UI / exit fullscreen / exit app" }, { L"left arrow", L"previous media" }, { L"right arrow", L"next media" }, { L"+", L"zoom in" },
+    { L"-", L"zoom out" }, { L"0", L"fit media / model" }, { L"f11", L"fullscreen" }, { L"space", L"play or pause video / cancel-auto-play" },
 }};
 constexpr std::array<ShortcutEntry, 6> kMouse2DNavigationEntries{{
     { L"mouse wheel", L"zoom in / out" }, { L"left mouse drag", L"pan when zoomed" },
@@ -675,7 +675,7 @@ constexpr std::array<ShortcutEntry, 3> kFilmstripNavigationEntries{{
     { L"downward swipe", L"dismiss transient filmstrip" },
 }};
 constexpr std::array<ShortcutEntry, 6> kMouse3DNavigationEntries{{
-    { L"left mouse drag", L"orbit" }, { L"middle mouse drag", L"pan" }, { L"mouse wheel", L"dolly" },
+    { L"left mouse drag", L"orbit" }, { L"middle mouse drag", L"pan" }, { L"mouse wheel", L"zoom in / out" },
     { L"right mouse click", L"select face / open right-click menu" }, { L"double-click model", L"select and fit object" },
     { L"middle double-click", L"home / reset view" },
 }};
@@ -13862,14 +13862,14 @@ private:
                 return cardPadding * 2.0f + cardHeadingHeight + rowHeight * static_cast<float>(rows) + (footer ? 16.0f * dpiScale : 0.0f);
             };
             const float mouse2DHeight = cardHeight(kMouse2DNavigationEntries.size());
-            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse2DHeight), L"2d", kMouse2DNavigationEntries, nullptr);
+            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse2DHeight), L"2D", kMouse2DNavigationEntries, nullptr);
             rightY += mouse2DHeight + cardGap;
             const float filmstripHeight = cardHeight(kFilmstripNavigationEntries.size(), true);
-            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + filmstripHeight), L"filmstrip",
+            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + filmstripHeight), L"FILMSTRIP",
                 kFilmstripNavigationEntries, L"requires swipe mode; always show filmstrip off.");
             rightY += filmstripHeight + cardGap;
             const float mouse3DHeight = cardHeight(kMouse3DNavigationEntries.size());
-            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse3DHeight), L"3d", kMouse3DNavigationEntries, nullptr);
+            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse3DHeight), L"3D", kMouse3DNavigationEntries, nullptr);
             renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::Settings) {
             const float settingsLeft = static_cast<float>(SettingsContentLeft());

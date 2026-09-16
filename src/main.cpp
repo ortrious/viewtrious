@@ -1292,6 +1292,9 @@ class Viewer {
 public:
     explicit Viewer(const StartupTimer& timer) : timer_(timer) {}
 
+    bool RegisterIntegrationForMaintenance() { return RegisterDefaultAppCapabilities(); }
+    bool UnregisterIntegrationForMaintenance() { return UnregisterDefaultAppCapabilities(); }
+
     HRESULT Initialize(const std::wstring& path) {
         ApplicationSettings::Initialize();
         HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
@@ -9033,7 +9036,9 @@ private:
         constexpr wchar_t kThumbnailHandlerClsid[] = L"{E357FCCD-A995-4576-B01F-234630154E96}";
         constexpr wchar_t kProviderClsid[] = L"{D812B4F2-B141-4A0D-9A4F-574DDB2975B2}";
         constexpr wchar_t kObsoleteProviderClsid[] = L"{6D3CF8C3-96CD-4E2E-B553-4AB90F097D1A}";
-        const fs::path providerPath = fs::path(executable).parent_path() / L"ViewtriousStlThumbnail.dll";
+        fs::path providerPath = fs::path(executable).parent_path() / L"shellextensions" / L"ViewtriousStlThumbnail.dll";
+        if (GetFileAttributesW(providerPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+            providerPath = fs::path(executable).parent_path() / L"ViewtriousStlThumbnail.dll";
         const DWORD attributes = GetFileAttributesW(providerPath.c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY)) return true;
 
@@ -9137,6 +9142,58 @@ private:
         // Refresh Shell associations only after verified registration data changes. Ordinary
         // launches must not cause Explorer to reload every desktop icon.
         if (success && registrationChanged) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+        return success;
+    }
+
+    bool UnregisterDefaultAppCapabilities() {
+        wchar_t modulePath[MAX_PATH]{};
+        if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) return false;
+        const std::wstring executable(modulePath);
+        const struct Association { const wchar_t* extension; const wchar_t* progId; } associations[] = {
+            { L".jpg", L"Viewtrious.jpg" }, { L".jpeg", L"Viewtrious.jpeg" }, { L".png", L"Viewtrious.png" },
+            { L".bmp", L"Viewtrious.bmp" }, { L".gif", L"Viewtrious.gif" }, { L".heic", L"Viewtrious.heic" },
+            { L".heif", L"Viewtrious.heif" }, { L".dng", L"Viewtrious.dng" }, { L".mp4", L"Viewtrious.mp4" },
+            { L".mov", L"Viewtrious.mov" }, { L".mkv", L"Viewtrious.mkv" }, { L".stl", L"Viewtrious.stl" }, { L".3mf", L"Viewtrious.3mf" },
+        };
+        bool changed = false, success = true;
+        for (const Association& association : associations) {
+            const std::wstring openWith = std::wstring(L"Software\\Classes\\") + association.extension + L"\\OpenWithProgids";
+            success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, openWith.c_str(), association.progId, changed);
+            success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, (std::wstring(L"Software\\Classes\\") + association.progId).c_str(), changed);
+        }
+        const std::wstring capabilitiesAssociations = std::wstring(kCapabilitiesPath) + L"\\FileAssociations";
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, changed);
+        success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kCapabilitiesPath, changed);
+        success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\Viewtrious.step", changed);
+        success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\Viewtrious.stp", changed);
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, capabilitiesAssociations.c_str(), L".step", changed);
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, capabilitiesAssociations.c_str(), L".stp", changed);
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\.step\\OpenWithProgids", L"Viewtrious.step", changed);
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\.stp\\OpenWithProgids", L"Viewtrious.stp", changed);
+        constexpr wchar_t kThumbnailHandlerClsid[] = L"{E357FCCD-A995-4576-B01F-234630154E96}";
+        constexpr wchar_t kProviderClsid[] = L"{D812B4F2-B141-4A0D-9A4F-574DDB2975B2}";
+        const std::wstring handlerPath = std::wstring(L"Software\\Classes\\.stl\\shellex\\") + kThumbnailHandlerClsid;
+        std::wstring provider;
+        if (ReadRegistryStringIfPresent(HKEY_CURRENT_USER, handlerPath.c_str(), L"", provider) && provider == kProviderClsid)
+            success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, handlerPath.c_str(), changed);
+        const std::wstring providerPath = std::wstring(L"Software\\Classes\\CLSID\\") + kProviderClsid;
+        std::wstring server;
+        if (ReadRegistryStringIfPresent(HKEY_CURRENT_USER, (providerPath + L"\\InprocServer32").c_str(), L"", server) &&
+            CommandOpensExecutable(L"\"" + server + L"\"", fs::path(executable).parent_path().wstring() + L"\\shellextensions\\ViewtriousStlThumbnail.dll"))
+            success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, providerPath.c_str(), changed);
+        const std::wstring icon = executable + L",-105";
+        for (const wchar_t* extension : { L".stl", L".3mf" }) {
+            const std::wstring progId = std::wstring(extension + 1) + L"_auto_file";
+            const std::wstring path = L"Software\\Classes\\" + progId;
+            std::wstring command, value;
+            if (ReadRegistryStringIfPresent(HKEY_CURRENT_USER, (path + L"\\shell\\open\\command").c_str(), L"", command) && CommandOpensExecutable(command, executable)) {
+                if (ReadRegistryStringIfPresent(HKEY_CURRENT_USER, (path + L"\\DefaultIcon").c_str(), L"", value) && value == icon)
+                    success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, (path + L"\\DefaultIcon").c_str(), changed);
+                if (ReadRegistryStringIfPresent(HKEY_CURRENT_USER, path.c_str(), L"TypeOverlay", value) && value == icon)
+                    success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, path.c_str(), L"TypeOverlay", changed);
+            }
+        }
+        if (success && changed) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
         return success;
     }
 
@@ -15158,6 +15215,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
     const std::wstring path = (arguments && argumentCount > 1) ? arguments[1] : L"";
     if (arguments) LocalFree(arguments);
+
+    if (path == L"--register-integration" || path == L"--unregister-integration") {
+        Viewer maintenance(timer);
+        const bool success = path == L"--register-integration" ? maintenance.RegisterIntegrationForMaintenance() : maintenance.UnregisterIntegrationForMaintenance();
+        OleUninitialize();
+        CoUninitialize();
+        return success ? 0 : 1;
+    }
 
     gPrimaryWindowQueryMessage = RegisterWindowMessageW(L"Viewtrious.PrimaryReuseTarget.Query.v1");
     HANDLE primaryMutex = CreateMutexW(nullptr, FALSE, kPrimaryMutexName);

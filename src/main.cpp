@@ -266,7 +266,6 @@ constexpr double kFilmstripHoverPreviewFollowTimeConstantMs = 50.0;
 constexpr UINT kFilmstripHoverPreviewIntentDelayMs = 50;
 constexpr UINT kFilmstripHoverPreviewCloseGraceMs = 175;
 constexpr double kFilmstripWrapCrossfadeMs = 180.0;
-constexpr UINT kFilmstripDismissSwipeThresholdDip = 28;
 constexpr ULONGLONG kFilmstripDismissFadeDurationMs = 140;
 constexpr double kFilmstripHoverVisualDurationMs = 90.0;
 constexpr ULONGLONG kVideoAdjustmentsFadeDurationMs = kStillDissolveDurationMs;
@@ -347,6 +346,7 @@ enum class TutorialStep { None, OpenImage, MenuSettings, ImageDetails, ContextMe
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
 enum class VideoWindowSizing : DWORD { FitToWindow = 0, ResizeWindowToVideo = 1 };
+enum class CanvasSwipeAction { None, NavigatePrevious, NavigateNext, DismissFilmstrip };
 enum class ModelRenderingApi : DWORD { Direct3D11 = 0 };
 enum class AxisIndicatorPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
 enum class ZoomHudPosition : DWORD { BottomLeft = 0, BottomRight = 1, TopLeft = 2, TopRight = 3 };
@@ -6639,9 +6639,6 @@ public:
     bool BeginFilmstripInteraction(POINT point) {
         if (!FilmstripContains(point)) return false;
         filmstripDragCandidate_ = true;
-        filmstripDismissGesture_ = false;
-        filmstripDismissStart_ = point;
-        filmstripDismissStartScroll_ = filmstripScroll_;
         filmstripDragStart_ = point;
         filmstripDragStartScroll_ = filmstripScroll_;
         filmstripDragItem_ = FilmstripItemAt(point);
@@ -6650,17 +6647,8 @@ public:
     }
     bool ContinueFilmstripInteraction(POINT point) {
         if (!filmstripDragCandidate_) return false;
-        if (filmstripDismissGesture_) return true;
         const int dx = point.x - filmstripDragStart_.x;
         const int dy = point.y - filmstripDragStart_.y;
-        const LONG dismissDx = point.x - filmstripDismissStart_.x;
-        const LONG dismissDy = point.y - filmstripDismissStart_.y;
-        const LONG dismissThreshold = MulDiv(kFilmstripDismissSwipeThresholdDip, GetDpiForWindow(window_), 96);
-        if (!alwaysShowFilmstrip_ && dismissDy >= dismissThreshold &&
-            static_cast<long long>(dismissDy) * 4 >= static_cast<long long>(std::abs(dismissDx)) * 5) {
-            DismissFilmstripForDownwardSwipe();
-            return true;
-        }
         if (!filmstripDragging_ && (std::abs(dx) >= GetSystemMetrics(SM_CXDRAG) || std::abs(dy) >= GetSystemMetrics(SM_CYDRAG))) {
             filmstripDragging_ = true;
             CancelFilmstripSelectionAnchor();
@@ -6677,12 +6665,10 @@ public:
         return true;
     }
     bool EndFilmstripInteraction(POINT point) {
-        const bool dismissed = filmstripDismissGesture_;
         const bool dragging = filmstripDragging_;
         const int click = filmstripDragItem_;
-        filmstripDragCandidate_ = filmstripDragging_ = filmstripDismissGesture_ = false;
+        filmstripDragCandidate_ = filmstripDragging_ = false;
         filmstripDragItem_ = -1;
-        if (dismissed) return true;
         if (dragging) {
             UpdateFilmstripThumbnailDemand(true);
             SetFilmstripPointerState(point);
@@ -6694,7 +6680,7 @@ public:
         return true;
     }
     void CancelFilmstripInteraction() {
-        filmstripDragCandidate_ = filmstripDragging_ = filmstripDismissGesture_ = false;
+        filmstripDragCandidate_ = filmstripDragging_ = false;
         filmstripDragItem_ = -1;
     }
     bool FilmstripInteractionActive() const { return filmstripDragCandidate_; }
@@ -6743,14 +6729,10 @@ public:
         filmstripVisibilityStart_ = GetTickCount64();
         SetTimer(window_, kFilmstripVisibilityTimer, animationsEnabled_ ? 16 : 50, nullptr);
     }
-    void DismissFilmstripForDownwardSwipe() {
-        if (alwaysShowFilmstrip_ || !filmstripDragCandidate_) return;
-        filmstripDismissGesture_ = true;
-        filmstripDragging_ = false;
-        filmstripDragItem_ = -1;
+    void DismissFilmstripForCanvasSwipe() {
+        if (alwaysShowFilmstrip_ || !FilmstripVisible()) return;
         CancelFilmstripSelectionAnchor();
         StopFilmstripScrollAnimation();
-        filmstripScroll_ = std::clamp(filmstripDismissStartScroll_, 0.0, static_cast<double>(FilmstripMaximumScroll()));
         UpdateFilmstripThumbnailDemand(true);
         HideFilmstripHoverPreviewImmediately();
         CancelFilmstripVideoHoverFade();
@@ -8642,16 +8624,25 @@ public:
 
     bool SwipeNavigationPending() const { return swipeNavigationPending_; }
 
-    bool FinishSwipeNavigation(POINT point) {
-        if (!swipeNavigationPending_) return false;
-        swipeNavigationPending_ = false;
+    CanvasSwipeAction ResolveCanvasSwipeAction(POINT point) const {
         const LONG deltaX = point.x - swipeNavigationStart_.x;
         const LONG deltaY = point.y - swipeNavigationStart_.y;
         const LONG horizontalDistance = std::abs(deltaX);
         const LONG verticalDistance = std::abs(deltaY);
         const LONG threshold = MulDiv(72, GetDpiForWindow(window_), 96);
-        if (horizontalDistance >= threshold && horizontalDistance >= verticalDistance * 2) {
-            const int direction = deltaX < 0 ? 1 : -1;
+        if (horizontalDistance >= threshold && horizontalDistance >= verticalDistance * 2)
+            return deltaX < 0 ? CanvasSwipeAction::NavigateNext : CanvasSwipeAction::NavigatePrevious;
+        if (deltaY >= threshold && verticalDistance >= horizontalDistance * 2)
+            return CanvasSwipeAction::DismissFilmstrip;
+        return CanvasSwipeAction::None;
+    }
+
+    bool FinishSwipeNavigation(POINT point) {
+        if (!swipeNavigationPending_) return false;
+        swipeNavigationPending_ = false;
+        const CanvasSwipeAction action = ResolveCanvasSwipeAction(point);
+        if (action == CanvasSwipeAction::NavigatePrevious || action == CanvasSwipeAction::NavigateNext) {
+            const int direction = action == CanvasSwipeAction::NavigateNext ? 1 : -1;
             if (BeginFilmstripWrapFade(direction, true)) {
                 return true;
             } else if (BeginStillDissolveNavigation(direction)) {
@@ -8659,7 +8650,7 @@ public:
                 else SelectNavigationTarget(dissolveTargetPath_, direction);
             }
             else Navigate(direction);
-        }
+        } else if (action == CanvasSwipeAction::DismissFilmstrip) DismissFilmstripForCanvasSwipe();
         return true;
     }
 
@@ -15277,10 +15268,7 @@ private:
     bool alwaysShowFilmstrip_ = true;
     bool filmstripDragCandidate_ = false;
     bool filmstripDragging_ = false;
-    bool filmstripDismissGesture_ = false;
     bool filmstripDismissFadeActive_ = false;
-    POINT filmstripDismissStart_{};
-    double filmstripDismissStartScroll_ = 0.0;
     POINT filmstripDragStart_{};
     double filmstripDragStartScroll_ = 0.0;
     int filmstripDragItem_ = -1;

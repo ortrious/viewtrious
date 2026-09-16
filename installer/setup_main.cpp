@@ -580,7 +580,7 @@ void Paint() {
             g_app.renderTarget->DrawLine(D2D1::Point2F(344.0f, 323.0f), D2D1::Point2F(349.0f, 328.0f), check.Get(), 2.0f);
             g_app.renderTarget->DrawLine(D2D1::Point2F(349.0f, 328.0f), D2D1::Point2F(355.0f, 318.0f), check.Get(), 2.0f);
         }
-        DrawTextBlock(L"Create a desktop shortcut", g_app.bodyFormat.Get(), D2D1::RectF(368.0f, 307.0f, 620.0f, 340.0f), Color(0xd6dbe4));
+        DrawTextBlock(L"Create a desktop shortcut", g_app.bodyFormat.Get(), D2D1::RectF(368.0f, 309.0f, 620.0f, 342.0f), Color(0xd6dbe4));
         DrawTextBlock(L"installs for your Windows account", g_app.bodyFormat.Get(), D2D1::RectF(338.0f, 344.0f, 714.0f, 368.0f), Color(0x98a3b0));
         DrawTextBlock(g_app.installLocation, g_app.smallFormat.Get(), D2D1::RectF(338.0f, 369.0f, 714.0f, 390.0f), Color(0x74808e));
         D2D1_COLOR_F licenseColor = Color(0x29a8ed);

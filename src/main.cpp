@@ -1294,6 +1294,7 @@ public:
 
     bool RegisterIntegrationForMaintenance() { return RegisterDefaultAppCapabilities(); }
     bool UnregisterIntegrationForMaintenance() { return UnregisterDefaultAppCapabilities(); }
+    bool CleanupDataForUninstallMaintenance() { return CleanupDataForUninstall(); }
 
     HRESULT Initialize(const std::wstring& path) {
         ApplicationSettings::Initialize();
@@ -9618,6 +9619,35 @@ private:
         return preserveActiveFile;
     }
 
+    bool CleanupDataForUninstall() {
+        const fs::path data = ViewtriousPaths::DataDirectory();
+        if (data.empty()) return false;
+        std::error_code error;
+        if (!fs::exists(data, error)) return !error;
+        if (error) return false;
+        const fs::path wallpaperDirectory = data / L"wallpaper";
+        const fs::path currentWallpaper = wallpaperDirectory / L"current.bmp";
+        const bool currentWallpaperExists = fs::exists(currentWallpaper, error);
+        if (error) return false;
+        if (!currentWallpaperExists || !WallpaperStagingPathIsActive(currentWallpaper)) {
+            fs::remove_all(data, error);
+            return !error;
+        }
+        for (const fs::directory_entry& entry : fs::directory_iterator(data, error)) {
+            if (error) return false;
+            if (entry.path() == wallpaperDirectory) continue;
+            fs::remove_all(entry.path(), error);
+            if (error) return false;
+        }
+        for (const fs::directory_entry& entry : fs::directory_iterator(wallpaperDirectory, error)) {
+            if (error) return false;
+            if (entry.path() == currentWallpaper) continue;
+            fs::remove_all(entry.path(), error);
+            if (error) return false;
+        }
+        return true;
+    }
+
     void CleanupWallpaperStagingDirectory(const fs::path& directory) {
         if (directory.empty()) return;
         const fs::path wallpaperPath = directory / L"current.bmp";
@@ -15216,9 +15246,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     const std::wstring path = (arguments && argumentCount > 1) ? arguments[1] : L"";
     if (arguments) LocalFree(arguments);
 
-    if (path == L"--register-integration" || path == L"--unregister-integration") {
+    if (path == L"--register-integration" || path == L"--unregister-integration" || path == L"--cleanup-data-for-uninstall") {
         Viewer maintenance(timer);
-        const bool success = path == L"--register-integration" ? maintenance.RegisterIntegrationForMaintenance() : maintenance.UnregisterIntegrationForMaintenance();
+        const bool success = path == L"--register-integration" ? maintenance.RegisterIntegrationForMaintenance() :
+            path == L"--unregister-integration" ? maintenance.UnregisterIntegrationForMaintenance() : maintenance.CleanupDataForUninstallMaintenance();
         OleUninitialize();
         CoUninitialize();
         return success ? 0 : 1;

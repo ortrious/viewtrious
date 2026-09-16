@@ -62,6 +62,9 @@ SectionEnd
 
 Section "Uninstall"
   ExecWait '"$INSTDIR\app\Viewtrious.exe" --unregister-integration' $0
+  ExecWait '"$INSTDIR\app\Viewtrious.exe" --cleanup-data-for-uninstall' $0
+  IntCmp $0 0 +2
+    MessageBox MB_ICONEXCLAMATION "Viewtrious could not fully remove its application data. It was left in place rather than risking an active desktop wallpaper."
   Delete "$SMPROGRAMS\viewtrious.lnk"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious"
   Delete "$INSTDIR\app\shellextensions\ViewtriousStlThumbnail.dll"
@@ -73,12 +76,6 @@ Section "Uninstall"
   RMDir "$INSTDIR\app\addons"
   RMDir "$INSTDIR\app\shellextensions"
   RMDir "$INSTDIR\app"
-  ; Preserve a possibly active wallpaper rather than deleting Windows' live source file.
-  IfFileExists "$INSTDIR\data\wallpaper\current.bmp" preserve_wallpaper
-  RMDir /r "$INSTDIR\data"
-  Goto remove_root
-preserve_wallpaper:
-  ; Keep the containing data directory so Windows can continue reading current.bmp.
 remove_root:
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"

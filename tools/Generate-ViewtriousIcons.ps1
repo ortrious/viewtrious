@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 
 $root = Split-Path -Parent $PSScriptRoot
-$sourceDirectory = Join-Path $root 'new_icons'
+$sourceDirectory = Join-Path $root 'assets\icon_sources'
 $assetDirectory = Join-Path $root 'assets'
 $sizes = 16, 20, 24, 32, 40, 48, 64, 256
 

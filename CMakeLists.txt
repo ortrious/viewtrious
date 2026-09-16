@@ -26,7 +26,7 @@ configure_file(assets/Viewtrious3D.ico "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious3D
 configure_file(src/Viewtrious.rc.in "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc" @ONLY)
 configure_file(shell/ViewtriousStlThumbnail.rc.in "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousStlThumbnail.rc" @ONLY)
 configure_file(assets/Viewtrious.ico "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup.ico" COPYONLY)
-configure_file(new_icons/icon_1024.png "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-Logo.png" COPYONLY)
+configure_file(assets/icon_sources/icon_1024.png "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-Logo.png" COPYONLY)
 configure_file(LICENSE "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-License.txt" COPYONLY)
 configure_file(NOTICE "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-Notice.txt" COPYONLY)
 configure_file(app/licenses/miniz.txt "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-Miniz.txt" COPYONLY)

@@ -67,7 +67,7 @@ if (Test-Path -LiteralPath $fileExtsRoot) {
 }
 
 Write-Host 'AppData files'
-Write-Host '  No app-owned AppData paths are created by the current source; none are targeted.'
+Write-Host '  Viewtrious stores runtime data under %LOCALAPPDATA%\viewtrious\data; this tool does not target that data.'
 
 $running = Get-Process -ErrorAction SilentlyContinue | Where-Object { $executables -contains "$($_.ProcessName).exe" }
 if ($running) {

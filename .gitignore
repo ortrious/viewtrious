@@ -26,3 +26,14 @@ Desktop.ini
 /Build_Viewtrious_Release_and_Debug.bat
 /build_release_debug_from_scratch.txt
 /Build_Viewtrious_AI_Addon.bat
+
+/AGENTS.md
+/CODEX_HANDOFF.md
+/codex_handoff.md
+
+# Local credentials/signing material
+/.env
+/.env.*
+*.pfx
+*.p12
+*.key

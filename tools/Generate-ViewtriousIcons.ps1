@@ -97,4 +97,4 @@ function New-Icon([string]$sourceName, [string]$outputName) {
 
 New-Icon 'icon_1024.png' 'Viewtrious.ico'
 New-Icon 'icon_play_1024.png' 'ViewtriousVideo.ico'
-New-Icon 'icon_3d_1024new.png' 'Viewtrious3D.ico'
+New-Icon 'icon_3d_1024.png' 'Viewtrious3D.ico'

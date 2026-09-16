@@ -9123,10 +9123,9 @@ private:
         success &= RegisterStlThumbnailProvider(executable, registrationChanged);
         success &= Reconcile3DAutoProgId(L".stl", executable, registrationChanged);
         success &= Reconcile3DAutoProgId(L".3mf", executable, registrationChanged);
-        // An updated executable can contain new icon frames while every registry icon reference
-        // remains the same path and resource ID. Notify the Shell after verified registration so
-        // it re-extracts that unchanged reference without touching its caches or UserChoice.
-        if (success) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+        // Refresh Shell associations only after verified registration data changes. Ordinary
+        // launches must not cause Explorer to reload every desktop icon.
+        if (success && registrationChanged) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
         return success;
     }
 

@@ -86,6 +86,7 @@ struct App {
     ComPtr<IDWriteTextFormat> titleFormat;
     ComPtr<IDWriteTextFormat> taglineFormat;
     ComPtr<IDWriteTextFormat> bodyFormat;
+    ComPtr<IDWriteTextFormat> controlFormat;
     ComPtr<IDWriteTextFormat> smallFormat;
     ComPtr<IDWriteTextFormat> buttonFormat;
     ComPtr<IDWriteTextFormat> overlayTitleFormat;
@@ -580,7 +581,7 @@ void Paint() {
             g_app.renderTarget->DrawLine(D2D1::Point2F(344.0f, 323.0f), D2D1::Point2F(349.0f, 328.0f), check.Get(), 2.0f);
             g_app.renderTarget->DrawLine(D2D1::Point2F(349.0f, 328.0f), D2D1::Point2F(355.0f, 318.0f), check.Get(), 2.0f);
         }
-        DrawTextBlock(L"Create a desktop shortcut", g_app.bodyFormat.Get(), D2D1::RectF(368.0f, 309.0f, 620.0f, 342.0f), Color(0xd6dbe4));
+        DrawTextBlock(L"Create a desktop shortcut", g_app.controlFormat.Get(), D2D1::RectF(368.0f, 314.0f, 620.0f, 332.0f), Color(0xd6dbe4));
         DrawTextBlock(L"installs for your Windows account", g_app.bodyFormat.Get(), D2D1::RectF(338.0f, 344.0f, 714.0f, 368.0f), Color(0x98a3b0));
         DrawTextBlock(g_app.installLocation, g_app.smallFormat.Get(), D2D1::RectF(338.0f, 369.0f, 714.0f, 390.0f), Color(0x74808e));
         D2D1_COLOR_F licenseColor = Color(0x29a8ed);
@@ -597,7 +598,6 @@ void Paint() {
         if (progress.right > progress.left) FillRounded(progress, 2.0f, Color(0x16a9e8));
         DrawTextBlock(L"this usually takes only a moment", g_app.smallFormat.Get(), D2D1::RectF(338.0f, 306.0f, 714.0f, 332.0f), Color(0x8995a3));
     } else if (g_app.state == SetupState::succeeded) {
-        DrawTextBlock(L"viewtrious is ready", g_app.overlayTitleFormat.Get(), D2D1::RectF(338.0f, 205.0f, 714.0f, 244.0f), Color(0xffffff));
         DrawButton(PrimaryRect(), L"LAUNCH VIEWTRIOUS", HitTarget::primary, true, g_app.focusIndex == 0);
         DrawButton(SecondaryRect(), L"CLOSE", HitTarget::secondary, false, g_app.focusIndex == 1);
     } else {
@@ -857,6 +857,7 @@ bool InitializeFactories(HINSTANCE instance) {
     if (FAILED(CreateTextFormat(g_app.writeFactory.Get(), 35.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, &g_app.titleFormat))) return false;
     if (FAILED(CreateTextFormat(g_app.writeFactory.Get(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING, &g_app.taglineFormat))) return false;
     if (FAILED(CreateTextFormat(g_app.writeFactory.Get(), 14.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING, &g_app.bodyFormat))) return false;
+    if (FAILED(CreateTextFormat(g_app.writeFactory.Get(), 14.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING, &g_app.controlFormat))) return false;
     if (FAILED(CreateTextFormat(g_app.writeFactory.Get(), 12.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING, &g_app.smallFormat))) return false;
     if (FAILED(CreateTextFormat(g_app.writeFactory.Get(), 15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, &g_app.buttonFormat))) return false;
     if (FAILED(CreateTextFormat(g_app.writeFactory.Get(), 20.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, &g_app.overlayTitleFormat))) return false;

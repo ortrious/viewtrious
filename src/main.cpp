@@ -397,17 +397,7 @@ constexpr wchar_t kThirdPartyNotices[] =
     L"miniz\n\n"
     L"Copyright 2013-2014 RAD Game Tools and Valve Software\n"
     L"Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC\n\n"
-    L"All Rights Reserved.\n\n"
-    L"Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated "
-    L"documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation "
-    L"the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and "
-    L"to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\n"
-    L"The above copyright notice and this permission notice shall be included in all copies or substantial portions "
-    L"of the Software.\n\n"
-    L"THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED "
-    L"TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE "
-    L"AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, "
-    L"TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.";
+    L"ZIP/DEFLATE library used for 3MF package handling. The full license is included with Viewtrious.";
 constexpr std::array<HelpTopic, 7> kHelpTopics{{
     { L"getting started", kGettingStartedSections.data(), kGettingStartedSections.size(), L"" },
     { L"SpaceMouse", kSpaceMouseSections.data(), kSpaceMouseSections.size(), L"" },

@@ -30,6 +30,7 @@ constexpr int kSetupIconResource = 101;
 constexpr int kLicenseResource = 201;
 constexpr int kNoticeResource = 202;
 constexpr int kMinizResource = 203;
+constexpr int kLogoResource = 204;
 constexpr DWORD kBackendExplorerLocked = 20;
 constexpr DWORD kBackendApplicationLocked = 21;
 constexpr DWORD kBackendIntegrationFailed = 22;
@@ -347,21 +348,42 @@ HRESULT EnsureDeviceResources() {
         &g_app.renderTarget);
     if (FAILED(result)) return result;
 
-    const HICON icon = static_cast<HICON>(LoadImageW(
-        GetModuleHandleW(nullptr),
-        MAKEINTRESOURCEW(kSetupIconResource),
-        IMAGE_ICON,
-        256,
-        256,
-        LR_DEFAULTCOLOR));
-    if (icon) {
-        ComPtr<IWICBitmap> wicBitmap;
-        if (SUCCEEDED(g_app.wicFactory->CreateBitmapFromHICON(icon, &wicBitmap))) {
-            g_app.renderTarget->CreateBitmapFromWicBitmap(wicBitmap.Get(), nullptr, &g_app.logo);
-        }
-        DestroyIcon(icon);
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    const HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(kLogoResource), RT_RCDATA);
+    const HGLOBAL loaded = resource ? LoadResource(instance, resource) : nullptr;
+    auto* logoBytes = loaded ? static_cast<BYTE*>(LockResource(loaded)) : nullptr;
+    const DWORD logoByteCount = resource ? SizeofResource(instance, resource) : 0;
+    if (!logoBytes || logoByteCount == 0) return HRESULT_FROM_WIN32(ERROR_RESOURCE_DATA_NOT_FOUND);
+
+    ComPtr<IWICStream> stream;
+    ComPtr<IWICBitmapDecoder> decoder;
+    ComPtr<IWICBitmapFrameDecode> frame;
+    ComPtr<IWICFormatConverter> converter;
+    result = g_app.wicFactory->CreateStream(&stream);
+    if (SUCCEEDED(result)) result = stream->InitializeFromMemory(logoBytes, logoByteCount);
+    if (SUCCEEDED(result)) {
+        result = g_app.wicFactory->CreateDecoderFromStream(
+            stream.Get(),
+            nullptr,
+            WICDecodeMetadataCacheOnLoad,
+            &decoder);
     }
-    return S_OK;
+    if (SUCCEEDED(result)) result = decoder->GetFrame(0, &frame);
+    if (SUCCEEDED(result)) result = g_app.wicFactory->CreateFormatConverter(&converter);
+    if (SUCCEEDED(result)) {
+        result = converter->Initialize(
+            frame.Get(),
+            GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone,
+            nullptr,
+            0.0,
+            WICBitmapPaletteTypeCustom);
+    }
+    if (SUCCEEDED(result)) {
+        result = g_app.renderTarget->CreateBitmapFromWicBitmap(converter.Get(), nullptr, &g_app.logo);
+    }
+    if (FAILED(result)) g_app.renderTarget.Reset();
+    return result;
 }
 
 ComPtr<ID2D1SolidColorBrush> Brush(const D2D1_COLOR_F& color) {
@@ -474,22 +496,22 @@ void Paint() {
     g_app.renderTarget->BeginDraw();
     g_app.renderTarget->Clear(Color(0x171a1f));
 
-    const auto leftBrush = Brush(Color(0x111419));
+    const auto leftBrush = Brush(Color(0x11151a));
     g_app.renderTarget->FillRectangle(D2D1::RectF(0.0f, 0.0f, 302.0f, kClientHeight), leftBrush.Get());
-    DrawFacet(0.0f, 0.0f, 302.0f, 0.0f, 116.0f, 194.0f, Color(0x122c3a, 0.72f));
-    DrawFacet(302.0f, 0.0f, 302.0f, 255.0f, 116.0f, 194.0f, Color(0x17313a, 0.58f));
-    DrawFacet(0.0f, 450.0f, 0.0f, 194.0f, 228.0f, 326.0f, Color(0x2b2118, 0.55f));
-    DrawFacet(302.0f, 450.0f, 228.0f, 326.0f, 302.0f, 255.0f, Color(0x12313b, 0.55f));
-    DrawFacet(0.0f, 194.0f, 116.0f, 194.0f, 228.0f, 326.0f, Color(0x152027, 0.8f));
+    DrawFacet(0.0f, 0.0f, 302.0f, 0.0f, 104.0f, 188.0f, Color(0x073a59, 0.68f));
+    DrawFacet(302.0f, 0.0f, 302.0f, 238.0f, 104.0f, 188.0f, Color(0x123b27, 0.48f));
+    DrawFacet(0.0f, 450.0f, 0.0f, 188.0f, 216.0f, 326.0f, Color(0x4a290e, 0.52f));
+    DrawFacet(302.0f, 450.0f, 216.0f, 326.0f, 302.0f, 238.0f, Color(0x073249, 0.56f));
+    DrawFacet(0.0f, 188.0f, 104.0f, 188.0f, 216.0f, 326.0f, Color(0x162027, 0.82f));
+    FillRounded(D2D1::RectF(54.0f, 106.0f, 248.0f, 300.0f), 97.0f, Color(0x0c1116, 0.72f));
+    StrokeRounded(D2D1::RectF(54.0f, 106.0f, 248.0f, 300.0f), 97.0f, Color(0x1b789f, 0.42f));
     if (g_app.logo) {
         g_app.renderTarget->DrawBitmap(
             g_app.logo.Get(),
-            D2D1::RectF(76.0f, 130.0f, 226.0f, 280.0f),
+            D2D1::RectF(62.0f, 114.0f, 240.0f, 292.0f),
             1.0f,
             D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
-    DrawTextBlock(L"lightweight. native. yours.", g_app.smallFormat.Get(), D2D1::RectF(44.0f, 317.0f, 258.0f, 345.0f), Color(0x9aa6b4));
-
     DrawClose(CloseRect(), HitTarget::close);
     DrawTextBlock(L"viewtrious", g_app.titleFormat.Get(), D2D1::RectF(338.0f, 75.0f, 714.0f, 126.0f), Color(0xffffff));
     DrawTextBlock(L"extremely lightweight media viewer", g_app.taglineFormat.Get(), D2D1::RectF(338.0f, 127.0f, 714.0f, 159.0f), Color(0xc5ccd5));

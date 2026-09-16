@@ -38,9 +38,9 @@ function Get-PngBytes([System.Drawing.Image]$source, [int]$size, [int]$padding) 
 function Get-SmallFramePadding([int]$size) {
     switch ($size) {
         16 { return 1 }
-        20 { return 1 }
-        24 { return 1 }
-        32 { return 2 }
+        20 { return 2 }
+        24 { return 2 }
+        32 { return 3 }
         default { return 0 }
     }
 }

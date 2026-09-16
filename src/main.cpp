@@ -370,7 +370,7 @@ constexpr std::array<HelpSection, 3> kSpaceMouseSections{{
     { L"2D navigation", L"in the 2D image viewer, supported motion can pan and zoom the image." },
 }};
 constexpr std::array<HelpSection, 3> kSupportedFileTypeSections{{
-    { L"images", L"PNG, JPEG, BMP, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG, CR2, CR3, NEF, ARW, RAF" },
+    { L"images", L"PNG, JPEG, BMP, TIFF, ICO, WebP, HEIC, HEIF, AVIF, DNG\n\nAdditional camera RAW formats may open when supported by installed Windows codecs." },
     { L"video", L"MP4, MOV, MKV, GIF" },
     { L"3D", L"STL and 3MF, with 3MF colors, slicer multimaterial, and Components hierarchy support." },
 }};
@@ -702,6 +702,11 @@ public:
 };
 #endif
 
+bool IsCameraRawExtension(const std::wstring& extension) {
+    return extension == L".dng" || extension == L".cr2" || extension == L".cr3" ||
+        extension == L".nef" || extension == L".arw" || extension == L".raf";
+}
+
 bool IsSupportedExtension(const fs::path& path) {
     std::wstring extension = path.extension().wstring();
     std::transform(extension.begin(), extension.end(), extension.begin(),
@@ -710,8 +715,7 @@ bool IsSupportedExtension(const fs::path& path) {
         extension == L".bmp" || extension == L".gif" || extension == L".tif" ||
         extension == L".tiff" || extension == L".ico" || extension == L".webp" ||
         extension == L".heic" || extension == L".heif" || extension == L".avif" ||
-        extension == L".dng" || extension == L".cr2" || extension == L".cr3" ||
-        extension == L".nef" || extension == L".arw" || extension == L".raf" || extension == L".mp4" || extension == L".mov" || extension == L".mkv" || extension == L".stl" || extension == L".3mf";
+        IsCameraRawExtension(extension) || extension == L".mp4" || extension == L".mov" || extension == L".mkv" || extension == L".stl" || extension == L".3mf";
 }
 
 
@@ -743,7 +747,7 @@ bool IsHeifPath(const std::wstring& path) {
 }
 
 bool IsGifPath(const std::wstring& path) { return LowercaseExtension(path) == L".gif"; }
-bool IsDngPath(const std::wstring& path) { return LowercaseExtension(path) == L".dng"; }
+bool IsCameraRawPath(const std::wstring& path) { return IsCameraRawExtension(LowercaseExtension(path)); }
 bool IsExternalOpenPath(const std::wstring& path) { return !path.empty() && IsTwoDimensionalMediaPath(fs::path(path)); }
 
 std::wstring FormatFramesPerSecond(float value) {
@@ -3675,7 +3679,7 @@ public:
     }
     void DismissOverlay() {
         if (!HasOverlay()) return;
-        if (overlay_ == OverlayKind::PrintError) printErrorForDng_ = false;
+        if (overlay_ == OverlayKind::PrintError) printErrorForCameraRaw_ = false;
         overlay_ = OverlayKind::None;
         SynchronizeFilmstripVisibilityToCurrentState();
         ShowVideoControls();
@@ -9627,7 +9631,7 @@ private:
         execute.fMask = SEE_MASK_FLAG_NO_UI; execute.hwnd = window_; execute.lpVerb = L"print";
         execute.lpFile = currentPath_.c_str(); execute.nShow = SW_SHOWNORMAL;
         if (!ShellExecuteExW(&execute)) {
-            printErrorForDng_ = IsDngPath(currentPath_);
+            printErrorForCameraRaw_ = IsCameraRawPath(currentPath_);
             ShowOverlay(OverlayKind::PrintError);
         }
     }
@@ -12454,11 +12458,11 @@ private:
         const bool usesSettingsPopupSize = overlay_ == OverlayKind::Settings || overlay_ == OverlayKind::Help;
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 920 :
             usesSettingsPopupSize ? 760 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
-            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::PrintError && printErrorForDng_ ? 500 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::PrintError && printErrorForCameraRaw_ ? 500 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? MulDiv(620, dpi, 96)
             : usesSettingsPopupSize ? 0 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(printErrorForDng_ ? 250 : 190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(printErrorForCameraRaw_ ? 250 : 190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -13168,11 +13172,11 @@ private:
         } else if (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) {
             const RECT dismissBounds = GetPrintErrorDismissButtonBounds();
             const bool registrationError = overlay_ == OverlayKind::RegistrationError;
-            const bool dngPrintError = overlay_ == OverlayKind::PrintError && printErrorForDng_;
-            DrawOverlayText(registrationError ? L"unable to register viewtrious file types" : dngPrintError ? L"unable to print this DNG file" : L"unable to print this file", left, static_cast<float>(bounds.top) + panelPadding,
+            const bool cameraRawPrintError = overlay_ == OverlayKind::PrintError && printErrorForCameraRaw_;
+            DrawOverlayText(registrationError ? L"unable to register viewtrious file types" : cameraRawPrintError ? L"unable to print this camera RAW file" : L"unable to print this file", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, registrationError ? 52.0f * dpiScale : 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
-            DrawOverlayText(registrationError ? L"viewtrious could not prepare Windows file associations." : dngPrintError ? L"DNG files contain raw camera image data and cannot be printed directly by the standard Windows print path. Save or export the image to a standard image format before printing." : L"Windows could not start printing this file.", left, static_cast<float>(bounds.top) + panelPadding + (registrationError ? 62.0f : 46.0f) * dpiScale,
-                contentWidth, dngPrintError ? 100.0f * dpiScale : 42.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
+            DrawOverlayText(registrationError ? L"viewtrious could not prepare Windows file associations." : cameraRawPrintError ? L"Camera RAW files contain raw camera image data and cannot be printed directly by the standard Windows print path. Save or export the image to a standard image format before printing." : L"Windows could not start printing this file.", left, static_cast<float>(bounds.top) + panelPadding + (registrationError ? 62.0f : 46.0f) * dpiScale,
+                contentWidth, cameraRawPrintError ? 100.0f * dpiScale : 42.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
             const D2D1_RECT_F dismiss = D2D1::RectF(static_cast<float>(dismissBounds.left), static_cast<float>(dismissBounds.top),
                 static_cast<float>(dismissBounds.right), static_cast<float>(dismissBounds.bottom));
             ComPtr<ID2D1SolidColorBrush> hover, pressed;
@@ -14365,7 +14369,7 @@ private:
     bool hamburgerHovered_ = false;
     bool hamburgerPressed_ = false;
     OverlayKind overlay_ = OverlayKind::None;
-    bool printErrorForDng_ = false;
+    bool printErrorForCameraRaw_ = false;
     bool dropdownOpen_ = false;
     bool triangleCountTooltipHovering_ = false;
     bool triangleCountTooltipVisible_ = false;

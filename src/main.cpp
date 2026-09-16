@@ -926,7 +926,11 @@ void TraceRegistryFailure(const wchar_t* operation, const wchar_t* path, const w
 #endif
 }
 
-bool WriteRegistryString(HKEY root, const wchar_t* path, const wchar_t* name, const std::wstring& value) {
+bool ReadRegistryStringIfPresent(HKEY root, const wchar_t* path, const wchar_t* name, std::wstring& value);
+
+bool WriteRegistryString(HKEY root, const wchar_t* path, const wchar_t* name, const std::wstring& value, bool& changed) {
+    std::wstring existing;
+    if (ReadRegistryStringIfPresent(root, path, name, existing) && existing == value) return true;
     HKEY key = nullptr;
     const LONG createResult = RegCreateKeyExW(root, path, 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr);
     if (createResult != ERROR_SUCCESS) { TraceRegistryFailure(L"create", path, name, createResult); return false; }
@@ -934,6 +938,7 @@ bool WriteRegistryString(HKEY root, const wchar_t* path, const wchar_t* name, co
         static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
     RegCloseKey(key);
     if (result != ERROR_SUCCESS) TraceRegistryFailure(L"write", path, name, result);
+    else changed = true;
     return result == ERROR_SUCCESS;
 }
 
@@ -978,14 +983,15 @@ bool CommandOpensExecutable(const std::wstring& command, const std::wstring& exe
         executable.c_str(), static_cast<int>(executable.size()), TRUE) == CSTR_EQUAL;
 }
 
-bool DeleteRegistryTreeIfPresent(HKEY root, const wchar_t* path) {
+bool DeleteRegistryTreeIfPresent(HKEY root, const wchar_t* path, bool& changed) {
     const LONG result = RegDeleteTreeW(root, path);
-    if (result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return true;
+    if (result == ERROR_SUCCESS) { changed = true; return true; }
+    if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return true;
     TraceRegistryFailure(L"delete", path, L"", result);
     return false;
 }
 
-bool DeleteRegistryValueIfPresent(HKEY root, const wchar_t* path, const wchar_t* name) {
+bool DeleteRegistryValueIfPresent(HKEY root, const wchar_t* path, const wchar_t* name, bool& changed) {
     HKEY key = nullptr;
     const LONG openResult = RegOpenKeyExW(root, path, 0, KEY_SET_VALUE, &key);
     if (openResult == ERROR_FILE_NOT_FOUND || openResult == ERROR_PATH_NOT_FOUND) return true;
@@ -995,7 +1001,8 @@ bool DeleteRegistryValueIfPresent(HKEY root, const wchar_t* path, const wchar_t*
     }
     const LONG deleteResult = RegDeleteValueW(key, name);
     RegCloseKey(key);
-    if (deleteResult == ERROR_SUCCESS || deleteResult == ERROR_FILE_NOT_FOUND) return true;
+    if (deleteResult == ERROR_SUCCESS) { changed = true; return true; }
+    if (deleteResult == ERROR_FILE_NOT_FOUND) return true;
     TraceRegistryFailure(L"delete", path, name, deleteResult);
     return false;
 }
@@ -9840,12 +9847,11 @@ private:
         const bool updateDefaultIcon = !ReadRegistryStringIfPresent(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", existingDefaultIcon) || existingDefaultIcon != iconReference;
         const bool updateTypeOverlay = !ReadRegistryStringIfPresent(HKEY_CURRENT_USER, autoProgIdPath.c_str(), L"TypeOverlay", existingTypeOverlay) || existingTypeOverlay != iconReference;
         bool success = true;
-        if (updateDefaultIcon) success &= WriteRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference);
-        if (updateTypeOverlay) success &= WriteRegistryString(HKEY_CURRENT_USER, autoProgIdPath.c_str(), L"TypeOverlay", iconReference);
+        if (updateDefaultIcon) success &= WriteRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference, changed);
+        if (updateTypeOverlay) success &= WriteRegistryString(HKEY_CURRENT_USER, autoProgIdPath.c_str(), L"TypeOverlay", iconReference, changed);
         if (!updateDefaultIcon && !updateTypeOverlay) return true;
         success &= VerifyRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference);
         success &= VerifyRegistryString(HKEY_CURRENT_USER, autoProgIdPath.c_str(), L"TypeOverlay", iconReference);
-        changed |= success;
         return success;
     }
 
@@ -9874,14 +9880,13 @@ private:
 
         bool success = true;
         if (existingProvider == kObsoleteProviderClsid)
-            success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, (std::wstring(L"Software\\Classes\\CLSID\\") + kObsoleteProviderClsid).c_str());
-        if (updateHandler) success &= WriteRegistryString(HKEY_CURRENT_USER, extensionPath.c_str(), L"", kProviderClsid);
-        if (updateDll) success &= WriteRegistryString(HKEY_CURRENT_USER, serverPath.c_str(), L"", providerDll);
-        if (updateThreadingModel) success &= WriteRegistryString(HKEY_CURRENT_USER, serverPath.c_str(), L"ThreadingModel", L"Both");
+            success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, (std::wstring(L"Software\\Classes\\CLSID\\") + kObsoleteProviderClsid).c_str(), changed);
+        if (updateHandler) success &= WriteRegistryString(HKEY_CURRENT_USER, extensionPath.c_str(), L"", kProviderClsid, changed);
+        if (updateDll) success &= WriteRegistryString(HKEY_CURRENT_USER, serverPath.c_str(), L"", providerDll, changed);
+        if (updateThreadingModel) success &= WriteRegistryString(HKEY_CURRENT_USER, serverPath.c_str(), L"ThreadingModel", L"Both", changed);
         if (updateHandler) success &= VerifyRegistryString(HKEY_CURRENT_USER, extensionPath.c_str(), L"", kProviderClsid);
         if (updateDll) success &= VerifyRegistryString(HKEY_CURRENT_USER, serverPath.c_str(), L"", providerDll);
         if (updateThreadingModel) success &= VerifyRegistryString(HKEY_CURRENT_USER, serverPath.c_str(), L"ThreadingModel", L"Both");
-        changed |= success;
         return success;
     }
 
@@ -9909,6 +9914,7 @@ private:
             { L".stl", L"Viewtrious.stl", L"STL File", 105 },
             { L".3mf", L"Viewtrious.3mf", L"3MF File", 105 },
         };
+        bool registrationChanged = false;
         const auto registerAssociation = [&](const Association& association) {
             const std::wstring progIdPath = std::wstring(L"Software\\Classes\\") + association.progId;
             const std::wstring iconReference = executable + L",-" + std::to_wstring(association.iconResourceId);
@@ -9918,13 +9924,13 @@ private:
             const std::wstring capabilitiesPath = std::wstring(kCapabilitiesPath) + L"\\FileAssociations";
             const std::wstring openWithProgIdsPath = std::wstring(L"Software\\Classes\\") + association.extension + L"\\OpenWithProgids";
             bool success = true;
-            success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, malformedTypeOverlayPath.c_str());
-            success &= WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description);
-            success &= WriteRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference);
-            success &= WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"TypeOverlay", iconReference);
-            success &= WriteRegistryString(HKEY_CURRENT_USER, openCommandPath.c_str(), L"", command);
-            success &= WriteRegistryString(HKEY_CURRENT_USER, capabilitiesPath.c_str(), association.extension, association.progId);
-            success &= WriteRegistryString(HKEY_CURRENT_USER, openWithProgIdsPath.c_str(), association.progId, L"");
+            success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, malformedTypeOverlayPath.c_str(), registrationChanged);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description, registrationChanged);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference, registrationChanged);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"TypeOverlay", iconReference, registrationChanged);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, openCommandPath.c_str(), L"", command, registrationChanged);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, capabilitiesPath.c_str(), association.extension, association.progId, registrationChanged);
+            success &= WriteRegistryString(HKEY_CURRENT_USER, openWithProgIdsPath.c_str(), association.progId, L"", registrationChanged);
             success &= VerifyRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"", association.description);
             success &= VerifyRegistryString(HKEY_CURRENT_USER, defaultIconPath.c_str(), L"", iconReference);
             success &= VerifyRegistryString(HKEY_CURRENT_USER, progIdPath.c_str(), L"TypeOverlay", iconReference);
@@ -9936,27 +9942,25 @@ private:
         };
         bool success = true;
         const std::wstring capabilitiesAssociationsPath = std::wstring(kCapabilitiesPath) + L"\\FileAssociations";
-        success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\Viewtrious.step");
-        success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\Viewtrious.stp");
-        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, capabilitiesAssociationsPath.c_str(), L".step");
-        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, capabilitiesAssociationsPath.c_str(), L".stp");
-        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\.step\\OpenWithProgids", L"Viewtrious.step");
-        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\.stp\\OpenWithProgids", L"Viewtrious.stp");
+        success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\Viewtrious.step", registrationChanged);
+        success &= DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\Viewtrious.stp", registrationChanged);
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, capabilitiesAssociationsPath.c_str(), L".step", registrationChanged);
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, capabilitiesAssociationsPath.c_str(), L".stp", registrationChanged);
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\.step\\OpenWithProgids", L"Viewtrious.step", registrationChanged);
+        success &= DeleteRegistryValueIfPresent(HKEY_CURRENT_USER, L"Software\\Classes\\.stp\\OpenWithProgids", L"Viewtrious.stp", registrationChanged);
         for (const Association& association : associations) success &= registerAssociation(association);
-        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
-        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"viewtrious image viewer");
-        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationIcon", applicationIcon);
-        success &= WriteRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
+        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName, registrationChanged);
+        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"viewtrious image viewer", registrationChanged);
+        success &= WriteRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationIcon", applicationIcon, registrationChanged);
+        success &= WriteRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath, registrationChanged);
         success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationName", kRegisteredApplicationName);
         success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationDescription", L"viewtrious image viewer");
         success &= VerifyRegistryString(HKEY_CURRENT_USER, kCapabilitiesPath, L"ApplicationIcon", applicationIcon);
         success &= VerifyRegistryString(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", kRegisteredApplicationName, kCapabilitiesPath);
-        bool thumbnailProviderChanged = false;
-        success &= RegisterStlThumbnailProvider(executable, thumbnailProviderChanged);
-        bool autoProgIdChanged = false;
-        success &= Reconcile3DAutoProgId(L".stl", executable, autoProgIdChanged);
-        success &= Reconcile3DAutoProgId(L".3mf", executable, autoProgIdChanged);
-        if (success) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+        success &= RegisterStlThumbnailProvider(executable, registrationChanged);
+        success &= Reconcile3DAutoProgId(L".stl", executable, registrationChanged);
+        success &= Reconcile3DAutoProgId(L".3mf", executable, registrationChanged);
+        if (success && registrationChanged) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
         return success;
     }
 

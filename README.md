@@ -24,17 +24,17 @@ the base viewer uses Windows-native graphics, media, shell, and persistence comp
 
 <p align="center">
   <img src="docs/images/viewtrious-icon.png" width="96" alt="images and GIFs">
-  &nbsp;
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <img src="docs/images/viewtrious-video-icon.png" width="96" alt="video">
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <img src="docs/images/viewtrious-3d-icon.png" width="96" alt="3D">
 </p>
 
 <p align="center">
   <strong>images &amp; GIFs</strong>
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <strong>video</strong>
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <strong>STL &amp; 3MF</strong>
 </p>
 

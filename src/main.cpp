@@ -1140,11 +1140,6 @@ struct VideoAdjustmentsPanelLayout {
     bool aboveControls = false;
 };
 
-struct AdjustmentPanelLipLayout {
-    RECT bounds{};
-    bool active = false;
-};
-
 struct AdjustmentPanelActionLayout {
     RECT autoButton;
     RECT userButton;
@@ -1878,8 +1873,7 @@ public:
             return bounds.left < expandedControls.right && bounds.right > expandedControls.left &&
                 bounds.top < expandedControls.bottom && bounds.bottom > expandedControls.top;
         };
-        const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(normalTarget);
-        return intersects(normalTarget.panel) || (lip.active && intersects(lip.bounds));
+        return intersects(normalTarget.panel);
     }
     VideoControlsLayout GetVideoControlsLayout(bool) const {
         const RECT canvas = ModelCanvasBounds();
@@ -2076,8 +2070,7 @@ public:
     VideoAdjustmentsPanelLayout GetVideoAdjustmentsPanelTargetLayout() const {
         const VideoAdjustmentsPanelLayout normal = GetImageAdjustmentsPanelTargetLayout();
         if (!VideoAdjustmentsPanelAboveControls()) return normal;
-        const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(normal);
-        const LONG bottom = lip.active ? lip.bounds.bottom : normal.panel.bottom;
+        const LONG bottom = normal.panel.bottom;
         const RECT controls = GetVideoControlsLayout(false).island;
         const LONG left = controls.left + (controls.right - controls.left - (normal.panel.right - normal.panel.left)) / 2;
         auto target = OffsetVideoAdjustmentsPanelLayout(normal, left - normal.panel.left, controls.top - bottom);
@@ -2263,7 +2256,7 @@ public:
         if (adjustmentPanelNavigation_.pending || !VideoActive() || !videoAdjustmentsPanelOpen_ ||
             videoAdjustmentsPanelOpacity_ * videoControlsOpacity_ <= 0.05f) return false;
         const VideoAdjustmentsPanelLayout& layout = GetVideoAdjustmentsPanelPresentedLayout();
-        const RECT panel = AdjustmentPanelRenderedRevealBounds(layout, videoAdjustmentsPanelOpacity_, GetAdjustmentPanelLipLayout(layout));
+        const RECT panel = AdjustmentPanelRevealBounds(layout, videoAdjustmentsPanelOpacity_);
         return PtInRect(&panel, point) != FALSE;
     }
     bool VideoAdjustmentsPanelVisible() const {
@@ -2327,7 +2320,6 @@ public:
         held.fadeStartOpacity = video ? videoAdjustmentsPanelFadeStartOpacity_ : imageAdjustmentsPanelFadeStartOpacity_;
         held.fadeStartedAt = video ? videoAdjustmentsPanelFadeStartedAt_ : imageAdjustmentsPanelFadeStartedAt_;
         held.layout = video ? GetVideoAdjustmentsPanelPresentedLayout() : GetImageAdjustmentsPanelLayout();
-        held.lip = GetAdjustmentPanelLipLayout(held.layout);
         held.physicalScale = video ? VideoCurrentScale() * RenderTargetDpi() / 96.0f : PhysicalPixelScale();
         held.overlayOpacity = video ? videoControlsOpacity_ : 1.0f;
         held.values = video ? videoAdjustments_ : imageAdjustments_;
@@ -2393,68 +2385,11 @@ public:
         DrawPersistentAdjustmentHud();
         if (opacity < 0.999f) renderTarget_->PopLayer();
     }
-    float AdjustmentDockFillProgress() const {
-        if (adjustmentPanelNavigation_.pending)
-            return adjustmentPanelNavigation_.layout.aboveControls ? 1.0f : 0.0f;
-        if (!VideoActive()) return 0.0f;
-        if (videoAdjustmentsPanelMotion_ == VideoAdjustmentsPanelMotion::Placement) {
-            const float start = videoAdjustmentsPanelPlacementStartLayout_.aboveControls ? 1.0f : 0.0f;
-            const float target = videoAdjustmentsPanelPlacementTargetLayout_.aboveControls ? 1.0f : 0.0f;
-            // Finish the notch fill before the bottom corners begin their docking morph.
-            const float progress = SmoothTransitionProgress(std::min(1.0f,
-                static_cast<float>(GetTickCount64() - videoAdjustmentsPanelPlacementStartedAt_) /
-                (static_cast<float>(kVideoAdjustmentsPlacementDurationMs) * 0.65f)));
-            return start + (target - start) * progress;
-        }
-        return videoAdjustmentsPanelPresentedLayout_.aboveControls ? 1.0f : 0.0f;
-    }
-    // Join only at the dock, never while the placement animation is in flight.
-    bool GetDockedAdjustmentJoin(RECT& foot) const {
-        const auto& held = adjustmentPanelNavigation_;
-        const auto& panel = held.pending ? held.layout : videoAdjustmentsPanelPresentedLayout_;
-        if (!panel.aboveControls || (!held.pending && (!VideoActive() || !VideoAdjustmentsPanelVisible()))) return false;
-        if ((held.pending ? held.opacity : videoAdjustmentsPanelOpacity_) <= 0.001f) return false;
-        const float controlsOpacity = TransitionOverlayActive() && transitionOverlayHasVideoControls_ ?
-            transitionOverlayVideoControlsOpacity_ : videoControlsOpacity_;
-        if (controlsOpacity <= 0.001f) return false;
-        const auto lip = held.pending ? held.lip : GetAdjustmentPanelLipLayout(panel);
-        if (!lip.active) return false;
-        foot = lip.bounds;
-        foot.right = panel.panel.right; // Fill the docked notch without moving footer controls.
-        const RECT controls = GetVideoControlsLayout(false).island;
-        const LONG radius = MulDiv(10, GetDpiForWindow(window_), 96);
-        return foot.bottom == controls.top && foot.left - radius > controls.left + radius &&
-            foot.right + radius < controls.right - radius;
-    }
-    bool GetAdjustmentDockMorph(RECT& foot, float& progress) const {
-        if (GetDockedAdjustmentJoin(foot)) { progress = 1.0f; return true; }
-        if (adjustmentPanelNavigation_.pending || !VideoActive() || !VideoAdjustmentsPanelVisible() ||
-            videoAdjustmentsPanelMotion_ != VideoAdjustmentsPanelMotion::Placement ||
-            !videoAdjustmentsPanelPlacementTargetLayout_.aboveControls) return false;
-        const float flight = std::min(1.0f,
-            static_cast<float>(GetTickCount64() - videoAdjustmentsPanelPlacementStartedAt_) /
-            static_cast<float>(kVideoAdjustmentsPlacementDurationMs));
-        if (flight <= 0.70f) return false;
-        const auto lip = GetAdjustmentPanelLipLayout(videoAdjustmentsPanelPresentedLayout_);
-        if (!lip.active) return false;
-        foot = lip.bounds;
-        foot.right = videoAdjustmentsPanelPresentedLayout_.panel.right;
-        // Only morph toward a dock that has room for the final exposed shoulders.
-        const RECT controls = GetVideoControlsLayout(false).island;
-        const RECT target = videoAdjustmentsPanelPlacementTargetLayout_.panel;
-        const LONG radius = MulDiv(10, GetDpiForWindow(window_), 96);
-        if (target.left - radius <= controls.left + radius || target.right + radius >= controls.right - radius) return false;
-        progress = SmoothTransitionProgress((flight - 0.70f) / 0.30f);
-        return true;
-    }
     void DrawNavigatingAdjustmentPanel() {
-        DrawAdjustmentDockConnection();
         auto& held = adjustmentPanelNavigation_;
         if (held.pending) {
             if (held.opacity <= 0.001f) return;
-            drawingHeldAdjustmentPanel_ = true;
             DrawAdjustmentPanel(held.layout, held.values, held.opacity, held.source, false);
-            drawingHeldAdjustmentPanel_ = false;
         } else if (VideoActive() && VideoAdjustmentsPanelVisible()) {
             DrawAdjustmentPanel(GetVideoAdjustmentsPanelPresentedLayout(), videoAdjustments_, videoAdjustmentsPanelOpacity_,
                 videoAdjustmentSource_, videoAdjustmentsOriginalPreviewActive_);
@@ -2466,7 +2401,7 @@ public:
     bool HeldAdjustmentPanelContains(POINT point) const {
         const auto& held = adjustmentPanelNavigation_;
         if (!held.pending || held.opacity * held.overlayOpacity <= 0.05f) return false;
-        const RECT bounds = AdjustmentPanelRenderedRevealBounds(held.layout, held.opacity, held.lip);
+        const RECT bounds = AdjustmentPanelRevealBounds(held.layout, held.opacity);
         return PtInRect(&bounds, point) != FALSE;
     }
     void SetAdjustmentPanelOpen(bool& panelOpen, bool& fadeActive, float& opacity,
@@ -2767,63 +2702,8 @@ public:
         const int panelTop = std::clamp(desiredTop, minimumTop, maximumTop);
         return MakeVideoAdjustmentsPanelLayout({ panelLeft, panelTop, panelLeft + width, panelTop + height }, false);
     }
-    AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel, bool tutorialPreview = false) const {
-        if (drawingHeldAdjustmentPanel_) return adjustmentPanelNavigation_.lip;
-        // The lipped silhouette is intended for the bottom-right HUD anchor. Other HUD
-        // positions retain the established rounded rectangle rather than forcing a foot
-        // through a constrained or unrelated lower-overlay layout.
-        const bool hudAtBottomRight = tutorialPreview || zoomHudPosition_ == ZoomHudPosition::BottomRight;
-        if (!hudAtBottomRight) return {};
-
-        const UINT dpi = GetDpiForWindow(window_);
-        const LONG radius = MulDiv(10, dpi, 96);
-        const LONG clearance = MulDiv(8, dpi, 96);
-        const LONG minimumFootWidth = MulDiv(220, dpi, 96);
-        // Video translates the finished image panel, including its footer, as one unit.
-        const auto normal = VideoActive() || tutorialPreview ? GetImageAdjustmentsPanelTargetLayout(tutorialPreview) : panel;
-        const ZoomHudLayout hud = GetImageZoomHudLayout(tutorialPreview);
-        const LONG footLeft = normal.panel.left;
-        const LONG footRight = std::min(normal.panel.right - radius * 2, hud.combined.left - clearance);
-        if (footRight - footLeft < minimumFootWidth) return {};
-
-        LONG footBottom = normal.panel.bottom;
-        if (VideoActive() || tutorialPreview) {
-            // Match the image filmstrip's 16-DIP canvas-bottom anchor. Videos have no
-            // source_, so FilmstripEligible()/GetFilmstripBounds() cannot supply it.
-            footBottom = static_cast<LONG>(ImageCanvasBounds().bottom) - MulDiv(16, dpi, 96);
-        } else if (FilmstripEligible() && !filmstripAdjustmentSuppressed_) {
-            footBottom = GetFilmstripBounds().bottom;
-        } else {
-            return {};
-        }
-
-        if (footBottom - normal.panel.bottom < MulDiv(34, dpi, 96)) return {};
-        RECT foot{ footLeft, normal.panel.bottom, footRight, footBottom };
-        OffsetRect(&foot, panel.panel.left - normal.panel.left, panel.panel.top - normal.panel.top);
-        return { foot, true };
-    }
-    AdjustmentPanelActionLayout GetAdjustmentPanelActionLayout(const VideoAdjustmentsPanelLayout& panel,
-        const AdjustmentPanelLipLayout& lip) const {
-        if (!lip.active) return { panel.autoButton, panel.userButton, panel.saveButton, panel.originalButton, panel.resetButton };
-        const UINT dpi = GetDpiForWindow(window_);
-        const LONG inset = MulDiv(4, dpi, 96);
-        const LONG gap = MulDiv(5, dpi, 96);
-        const LONG buttonHeight = MulDiv(30, dpi, 96);
-        const std::array<LONG, 5> widths{ MulDiv(42, dpi, 96), MulDiv(38, dpi, 96), MulDiv(42, dpi, 96), buttonHeight, MulDiv(44, dpi, 96) };
-        const LONG bottom = lip.bounds.bottom - inset;
-        const LONG top = bottom - buttonHeight;
-        LONG left = lip.bounds.left + inset;
-        auto next = [&](LONG width) {
-            const RECT result{ left, top, left + width, bottom };
-            left = result.right + gap;
-            return result;
-        };
-        const RECT autoButton = next(widths[0]);
-        const RECT originalButton = next(widths[3]);
-        const RECT userButton = next(widths[1]);
-        const RECT saveButton = next(widths[2]);
-        const RECT resetButton{ lip.bounds.right - inset - widths[4], top, lip.bounds.right - inset, bottom };
-        return { autoButton, userButton, saveButton, originalButton, resetButton };
+    AdjustmentPanelActionLayout GetAdjustmentPanelActionLayout(const VideoAdjustmentsPanelLayout& panel) const {
+        return { panel.autoButton, panel.userButton, panel.saveButton, panel.originalButton, panel.resetButton };
     }
     AdjustmentFooterButton AdjustmentFooterButtonAt(const AdjustmentPanelActionLayout& actions, POINT point) const {
         if (PtInRect(&actions.autoButton, point)) return AdjustmentFooterButton::Auto;
@@ -2838,10 +2718,10 @@ public:
         AdjustmentFooterButton hovered = AdjustmentFooterButton::None;
         if (VideoAdjustmentsPanelOpen()) {
             const auto& panel = GetVideoAdjustmentsPanelPresentedLayout();
-            hovered = AdjustmentFooterButtonAt(GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel)), point);
+            hovered = AdjustmentFooterButtonAt(GetAdjustmentPanelActionLayout(panel), point);
         } else if (ImageAdjustmentsPanelOpen()) {
             const auto& panel = GetImageAdjustmentsPanelLayout();
-            hovered = AdjustmentFooterButtonAt(GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel)), point);
+            hovered = AdjustmentFooterButtonAt(GetAdjustmentPanelActionLayout(panel), point);
         }
         if (hovered == adjustmentFooterHovered_) return;
         UpdateAdjustmentFooterVisuals();
@@ -2864,15 +2744,6 @@ public:
             else adjustmentFooterSaveConfirmedAt_ = 0;
         }
         return active;
-    }
-    RECT AdjustmentPanelRenderedRevealBounds(const VideoAdjustmentsPanelLayout& panel, float reveal,
-        const AdjustmentPanelLipLayout& lip) const {
-        if (!lip.active) return AdjustmentPanelRevealBounds(panel, reveal);
-        RECT bounds = panel.panel;
-        bounds.bottom = lip.bounds.bottom;
-        const float progress = std::clamp(reveal, 0.0f, 1.0f);
-        bounds.top = static_cast<LONG>(std::lround(bounds.bottom + (panel.panel.top - bounds.bottom) * progress));
-        return bounds;
     }
     const ImageAdjustmentsPanelLayout& GetImageAdjustmentsPanelLayout() const {
         return ImageAdjustmentsPanelVisible() ? videoAdjustmentsPanelPresentedLayout_ : imageAdjustmentsPanelTargetLayout_;
@@ -2904,7 +2775,7 @@ public:
     bool ImageAdjustmentsPanelContains(POINT point) const {
         if (adjustmentPanelNavigation_.pending || !imageAdjustmentsPanelOpen_) return false;
         const ImageAdjustmentsPanelLayout& layout = GetImageAdjustmentsPanelLayout();
-        const RECT panel = AdjustmentPanelRenderedRevealBounds(layout, imageAdjustmentsPanelOpacity_, GetAdjustmentPanelLipLayout(layout));
+        const RECT panel = AdjustmentPanelRevealBounds(layout, imageAdjustmentsPanelOpacity_);
         return PtInRect(&panel, point) != FALSE;
     }
     bool ImageAdjustmentsPanelVisible() const {
@@ -3040,7 +2911,7 @@ public:
         if (imageAdjustmentsPanelOpen_) {
             const ImageAdjustmentsPanelLayout panel = GetImageAdjustmentsPanelLayout();
             if (ImageAdjustmentsPanelContains(point)) {
-                const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
+                const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel);
                 adjustmentFooterPressed_ = AdjustmentFooterButtonAt(actions, point);
                 const int thumb = AdjustmentSliderThumbAt(panel, imageAdjustments_, point);
                 const int slider = thumb >= 0 ? thumb : AdjustmentSliderAt(panel, point);
@@ -3266,7 +3137,7 @@ public:
         if (videoAdjustmentsPanelOpen_) {
             const VideoAdjustmentsPanelLayout& panel = GetVideoAdjustmentsPanelPresentedLayout();
             if (VideoAdjustmentsPanelContains(point)) {
-                const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, GetAdjustmentPanelLipLayout(panel));
+                const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel);
                 adjustmentFooterPressed_ = AdjustmentFooterButtonAt(actions, point);
                 const int thumb = AdjustmentSliderThumbAt(panel, videoAdjustments_, point);
                 const int slider = thumb >= 0 ? thumb : AdjustmentSliderAt(panel, point);
@@ -12624,8 +12495,7 @@ private:
         }
     }
 
-    void DrawAdjustmentPanelContent(const VideoAdjustmentsPanelLayout& panel, const AdjustmentPanelLipLayout& lip,
-        const ImageAdjustments& adjustments, float opacity,
+    void DrawAdjustmentPanelContent(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float opacity,
         AdjustmentSource source, bool originalActive, ID2D1SolidColorBrush* text, ID2D1SolidColorBrush* accent, ID2D1SolidColorBrush* orange,
         ID2D1SolidColorBrush* track, ID2D1SolidColorBrush* hover, bool interactive = true) {
         const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
@@ -12661,7 +12531,7 @@ private:
             DrawOverlayText(label, static_cast<float>(bounds.left), static_cast<float>(bounds.top), static_cast<float>(bounds.right - bounds.left), static_cast<float>(bounds.bottom - bounds.top), 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, glyph, true, false, true);
             glyph->SetOpacity(opacity);
         };
-        const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel, lip);
+        const AdjustmentPanelActionLayout actions = GetAdjustmentPanelActionLayout(panel);
         drawButton(actions.autoButton, L"AUTO", AdjustmentFooterButton::Auto, source == AdjustmentSource::Auto ? orange : text);
         const bool userPresetAvailable = interactive && userAdjustmentPresetSaved_;
         drawButton(actions.userButton, L"USER", AdjustmentFooterButton::User, source == AdjustmentSource::User ? orange : (userPresetAvailable ? accent : text), userPresetAvailable);
@@ -12672,159 +12542,12 @@ private:
         drawButton(actions.resetButton, L"RESET", AdjustmentFooterButton::Reset, text);
     }
 
-    void DrawAdjustmentDockConnection() {
-        RECT foot{};
-        float morph = 0.0f;
-        if (!GetAdjustmentDockMorph(foot, morph)) return;
-        const auto& held = adjustmentPanelNavigation_;
-        const auto& panel = held.pending ? held.layout : videoAdjustmentsPanelPresentedLayout_;
-        const float reveal = held.pending ? held.opacity : videoAdjustmentsPanelOpacity_;
-        const float opacity = AdjustmentPanelPresentationOpacity(reveal);
-        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
-        ComPtr<ID2D1SolidColorBrush> surface, border;
-        if (FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceFill(UseDarkAppMode(), opacity), &surface)) ||
-            FAILED(renderTarget_->CreateSolidColorBrush(AdjustmentSurfaceBorder(UseDarkAppMode(), opacity), &border))) return;
-        const RECT revealed = AdjustmentPanelRenderedRevealBounds(panel, reveal, { foot, true });
-        // Draw the connector behind the unchanged shared panel/content. Its shoulders
-        // extend outside the panel's own reveal clip.
-        renderTarget_->PushAxisAlignedClip(D2D1::RectF(foot.left - 11.0f * scale, static_cast<float>(revealed.top),
-            foot.right + 11.0f * scale, foot.bottom + scale), D2D1_ANTIALIAS_MODE_ALIASED);
-        DrawAdjustmentDockShoulders(foot, surface.Get(), border.Get(), scale, morph);
-        renderTarget_->PopAxisAlignedClip();
-    }
-    void DrawAdjustmentDockShoulders(const RECT& foot, ID2D1Brush* surface, ID2D1Brush* border, float scale, float morph) {
-        const float left = static_cast<float>(foot.left), right = static_cast<float>(foot.right);
-        const float bottom = static_cast<float>(foot.bottom), radius = 10.0f * scale;
-        const float kappa = 0.55228475f;
-        const auto p = [](float x, float y) { return D2D1::Point2F(x, y); };
-        // Interpolate the same cubic from a convex bottom corner to a concave shoulder.
-        const float reach = radius * (1.0f - 2.0f * morph);
-        const auto leftShoulder = D2D1::BezierSegment(p(left, bottom - radius + radius * kappa),
-            p(left + reach * (1.0f - kappa), bottom), p(left + reach, bottom));
-        const auto rightShoulder = D2D1::BezierSegment(p(right - reach * (1.0f - kappa), bottom),
-            p(right, bottom - radius + radius * kappa), p(right, bottom - radius));
-        ComPtr<ID2D1PathGeometry> fill, outline;
-        ComPtr<ID2D1GeometrySink> sink;
-        if (FAILED(d2dFactory_->CreatePathGeometry(&fill)) || FAILED(fill->Open(&sink))) return;
-        sink->BeginFigure(p(left, bottom - radius), D2D1_FIGURE_BEGIN_FILLED);
-        sink->AddBezier(leftShoulder);
-        sink->AddLine(p(right - reach, bottom));
-        sink->AddBezier(rightShoulder);
-        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-        if (FAILED(sink->Close())) return;
-        sink.Reset();
-        if (FAILED(d2dFactory_->CreatePathGeometry(&outline)) || FAILED(outline->Open(&sink))) return;
-        sink->BeginFigure(p(left, bottom - radius), D2D1_FIGURE_BEGIN_HOLLOW);
-        sink->AddBezier(leftShoulder);
-        sink->EndFigure(D2D1_FIGURE_END_OPEN);
-        sink->BeginFigure(p(right - reach, bottom), D2D1_FIGURE_BEGIN_HOLLOW);
-        sink->AddBezier(rightShoulder);
-        sink->EndFigure(D2D1_FIGURE_END_OPEN);
-        if (FAILED(sink->Close())) return;
-        renderTarget_->FillGeometry(fill.Get(), surface);
-        renderTarget_->DrawGeometry(outline.Get(), border, scale);
-        const float borderOpacity = border->GetOpacity();
-        border->SetOpacity(borderOpacity * (1.0f - morph));
-        renderTarget_->DrawLine(p(left + reach, bottom), p(right - reach, bottom), border, scale);
-        border->SetOpacity(borderOpacity);
-    }
-
-    void DrawAdjustmentPanelShell(const VideoAdjustmentsPanelLayout& panel, const AdjustmentPanelLipLayout& lip,
-        ID2D1Brush* surface, ID2D1Brush* border, float scale, bool allowDocking = true) {
+    void DrawAdjustmentPanelShell(const VideoAdjustmentsPanelLayout& panel,
+        ID2D1Brush* surface, ID2D1Brush* border, float scale) {
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
         const float radius = 10.0f * scale;
-        RECT join{};
-        float morph = 0.0f;
-        if (allowDocking && GetAdjustmentDockMorph(join, morph) && lip.active && join.bottom == lip.bounds.bottom &&
-            join.left == panel.panel.left && join.right == panel.panel.right) {
-            // The separately drawn bottom band morphs during approach; keep the
-            // unchanged shared content above it without double-filling that band.
-            const D2D1_RECT_F docked = D2D1::RectF(static_cast<float>(panel.panel.left),
-                static_cast<float>(panel.panel.top), static_cast<float>(panel.panel.right), static_cast<float>(join.bottom));
-            renderTarget_->PushAxisAlignedClip(D2D1::RectF(docked.left - scale, docked.top - scale,
-                docked.right + scale, docked.bottom - radius), D2D1_ANTIALIAS_MODE_ALIASED);
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(docked, radius, radius), surface);
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(docked, radius, radius), border, scale);
-            renderTarget_->PopAxisAlignedClip();
-            return;
-        }
-        if (!lip.active) {
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), radius, radius), surface);
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), radius, radius), border, scale);
-            return;
-        }
-
-        ComPtr<ID2D1PathGeometry> silhouette;
-        ComPtr<ID2D1GeometrySink> sink;
-        if (FAILED(d2dFactory_->CreatePathGeometry(&silhouette)) || FAILED(silhouette->Open(&sink))) {
-            renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), radius, radius), surface);
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), radius, radius), border, scale);
-            return;
-        }
-        const float left = static_cast<float>(panel.panel.left), top = static_cast<float>(panel.panel.top);
-        const float right = static_cast<float>(panel.panel.right), bottom = static_cast<float>(panel.panel.bottom);
-        const float footLeft = static_cast<float>(lip.bounds.left), footRight = static_cast<float>(lip.bounds.right), footBottom = static_cast<float>(lip.bounds.bottom);
-        const float kappa = 0.55228475f;
-        const auto point = [](float x, float y) { return D2D1::Point2F(x, y); };
-        sink->BeginFigure(point(left + radius, top), D2D1_FIGURE_BEGIN_FILLED);
-        sink->AddLine(point(right - radius, top));
-        sink->AddBezier(D2D1::BezierSegment(point(right - radius + radius * kappa, top), point(right, top + radius - radius * kappa), point(right, top + radius)));
-        sink->AddLine(point(right, bottom - radius));
-        sink->AddBezier(D2D1::BezierSegment(point(right, bottom - radius + radius * kappa), point(right - radius + radius * kappa, bottom), point(right - radius, bottom)));
-        sink->AddLine(point(footRight + radius, bottom));
-        sink->AddBezier(D2D1::BezierSegment(point(footRight + radius - radius * kappa, bottom), point(footRight, bottom + radius - radius * kappa), point(footRight, bottom + radius)));
-        sink->AddLine(point(footRight, footBottom - radius));
-        sink->AddBezier(D2D1::BezierSegment(point(footRight, footBottom - radius + radius * kappa), point(footRight - radius + radius * kappa, footBottom), point(footRight - radius, footBottom)));
-        sink->AddLine(point(footLeft + radius, footBottom));
-        sink->AddBezier(D2D1::BezierSegment(point(footLeft + radius - radius * kappa, footBottom), point(footLeft, footBottom - radius + radius * kappa), point(footLeft, footBottom - radius)));
-        sink->AddLine(point(footLeft, top + radius));
-        sink->AddBezier(D2D1::BezierSegment(point(left, top + radius - radius * kappa), point(left + radius - radius * kappa, top), point(left + radius, top)));
-        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-        if (FAILED(sink->Close())) return;
-        const float dockFill = AdjustmentDockFillProgress();
-        if (dockFill > 0.0f) {
-            const auto filled = D2D1::RoundedRect(D2D1::RectF(left, top, right, footBottom), radius, radius);
-            if (dockFill >= 1.0f) {
-                renderTarget_->FillRoundedRectangle(filled, surface);
-                renderTarget_->DrawRoundedRectangle(filled, border, scale);
-                return;
-            }
-            ComPtr<ID2D1RoundedRectangleGeometry> filledGeometry;
-            ComPtr<ID2D1PathGeometry> extension;
-            ComPtr<ID2D1GeometrySink> extensionSink;
-            if (SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(filled, &filledGeometry)) &&
-                SUCCEEDED(d2dFactory_->CreatePathGeometry(&extension)) && SUCCEEDED(extension->Open(&extensionSink)) &&
-                SUCCEEDED(filledGeometry->CombineWithGeometry(silhouette.Get(), D2D1_COMBINE_MODE_EXCLUDE,
-                    D2D1::IdentityMatrix(), extensionSink.Get())) && SUCCEEDED(extensionSink->Close())) {
-                // Fade only the missing area, never a second fill over the existing panel.
-                renderTarget_->FillGeometry(silhouette.Get(), surface);
-                const float surfaceOpacity = surface->GetOpacity(), borderOpacity = border->GetOpacity();
-                surface->SetOpacity(surfaceOpacity * dockFill);
-                renderTarget_->FillGeometry(extension.Get(), surface);
-                surface->SetOpacity(surfaceOpacity);
-                // Keep the common border unchanged; crossfade only the notch outline.
-                const float changeLeft = footRight - radius - scale;
-                const float changeTop = bottom - radius - scale;
-                const auto drawClippedBorder = [&](D2D1_RECT_F clip) {
-                    renderTarget_->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
-                    renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
-                    renderTarget_->PopAxisAlignedClip();
-                };
-                drawClippedBorder(D2D1::RectF(left - scale, top - scale, right + scale, changeTop));
-                drawClippedBorder(D2D1::RectF(left - scale, changeTop, changeLeft, footBottom + scale));
-                renderTarget_->PushAxisAlignedClip(D2D1::RectF(changeLeft, changeTop, right + scale,
-                    footBottom + scale), D2D1_ANTIALIAS_MODE_ALIASED);
-                border->SetOpacity(borderOpacity * (1.0f - dockFill));
-                renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
-                border->SetOpacity(borderOpacity * dockFill);
-                renderTarget_->DrawRoundedRectangle(filled, border, scale);
-                border->SetOpacity(borderOpacity);
-                renderTarget_->PopAxisAlignedClip();
-                return;
-            }
-        }
-        renderTarget_->FillGeometry(silhouette.Get(), surface);
-        renderTarget_->DrawGeometry(silhouette.Get(), border, scale);
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), radius, radius), surface);
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect(panel.panel), radius, radius), border, scale);
     }
 
     void DrawAdjustmentPanel(const VideoAdjustmentsPanelLayout& panel, const ImageAdjustments& adjustments, float reveal,
@@ -12841,12 +12564,11 @@ private:
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 100.0f / 255.0f : 170.0f / 255.0f, dark ? 104.0f / 255.0f : 170.0f / 255.0f, dark ? 114.0f / 255.0f : 170.0f / 255.0f, 0.75f * panelOpacity), &track)) ||
             FAILED(renderTarget_->CreateSolidColorBrush(D2D1::ColorF(dark ? 66.0f / 255.0f : 224.0f / 255.0f, dark ? 70.0f / 255.0f : 224.0f / 255.0f, dark ? 80.0f / 255.0f : 224.0f / 255.0f, panelOpacity), &hover))) return;
         const auto rect = [](const RECT& value) { return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top), static_cast<float>(value.right), static_cast<float>(value.bottom)); };
-        const AdjustmentPanelLipLayout lip = GetAdjustmentPanelLipLayout(panel, tutorialPreview);
-        const RECT revealed = AdjustmentPanelRenderedRevealBounds(panel, reveal, lip);
+        const RECT revealed = AdjustmentPanelRevealBounds(panel, reveal);
         if (revealed.bottom <= revealed.top) return;
         renderTarget_->PushAxisAlignedClip(rect(revealed), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        DrawAdjustmentPanelShell(panel, lip, surface.Get(), border.Get(), scale, !tutorialPreview);
-        DrawAdjustmentPanelContent(panel, lip, adjustments, panelOpacity, source, originalActive, text.Get(), accent.Get(), orange.Get(), track.Get(), hover.Get(), !tutorialPreview);
+        DrawAdjustmentPanelShell(panel, surface.Get(), border.Get(), scale);
+        DrawAdjustmentPanelContent(panel, adjustments, panelOpacity, source, originalActive, text.Get(), accent.Get(), orange.Get(), track.Get(), hover.Get(), !tutorialPreview);
         renderTarget_->PopAxisAlignedClip();
     }
 
@@ -13083,23 +12805,7 @@ private:
     }
     void DrawVideoControlsShell(const D2D1_RECT_F& island, ID2D1Brush* surface, ID2D1Brush* border, float scale) {
         renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), surface);
-        RECT join{};
-        if (GetDockedAdjustmentJoin(join)) {
-            // Keep the exposed border; omit the seam underneath the foot and shoulders.
-            const float radius = 10.0f * scale;
-            const D2D1_RECT_F clips[] = {
-                D2D1::RectF(island.left - scale, island.top - scale, join.left - radius, island.top + scale),
-                D2D1::RectF(join.right + radius, island.top - scale, island.right + scale, island.top + scale),
-                D2D1::RectF(island.left - scale, island.top + scale, island.right + scale, island.bottom + scale)
-            };
-            for (const auto& clip : clips) {
-                renderTarget_->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
-                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border, scale);
-                renderTarget_->PopAxisAlignedClip();
-            }
-        } else {
-            renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border, scale);
-        }
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(island, 11.0f * scale, 11.0f * scale), border, scale);
     }
     void DrawVideoPlaybackControls(bool drawZoomHud = true, float overlayOpacity = -1.0f) {
         if (lowerUiMorph_.active && !drawingLowerUiContents_) {
@@ -15156,11 +14862,9 @@ private:
         ULONGLONG fadeStartedAt = 0;
         std::wstring path;
         VideoAdjustmentsPanelLayout layout{};
-        AdjustmentPanelLipLayout lip{};
         ImageAdjustments values{};
         AdjustmentSource source = AdjustmentSource::None;
     } adjustmentPanelNavigation_;
-    bool drawingHeldAdjustmentPanel_ = false;
     bool imageAdjustmentsPanelOpen_ = false;
     bool imageAdjustmentsPanelFadeActive_ = false;
     float imageAdjustmentsPanelOpacity_ = 0.0f;

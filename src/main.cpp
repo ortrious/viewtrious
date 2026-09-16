@@ -2051,6 +2051,16 @@ public:
         const RECT reset{ right - panelPadding - resetButtonWidth, buttonBottom - buttonHeight, right - panelPadding, buttonBottom };
         return { panel, sliders, autoButton, user, save, original, reset, aboveControls };
     }
+    int AdjustmentPanelNaturalHeight() const {
+        const int dpi = GetDpiForWindow(window_);
+        const int sliderTopInset = MulDiv(16, dpi, 96);
+        const int rowHeight = MulDiv(32, dpi, 96);
+        const int sliderHeight = MulDiv(20, dpi, 96);
+        const int contentToFooterGap = MulDiv(8, dpi, 96);
+        const int footerHeight = MulDiv(30, dpi, 96);
+        const int bottomPadding = MulDiv(12, dpi, 96);
+        return sliderTopInset + 6 * rowHeight + sliderHeight + contentToFooterGap + footerHeight + bottomPadding;
+    }
     RECT AdjustmentPanelRevealBounds(const VideoAdjustmentsPanelLayout& panel, float reveal) const {
         RECT bounds = panel.panel;
         const float progress = std::clamp(reveal, 0.0f, 1.0f);
@@ -2750,9 +2760,12 @@ public:
         const int gap = MulDiv(8, dpi, 96);
         const int width = std::min(MulDiv(370, dpi, 96), std::max(MulDiv(220, dpi, 96), static_cast<int>(canvas.right - canvas.left) - MulDiv(24, dpi, 96)));
         const int panelLeft = std::clamp(static_cast<int>(hud.combined.right) - width, static_cast<int>(canvas.left) + gap, std::max(static_cast<int>(canvas.left) + gap, static_cast<int>(canvas.right) - gap - width));
-        const int bottom = static_cast<int>(hud.combined.top) - gap;
-        const int height = std::min(MulDiv(238, dpi, 96), std::max(1, bottom - (static_cast<int>(canvas.top) + gap)));
-        return MakeVideoAdjustmentsPanelLayout({ panelLeft, bottom - height, panelLeft + width, bottom }, false);
+        const int height = AdjustmentPanelNaturalHeight();
+        const int minimumTop = static_cast<int>(canvas.top) + gap;
+        const int maximumTop = std::max(minimumTop, static_cast<int>(canvas.bottom) - gap - height);
+        const int desiredTop = static_cast<int>(hud.combined.top) - gap - height;
+        const int panelTop = std::clamp(desiredTop, minimumTop, maximumTop);
+        return MakeVideoAdjustmentsPanelLayout({ panelLeft, panelTop, panelLeft + width, panelTop + height }, false);
     }
     AdjustmentPanelLipLayout GetAdjustmentPanelLipLayout(const VideoAdjustmentsPanelLayout& panel, bool tutorialPreview = false) const {
         if (drawingHeldAdjustmentPanel_) return adjustmentPanelNavigation_.lip;
@@ -8298,7 +8311,6 @@ public:
     }
     void ArmExternalMediaDrag(POINT point) {
         CancelExternalMediaDragArming();
-        externalMediaDragConsumed_ = false;
         if (!ExternalMediaDragEligibleAt(point)) return;
         externalMediaDragArmed_ = true;
         std::error_code error;
@@ -8306,12 +8318,6 @@ public:
         externalMediaDragPath_ = error ? currentPath_ : absolutePath.wstring();
         externalMediaDragOpenAttemptId_ = activeOpenAttemptId_;
     }
-    bool ConsumeExternalMediaDragGesture() {
-        if (!externalMediaDragConsumed_) return false;
-        externalMediaDragConsumed_ = false;
-        return true;
-    }
-    void ClearExternalMediaDragGestureConsumption() { externalMediaDragConsumed_ = false; }
     bool OutsideExternalMediaDragGate(POINT screenPoint) const {
         RECT outer{};
         if (!GetWindowRect(window_, &outer)) return false;
@@ -8470,18 +8476,15 @@ public:
         }
         return true;
     }
-    void BeginExternalMediaFileDrag() {
+    bool BeginExternalMediaFileDrag() {
         if (!externalMediaDragArmed_ || !ExternalMediaDragSourceAvailable() ||
             externalMediaDragOpenAttemptId_ != activeOpenAttemptId_) {
             CancelExternalMediaDragArming();
-            return;
+            return false;
         }
 
         const std::wstring path = externalMediaDragPath_;
-        externalMediaDragArmed_ = false;
-        externalMediaDragOutsideSince_ = 0;
-        KillTimer(window_, kExternalMediaDragIntentTimer);
-        externalMediaDragConsumed_ = true;
+        CancelExternalMediaDragArming();
         CancelSwipeNavigation();
         EndPan();
         if (GetCapture() == window_) ReleaseCapture();
@@ -8489,7 +8492,7 @@ public:
         ComPtr<IShellItem> item;
         ComPtr<IDataObject> dataObject;
         if (FAILED(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&item))) ||
-            FAILED(item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&dataObject)))) return;
+            FAILED(item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&dataObject)))) return true;
         SetPreferredCopyDropEffect(dataObject.Get());
         HBITMAP dragBitmap = nullptr;
         const bool customDragImage = InitializeNativeMediaDragImage(dataObject.Get(), dragBitmap);
@@ -8506,6 +8509,7 @@ public:
         externalMediaDragInProgress_ = false;
         if (registered) RevokeDragDrop(window_);
         if (dragBitmap) DeleteObject(dragBitmap);
+        return true;
     }
     bool UpdateExternalMediaDragIntent() {
         if (!externalMediaDragArmed_) return false;
@@ -8528,8 +8532,7 @@ public:
             return false;
         }
         if (now - externalMediaDragOutsideSince_ < kExternalMediaDragOutsideDwellMs) return false;
-        BeginExternalMediaFileDrag();
-        return externalMediaDragConsumed_;
+        return BeginExternalMediaFileDrag();
     }
 
     void BeginPan(POINT point) {
@@ -15217,7 +15220,6 @@ private:
     bool dragging_ = false;
     bool swipeNavigationPending_ = false;
     bool externalMediaDragArmed_ = false;
-    bool externalMediaDragConsumed_ = false;
     bool externalMediaDragInProgress_ = false;
     ULONGLONG externalMediaDragOutsideSince_ = 0;
     bool dissolveAwaitingTarget_ = false;
@@ -15786,7 +15788,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_LBUTTONDOWN: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        viewer->ClearExternalMediaDragGestureConsumption();
         if (viewer->TutorialActive()) {
             const ButtonKind button = viewer->ButtonAt(point);
             if (button == ButtonKind::TutorialSkip || button == ButtonKind::TutorialNext) {
@@ -16042,7 +16043,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->ClearComponentsPanelHover(); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->UpdateGifControlsMouse({ -1, -1 }); viewer->VideoControlsMouseLeave(); return 0;
     case WM_LBUTTONUP: {
-        if (viewer->ConsumeExternalMediaDragGesture()) return 0;
         viewer->CancelExternalMediaDragArming();
         if (viewer->ComponentsPanelInteractionActive()) {
             viewer->EndComponentsPanelInteraction();

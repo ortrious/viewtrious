@@ -45,7 +45,8 @@ Section "Install"
   File /oname=miniz.txt "${SOURCE_DIR}\app\licenses\miniz.txt"
   File /oname=notice.txt "${SOURCE_DIR}\NOTICE"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  CreateShortcut "$SMPROGRAMS\viewtrious.lnk" "$INSTDIR\app\Viewtrious.exe" "" "$INSTDIR\app\Viewtrious.exe" 0 "$INSTDIR\app"
+  SetOutPath "$INSTDIR\app"
+  CreateShortcut "$SMPROGRAMS\viewtrious.lnk" "$INSTDIR\app\Viewtrious.exe" "" "$INSTDIR\app\Viewtrious.exe" 0 SW_SHOWNORMAL
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "DisplayName" "viewtrious"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "DisplayVersion" "${PRODUCT_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "Publisher" "Ortrious"
@@ -76,7 +77,6 @@ Section "Uninstall"
   RMDir "$INSTDIR\app\addons"
   RMDir "$INSTDIR\app\shellextensions"
   RMDir "$INSTDIR\app"
-remove_root:
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 SectionEnd

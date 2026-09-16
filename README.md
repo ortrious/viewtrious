@@ -16,6 +16,15 @@
 
 STEP/STP and an OCCT runtime are not part of the current product.
 
+## Licensing
+
+Viewtrious is source-available under the Apache License 2.0 with the Commons Clause License Condition v1.0. Source may be viewed, modified, and redistributed subject to those terms. The Commons Clause restricts selling Viewtrious itself, or a product or service whose value derives entirely or substantially from Viewtrious functionality, as defined by the clause. Commercial and internal business use are not categorically prohibited.
+
+See [LICENSE](LICENSE) for the controlling terms.
+
+Copyright 2026 Dustin Wilson
+Published under the Ortrious brand.
+
 ## Build prerequisites
 
 - Windows 11

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 1.0.0.0 LANGUAGES CXX)
+project(Viewtrious VERSION 1.0.0.1 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -50,6 +50,14 @@ add_executable(Viewtrious WIN32
     src/shell_thumbnail_reader.cpp
     src/video_hover_frame_stream.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc"
+)
+set_target_properties(Viewtrious PROPERTIES OUTPUT_NAME viewtrious)
+set(_viewtrious_case_rename_tmp "$<TARGET_FILE_DIR:Viewtrious>/viewtrious.rename.tmp")
+add_custom_command(TARGET Viewtrious POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E rm -f "${_viewtrious_case_rename_tmp}"
+    COMMAND "${CMAKE_COMMAND}" -E rename "$<TARGET_FILE:Viewtrious>" "${_viewtrious_case_rename_tmp}"
+    COMMAND "${CMAKE_COMMAND}" -E rename "${_viewtrious_case_rename_tmp}" "$<TARGET_FILE:Viewtrious>"
+    VERBATIM
 )
 
 add_library(ViewtriousStlThumbnail SHARED

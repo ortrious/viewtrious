@@ -18,27 +18,15 @@ the base viewer uses Windows-native graphics, media, shell, and persistence comp
 
 ## media families
 
-<table align="center">
-  <tr>
-    <td align="center" width="140">
-      <img src="docs/images/viewtrious-icon.png" width="96" alt="images and GIFs"><br>
-      <strong>images &amp; GIFs</strong>
-    </td>
-    <td align="center" width="140">
-      <img src="docs/images/viewtrious-video-icon.png" width="96" alt="video"><br>
-      <strong>video</strong>
-    </td>
-    <td align="center" width="140">
-      <img src="docs/images/viewtrious-3d-icon.png" width="96" alt="3D"><br>
-      <strong>STL &amp; 3MF</strong>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/images/viewtrious-media-families.png"
+       width="430"
+       alt="viewtrious media families: images and GIFs, video, STL and 3MF">
+</p>
 
 ## highlights
 
 - native C++20 / Win32 application
-- images, animated GIFs, video, STL, and 3MF in one viewer
 - fast same-folder navigation with a filmstrip that follows the selected media
 - media adjustment panel with Exposure, Brightness, Contrast, Shadows, Highlights, Saturation, and Sharpness
 - deterministic auto adjustments, user presets, and optional per-media adjustment persistence

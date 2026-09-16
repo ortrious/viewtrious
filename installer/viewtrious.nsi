@@ -4,7 +4,7 @@ RequestExecutionLevel user
 !include "FileFunc.nsh"
 
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "1.0.0.0"
+  !define PRODUCT_VERSION "1.0.0.1"
 !endif
 !ifndef RELEASE_DIR
   !error "RELEASE_DIR must name the Release artifact directory."
@@ -61,15 +61,18 @@ shell_extension_interactive:
 shell_extension_written:
   SetOutPath "$INSTDIR\app"
   ClearErrors
-  File "${RELEASE_DIR}\Viewtrious.exe"
+  File "${RELEASE_DIR}\viewtrious.exe"
   IfErrors 0 app_written
   StrCmp $CustomUiMode "1" 0 app_interactive
     SetErrorLevel 21
     Abort
 app_interactive:
-    MessageBox MB_ICONSTOP "Viewtrious.exe could not be updated. Close viewtrious and retry."
+    MessageBox MB_ICONSTOP "viewtrious.exe could not be updated. Close viewtrious and retry."
     Abort
 app_written:
+  Delete "$INSTDIR\app\viewtrious.rename.tmp"
+  Rename "$INSTDIR\app\viewtrious.exe" "$INSTDIR\app\viewtrious.rename.tmp"
+  Rename "$INSTDIR\app\viewtrious.rename.tmp" "$INSTDIR\app\viewtrious.exe"
   SetOutPath "$INSTDIR\app\addons"
   SetOutPath "$INSTDIR\app\licenses"
   File /oname=viewtrious.txt "${SOURCE_DIR}\LICENSE"
@@ -77,20 +80,20 @@ app_written:
   File /oname=notice.txt "${SOURCE_DIR}\NOTICE"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   SetOutPath "$INSTDIR\app"
-  CreateShortcut "$SMPROGRAMS\viewtrious.lnk" "$INSTDIR\app\Viewtrious.exe" "" "$INSTDIR\app\Viewtrious.exe" 0 SW_SHOWNORMAL
+  CreateShortcut "$SMPROGRAMS\viewtrious.lnk" "$INSTDIR\app\viewtrious.exe" "" "$INSTDIR\app\viewtrious.exe" 0 SW_SHOWNORMAL
   Delete "$DESKTOP\viewtrious.lnk"
   StrCmp $DesktopShortcut "1" 0 +2
-    CreateShortcut "$DESKTOP\viewtrious.lnk" "$INSTDIR\app\Viewtrious.exe" "" "$INSTDIR\app\Viewtrious.exe" 0 SW_SHOWNORMAL
+    CreateShortcut "$DESKTOP\viewtrious.lnk" "$INSTDIR\app\viewtrious.exe" "" "$INSTDIR\app\viewtrious.exe" 0 SW_SHOWNORMAL
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "DisplayName" "viewtrious"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "DisplayVersion" "${PRODUCT_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "Publisher" "Ortrious"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "DisplayIcon" "$INSTDIR\app\Viewtrious.exe"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "DisplayIcon" "$INSTDIR\app\viewtrious.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious" "NoRepair" 1
-  ExecWait '"$INSTDIR\app\Viewtrious.exe" --register-integration' $0
+  ExecWait '"$INSTDIR\app\viewtrious.exe" --register-integration' $0
   IntCmp $0 0 integration_registered
   StrCmp $CustomUiMode "1" 0 integration_interactive
     SetErrorLevel 22
@@ -101,8 +104,8 @@ integration_registered:
 SectionEnd
 
 Section "Uninstall"
-  ExecWait '"$INSTDIR\app\Viewtrious.exe" --unregister-integration' $0
-  ExecWait '"$INSTDIR\app\Viewtrious.exe" --cleanup-data-for-uninstall' $0
+  ExecWait '"$INSTDIR\app\viewtrious.exe" --unregister-integration' $0
+  ExecWait '"$INSTDIR\app\viewtrious.exe" --cleanup-data-for-uninstall' $0
   IntCmp $0 0 +2
     MessageBox MB_ICONEXCLAMATION "Viewtrious could not fully remove its application data. It was left in place rather than risking an active desktop wallpaper."
   Delete "$SMPROGRAMS\viewtrious.lnk"
@@ -110,7 +113,8 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\viewtrious"
   DeleteRegKey HKCU "Software\Viewtrious"
   Delete "$INSTDIR\app\shellextensions\ViewtriousStlThumbnail.dll"
-  Delete "$INSTDIR\app\Viewtrious.exe"
+  Delete "$INSTDIR\app\viewtrious.rename.tmp"
+  Delete "$INSTDIR\app\viewtrious.exe"
   Delete "$INSTDIR\app\licenses\viewtrious.txt"
   Delete "$INSTDIR\app\licenses\miniz.txt"
   Delete "$INSTDIR\app\licenses\notice.txt"

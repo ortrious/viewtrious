@@ -665,7 +665,7 @@ void LaunchInstalledApplication() {
         g_app.failureCode = kLaunchFailure;
         return;
     }
-    const std::wstring application = std::wstring(localAppData) + L"\\viewtrious\\app\\Viewtrious.exe";
+    const std::wstring application = std::wstring(localAppData) + L"\\viewtrious\\app\\viewtrious.exe";
     CoTaskMemFree(localAppData);
     const HINSTANCE launched = ShellExecuteW(g_app.window, L"open", application.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     if (reinterpret_cast<INT_PTR>(launched) > 32) {

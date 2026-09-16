@@ -21,7 +21,7 @@ $cmake = Get-Command cmake.exe -ErrorAction Stop | Select-Object -First 1 -Expan
 & $cmake --build $release --config Release --target Viewtrious
 if ($LASTEXITCODE -ne 0) { throw "Release build failed with exit code $LASTEXITCODE." }
 
-$viewer = Join-Path $release 'Viewtrious.exe'
+$viewer = Join-Path $release 'viewtrious.exe'
 if (-not (Test-Path -LiteralPath $viewer -PathType Leaf)) {
     throw "Missing Release artifact: $viewer"
 }
@@ -38,7 +38,7 @@ if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force 
 
 $licenses = Join-Path $packageDirectory 'licenses'
 New-Item -ItemType Directory -Path $licenses -Force | Out-Null
-Copy-Item -LiteralPath $viewer -Destination (Join-Path $packageDirectory 'Viewtrious.exe')
+Copy-Item -LiteralPath $viewer -Destination (Join-Path $packageDirectory 'viewtrious.exe')
 [System.IO.File]::WriteAllBytes((Join-Path $packageDirectory 'viewtrious.portable'), [byte[]]@())
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $licenses 'viewtrious.txt')
 Copy-Item -LiteralPath (Join-Path $root 'app\licenses\miniz.txt') -Destination (Join-Path $licenses 'miniz.txt')

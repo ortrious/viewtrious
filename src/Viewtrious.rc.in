@@ -29,7 +29,7 @@ BEGIN
             VALUE "FileDescription", "viewtrious"
             VALUE "FileVersion", "@PROJECT_VERSION@"
             VALUE "InternalName", "Viewtrious"
-            VALUE "OriginalFilename", "Viewtrious.exe"
+            VALUE "OriginalFilename", "viewtrious.exe"
             VALUE "ProductName", "viewtrious"
             VALUE "ProductVersion", "@PROJECT_VERSION@"
         END

@@ -19,7 +19,7 @@ foreach ($line in (& cmd.exe /d /s /c "`"$vcvars`" >nul && set")) {
 $cmake = Get-Command cmake.exe -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source
 & $cmake --build $release --config Release --target Viewtrious ViewtriousStlThumbnail ViewtriousSetup
 if ($LASTEXITCODE -ne 0) { throw "Release build failed with exit code $LASTEXITCODE." }
-$required = @('Viewtrious.exe', 'ViewtriousStlThumbnail.dll')
+$required = @('viewtrious.exe', 'ViewtriousStlThumbnail.dll')
 foreach ($name in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $release $name) -PathType Leaf)) {
         throw "Missing Release artifact: $(Join-Path $release $name). Build the configured Release tree first."

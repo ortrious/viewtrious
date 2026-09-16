@@ -662,14 +662,23 @@ protected:
 constexpr std::array<ShortcutEntry, 13> kKeyboardShortcutEntries{{
     { L"Ctrl + O", L"Open file" }, { L"Ctrl + C", L"Copy media" }, { L"Ctrl + P", L"Print" }, { L"Delete", L"Move media to Recycle Bin" },
     { L"Ctrl + Z", L"Restore last deleted media" },
-    { L"Esc", L"Exit fullscreen, or close viewtrious" }, { L"Left Arrow", L"Previous media" }, { L"Right Arrow", L"Next media" }, { L"+", L"Zoom in" },
-    { L"-", L"Zoom out" }, { L"0", L"Reset zoom to center" }, { L"F11", L"Fullscreen" }, { L"Space", L"Play / pause video" },
+    { L"Esc", L"Close current UI / exit fullscreen / close Viewtrious" }, { L"Left Arrow", L"Previous media" }, { L"Right Arrow", L"Next media" }, { L"+", L"Zoom in" },
+    { L"-", L"Zoom out" }, { L"0", L"Fit media / model" }, { L"F11", L"Fullscreen" }, { L"Space", L"Cancel Auto-play Next / play or pause video" },
 }};
-constexpr std::array<ShortcutEntry, 4> kMouseNavigationEntries{{
-    { L"Mouse Wheel (2D)", L"Zoom in / out" }, { L"Left Mouse Drag (2D)", L"Pan" },
-    { L"Right Mouse Click", L"Open right-click menu" }, { L"Double-click video", L"Toggle fullscreen" },
+constexpr std::array<ShortcutEntry, 6> kMouse2DNavigationEntries{{
+    { L"Mouse Wheel", L"Zoom in / out" }, { L"Left Mouse Drag", L"Pan when zoomed" },
+    { L"Right Mouse Click", L"Open right-click menu" }, { L"Double-click image", L"Toggle fit / actual pixels" },
+    { L"Double-click video", L"Toggle fullscreen" }, { L"Middle double-click", L"Toggle fit / actual pixels" },
 }};
-constexpr size_t kShortcutEntryCount = kKeyboardShortcutEntries.size() + kMouseNavigationEntries.size();
+constexpr std::array<ShortcutEntry, 3> kFilmstripNavigationEntries{{
+    { L"Mouse Wheel", L"Scroll filmstrip" }, { L"Left Mouse Drag", L"Scroll filmstrip" },
+    { L"Downward Swipe", L"Dismiss transient filmstrip" },
+}};
+constexpr std::array<ShortcutEntry, 6> kMouse3DNavigationEntries{{
+    { L"Left Mouse Drag", L"Orbit" }, { L"Middle Mouse Drag", L"Pan" }, { L"Mouse Wheel", L"Dolly" },
+    { L"Right Mouse Click", L"Select face / open right-click menu" }, { L"Double-click model", L"Select and fit object" },
+    { L"Middle double-click", L"Home / reset view" },
+}};
 constexpr wchar_t kBugReportUrl[] = L"https://github.com/ortrious/Viewtrious/issues/new?template=bug_report.md";
 constexpr wchar_t kFeatureRequestUrl[] = L"https://github.com/ortrious/Viewtrious/issues/new?template=feature_request.md";
 
@@ -13431,31 +13440,17 @@ private:
         renderTarget_->DrawTextLayout(D2D1::Point2F(bounds.left, bounds.top), layout.Get(), foreground.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
-    int GetShortcutRowHeight() const {
-        RECT client{};
-        GetClientRect(window_, &client);
-        const UINT dpi = GetDpiForWindow(window_);
-        const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
-        const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
-        const int normalRow = MulDiv(25, dpi, 96);
-        const int compactRow = MulDiv(18, dpi, 96);
-        const int fixedHeight = MulDiv(114, dpi, 96);
-        return fixedHeight + static_cast<int>(kShortcutEntryCount) * normalRow <= availableHeight ? normalRow :
-            std::max(compactRow, (availableHeight - fixedHeight) / static_cast<int>(kShortcutEntryCount));
-    }
-
     RECT GetOverlayBounds() const {
         if (settingsLayoutProbeBounds_) return *settingsLayoutProbeBounds_;
         RECT client{};
         GetClientRect(window_, &client);
         if (!HasOverlay()) return {};
         const UINT dpi = GetDpiForWindow(window_);
-        const int rowHeight = GetShortcutRowHeight();
-        const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 460 :
+        const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 920 :
             overlay_ == OverlayKind::Settings ? 760 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
             overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::Help ? 700 : overlay_ == OverlayKind::PrintError && printErrorForDng_ ? 500 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
-            ? MulDiv(114, dpi, 96) + static_cast<int>(kShortcutEntryCount) * rowHeight
+            ? MulDiv(620, dpi, 96)
             : overlay_ == OverlayKind::Settings ? 0 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
             overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::Help ? MulDiv(680, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(printErrorForDng_ ? 250 : 190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
@@ -13810,25 +13805,70 @@ private:
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
             renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::KeyboardShortcuts) {
-            DrawOverlayText(L"Keyboard Shortcuts", left, static_cast<float>(bounds.top) + panelPadding,
-                contentWidth, 24.0f * dpiScale, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            const float shortcutWidth = 176.0f * dpiScale;
-            float y = static_cast<float>(bounds.top) + panelPadding + 38.0f * dpiScale;
-            const float shortcutRowHeight = static_cast<float>(GetShortcutRowHeight());
-            const auto drawRows = [&](const auto& entries) {
+            ComPtr<ID2D1SolidColorBrush> cardFill;
+            const D2D1_COLOR_F cardColor = dark ? D2D1::ColorF(35.0f / 255.0f, 38.0f / 255.0f, 45.0f / 255.0f)
+                : D2D1::ColorF(242.0f / 255.0f, 242.0f / 255.0f, 242.0f / 255.0f);
+            if (FAILED(renderTarget_->CreateSolidColorBrush(cardColor, &cardFill))) return;
+            renderTarget_->PushAxisAlignedClip(panelRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            const float gutter = 20.0f * dpiScale;
+            const float columnWidth = std::max(1.0f, (contentWidth - gutter) * 0.5f);
+            const float leftColumn = left;
+            const float rightColumn = left + columnWidth + gutter;
+            const float headingHeight = 24.0f * dpiScale;
+            const float cardPadding = 12.0f * dpiScale;
+            const float cardHeadingHeight = 18.0f * dpiScale;
+            const float cardGap = 10.0f * dpiScale;
+            const float cardsTop = static_cast<float>(bounds.top) + panelPadding + headingHeight + 10.0f * dpiScale;
+            const float cardsBottom = static_cast<float>(bounds.bottom) - panelPadding;
+            const float rightFixedHeight = (cardPadding * 2.0f + cardHeadingHeight) * 3.0f + cardGap * 2.0f + 16.0f * dpiScale;
+            const float rightRows = static_cast<float>(kMouse2DNavigationEntries.size() + kFilmstripNavigationEntries.size() + kMouse3DNavigationEntries.size());
+            const float rowHeight = std::clamp((cardsBottom - cardsTop - rightFixedHeight) / std::max(1.0f, rightRows),
+                16.0f * dpiScale, 25.0f * dpiScale);
+            const float rowFontSize = rowHeight < 21.0f * dpiScale ? 10.5f : 12.5f;
+            const float bindingWidth = std::clamp(columnWidth * 0.37f, 72.0f * dpiScale, 152.0f * dpiScale);
+            const auto drawRows = [&](const auto& entries, float x, float y, float width) {
                 for (const ShortcutEntry& line : entries) {
-                    const float fontSize = shortcutRowHeight < 22.0f * dpiScale ? 10.5f : 12.5f;
-                    DrawOverlayText(line.shortcut, left, y, shortcutWidth, 18.0f * dpiScale, fontSize, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-                    DrawOverlayText(line.description, left + shortcutWidth, y, contentWidth - shortcutWidth,
-                        18.0f * dpiScale, fontSize, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get());
-                    y += shortcutRowHeight;
+                    DrawOverlayText(line.shortcut, x, y, bindingWidth, rowHeight, rowFontSize,
+                        DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
+                    DrawOverlayText(line.description, x + bindingWidth, y, width - bindingWidth, rowHeight, rowFontSize,
+                        DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), true);
+                    y += rowHeight;
                 }
+                return y;
             };
-            drawRows(kKeyboardShortcutEntries);
-            y += 10.0f * dpiScale;
-            DrawOverlayText(L"Mouse Navigation", left, y, contentWidth, 18.0f * dpiScale, 12.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
-            y += 22.0f * dpiScale;
-            drawRows(kMouseNavigationEntries);
+            const auto drawCard = [&](const D2D1_RECT_F& card, const wchar_t* heading, const auto& entries, const wchar_t* footer) {
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(card, 10.0f * dpiScale, 10.0f * dpiScale), cardFill.Get());
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(card, 10.0f * dpiScale, 10.0f * dpiScale), borderBrush.Get(), dpiScale);
+                float y = card.top + cardPadding;
+                if (heading) {
+                    DrawOverlayText(heading, card.left + cardPadding, y, card.right - card.left - cardPadding * 2.0f,
+                        cardHeadingHeight, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
+                    y += cardHeadingHeight;
+                }
+                y = drawRows(entries, card.left + cardPadding, y, card.right - card.left - cardPadding * 2.0f);
+                if (footer) DrawOverlayText(footer, card.left + cardPadding, y, card.right - card.left - cardPadding * 2.0f,
+                    16.0f * dpiScale, 10.5f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), true);
+            };
+            const float keyboardCardHeight = cardPadding * 2.0f + cardHeadingHeight + rowHeight * static_cast<float>(kKeyboardShortcutEntries.size());
+            const D2D1_RECT_F keyboardCard = D2D1::RectF(leftColumn, static_cast<float>(bounds.top) + panelPadding,
+                leftColumn + columnWidth, static_cast<float>(bounds.top) + panelPadding + keyboardCardHeight);
+            DrawOverlayText(L"Mouse Navigation", rightColumn, static_cast<float>(bounds.top) + panelPadding,
+                columnWidth, headingHeight, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true);
+            drawCard(keyboardCard, L"Keyboard Shortcuts", kKeyboardShortcutEntries, nullptr);
+            float rightY = cardsTop;
+            const auto cardHeight = [&](size_t rows, bool footer = false) {
+                return cardPadding * 2.0f + cardHeadingHeight + rowHeight * static_cast<float>(rows) + (footer ? 16.0f * dpiScale : 0.0f);
+            };
+            const float mouse2DHeight = cardHeight(kMouse2DNavigationEntries.size());
+            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse2DHeight), L"2D", kMouse2DNavigationEntries, nullptr);
+            rightY += mouse2DHeight + cardGap;
+            const float filmstripHeight = cardHeight(kFilmstripNavigationEntries.size(), true);
+            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + filmstripHeight), L"Filmstrip",
+                kFilmstripNavigationEntries, L"Requires swipe mode; Always Show Filmstrip off.");
+            rightY += filmstripHeight + cardGap;
+            const float mouse3DHeight = cardHeight(kMouse3DNavigationEntries.size());
+            drawCard(D2D1::RectF(rightColumn, rightY, rightColumn + columnWidth, rightY + mouse3DHeight), L"3D", kMouse3DNavigationEntries, nullptr);
+            renderTarget_->PopAxisAlignedClip();
         } else if (overlay_ == OverlayKind::Settings) {
             const float settingsLeft = static_cast<float>(SettingsContentLeft());
             const float settingsWidth = static_cast<float>(SettingsContentRight() - SettingsContentLeft());

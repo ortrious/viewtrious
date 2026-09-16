@@ -90,6 +90,7 @@ struct App {
     ComPtr<IDWriteTextFormat> buttonFormat;
     ComPtr<IDWriteTextFormat> overlayTitleFormat;
     std::wstring legalText;
+    std::wstring installLocation;
 };
 
 App g_app;
@@ -166,6 +167,27 @@ std::wstring ModulePath() {
         if (length < static_cast<DWORD>(buffer.size() - 1)) return std::wstring(buffer.data(), length);
         buffer.resize(buffer.size() * 2);
     }
+}
+
+std::wstring ResolveInstallLocation() {
+    PWSTR localAppData{};
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData))) {
+        std::wstring path = localAppData;
+        CoTaskMemFree(localAppData);
+        path += L"\\viewtrious";
+        return path;
+    }
+    const DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
+    if (required > 1) {
+        std::wstring path(static_cast<std::size_t>(required), L'\0');
+        const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", path.data(), required);
+        if (length > 0 && length < required) {
+            path.resize(length);
+            path += L"\\viewtrious";
+            return path;
+        }
+    }
+    return L"%LOCALAPPDATA%\\viewtrious";
 }
 
 bool ReadExactly(HANDLE file, void* destination, DWORD bytes) {
@@ -418,18 +440,26 @@ void DrawTextBlock(
         options);
 }
 
-void DrawFacet(float x1, float y1, float x2, float y2, float x3, float y3, const D2D1_COLOR_F& color) {
-    ComPtr<ID2D1PathGeometry> geometry;
-    if (FAILED(g_app.d2dFactory->CreatePathGeometry(&geometry))) return;
-    ComPtr<ID2D1GeometrySink> sink;
-    if (FAILED(geometry->Open(&sink))) return;
-    sink->BeginFigure(D2D1::Point2F(x1, y1), D2D1_FIGURE_BEGIN_FILLED);
-    const D2D1_POINT_2F points[] = {D2D1::Point2F(x2, y2), D2D1::Point2F(x3, y3)};
-    sink->AddLines(points, 2);
-    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-    if (FAILED(sink->Close())) return;
-    const auto brush = Brush(color);
-    g_app.renderTarget->FillGeometry(geometry.Get(), brush.Get());
+void DrawGlow(D2D1_POINT_2F center, float radiusX, float radiusY, UINT32 rgb, float opacity) {
+    const D2D1_GRADIENT_STOP stops[] = {
+        {0.0f, Color(rgb, opacity)},
+        {0.42f, Color(rgb, opacity * 0.45f)},
+        {0.76f, Color(rgb, opacity * 0.12f)},
+        {1.0f, Color(rgb, 0.0f)},
+    };
+    ComPtr<ID2D1GradientStopCollection> stopCollection;
+    if (FAILED(g_app.renderTarget->CreateGradientStopCollection(
+            stops,
+            static_cast<UINT32>(_countof(stops)),
+            D2D1_GAMMA_2_2,
+            D2D1_EXTEND_MODE_CLAMP,
+            &stopCollection))) return;
+    ComPtr<ID2D1RadialGradientBrush> brush;
+    if (FAILED(g_app.renderTarget->CreateRadialGradientBrush(
+            D2D1::RadialGradientBrushProperties(center, D2D1::Point2F(), radiusX, radiusY),
+            stopCollection.Get(),
+            &brush))) return;
+    g_app.renderTarget->FillEllipse(D2D1::Ellipse(center, radiusX, radiusY), brush.Get());
 }
 
 void DrawButton(const D2D1_RECT_F& rect, const wchar_t* label, HitTarget target, bool primary, bool focused) {
@@ -498,18 +528,39 @@ void Paint() {
 
     const auto leftBrush = Brush(Color(0x101318));
     g_app.renderTarget->FillRectangle(D2D1::RectF(0.0f, 0.0f, 302.0f, kClientHeight), leftBrush.Get());
-    DrawFacet(0.0f, 0.0f, 158.0f, 0.0f, 0.0f, 104.0f, Color(0x00a8f3, 0.28f));
-    DrawFacet(158.0f, 0.0f, 74.0f, 74.0f, 0.0f, 104.0f, Color(0x00a8f3, 0.12f));
-    DrawFacet(302.0f, 0.0f, 302.0f, 106.0f, 206.0f, 0.0f, Color(0x21d909, 0.26f));
-    DrawFacet(206.0f, 0.0f, 302.0f, 106.0f, 252.0f, 74.0f, Color(0x21d909, 0.12f));
-    DrawFacet(0.0f, 450.0f, 0.0f, 348.0f, 152.0f, 450.0f, Color(0xff7a00, 0.28f));
-    DrawFacet(0.0f, 348.0f, 152.0f, 450.0f, 68.0f, 370.0f, Color(0xff7a00, 0.13f));
+    g_app.renderTarget->PushAxisAlignedClip(D2D1::RectF(0.0f, 0.0f, 302.0f, kClientHeight), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    DrawGlow(D2D1::Point2F(22.0f, 52.0f), 235.0f, 215.0f, 0x00a8f3, 0.30f);
+    DrawGlow(D2D1::Point2F(286.0f, 72.0f), 190.0f, 230.0f, 0x21d909, 0.23f);
+    DrawGlow(D2D1::Point2F(18.0f, 420.0f), 250.0f, 190.0f, 0xff7a00, 0.28f);
+    g_app.renderTarget->PopAxisAlignedClip();
     if (g_app.logo) {
+        constexpr D2D1_RECT_F logoBounds = {62.0f, 114.0f, 240.0f, 292.0f};
+        const D2D1_SIZE_F sourceSize = g_app.logo->GetSize();
+        const float sourceInset = std::min(sourceSize.width, sourceSize.height) * (12.0f / 1024.0f);
+        const float destinationScale = (logoBounds.right - logoBounds.left) / sourceSize.width;
+        const float destinationInset = sourceInset * destinationScale;
         g_app.renderTarget->DrawBitmap(
             g_app.logo.Get(),
-            D2D1::RectF(62.0f, 114.0f, 240.0f, 292.0f),
+            D2D1::RectF(
+                logoBounds.left + destinationInset,
+                logoBounds.top + destinationInset,
+                logoBounds.right - destinationInset,
+                logoBounds.bottom - destinationInset),
             1.0f,
-            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+            D2D1::RectF(
+                sourceInset,
+                sourceInset,
+                sourceSize.width - sourceInset,
+                sourceSize.height - sourceInset));
+        const D2D1_ANTIALIAS_MODE previousAntialiasMode = g_app.renderTarget->GetAntialiasMode();
+        g_app.renderTarget->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        const D2D1_ELLIPSE ringEllipse = D2D1::Ellipse(D2D1::Point2F(151.0f, 203.0f), 88.2f, 88.2f);
+        const auto ringSeparatorBrush = Brush(Color(0x101318, 0.96f));
+        g_app.renderTarget->DrawEllipse(ringEllipse, ringSeparatorBrush.Get(), 2.35f);
+        const auto ringBrush = Brush(Color(0x00a8f3, 0.78f));
+        g_app.renderTarget->DrawEllipse(ringEllipse, ringBrush.Get(), 1.15f);
+        g_app.renderTarget->SetAntialiasMode(previousAntialiasMode);
     }
     DrawClose(CloseRect(), HitTarget::close);
     DrawTextBlock(L"viewtrious", g_app.titleFormat.Get(), D2D1::RectF(338.0f, 75.0f, 714.0f, 126.0f), Color(0xffffff));
@@ -530,7 +581,8 @@ void Paint() {
             g_app.renderTarget->DrawLine(D2D1::Point2F(349.0f, 328.0f), D2D1::Point2F(355.0f, 318.0f), check.Get(), 2.0f);
         }
         DrawTextBlock(L"Create a desktop shortcut", g_app.bodyFormat.Get(), D2D1::RectF(368.0f, 307.0f, 620.0f, 340.0f), Color(0xd6dbe4));
-        DrawTextBlock(L"install location  %LOCALAPPDATA%\\viewtrious", g_app.smallFormat.Get(), D2D1::RectF(338.0f, 351.0f, 714.0f, 378.0f), Color(0x8995a3));
+        DrawTextBlock(L"installs for your Windows account", g_app.bodyFormat.Get(), D2D1::RectF(338.0f, 344.0f, 714.0f, 368.0f), Color(0x98a3b0));
+        DrawTextBlock(g_app.installLocation, g_app.smallFormat.Get(), D2D1::RectF(338.0f, 369.0f, 714.0f, 390.0f), Color(0x74808e));
         D2D1_COLOR_F licenseColor = Color(0x29a8ed);
         if (g_app.pressed == HitTarget::license) licenseColor = Color(0x1586c1);
         else if (g_app.hover == HitTarget::license) licenseColor = Color(0x5ec5ff);
@@ -812,6 +864,7 @@ bool InitializeFactories(HINSTANCE instance) {
     g_app.legalText = L"VIEWTRIOUS LICENSE\n\n" + Utf8Resource(instance, kLicenseResource) +
         L"\n\n\nTHIRD-PARTY NOTICES\n\n" + Utf8Resource(instance, kNoticeResource) +
         L"\n\nminiz\n\n" + Utf8Resource(instance, kMinizResource);
+    g_app.installLocation = ResolveInstallLocation();
     return !g_app.legalText.empty();
 }
 

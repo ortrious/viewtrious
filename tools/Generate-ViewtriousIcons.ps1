@@ -8,7 +8,7 @@ $sourceDirectory = Join-Path $root 'new_icons'
 $assetDirectory = Join-Path $root 'assets'
 $sizes = 16, 20, 24, 32, 40, 48, 64, 256
 
-function Get-PngBytes([System.Drawing.Image]$source, [int]$size) {
+function Get-PngBytes([System.Drawing.Image]$source, [int]$size, [int]$padding) {
     $bitmap = [System.Drawing.Bitmap]::new($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     try {
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -18,7 +18,8 @@ function Get-PngBytes([System.Drawing.Image]$source, [int]$size) {
             $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
             $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
             $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-            $graphics.DrawImage($source, [System.Drawing.Rectangle]::new(0, 0, $size, $size))
+            $innerSize = $size - (2 * $padding)
+            $graphics.DrawImage($source, [System.Drawing.Rectangle]::new($padding, $padding, $innerSize, $innerSize))
         } finally {
             $graphics.Dispose()
         }
@@ -34,14 +35,25 @@ function Get-PngBytes([System.Drawing.Image]$source, [int]$size) {
     }
 }
 
+function Get-SmallFramePadding([int]$size) {
+    switch ($size) {
+        16 { return 1 }
+        20 { return 1 }
+        24 { return 1 }
+        32 { return 2 }
+        default { return 0 }
+    }
+}
+
 function New-Icon([string]$smallSourceName, [string]$largeSourceName, [string]$outputName) {
     $small = [System.Drawing.Image]::FromFile((Join-Path $sourceDirectory $smallSourceName))
     $large = [System.Drawing.Image]::FromFile((Join-Path $sourceDirectory $largeSourceName))
     try {
         $frames = foreach ($size in $sizes) {
+            $padding = Get-SmallFramePadding $size
             [pscustomobject]@{
                 Size = $size
-                Bytes = Get-PngBytes $(if ($size -le 32) { $small } else { $large }) $size
+                Bytes = Get-PngBytes $(if ($size -le 32) { $small } else { $large }) $size $padding
             }
         }
         $stream = [System.IO.MemoryStream]::new()

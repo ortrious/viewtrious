@@ -87,8 +87,6 @@ constexpr UINT kFilmstripHoverPreviewCompleteMessage = WM_APP + 14;
 // holding up every later visible filmstrip thumbnail, without creating an
 // unbounded background decode workload.
 constexpr size_t kFilmstripThumbnailWorkerCount = 2;
-// TEMPORARY HEIC/HEIF/JPEG/PNG timing diagnostics. Remove after the physical comparison run.
-constexpr bool kFilmstripThumbnailTimingDiagnostics = true;
 // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is available on Windows 10 version 1803 and later.
 constexpr DWORD kHighResolutionWaitableTimerFlag = 0x00000002;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
@@ -555,72 +553,24 @@ struct LanczosResult {
     bool succeeded = false;
     D2D1_RECT_F destination{};
 };
-struct FilmstripThumbnailTiming {
-    LONGLONG frequency = 0;
-    LONGLONG enqueued = 0;
-    LONGLONG dequeued = 0;
-    LONGLONG decodeFinished = 0;
-    LONGLONG posted = 0;
-    LONGLONG uiReceived = 0;
-    LONGLONG uiPublished = 0;
-    DWORD workerThreadId = 0;
-    double factoryMs = 0.0;
-    double decoderMs = 0.0;
-    double getFrameMs = 0.0;
-    double metadataMs = 0.0;
-    double converterMs = 0.0;
-    double clipperMs = 0.0;
-    double scalerMs = 0.0;
-    double finalConverterMs = 0.0;
-    double copyPixelsMs = 0.0;
-    double orientationMs = 0.0;
-    double embeddedProbeMs = 0.0;
-    UINT sourceWidth = 0;
-    UINT sourceHeight = 0;
-    UINT orientation = 1;
-    HRESULT decoderThumbnailResult = E_PENDING;
-    HRESULT frameThumbnailResult = E_PENDING;
-    HRESULT decoderPreviewResult = E_PENDING;
-    HRESULT embeddedDecodeResult = E_PENDING;
-    UINT embeddedWidth = 0;
-    UINT embeddedHeight = 0;
-    const wchar_t* embeddedKind = L"none";
-    const wchar_t* sourceKind = L"full-frame";
-};
 struct FilmstripThumbnailRequest {
     std::wstring path;
     uint64_t folderGeneration = 0;
     uint64_t itemGeneration = 0;
     UINT targetHeight = 0;
-    FilmstripThumbnailTiming timing;
 };
 struct FilmstripThumbnailResult : PixelBuffer {
     FilmstripThumbnailRequest request;
     float aspect = 1.0f;
     HRESULT result = E_FAIL;
-    FilmstripThumbnailTiming timing;
 };
 struct FilmstripThumbnailEntry : PixelBuffer {
     std::wstring path;
     uint64_t itemGeneration = 0;
     float aspect = 1.0f;
-    FilmstripThumbnailTiming timing;
-    bool diagnosticCacheHitReported = false;
     // Derived solely from pixels; it cannot retain the source file or WIC objects.
     ComPtr<ID2D1Bitmap> bitmap;
 };
-LONGLONG FilmstripThumbnailDiagnosticNow() {
-    LARGE_INTEGER now{};
-    return QueryPerformanceCounter(&now) ? now.QuadPart : 0;
-}
-LONGLONG FilmstripThumbnailDiagnosticFrequency() {
-    LARGE_INTEGER frequency{};
-    return QueryPerformanceFrequency(&frequency) ? frequency.QuadPart : 0;
-}
-double FilmstripThumbnailDiagnosticMs(LONGLONG started, LONGLONG finished, LONGLONG frequency) {
-    return started > 0 && finished >= started && frequency > 0 ?
-        static_cast<double>(finished - started) * 1000.0 / static_cast<double>(frequency) : 0.0;
-}
 struct FilmstripHoverPreviewRequest {
     std::wstring path;
     uint64_t folderGeneration = 0;
@@ -5858,35 +5808,6 @@ public:
         (void)event; (void)request; (void)result;
 #endif
     }
-    void TraceFilmstripThumbnailTimingSummary(const FilmstripThumbnailResult& result) const {
-        if (!kFilmstripThumbnailTimingDiagnostics || IsVideoPath(result.request.path)) return;
-        const FilmstripThumbnailTiming& timing = result.timing;
-        const double queueMs = FilmstripThumbnailDiagnosticMs(timing.enqueued, timing.dequeued, timing.frequency);
-        const double workerMs = FilmstripThumbnailDiagnosticMs(timing.dequeued, timing.decodeFinished, timing.frequency);
-        const double postMs = FilmstripThumbnailDiagnosticMs(timing.posted, timing.uiReceived, timing.frequency);
-        const double uiPublishMs = FilmstripThumbnailDiagnosticMs(timing.uiReceived, timing.uiPublished, timing.frequency);
-        const double totalMs = FilmstripThumbnailDiagnosticMs(timing.enqueued, timing.uiPublished, timing.frequency);
-        const std::wstring extension = LowercaseExtension(result.request.path);
-        wchar_t message[2048]{};
-        swprintf_s(message,
-            L"[Viewtrious][TEMP_THUMB_TIMING] ext=%ls cache=miss tid=%lu targetH=%u source=%ls source_dims=%ux%u output=%ux%u orientation=%u "
-            L"queue=%.3fms factory=%.3fms decoder_open=%.3fms get_frame=%.3fms metadata=%.3fms converter_init=%.3fms "
-            L"clipper_init=%.3fms scaler_init=%.3fms final_converter_init=%.3fms copy_pixels=%.3fms ram_orientation=%.3fms "
-            L"worker=%.3fms post_to_ui=%.3fms ui_publish=%.3fms enqueue_to_ui=%.3fms embedded=%ls/%ux%u probe=%.3fms "
-            L"worker_qpc=%lld..%lld decoder_thumb=0x%08X frame_thumb=0x%08X decoder_preview=0x%08X embedded_decode=0x%08X "
-            L"hr=0x%08X generation=%llu path=%ls\n",
-            extension.c_str(), timing.workerThreadId, result.request.targetHeight, timing.sourceKind, timing.sourceWidth, timing.sourceHeight,
-            result.width, result.height, timing.orientation, queueMs, timing.factoryMs, timing.decoderMs, timing.getFrameMs,
-            timing.metadataMs, timing.converterMs, timing.clipperMs, timing.scalerMs, timing.finalConverterMs,
-            timing.copyPixelsMs, timing.orientationMs, workerMs, postMs, uiPublishMs, totalMs, timing.embeddedKind,
-            timing.embeddedWidth, timing.embeddedHeight, timing.embeddedProbeMs,
-            static_cast<long long>(timing.dequeued), static_cast<long long>(timing.decodeFinished),
-            static_cast<unsigned int>(timing.decoderThumbnailResult), static_cast<unsigned int>(timing.frameThumbnailResult),
-            static_cast<unsigned int>(timing.decoderPreviewResult), static_cast<unsigned int>(timing.embeddedDecodeResult),
-            static_cast<unsigned int>(result.result),
-            static_cast<unsigned long long>(result.request.itemGeneration), result.request.path.c_str());
-        OutputDebugStringW(message);
-    }
 #ifdef _DEBUG
     void TraceFilmstripThumbnailStage(const wchar_t* event, const std::wstring& path, ULONGLONG started, HRESULT result) const {
         wchar_t message[768]{};
@@ -5923,14 +5844,11 @@ public:
                         request = std::move(filmstripThumbnailQueue_.front());
                         filmstripThumbnailQueue_.pop_front();
                     }
-                    request.timing.dequeued = FilmstripThumbnailDiagnosticNow();
-                    request.timing.workerThreadId = GetCurrentThreadId();
                     if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) continue;
                     if (request.folderGeneration != filmstripThumbnailFolderGeneration_.load(std::memory_order_acquire)) continue;
                     TraceFilmstripThumbnailJob(L"THUMB_JOB_DEQUEUED", request);
                     auto* result = new FilmstripThumbnailResult{};
                     result->request = request;
-                    result->timing = request.timing;
                     if (IsVideoPath(request.path)) {
                         ShellThumbnailPixels decoded;
                         result->result = DecodeShellVideoThumbnailPixels(request.path, 256, decoded, result->aspect);
@@ -5939,19 +5857,15 @@ public:
                         result->stride = decoded.stride;
                         result->pixels = std::move(decoded.pixels);
                     } else {
-                        result->result = DecodeFilmstripThumbnailPixels(request.path, request.targetHeight, *result, result->aspect, &result->timing);
+                        result->result = DecodeFilmstripThumbnailPixels(request.path, request.targetHeight, *result, result->aspect);
                     }
-                    result->timing.decodeFinished = FilmstripThumbnailDiagnosticNow();
                     // Both decode paths release all source objects before returning, so only copied
                     // Viewtrious-owned RAM pixels can cross onto the UI thread.
                     TraceFilmstripThumbnailJob(SUCCEEDED(result->result) ? L"THUMB_JOB_SUCCESS" : L"THUMB_JOB_FAILED", request, result->result);
                     if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) delete result;
-                    else {
-                        result->timing.posted = FilmstripThumbnailDiagnosticNow();
-                        if (PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result)))
-                            TraceFilmstripThumbnailJob(L"THUMB_RAM_PUBLISHED", request, result->result);
-                        else delete result;
-                    }
+                    else if (PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result)))
+                        TraceFilmstripThumbnailJob(L"THUMB_RAM_PUBLISHED", request, result->result);
+                    else delete result;
                 }
                 if (SUCCEEDED(apartment)) CoUninitialize();
             });
@@ -6390,27 +6304,13 @@ public:
         for (size_t index : requested) {
             const std::wstring path = navigationFiles_[index].wstring();
             const uint64_t itemGeneration = filmstripThumbnailGenerations_[index];
-            const int cached = FindFilmstripThumbnail(path, itemGeneration);
-            if (cached >= 0) {
-                FilmstripThumbnailEntry& entry = filmstripThumbnails_[cached];
-                if (kFilmstripThumbnailTimingDiagnostics && !entry.diagnosticCacheHitReported) {
-                    entry.diagnosticCacheHitReported = true;
-                    const std::wstring extension = LowercaseExtension(path);
-                    wchar_t message[768]{};
-                    swprintf_s(message, L"[Viewtrious][TEMP_THUMB_CACHE] ext=%ls cache=ram-hit generation=%llu path=%ls\n",
-                        extension.c_str(), static_cast<unsigned long long>(itemGeneration), path.c_str());
-                    OutputDebugStringW(message);
-                }
-                continue;
-            }
-            if (FilmstripThumbnailPending(path, itemGeneration) || FilmstripThumbnailFailed(path, itemGeneration)) continue;
+            if (FindFilmstripThumbnail(path, itemGeneration) >= 0 ||
+                FilmstripThumbnailPending(path, itemGeneration) || FilmstripThumbnailFailed(path, itemGeneration)) continue;
             FilmstripThumbnailRequest request{};
             request.path = path;
             request.folderGeneration = navigationFolderGeneration_;
             request.itemGeneration = itemGeneration;
             request.targetHeight = static_cast<UINT>(FilmstripThumbnailHeight());
-            request.timing.frequency = FilmstripThumbnailDiagnosticFrequency();
-            request.timing.enqueued = FilmstripThumbnailDiagnosticNow();
             filmstripThumbnailPending_.push_back(request);
             {
                 std::lock_guard<std::mutex> lock(filmstripThumbnailMutex_);
@@ -6444,7 +6344,6 @@ public:
     }
     void HandleFilmstripThumbnailResult(FilmstripThumbnailResult* result) {
         if (!result) return;
-        result->timing.uiReceived = FilmstripThumbnailDiagnosticNow();
         filmstripThumbnailPending_.erase(std::remove_if(filmstripThumbnailPending_.begin(), filmstripThumbnailPending_.end(), [&](const FilmstripThumbnailRequest& request) {
             return request.itemGeneration == result->request.itemGeneration && PathsEqual(fs::path(request.path), fs::path(result->request.path));
         }), filmstripThumbnailPending_.end());
@@ -6463,15 +6362,11 @@ public:
             entry.path = result->request.path;
             entry.itemGeneration = result->request.itemGeneration;
             entry.aspect = result->aspect;
-            entry.timing = result->timing;
             entry.width = result->width;
             entry.height = result->height;
             entry.stride = result->stride;
             entry.pixels = std::move(result->pixels);
             filmstripThumbnails_.push_back(std::move(entry));
-            filmstripThumbnails_.back().timing.uiPublished = FilmstripThumbnailDiagnosticNow();
-            result->timing.uiPublished = filmstripThumbnails_.back().timing.uiPublished;
-            TraceFilmstripThumbnailTimingSummary(*result);
             PruneFilmstripThumbnails();
             const bool aspectChanged = UpdateFilmstripKnownAspect(index, result->aspect);
             const bool layoutDeferred = aspectChanged && filmstripScrollAnimating_;
@@ -6496,8 +6391,6 @@ public:
             }
             InvalidateRect(window_, nullptr, FALSE);
         } else {
-            result->timing.uiPublished = FilmstripThumbnailDiagnosticNow();
-            TraceFilmstripThumbnailTimingSummary(*result);
             if (current) filmstripThumbnailFailures_.push_back(result->request);
             ReleaseFilmstripWrapAnchorIfSettled();
             QueueFilmstripThumbnails();
@@ -6512,19 +6405,7 @@ public:
         if (!entry.bitmap && entry.pixels) {
             const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
                 D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), RenderTargetDpi(), RenderTargetDpi());
-            const LONGLONG started = FilmstripThumbnailDiagnosticNow();
-            const HRESULT createResult = renderTarget_->CreateBitmap(D2D1::SizeU(entry.width, entry.height), entry.pixels->data(), entry.stride, properties, &entry.bitmap);
-            if (kFilmstripThumbnailTimingDiagnostics && !IsVideoPath(entry.path)) {
-                const LONGLONG finished = FilmstripThumbnailDiagnosticNow();
-                const std::wstring extension = LowercaseExtension(entry.path);
-                wchar_t message[1024]{};
-                swprintf_s(message,
-                    L"[Viewtrious][TEMP_THUMB_D2D] ext=%ls cache=ram-hit/d2d-miss create=%.3fms ui_to_paint=%.3fms hr=0x%08X path=%ls\n",
-                    extension.c_str(), FilmstripThumbnailDiagnosticMs(started, finished, entry.timing.frequency),
-                    FilmstripThumbnailDiagnosticMs(entry.timing.uiPublished, started, entry.timing.frequency),
-                    static_cast<unsigned int>(createResult), entry.path.c_str());
-                OutputDebugStringW(message);
-            }
+            renderTarget_->CreateBitmap(D2D1::SizeU(entry.width, entry.height), entry.pixels->data(), entry.stride, properties, &entry.bitmap);
         }
         return entry.bitmap.Get();
     }
@@ -11727,8 +11608,7 @@ private:
         InvalidateRect(window_, nullptr, FALSE);
     }
 
-    HRESULT DecodeFilmstripThumbnailPixels(const std::wstring& path, UINT targetHeight, PixelBuffer& decoded, float& aspect,
-        FilmstripThumbnailTiming* timing = nullptr) const {
+    HRESULT DecodeFilmstripThumbnailPixels(const std::wstring& path, UINT targetHeight, PixelBuffer& decoded, float& aspect) const {
         if (targetHeight == 0) return E_INVALIDARG;
         HRESULT hr = E_FAIL;
         UINT orientation = 1;
@@ -11742,19 +11622,13 @@ private:
             ComPtr<IWICImagingFactory> factory;
             ComPtr<IWICBitmapDecoder> decoder;
             ComPtr<IWICBitmapFrameDecode> frame;
-            LONGLONG diagnosticStarted = FilmstripThumbnailDiagnosticNow();
             hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
-            if (timing) timing->factoryMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
-            diagnosticStarted = FilmstripThumbnailDiagnosticNow();
             if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
-            if (timing) timing->decoderMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
 #ifdef _DEBUG
             TraceFilmstripThumbnailStage(L"DECODER_CREATE_END", path, decoderStarted, hr);
             const ULONGLONG frameStarted = GetTickCount64();
 #endif
-            diagnosticStarted = FilmstripThumbnailDiagnosticNow();
             if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
-            if (timing) timing->getFrameMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
 #ifdef _DEBUG
             TraceFilmstripThumbnailStage(L"GET_FRAME_END", path, frameStarted, hr);
 #endif
@@ -11762,12 +11636,7 @@ private:
 #ifdef _DEBUG
             const ULONGLONG orientationStarted = GetTickCount64();
 #endif
-            diagnosticStarted = FilmstripThumbnailDiagnosticNow();
             orientation = ReadPhotoOrientation(frame.Get(), &path);
-            if (timing) {
-                timing->metadataMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
-                timing->orientation = orientation;
-            }
 #ifdef _DEBUG
             TraceFilmstripThumbnailStage(L"ORIENTATION_END", path, orientationStarted, S_OK);
 #endif
@@ -11775,16 +11644,13 @@ private:
                 if (!source) return E_FAIL;
                 UINT sourceWidth = 0, sourceHeight = 0;
                 HRESULT attempt = source->GetSize(&sourceWidth, &sourceHeight);
-                if (timing) { timing->sourceWidth = sourceWidth; timing->sourceHeight = sourceHeight; }
                 ComPtr<IWICFormatConverter> converter;
 #ifdef _DEBUG
                 const ULONGLONG converterStarted = GetTickCount64();
 #endif
-                diagnosticStarted = FilmstripThumbnailDiagnosticNow();
                 if (SUCCEEDED(attempt)) attempt = factory->CreateFormatConverter(&converter);
                 if (SUCCEEDED(attempt)) attempt = converter->Initialize(source, GUID_WICPixelFormat32bppPBGRA,
                     WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-                if (timing) timing->converterMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
 #ifdef _DEBUG
                 TraceFilmstripThumbnailStage(L"CONVERTER_INIT_END", path, converterStarted, attempt);
 #endif
@@ -11821,10 +11687,8 @@ private:
 #ifdef _DEBUG
                 const ULONGLONG clipperStarted = GetTickCount64();
 #endif
-                diagnosticStarted = FilmstripThumbnailDiagnosticNow();
                 if (SUCCEEDED(attempt)) attempt = factory->CreateBitmapClipper(&clipper);
                 if (SUCCEEDED(attempt)) attempt = clipper->Initialize(transformed.Get(), &crop);
-                if (timing) timing->clipperMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
 #ifdef _DEBUG
                 TraceFilmstripThumbnailStage(L"CLIPPER_INIT_END", path, clipperStarted, attempt);
 #endif
@@ -11832,10 +11696,8 @@ private:
 #ifdef _DEBUG
                 const ULONGLONG scalerStarted = GetTickCount64();
 #endif
-                diagnosticStarted = FilmstripThumbnailDiagnosticNow();
                 if (SUCCEEDED(attempt)) attempt = factory->CreateBitmapScaler(&scaler);
                 if (SUCCEEDED(attempt)) attempt = scaler->Initialize(clipper.Get(), sourceTargetWidth, sourceTargetHeight, WICBitmapInterpolationModeFant);
-                if (timing) timing->scalerMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
 #ifdef _DEBUG
                 TraceFilmstripThumbnailStage(L"SCALER_INIT_END", path, scalerStarted, attempt);
 #endif
@@ -11843,11 +11705,9 @@ private:
 #ifdef _DEBUG
                 const ULONGLONG finalConverterStarted = GetTickCount64();
 #endif
-                diagnosticStarted = FilmstripThumbnailDiagnosticNow();
                 if (SUCCEEDED(attempt)) attempt = factory->CreateFormatConverter(&finalConverter);
                 if (SUCCEEDED(attempt)) attempt = finalConverter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA,
                     WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-                if (timing) timing->finalConverterMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
 #ifdef _DEBUG
                 TraceFilmstripThumbnailStage(L"FINAL_CONVERTER_INIT_END", path, finalConverterStarted, attempt);
 #endif
@@ -11858,9 +11718,7 @@ private:
 #ifdef _DEBUG
                 const ULONGLONG copyStarted = GetTickCount64();
 #endif
-                diagnosticStarted = FilmstripThumbnailDiagnosticNow();
                 attempt = finalConverter->CopyPixels(nullptr, stride, static_cast<UINT>(bytes), pixels->data());
-                if (timing) timing->copyPixelsMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
 #ifdef _DEBUG
                 TraceFilmstripThumbnailStage(L"COPYPIXELS_END", path, copyStarted, attempt);
 #endif
@@ -11876,7 +11734,6 @@ private:
             const ULONGLONG scaleStarted = GetTickCount64();
 #endif
             if (IsHeifPath(path)) {
-                diagnosticStarted = FilmstripThumbnailDiagnosticNow();
                 ComPtr<IWICBitmapSource> embedded;
                 const HRESULT thumbnailResult = frame->GetThumbnail(&embedded);
                 UINT embeddedWidth = 0, embeddedHeight = 0;
@@ -11897,19 +11754,9 @@ private:
                         embeddedResult = FAILED(frameSizeResult) ? frameSizeResult : E_FAIL;
                     }
                 }
-                if (timing) {
-                    timing->frameThumbnailResult = thumbnailResult;
-                    timing->embeddedWidth = embeddedWidth;
-                    timing->embeddedHeight = embeddedHeight;
-                    timing->embeddedKind = SUCCEEDED(thumbnailResult) && embedded ? L"frame-thumbnail" : L"none";
-                    timing->embeddedProbeMs = FilmstripThumbnailDiagnosticMs(
-                        diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
-                }
                 if (SUCCEEDED(embeddedResult)) embeddedResult = decodeSource(embedded.Get(), true);
-                if (timing) timing->embeddedDecodeResult = embeddedResult;
                 if (SUCCEEDED(embeddedResult)) {
                     hr = embeddedResult;
-                    if (timing) timing->sourceKind = L"embedded-thumbnail";
                 } else {
                     hr = decodeSource(frame.Get(), false);
                 }
@@ -11919,24 +11766,6 @@ private:
 #ifdef _DEBUG
             TraceFilmstripThumbnailStage(L"SCALE_END", path, scaleStarted, hr);
 #endif
-            if (timing && !IsHeifPath(path)) {
-                diagnosticStarted = FilmstripThumbnailDiagnosticNow();
-                ComPtr<IWICBitmapSource> embedded;
-                timing->decoderThumbnailResult = decoder->GetThumbnail(&embedded);
-                if (FAILED(timing->decoderThumbnailResult)) {
-                    embedded.Reset();
-                    timing->frameThumbnailResult = frame->GetThumbnail(&embedded);
-                }
-                if (SUCCEEDED(timing->decoderThumbnailResult)) timing->embeddedKind = L"decoder-thumbnail";
-                else if (SUCCEEDED(timing->frameThumbnailResult)) timing->embeddedKind = L"frame-thumbnail";
-                else {
-                    embedded.Reset();
-                    timing->decoderPreviewResult = decoder->GetPreview(&embedded);
-                    if (SUCCEEDED(timing->decoderPreviewResult)) timing->embeddedKind = L"decoder-preview";
-                }
-                if (embedded) embedded->GetSize(&timing->embeddedWidth, &timing->embeddedHeight);
-                timing->embeddedProbeMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
-            }
         }
 #ifdef _DEBUG
         TraceFilmstripThumbnailStage(L"SOURCE_RELEASED", path, decodeStarted, hr);
@@ -11946,9 +11775,7 @@ private:
             const ULONGLONG ramOrientationStarted = GetTickCount64();
             TraceFilmstripThumbnailStage(L"RAM_ORIENTATION_BEGIN", path, ramOrientationStarted, S_OK);
 #endif
-            const LONGLONG diagnosticStarted = FilmstripThumbnailDiagnosticNow();
             if (!ApplyFilmstripThumbnailOrientation(decoded, orientation)) return E_FAIL;
-            if (timing) timing->orientationMs = FilmstripThumbnailDiagnosticMs(diagnosticStarted, FilmstripThumbnailDiagnosticNow(), timing->frequency);
 #ifdef _DEBUG
             TraceFilmstripThumbnailStage(L"RAM_ORIENTATION_END", path, ramOrientationStarted, S_OK);
 #endif

@@ -9472,7 +9472,7 @@ private:
             ShowVideoFrameSaveToast(false);
             return;
         }
-        const fs::path outputFolder = fs::path(pictures) / L"Viewtrious";
+        const fs::path outputFolder = fs::path(pictures) / L"viewtrious";
         CoTaskMemFree(pictures);
         std::error_code createError;
         fs::create_directories(outputFolder, createError);

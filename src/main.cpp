@@ -5210,7 +5210,9 @@ public:
             }
             if (ModelActive() && !tutorialPresentation_) { DrawModelAxisIndicator(); TraceOffscreenModelIndicatorState(); DrawOffscreenModelIndicator(); DrawModelViewBar(); DrawComponentsPanel(); }
             if (!tutorialPresentation_) DrawModelLoadingOverlay();
+#if defined(VIEWTRIOUS_SHOW_DEV_VERSION_BADGE)
             if (!tutorialPresentation_) DrawRevisionLabel();
+#endif
             DrawTitleBar();
             DrawTriangleCountTooltip();
             DrawDropdown();

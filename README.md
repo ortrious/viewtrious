@@ -5,7 +5,7 @@
 <h1 align="center">viewtrious</h1>
 
 <p align="center">
-  <strong>no accounts. no cloud. just an image viewer.</strong>
+  <strong>no accounts. no cloud. just a media viewer.</strong>
 </p>
 
 <p align="center">
@@ -24,16 +24,16 @@ the base viewer uses Windows-native graphics, media, shell, and persistence comp
 
 <p align="center">
   <img src="docs/images/viewtrious-icon.png" width="96" alt="images and GIFs">
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  &nbsp;
   <img src="docs/images/viewtrious-video-icon.png" width="96" alt="video">
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <img src="docs/images/viewtrious-3d-icon.png" width="96" alt="3D">
 </p>
 
 <p align="center">
-  <strong>Images &amp; GIFs</strong>
+  <strong>images &amp; GIFs</strong>
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <strong>Video</strong>
+  <strong>video</strong>
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <strong>STL &amp; 3MF</strong>
 </p>

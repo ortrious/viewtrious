@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <array>
 #include <string>
 #include <thread>
 
@@ -13,6 +14,8 @@ struct UpdateCheckResult {
     std::wstring releaseUrl;
     std::wstring message;
 };
+
+bool ParseUpdateVersion(const std::wstring& text, std::array<unsigned int, 4>& version);
 
 class UpdateChecker {
 public:

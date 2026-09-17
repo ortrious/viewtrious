@@ -16,7 +16,7 @@ constexpr DWORD kTimeoutMs = 5000;
 constexpr DWORD kMaximumResponseBytes = 16 * 1024;
 constexpr size_t kMaximumFieldLength = 2048;
 
-bool ParseVersion(const std::wstring& text, std::array<unsigned int, 4>& version) {
+bool ParseVersionImpl(const std::wstring& text, std::array<unsigned int, 4>& version) {
     size_t begin = 0;
     for (size_t part = 0; part < version.size(); ++part) {
         const size_t end = text.find(L'.', begin);
@@ -37,7 +37,7 @@ bool ParseVersion(const std::wstring& text, std::array<unsigned int, 4>& version
 
 bool IsNewerVersion(const std::wstring& remote) {
     std::array<unsigned int, 4> remoteParts{}, localParts{};
-    return ParseVersion(remote, remoteParts) && ParseVersion(VIEWTRIOUS_VERSION, localParts) && remoteParts > localParts;
+    return ParseVersionImpl(remote, remoteParts) && ParseVersionImpl(VIEWTRIOUS_VERSION, localParts) && remoteParts > localParts;
 }
 
 bool DecodeUtf8(const std::string& input, std::wstring& output) {
@@ -99,7 +99,7 @@ bool ParseResponse(const std::string& bytes, UpdateCheckResult& result) {
     }
     SkipWhitespace(json, cursor);
     std::array<unsigned int, 4> parsedVersion{};
-    if (cursor != json.size() || !schemaSeen || schema != 1 || !versionSeen || !ParseVersion(result.latestVersion, parsedVersion)) return false;
+    if (cursor != json.size() || !schemaSeen || schema != 1 || !versionSeen || !ParseVersionImpl(result.latestVersion, parsedVersion)) return false;
     result.updateAvailable = IsNewerVersion(result.latestVersion);
     if (result.updateAvailable && (!urlSeen || result.releaseUrl.rfind(L"https://", 0) != 0)) return false;
     if (result.message.empty()) result.message = L"a new version of viewtrious is available.";
@@ -129,6 +129,10 @@ bool Fetch(UpdateCheckResult& result) {
     if (request) WinHttpCloseHandle(request); if (connection) WinHttpCloseHandle(connection); WinHttpCloseHandle(session);
     return success && !body.empty() && ParseResponse(body, result);
 }
+}
+
+bool ParseUpdateVersion(const std::wstring& text, std::array<unsigned int, 4>& version) {
+    return ParseVersionImpl(text, version);
 }
 
 UpdateChecker::~UpdateChecker() { Shutdown(); }

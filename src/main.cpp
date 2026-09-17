@@ -1447,7 +1447,7 @@ public:
         std::unique_ptr<UpdateCheckResult> owned(result);
         if (!owned) return;
         if (!updateCheckManual_) {
-            if (owned->succeeded && owned->updateAvailable) {
+            if (owned->succeeded && owned->updateAvailable && !IsDismissedUpdateVersion(owned->latestVersion)) {
                 updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message;
                 ShowOverlay(OverlayKind::UpdateCheck);
             }
@@ -3728,6 +3728,7 @@ public:
     }
     void DismissOverlay() {
         if (!HasOverlay()) return;
+        if (UpdateNoticeOpen()) return;
         if (overlay_ == OverlayKind::PrintError) printErrorForCameraRaw_ = false;
         overlay_ = OverlayKind::None;
         SynchronizeFilmstripVisibilityToCurrentState();
@@ -3751,6 +3752,13 @@ public:
     void ScrollSettings(float delta) {
         if (overlay_ != OverlayKind::Settings) return;
         settingsScroll_ = std::clamp(settingsScroll_ + delta, 0.0f, SettingsMaximumScroll());
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool UpdateNoticeOpen() const { return overlay_ == OverlayKind::UpdateCheck && !updateReleaseUrl_.empty(); }
+    void DismissUpdateNotice() {
+        overlay_ = OverlayKind::None;
+        SynchronizeFilmstripVisibilityToCurrentState();
+        ShowVideoControls();
         InvalidateRect(window_, nullptr, FALSE);
     }
     void UpdateSettingsToggleVisual(SettingsToggleVisualState& state, ULONGLONG now) {
@@ -4537,11 +4545,11 @@ public:
     RECT GetUpdateActionBounds(bool download) const {
         const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
         const int width = MulDiv(112, dpi, 96), height = MulDiv(34, dpi, 96), gap = MulDiv(10, dpi, 96);
-        const int right = bounds.right - MulDiv(24, dpi, 96);
-        const int left = right - width * (updateReleaseUrl_.empty() ? 1 : 2) - (updateReleaseUrl_.empty() ? 0 : gap);
+        const int groupWidth = updateReleaseUrl_.empty() ? width : width * 2 + gap;
+        const int left = bounds.left + (bounds.right - bounds.left - groupWidth) / 2;
         const int top = bounds.bottom - MulDiv(24, dpi, 96) - height;
-        return updateReleaseUrl_.empty() || download ? RECT{ updateReleaseUrl_.empty() ? right - width : left, top, updateReleaseUrl_.empty() ? right : left + width, top + height }
-            : RECT{ left + width + gap, top, right, top + height };
+        return updateReleaseUrl_.empty() || download ? RECT{ left, top, left + width, top + height }
+            : RECT{ left + width + gap, top, left + width * 2 + gap, top + height };
     }
     bool UpdateActionContains(POINT point, bool download) const {
         const RECT button = GetUpdateActionBounds(download);
@@ -4560,6 +4568,19 @@ public:
     void WriteUpdateAttemptUtc(ULONGLONG value) {
         WriteSetting(L"LastUpdateCheckAttemptUtcLow", static_cast<DWORD>(value));
         WriteSetting(L"LastUpdateCheckAttemptUtcHigh", static_cast<DWORD>(value >> 32));
+    }
+    bool IsDismissedUpdateVersion(const std::wstring& version) const {
+        std::array<unsigned int, 4> candidate{};
+        DWORD major = 0, minor = 0, feature = 0, fix = 0;
+        return ParseUpdateVersion(version, candidate) && ReadSetting(L"DismissedUpdateVersionMajor", major) &&
+            ReadSetting(L"DismissedUpdateVersionMinor", minor) && ReadSetting(L"DismissedUpdateVersionFeature", feature) &&
+            ReadSetting(L"DismissedUpdateVersionFix", fix) && candidate == std::array<unsigned int, 4>{ major, minor, feature, fix };
+    }
+    void DismissUpdateVersion(const std::wstring& version) {
+        std::array<unsigned int, 4> parsed{};
+        if (!ParseUpdateVersion(version, parsed)) return;
+        WriteSetting(L"DismissedUpdateVersionMajor", parsed[0]); WriteSetting(L"DismissedUpdateVersionMinor", parsed[1]);
+        WriteSetting(L"DismissedUpdateVersionFeature", parsed[2]); WriteSetting(L"DismissedUpdateVersionFix", parsed[3]);
     }
     bool CanvasNavigationButtonsVisible() const {
         return (source_ || VideoActive()) && navigationBuilt_ && navigationFiles_.size() > 1 &&
@@ -5095,9 +5116,12 @@ public:
         }
         else if (button == ButtonKind::HelpClose) DismissOverlay();
         else if (button == ButtonKind::HelpTopic) SetHelpTopic(helpTopicHit_);
-        else if (button == ButtonKind::UpdateLater) DismissOverlay();
+        else if (button == ButtonKind::UpdateLater) {
+            if (!updateReleaseUrl_.empty()) DismissUpdateVersion(updateVersion_);
+            DismissUpdateNotice();
+        }
         else if (button == ButtonKind::UpdateDownload) {
-            if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", updateReleaseUrl_.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32) DismissOverlay();
+            if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", updateReleaseUrl_.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32) DismissUpdateNotice();
             else { updateReleaseUrl_.clear(); updateCheckStatus_ = L"unable to open the release page right now."; InvalidateRect(window_, nullptr, FALSE); }
         }
         else if (button == ButtonKind::PrintErrorDismiss) DismissOverlay();
@@ -13370,19 +13394,26 @@ private:
             const RECT primaryAction = GetUpdateActionBounds(true), secondaryAction = GetUpdateActionBounds(false);
             DrawOverlayText(updateAvailable ? (std::wstring(L"viewtrious ") + updateVersion_ + L" is available").c_str() : L"check for updates", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
-            const std::wstring body = updateAvailable ? updateMessage_ : updateCheckStatus_;
-            DrawOverlayText(body.c_str(), left, static_cast<float>(bounds.top) + panelPadding + 48.0f * dpiScale, contentWidth, 44.0f * dpiScale,
+            if (!updateAvailable) DrawOverlayText(updateCheckStatus_.c_str(), left, static_cast<float>(bounds.top) + panelPadding + 48.0f * dpiScale, contentWidth, 44.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
-            ComPtr<ID2D1SolidColorBrush> actionHover;
-            renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &actionHover);
-            const auto drawAction = [&](RECT action, ButtonKind button, const wchar_t* label) {
-                const D2D1_RECT_F rect = D2D1::RectF((float)action.left, (float)action.top, (float)action.right, (float)action.bottom);
-                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, 5.0f * dpiScale, 5.0f * dpiScale), hoveredButton_ == button && actionHover ? actionHover.Get() : panelBrush.Get());
+            ComPtr<ID2D1SolidColorBrush> accent, accentHover, accentPressed, neutralHover, neutralPressed, accentText;
+            renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 120.f / 255.f, 212.f / 255.f), &accent);
+            renderTarget_->CreateSolidColorBrush(D2D1::ColorF(24.f / 255.f, 142.f / 255.f, 232.f / 255.f), &accentHover);
+            renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 92.f / 255.f, 164.f / 255.f), &accentPressed);
+            renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255.f, 64.f / 255.f, 74.f / 255.f) : D2D1::ColorF(228.f / 255.f, 228.f / 255.f, 228.f / 255.f), &neutralHover);
+            renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(75.f / 255.f, 80.f / 255.f, 92.f / 255.f) : D2D1::ColorF(210.f / 255.f, 210.f / 255.f, 210.f / 255.f), &neutralPressed);
+            renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &accentText);
+            const auto drawAction = [&](RECT action, ButtonKind button, const wchar_t* label, bool primaryAction) {
+                const bool pressed = pressedButton_ == button, hovered = hoveredButton_ == button;
+                const float pressOffset = pressed ? 1.5f * dpiScale : 0.0f;
+                const D2D1_RECT_F rect = D2D1::RectF((float)action.left, (float)action.top + pressOffset, (float)action.right, (float)action.bottom + pressOffset);
+                ID2D1Brush* fill = primaryAction ? (pressed ? accentPressed.Get() : hovered ? accentHover.Get() : accent.Get()) : (pressed ? neutralPressed.Get() : hovered ? neutralHover.Get() : panelBrush.Get());
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, 5.0f * dpiScale, 5.0f * dpiScale), fill ? fill : panelBrush.Get());
                 renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
-                DrawOverlayText(label, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+                DrawOverlayText(label, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryAction && accentText ? accentText.Get() : primaryBrush.Get(), true, false, true);
             };
-            if (updateAvailable) { drawAction(primaryAction, ButtonKind::UpdateDownload, L"DOWNLOAD"); drawAction(secondaryAction, ButtonKind::UpdateLater, L"LATER"); }
-            else drawAction(primaryAction, ButtonKind::UpdateLater, L"OK");
+            if (updateAvailable) { drawAction(primaryAction, ButtonKind::UpdateDownload, L"download", true); drawAction(secondaryAction, ButtonKind::UpdateLater, L"later", false); }
+            else drawAction(primaryAction, ButtonKind::UpdateLater, L"ok", false);
         } else if (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) {
             const RECT dismissBounds = GetPrintErrorDismissButtonBounds();
             const bool registrationError = overlay_ == OverlayKind::RegistrationError;
@@ -14890,6 +14921,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             }
             return 0;
         }
+        if (viewer->UpdateNoticeOpen()) {
+            const ButtonKind button = viewer->ButtonAt(point);
+            if (button == ButtonKind::UpdateDownload || button == ButtonKind::UpdateLater) { viewer->SetButtonPressed(button); SetCapture(window); }
+            return 0;
+        }
         if (viewer->HandleVideoFrameSaveToastClick(point)) return 0;
         if (viewer->OpenWithSubmenuOpen()) {
             const int item = viewer->OpenWithItemAt(point);
@@ -15138,6 +15174,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->ClearComponentsPanelHover(); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->UpdateGifControlsMouse({ -1, -1 }); viewer->VideoControlsMouseLeave(); return 0;
     case WM_LBUTTONUP: {
         viewer->CancelExternalMediaDragArming();
+        if (viewer->UpdateNoticeOpen() && viewer->PressedButton() == ButtonKind::None) return 0;
         if (viewer->ComponentsPanelInteractionActive()) {
             viewer->EndComponentsPanelInteraction();
             if (GetCapture() == window) ReleaseCapture();
@@ -15241,6 +15278,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (!viewer->TutorialActive() && viewer->VideoContextMenuAllowed(point)) viewer->OpenContextMenu(point);
             return 0;
         }
+        if (viewer->UpdateNoticeOpen()) {
+            const ButtonKind button = viewer->ButtonAt(point);
+            if (button == ButtonKind::UpdateDownload || button == ButtonKind::UpdateLater) { viewer->SetButtonPressed(button); SetCapture(window); }
+            return 0;
+        }
         if (!viewer->TutorialActive()) { if (viewer->ModelActive() && viewer->SelectModelFace(point)) viewer->SelectComponentsPanelRange(viewer->ModelObjectRangeAt(point), true); viewer->OpenContextMenu(point); }
         return 0;
     }
@@ -15333,7 +15375,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
         if (viewer->HasOverlay()) {
-            if (wParam == VK_ESCAPE && !viewer->WelcomeOpen()) viewer->DismissOverlay();
+            if (wParam == VK_ESCAPE && !viewer->WelcomeOpen() && !viewer->UpdateNoticeOpen()) viewer->DismissOverlay();
             return 0;
         }
         if (viewer->BuildPlateSizePopupOpen()) return 0;

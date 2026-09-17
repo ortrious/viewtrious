@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icons_sources/icon_1024.png" width="140" alt="viewtrious">
+  <img src="assets/icon_sources/icon_1024.png" width="140" alt="viewtrious">
 </p>
 
 <h1 align="center">viewtrious</h1>

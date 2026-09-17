@@ -13367,20 +13367,22 @@ private:
             DrawOverlayText(L"Delete", remove.left, remove.top, remove.right - remove.left, remove.bottom - remove.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
         } else if (overlay_ == OverlayKind::UpdateCheck) {
             const bool updateAvailable = !updateReleaseUrl_.empty();
-            const RECT primary = GetUpdateActionBounds(true), secondary = GetUpdateActionBounds(false);
+            const RECT primaryAction = GetUpdateActionBounds(true), secondaryAction = GetUpdateActionBounds(false);
             DrawOverlayText(updateAvailable ? (std::wstring(L"viewtrious ") + updateVersion_ + L" is available").c_str() : L"check for updates", left, static_cast<float>(bounds.top) + panelPadding,
                 contentWidth, 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
             const std::wstring body = updateAvailable ? updateMessage_ : updateCheckStatus_;
             DrawOverlayText(body.c_str(), left, static_cast<float>(bounds.top) + panelPadding + 48.0f * dpiScale, contentWidth, 44.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
+            ComPtr<ID2D1SolidColorBrush> actionHover;
+            renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255, 64.f / 255, 74.f / 255) : D2D1::ColorF(228.f / 255, 228.f / 255, 228.f / 255), &actionHover);
             const auto drawAction = [&](RECT action, ButtonKind button, const wchar_t* label) {
                 const D2D1_RECT_F rect = D2D1::RectF((float)action.left, (float)action.top, (float)action.right, (float)action.bottom);
-                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, 5.0f * dpiScale, 5.0f * dpiScale), hoveredButton_ == button ? rowHover.Get() : segmentIdle.Get());
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, 5.0f * dpiScale, 5.0f * dpiScale), hoveredButton_ == button && actionHover ? actionHover.Get() : panelBrush.Get());
                 renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
                 DrawOverlayText(label, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             };
-            if (updateAvailable) { drawAction(primary, ButtonKind::UpdateDownload, L"DOWNLOAD"); drawAction(secondary, ButtonKind::UpdateLater, L"LATER"); }
-            else drawAction(primary, ButtonKind::UpdateLater, L"OK");
+            if (updateAvailable) { drawAction(primaryAction, ButtonKind::UpdateDownload, L"DOWNLOAD"); drawAction(secondaryAction, ButtonKind::UpdateLater, L"LATER"); }
+            else drawAction(primaryAction, ButtonKind::UpdateLater, L"OK");
         } else if (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) {
             const RECT dismissBounds = GetPrintErrorDismissButtonBounds();
             const bool registrationError = overlay_ == OverlayKind::RegistrationError;

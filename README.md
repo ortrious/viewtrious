@@ -28,15 +28,15 @@ the base viewer uses Windows-native graphics, media, shell, and persistence comp
 
 - native C++20 / Win32 application
 - fast same-folder navigation with a filmstrip that follows the selected media
-- media adjustment panel with Exposure, Brightness, Contrast, Shadows, Highlights, Saturation, and Sharpness
+- media adjustment panel with exposure, brightness, contrast, shadows, highlights, saturation, and sharpness
 - deterministic auto adjustments, user presets, and optional per-media adjustment persistence
 - media-aware custom context menus and Windows-native file associations
 - per-user settings and adjustment data stored in WinSQLite under `%LOCALAPPDATA%\viewtrious\data`
-- 3Dconnexion SpaceMouse support for Model3D navigation
+- 3Dconnexion SpaceMouse support for 3D model navigation
 
 ## images videos and GIFs
 
-viewtrious uses Windows Imaging Component (WIC) for still-image decoding and supports the common formats exposed through its current Windows integration, including JPEG, PNG, BMP, HEIC/HEIF, DNG, and GIF. Video playback uses Windows Media Foundation and the existing Direct3D/Direct2D presentation path.
+viewtrious uses Windows Imaging Component (WIC) for still-image decoding and supports the common formats exposed through its current Windows integration, including JPEG, PNG, BMP, HEIC/HEIF, DNG, and GIF. video playback uses Windows Media Foundation and the existing Direct3D/Direct2D presentation path.
 
 - safe JPEG/PNG rotation
 - content-hash-backed adjustment persistence without modifying the original media
@@ -45,11 +45,11 @@ viewtrious uses Windows Imaging Component (WIC) for still-image decoding and sup
 
 ## 3D
 
-model3D supports **STL and 3MF**.
+the 3D viewer supports **STL and 3MF**.
 
 - 3Dconnexion SpaceMouse navigation
 - orthographic/perspective control on the canvas
-- configurable Build Plate and grid
+- configurable build plate and grid
 - standard 3MF colors plus supported slicer material/color metadata
 - multi-part/component hierarchy with synchronized viewport selection
 - resilient loading of referenced 3MF model parts
@@ -93,7 +93,7 @@ the canonical release executable is:
 out\release\Viewtrious.exe
 ```
 
-debug builds emit selected startup and frame-pacing diagnostics to the debugger output. Release builds compile that instrumentation out.
+`Debug` builds emit selected startup and frame-pacing diagnostics to the debugger output. `Release` builds compile that instrumentation out.
 
 ## architecture
 
@@ -111,15 +111,15 @@ the base viewer is built from:
 
 the project intentionally avoids heavyweight media/CAD frameworks in the base application.
 
-## Licensing
+## licensing
 
 viewtrious is **source-available** under the **Apache License 2.0 with the Commons Clause License Condition v1.0**.
 
-source may be viewed, modified, and redistributed subject to those terms. The Commons Clause restricts selling viewtrious itself, or a product or service whose value derives entirely or substantially from viewtrious functionality, as defined by the clause. commercial and internal business use are not categorically prohibited.
+source may be viewed, modified, and redistributed subject to those terms. the Commons Clause restricts selling viewtrious itself, or a product or service whose value derives entirely or substantially from viewtrious functionality, as defined by the clause. commercial and internal business use are not categorically prohibited.
 
 see [LICENSE](LICENSE) for the controlling terms.
 
-Copyright 2026 Dustin Wilson<br>
-Published under the ortrious brand
+copyright 2026 Dustin Wilson<br>
+published under the ortrious brand
 
-Third-party components retain their own licenses and attribution requirements.
+third-party components retain their own licenses and attribution requirements.

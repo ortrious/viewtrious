@@ -28,6 +28,7 @@
 #include "adjustment_persistence.h"
 #include "application_paths.h"
 #include "application_settings.h"
+#include "update_checker.h"
 
 #include <algorithm>
 #include <atomic>
@@ -83,6 +84,7 @@ constexpr UINT kImageAdjustmentPersistenceCompleteMessage = WM_APP + 15;
 constexpr UINT kFilmstripThumbnailCompleteMessage = WM_APP + 12;
 constexpr UINT kFilmstripScrollWakeMessage = WM_APP + 13;
 constexpr UINT kFilmstripHoverPreviewCompleteMessage = WM_APP + 14;
+constexpr UINT kUpdateCheckCompleteMessage = WM_APP + 17;
 // A small pool prevents one expensive WIC decode (for example HEIC or DNG) from
 // holding up every later visible filmstrip thumbnail, without creating an
 // unbounded background decode workload.
@@ -314,8 +316,8 @@ constexpr float kSignedAdjustmentSliderMinimum = -1.0f;
 constexpr float kSignedAdjustmentSliderMaximum = 1.0f;
 
 
-enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, ResetAdjustmentsConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError, RegistrationError };
-enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, About, Feedback, Close };
+enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, ResetAdjustmentsConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError, RegistrationError, UpdateCheck };
+enum class DropdownItem { None, OpenFile, Settings, QuickTour, KeyboardShortcuts, Help, CheckForUpdates, About, Feedback, Close };
 enum class ContextAction { None, Fullscreen, Adjustments, SaveCurrentFrame, RotateLeft, RotateRight, OpenWith, Copy, Print, SetBackground, Delete, SnapViewToFace };
 struct ContextMenuItem {
     ContextAction action;
@@ -329,10 +331,10 @@ struct ContextMenuItemList {
     size_t count;
 };
 enum class ButtonKind { None, CanvasPrevious, CanvasNext, SettingsGeneralPage, SettingsImage2DPage, SettingsModel3DPage, SettingsAddOnsPage, SettingsClose, SettingsRememberPlacement, SettingsIncludeHidden,
-    SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAdjustmentsDatabase, SettingsResetAdjustmentsDatabase, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
+    SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsAutomaticUpdateChecks, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAdjustmentsDatabase, SettingsResetAdjustmentsDatabase, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsFilmstripDisplayToggle, SettingsFilmstripHidden, SettingsFilmstripAutomatic, SettingsFilmstripAlwaysShow, SettingsImageScalingToggle, SettingsVideoSizingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsModelReverseWheelZoom, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, ResetAdjustmentsConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments, ViewBarBuildPlateSize, ViewBarPlateWidth, ViewBarPlateDepth, ViewBarPlateLink, ViewBarPlateReset, Count };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, UpdateDownload, UpdateLater, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments, ViewBarBuildPlateSize, ViewBarPlateWidth, ViewBarPlateDepth, ViewBarPlateLink, ViewBarPlateReset, Count };
 enum class TutorialStep { None, OpenImage, MenuSettings, ImageDetails, ContextMenu, ZoomBox, Adjustments, ResizeApp, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
@@ -1404,6 +1406,9 @@ public:
         DWORD adjustmentPersistenceEnabled = 1;
         ReadSetting(L"AdjustmentPersistenceEnabled", adjustmentPersistenceEnabled);
         adjustmentPersistenceEnabled_ = adjustmentPersistenceEnabled != 0;
+        DWORD automaticUpdateChecks = 1;
+        ReadSetting(L"AutomaticUpdateChecks", automaticUpdateChecks);
+        automaticUpdateChecks_ = automaticUpdateChecks != 0;
         LoadUserAdjustmentPreset();
         reuseImageWindow_ = ReadExternalOpenBehavior(L"ImageExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
         reuseVideoWindow_ = ReadExternalOpenBehavior(L"VideoExternalOpenBehavior") == ExternalOpenBehavior::SameWindow;
@@ -1418,6 +1423,43 @@ public:
         coldOpenFadePath_ = path;
         startupVideoSizingRequested_ = videoWindowSizing_ == VideoWindowSizing::ResizeWindowToVideo && IsVideoPath(path);
         return S_OK;
+    }
+
+    void BeginAutomaticUpdateCheck() {
+        if (!automaticUpdateChecks_ || updateChecker_.Active()) return;
+        const ULONGLONG now = CurrentUtcSeconds();
+        const ULONGLONG lastAttempt = ReadUpdateAttemptUtc();
+        if (lastAttempt && (now <= lastAttempt || now - lastAttempt < 24ull * 60ull * 60ull)) return;
+        WriteUpdateAttemptUtc(now);
+        updateCheckManual_ = false;
+        updateChecker_.Start(window_, kUpdateCheckCompleteMessage);
+    }
+
+    void BeginManualUpdateCheck() {
+        updateCheckManual_ = true;
+        WriteUpdateAttemptUtc(CurrentUtcSeconds());
+        updateCheckStatus_ = L"checking for updates...";
+        ShowOverlay(OverlayKind::UpdateCheck);
+        if (!updateChecker_.Active()) updateChecker_.Start(window_, kUpdateCheckCompleteMessage);
+    }
+
+    void UpdateCheckCompleteMessage(UpdateCheckResult* result) {
+        std::unique_ptr<UpdateCheckResult> owned(result);
+        if (!owned) return;
+        if (!updateCheckManual_) {
+            if (owned->succeeded && owned->updateAvailable) {
+                updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message;
+                ShowOverlay(OverlayKind::UpdateCheck);
+            }
+            return;
+        }
+        if (owned->succeeded && owned->updateAvailable) {
+            updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message;
+        } else {
+            updateVersion_.clear(); updateReleaseUrl_.clear();
+            updateCheckStatus_ = owned->succeeded ? L"viewtrious is up to date." : L"unable to check for updates right now.";
+        }
+        InvalidateRect(window_, nullptr, FALSE);
     }
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
@@ -1676,6 +1718,7 @@ public:
         item = hit(DropdownItem::KeyboardShortcuts); if (item != DropdownItem::None) return item;
         top += separatorGap;
         item = hit(DropdownItem::Help); if (item != DropdownItem::None) return item;
+        item = hit(DropdownItem::CheckForUpdates); if (item != DropdownItem::None) return item;
         item = hit(DropdownItem::Feedback); if (item != DropdownItem::None) return item;
         item = hit(DropdownItem::About); if (item != DropdownItem::None) return item;
         top += separatorGap;
@@ -1704,6 +1747,7 @@ public:
         else if (item == DropdownItem::QuickTour) StartTutorial();
         else if (item == DropdownItem::KeyboardShortcuts) ShowOverlay(OverlayKind::KeyboardShortcuts);
         else if (item == DropdownItem::Help) ShowOverlay(OverlayKind::Help);
+        else if (item == DropdownItem::CheckForUpdates) BeginManualUpdateCheck();
         else if (item == DropdownItem::About) ShowOverlay(OverlayKind::About);
         else if (item == DropdownItem::Feedback) ShowOverlay(OverlayKind::Feedback);
         else if (item == DropdownItem::Close) SendMessageW(window_, WM_SYSCOMMAND, SC_CLOSE, 0);
@@ -3933,7 +3977,8 @@ public:
             const RECT include = GetSettingsSingleColumnBounds(remember.bottom + SettingsStackGap(), L"include hidden files in current folder");
             const RECT confirm = GetSettingsSingleColumnBounds(include.bottom + SettingsStackGap(), L"confirm before deleting images");
             const RECT swipe = GetSettingsSingleColumnBounds(confirm.bottom + SettingsStackGap(), L"swipe to navigate when fit");
-            return option == 0 ? remember : option == 1 ? include : option == 2 ? confirm : swipe;
+            const RECT updates = GetSettingsSingleColumnBounds(swipe.bottom + SettingsStackGap(), L"check for updates automatically");
+            return option == 0 ? remember : option == 1 ? include : option == 2 ? confirm : option == 3 ? swipe : updates;
         }
         if (page == SettingsPage::Image2D) {
             const int imageVideoTop = GetSettingsImageVideoBehaviorHeadingTop() + SettingsSectionHeadingHeight() + SettingsHeadingToControlGap();
@@ -3993,7 +4038,7 @@ public:
     static bool SameGraphicsAdapterLuid(const LUID& left, const LUID& right) { return left.HighPart == right.HighPart && left.LowPart == right.LowPart; }
     std::wstring GraphicsAdapterLabel() const { if (graphicsAdapterAuto_) return L"Auto (High Performance)"; for (const auto& adapter : graphicsAdapters_) if (SameGraphicsAdapterLuid(adapter.luid, graphicsAdapterLuid_)) return adapter.name; return L"Saved adapter unavailable"; }
     int GetSettingsGeneralBehaviorHeadingTop() const { return SettingsFirstCardHeadingTop(); }
-    RECT GetSettingsGeneralBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsGeneralBehaviorHeadingTop(), GetSettingsOptionBounds(SettingsPage::General, 3).bottom); }
+    RECT GetSettingsGeneralBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsGeneralBehaviorHeadingTop(), GetSettingsOptionBounds(SettingsPage::General, 4).bottom); }
     int GetSettingsThemeHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsGeneralBehaviorCardBounds()); }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
         const int buttonWidth = MulDiv(76, GetDpiForWindow(window_), 96), gap = MulDiv(8, GetDpiForWindow(window_), 96);
@@ -4489,6 +4534,33 @@ public:
         const RECT button = GetPrintErrorDismissButtonBounds();
         return (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) && PtInRect(&button, point);
     }
+    RECT GetUpdateActionBounds(bool download) const {
+        const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(112, dpi, 96), height = MulDiv(34, dpi, 96), gap = MulDiv(10, dpi, 96);
+        const int right = bounds.right - MulDiv(24, dpi, 96);
+        const int left = right - width * (updateReleaseUrl_.empty() ? 1 : 2) - (updateReleaseUrl_.empty() ? 0 : gap);
+        const int top = bounds.bottom - MulDiv(24, dpi, 96) - height;
+        return updateReleaseUrl_.empty() || download ? RECT{ updateReleaseUrl_.empty() ? right - width : left, top, updateReleaseUrl_.empty() ? right : left + width, top + height }
+            : RECT{ left + width + gap, top, right, top + height };
+    }
+    bool UpdateActionContains(POINT point, bool download) const {
+        const RECT button = GetUpdateActionBounds(download);
+        return overlay_ == OverlayKind::UpdateCheck && PtInRect(&button, point);
+    }
+    static ULONGLONG CurrentUtcSeconds() {
+        FILETIME fileTime{}; GetSystemTimeAsFileTime(&fileTime);
+        ULARGE_INTEGER value{}; value.LowPart = fileTime.dwLowDateTime; value.HighPart = fileTime.dwHighDateTime;
+        return value.QuadPart / 10000000ull;
+    }
+    ULONGLONG ReadUpdateAttemptUtc() const {
+        DWORD low = 0, high = 0;
+        if (!ReadSetting(L"LastUpdateCheckAttemptUtcLow", low) || !ReadSetting(L"LastUpdateCheckAttemptUtcHigh", high)) return 0;
+        return (static_cast<ULONGLONG>(high) << 32) | low;
+    }
+    void WriteUpdateAttemptUtc(ULONGLONG value) {
+        WriteSetting(L"LastUpdateCheckAttemptUtcLow", static_cast<DWORD>(value));
+        WriteSetting(L"LastUpdateCheckAttemptUtcHigh", static_cast<DWORD>(value >> 32));
+    }
     bool CanvasNavigationButtonsVisible() const {
         return (source_ || VideoActive()) && navigationBuilt_ && navigationFiles_.size() > 1 &&
             !HasOverlay() && !TutorialActive() && !dropdownOpen_ && !contextMenuOpen_;
@@ -4733,6 +4805,7 @@ public:
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
                 if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsSwipeToNavigateWhenFit;
+                if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAutomaticUpdateChecks;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -4795,6 +4868,8 @@ public:
         if (DefaultAppsHelperButtonContains(point, true)) return ButtonKind::DefaultAppsHelperOpen;
         if (FeedbackActionContains(point, false)) return ButtonKind::FeedbackBug;
         if (FeedbackActionContains(point, true)) return ButtonKind::FeedbackFeature;
+        if (UpdateActionContains(point, true)) return updateReleaseUrl_.empty() ? ButtonKind::UpdateLater : ButtonKind::UpdateDownload;
+        if (!updateReleaseUrl_.empty() && UpdateActionContains(point, false)) return ButtonKind::UpdateLater;
         if (PrintErrorDismissButtonContains(point)) return ButtonKind::PrintErrorDismiss;
         return ButtonKind::None;
     }
@@ -4908,6 +4983,7 @@ public:
         else if (button == ButtonKind::SettingsIncludeHidden) ToggleIncludeHiddenImages();
         else if (button == ButtonKind::SettingsConfirmDelete) ToggleConfirmBeforeDeleting();
         else if (button == ButtonKind::SettingsSwipeToNavigateWhenFit) ToggleSwipeToNavigateWhenFit();
+        else if (button == ButtonKind::SettingsAutomaticUpdateChecks) { automaticUpdateChecks_ = !automaticUpdateChecks_; WriteSetting(L"AutomaticUpdateChecks", automaticUpdateChecks_ ? 1 : 0); InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsReuseImageWindow) { reuseImageWindow_ = !reuseImageWindow_; WriteSetting(L"ImageExternalOpenBehavior", reuseImageWindow_ ? 1 : 0); InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsReuseVideoWindow) { reuseVideoWindow_ = !reuseVideoWindow_; WriteSetting(L"VideoExternalOpenBehavior", reuseVideoWindow_ ? 1 : 0); InvalidateRect(window_, nullptr, FALSE); }
         else if (button == ButtonKind::SettingsShowZoomHud) ToggleZoomHudEnabled();
@@ -5019,6 +5095,11 @@ public:
         }
         else if (button == ButtonKind::HelpClose) DismissOverlay();
         else if (button == ButtonKind::HelpTopic) SetHelpTopic(helpTopicHit_);
+        else if (button == ButtonKind::UpdateLater) DismissOverlay();
+        else if (button == ButtonKind::UpdateDownload) {
+            if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", updateReleaseUrl_.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32) DismissOverlay();
+            else { updateReleaseUrl_.clear(); updateCheckStatus_ = L"unable to open the release page right now."; InvalidateRect(window_, nullptr, FALSE); }
+        }
         else if (button == ButtonKind::PrintErrorDismiss) DismissOverlay();
         else if (button == ButtonKind::TutorialSkip) StopTutorial();
         else if (button == ButtonKind::TutorialNext) AdvanceTutorial();
@@ -5049,6 +5130,7 @@ public:
         includeHiddenImages_ = false;
         confirmBeforeDeleting_ = true;
         swipeToNavigateWhenFit_ = true;
+        automaticUpdateChecks_ = true;
         showZoomPercentage_ = true;
         zoomHudEnabled_ = true;
         zoomHudPosition_ = ZoomHudPosition::BottomRight;
@@ -5100,6 +5182,7 @@ public:
         WriteSetting(L"IncludeHiddenImages", 0);
         WriteSetting(L"ConfirmBeforeDeleting", 1);
         WriteSetting(L"SwipeToNavigateWhenFit", 1);
+        WriteSetting(L"AutomaticUpdateChecks", 1);
         WriteSetting(L"ShowZoomPercentage", 1);
         WriteSetting(L"ZoomHudEnabled", 1);
         WriteSetting(L"ZoomHudPosition", static_cast<DWORD>(ZoomHudPosition::BottomRight));
@@ -8357,6 +8440,10 @@ public:
 
     void Shutdown() {
         shuttingDown_ = true;
+        updateChecker_.Shutdown();
+        MSG updateMessage{};
+        while (PeekMessageW(&updateMessage, window_, kUpdateCheckCompleteMessage, kUpdateCheckCompleteMessage, PM_REMOVE))
+            delete reinterpret_cast<UpdateCheckResult*>(updateMessage.lParam);
         CancelExternalMediaDragArming();
         CancelLowerUiMorph();
         FlushImageAdjustmentPersistence();
@@ -10473,7 +10560,7 @@ private:
         const LONG rowHeight = MulDiv(38, dpi, 96);
         const LONG separatorGap = MulDiv(9, dpi, 96);
         const LONG panelPadding = MulDiv(4, dpi, 96);
-        const LONG height = panelPadding * 2 + rowHeight * 8 + separatorGap * 3;
+        const LONG height = panelPadding * 2 + rowHeight * 9 + separatorGap * 3;
         const LONG left = std::clamp<LONG>(frame.hamburger.left + margin, margin,
             std::max<LONG>(margin, client.right - width - margin));
         const LONG top = std::min<LONG>(frame.hamburger.bottom + margin,
@@ -12566,11 +12653,11 @@ private:
         const bool usesSettingsPopupSize = overlay_ == OverlayKind::Settings || overlay_ == OverlayKind::Help;
         const int desiredWidth = MulDiv(overlay_ == OverlayKind::KeyboardShortcuts ? 920 :
             usesSettingsPopupSize ? 760 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? 500 : overlay_ == OverlayKind::DeleteConfirm ? 540 :
-            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::PrintError && printErrorForCameraRaw_ ? 500 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? 640 : overlay_ == OverlayKind::DefaultAppsHelper ? 560 : overlay_ == OverlayKind::Feedback ? 440 : overlay_ == OverlayKind::UpdateCheck ? 460 : overlay_ == OverlayKind::PrintError && printErrorForCameraRaw_ ? 500 : (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) ? 420 : 460, dpi, 96);
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? MulDiv(620, dpi, 96)
             : usesSettingsPopupSize ? 0 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(printErrorForCameraRaw_ ? 250 : 190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::UpdateCheck ? MulDiv(190, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(printErrorForCameraRaw_ ? 250 : 190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -13071,6 +13158,7 @@ private:
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden files in current folder", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
             drawToggle(3, ButtonKind::SettingsSwipeToNavigateWhenFit, L"swipe to navigate when fit", swipeToNavigateWhenFit_);
+            drawToggle(4, ButtonKind::SettingsAutomaticUpdateChecks, L"check for updates automatically", automaticUpdateChecks_);
             group(L"theme", static_cast<float>(GetSettingsThemeHeadingTop() - bounds.top) / dpiScale);
             const auto drawTheme = [&](ThemePreference preference, ButtonKind button, const wchar_t* label) {
                 const RECT segmentBounds = GetSettingsThemeBounds(preference);
@@ -13277,6 +13365,22 @@ private:
                 15.0f, DWRITE_FONT_WEIGHT_NORMAL, primaryBrush.Get(), true);
             DrawOverlayText(L"Cancel", cancel.left, cancel.top, cancel.right - cancel.left, cancel.bottom - cancel.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
             DrawOverlayText(L"Delete", remove.left, remove.top, remove.right - remove.left, remove.bottom - remove.top, 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, buttonText.Get(), true, false, true);
+        } else if (overlay_ == OverlayKind::UpdateCheck) {
+            const bool updateAvailable = !updateReleaseUrl_.empty();
+            const RECT primary = GetUpdateActionBounds(true), secondary = GetUpdateActionBounds(false);
+            DrawOverlayText(updateAvailable ? (std::wstring(L"viewtrious ") + updateVersion_ + L" is available").c_str() : L"check for updates", left, static_cast<float>(bounds.top) + panelPadding,
+                contentWidth, 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
+            const std::wstring body = updateAvailable ? updateMessage_ : updateCheckStatus_;
+            DrawOverlayText(body.c_str(), left, static_cast<float>(bounds.top) + panelPadding + 48.0f * dpiScale, contentWidth, 44.0f * dpiScale,
+                16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
+            const auto drawAction = [&](RECT action, ButtonKind button, const wchar_t* label) {
+                const D2D1_RECT_F rect = D2D1::RectF((float)action.left, (float)action.top, (float)action.right, (float)action.bottom);
+                renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, 5.0f * dpiScale, 5.0f * dpiScale), hoveredButton_ == button ? rowHover.Get() : segmentIdle.Get());
+                renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect, 5.0f * dpiScale, 5.0f * dpiScale), borderBrush.Get(), 1.0f);
+                DrawOverlayText(label, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, 14.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), true, false, true);
+            };
+            if (updateAvailable) { drawAction(primary, ButtonKind::UpdateDownload, L"DOWNLOAD"); drawAction(secondary, ButtonKind::UpdateLater, L"LATER"); }
+            else drawAction(primary, ButtonKind::UpdateLater, L"OK");
         } else if (overlay_ == OverlayKind::PrintError || overlay_ == OverlayKind::RegistrationError) {
             const RECT dismissBounds = GetPrintErrorDismissButtonBounds();
             const bool registrationError = overlay_ == OverlayKind::RegistrationError;
@@ -13401,6 +13505,7 @@ private:
         drawItem(DropdownItem::KeyboardShortcuts, top, L"keyboard shortcuts", L'\uE765'); top += rowHeight;
         separator();
         drawItem(DropdownItem::Help, top, L"help", L'\uE897'); top += rowHeight;
+        drawItem(DropdownItem::CheckForUpdates, top, L"check for updates", L'\uE895'); top += rowHeight;
         drawItem(DropdownItem::Feedback, top, L"feedback", L'\uE939'); top += rowHeight;
         drawItem(DropdownItem::About, top, L"about", L'\uE946'); top += rowHeight;
         separator();
@@ -14478,6 +14583,13 @@ private:
     bool hamburgerPressed_ = false;
     OverlayKind overlay_ = OverlayKind::None;
     bool printErrorForCameraRaw_ = false;
+    UpdateChecker updateChecker_;
+    bool automaticUpdateChecks_ = true;
+    bool updateCheckManual_ = false;
+    std::wstring updateCheckStatus_;
+    std::wstring updateVersion_;
+    std::wstring updateReleaseUrl_;
+    std::wstring updateMessage_;
     bool dropdownOpen_ = false;
     bool triangleCountTooltipHovering_ = false;
     bool triangleCountTooltipVisible_ = false;
@@ -15189,6 +15301,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kVideoPlaybackWakeMessage: viewer->VideoPlaybackWakeMessage(static_cast<uint64_t>(wParam)); return 0;
     case kAiAnalysisCompleteMessage: viewer->AiAnalysisCompleteMessage(reinterpret_cast<AiAnalysisResult*>(lParam)); return 0;
     case kImageAdjustmentPersistenceCompleteMessage: viewer->ImageAdjustmentPersistenceCompleteMessage(reinterpret_cast<ImageAdjustmentPersistenceResult*>(lParam)); return 0;
+    case kUpdateCheckCompleteMessage: viewer->UpdateCheckCompleteMessage(reinterpret_cast<UpdateCheckResult*>(lParam)); return 0;
     case kExternalOpenMessage: viewer->ProcessExternalOpen(); return 0;
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE && viewer->FilmstripInteractionActive()) {
@@ -15349,6 +15462,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         ShowWindow(window, restoredMaximized ? SW_MAXIMIZE : showCommand);
         UpdateWindow(window);
     }
+    viewer.BeginAutomaticUpdateCheck();
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {

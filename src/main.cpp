@@ -1448,15 +1448,15 @@ public:
         if (!owned) return;
         if (!updateCheckManual_) {
             if (owned->succeeded && owned->updateAvailable && !IsDismissedUpdateVersion(owned->latestVersion)) {
-                updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message;
+                updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message; updateNotes_ = owned->notes; updateNotesScroll_ = 0.0f;
                 ShowOverlay(OverlayKind::UpdateCheck);
             }
             return;
         }
         if (owned->succeeded && owned->updateAvailable) {
-            updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message;
+            updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message; updateNotes_ = owned->notes; updateNotesScroll_ = 0.0f;
         } else {
-            updateVersion_.clear(); updateReleaseUrl_.clear();
+            updateVersion_.clear(); updateReleaseUrl_.clear(); updateNotes_.clear(); updateNotesScroll_ = 0.0f;
             updateCheckStatus_ = owned->succeeded ? L"viewtrious is up to date." : L"unable to check for updates right now.";
         }
         InvalidateRect(window_, nullptr, FALSE);
@@ -3754,6 +3754,17 @@ public:
         settingsScroll_ = std::clamp(settingsScroll_ + delta, 0.0f, SettingsMaximumScroll());
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void CompleteCapturedCaptionButtonClick() {
+        const CaptionButton pressed = pressedCaptionButton_;
+        ClearCaptionButtonPressed();
+        if (GetCapture() == window_) ReleaseCapture();
+        if (pressed != CaptionButton::None) SendMessageW(window_, WM_SYSCOMMAND, SystemCommandForCaptionButton(window_, pressed), 0);
+    }
+    void PrepareForClose() {
+        if (GetCapture() == window_) ReleaseCapture();
+        ClearCaptionButtonPressed();
+        ClearButtonPressed(false);
+    }
     bool UpdateNoticeOpen() const { return overlay_ == OverlayKind::UpdateCheck && !updateReleaseUrl_.empty(); }
     void DismissUpdateNotice() {
         overlay_ = OverlayKind::None;
@@ -4554,6 +4565,28 @@ public:
     bool UpdateActionContains(POINT point, bool download) const {
         const RECT button = GetUpdateActionBounds(download);
         return overlay_ == OverlayKind::UpdateCheck && PtInRect(&button, point);
+    }
+    int UpdateNoticeDesiredHeightDips() const {
+        return updateNotes_.empty() ? 190 : std::min(470, 190 + 32 + static_cast<int>(updateNotes_.size()) * 42);
+    }
+    RECT GetUpdateNotesViewport() const {
+        const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
+        const RECT actions = GetUpdateActionBounds(true);
+        const int top = bounds.top + MulDiv(88, dpi, 96);
+        return { bounds.left + MulDiv(24, dpi, 96), top, bounds.right - MulDiv(24, dpi, 96), actions.top - MulDiv(14, dpi, 96) };
+    }
+    float UpdateNotesMaximumScroll() const {
+        const RECT viewport = GetUpdateNotesViewport();
+        const float contentHeight = static_cast<float>(MulDiv(static_cast<int>(updateNotes_.size()) * 42, GetDpiForWindow(window_), 96));
+        return std::max(0.0f, contentHeight - static_cast<float>(std::max(0L, viewport.bottom - viewport.top)));
+    }
+    bool UpdateNotesContains(POINT point) const {
+        const RECT viewport = GetUpdateNotesViewport();
+        return overlay_ == OverlayKind::UpdateCheck && !updateNotes_.empty() && PtInRect(&viewport, point);
+    }
+    void ScrollUpdateNotes(float delta) {
+        updateNotesScroll_ = std::clamp(updateNotesScroll_ + delta, 0.0f, UpdateNotesMaximumScroll());
+        InvalidateRect(window_, nullptr, FALSE);
     }
     static ULONGLONG CurrentUtcSeconds() {
         FILETIME fileTime{}; GetSystemTimeAsFileTime(&fileTime);
@@ -12681,7 +12714,7 @@ private:
         int desiredHeight = overlay_ == OverlayKind::KeyboardShortcuts
             ? MulDiv(620, dpi, 96)
             : usesSettingsPopupSize ? 0 : (overlay_ == OverlayKind::ResetConfirm || overlay_ == OverlayKind::ResetAdjustmentsConfirm) ? MulDiv(236, dpi, 96) : overlay_ == OverlayKind::DeleteConfirm ? MulDiv(268, dpi, 96) :
-            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::UpdateCheck ? MulDiv(190, dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(printErrorForCameraRaw_ ? 250 : 190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
+            overlay_ == OverlayKind::Welcome ? MulDiv(224, dpi, 96) : overlay_ == OverlayKind::DefaultAppsHelper ? MulDiv(418, dpi, 96) : overlay_ == OverlayKind::Feedback ? MulDiv(330, dpi, 96) : overlay_ == OverlayKind::UpdateCheck ? MulDiv(UpdateNoticeDesiredHeightDips(), dpi, 96) : overlay_ == OverlayKind::PrintError ? MulDiv(printErrorForCameraRaw_ ? 250 : 190, dpi, 96) : overlay_ == OverlayKind::RegistrationError ? MulDiv(220, dpi, 96) : MulDiv(220, dpi, 96);
         const int top = fullscreen_ ? 0 : GetFrameMetrics(window_).titleBarHeight;
         const int availableWidth = std::max(1L, client.right - client.left - MulDiv(24, dpi, 96));
         const int availableHeight = std::max(1L, client.bottom - top - MulDiv(24, dpi, 96));
@@ -13396,6 +13429,21 @@ private:
                 contentWidth, 34.0f * dpiScale, 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get(), false, false, true);
             if (!updateAvailable) DrawOverlayText(updateCheckStatus_.c_str(), left, static_cast<float>(bounds.top) + panelPadding + 48.0f * dpiScale, contentWidth, 44.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
+            if (updateAvailable && !updateNotes_.empty()) {
+                DrawOverlayText(L"what's new", left, static_cast<float>(bounds.top) + panelPadding + 40.0f * dpiScale,
+                    contentWidth, 22.0f * dpiScale, 15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
+                const RECT notesViewport = GetUpdateNotesViewport();
+                renderTarget_->PushAxisAlignedClip(D2D1::RectF((float)notesViewport.left, (float)notesViewport.top, (float)notesViewport.right, (float)notesViewport.bottom), D2D1_ANTIALIAS_MODE_ALIASED);
+                renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -updateNotesScroll_));
+                const float noteHeight = 42.0f * dpiScale;
+                for (size_t index = 0; index < updateNotes_.size(); ++index) {
+                    const std::wstring text = L"\u2022  " + updateNotes_[index];
+                    DrawOverlayText(text.c_str(), static_cast<float>(notesViewport.left), static_cast<float>(notesViewport.top) + noteHeight * static_cast<float>(index),
+                        static_cast<float>(notesViewport.right - notesViewport.left), noteHeight, 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+                }
+                renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+                renderTarget_->PopAxisAlignedClip();
+            }
             ComPtr<ID2D1SolidColorBrush> accent, accentHover, accentPressed, neutralHover, neutralPressed, accentText;
             renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.f, 120.f / 255.f, 212.f / 255.f), &accent);
             renderTarget_->CreateSolidColorBrush(D2D1::ColorF(24.f / 255.f, 142.f / 255.f, 232.f / 255.f), &accentHover);
@@ -14623,6 +14671,8 @@ private:
     std::wstring updateVersion_;
     std::wstring updateReleaseUrl_;
     std::wstring updateMessage_;
+    std::vector<std::wstring> updateNotes_;
+    float updateNotesScroll_ = 0.0f;
     bool dropdownOpen_ = false;
     bool triangleCountTooltipHovering_ = false;
     bool triangleCountTooltipVisible_ = false;
@@ -14804,6 +14854,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(window, &point);
         if (viewer->TutorialActive()) return 0;
+        if (viewer->UpdateNotesContains(point)) {
+            const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+            viewer->ScrollUpdateNotes(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
+            return 0;
+        }
         if (viewer->SettingsContains(point)) {
             const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
             viewer->ScrollSettings(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
@@ -15174,6 +15229,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_MOUSELEAVE: viewer->UpdateTriangleCountTooltipHover({ -1, -1 }); viewer->ClearComponentsPanelHover(); viewer->SetHamburgerHover(false); viewer->SetButtonHover(ButtonKind::None); viewer->SetCanvasNavigationHover(ButtonKind::None); viewer->SetDropdownHover(DropdownItem::None); viewer->SetContextHover(ContextAction::None); viewer->SetFilmstripPointerState({ -1, -1 }); viewer->SetFilmstripHover({ -1, -1 }); viewer->UpdateGifControlsMouse({ -1, -1 }); viewer->VideoControlsMouseLeave(); return 0;
     case WM_LBUTTONUP: {
         viewer->CancelExternalMediaDragArming();
+        if (viewer->PressedCaptionButton() != CaptionButton::None) { viewer->CompleteCapturedCaptionButtonClick(); return 0; }
         if (viewer->UpdateNoticeOpen() && viewer->PressedButton() == ButtonKind::None) return 0;
         if (viewer->ComponentsPanelInteractionActive()) {
             viewer->EndComponentsPanelInteraction();
@@ -15347,6 +15403,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kImageAdjustmentPersistenceCompleteMessage: viewer->ImageAdjustmentPersistenceCompleteMessage(reinterpret_cast<ImageAdjustmentPersistenceResult*>(lParam)); return 0;
     case kUpdateCheckCompleteMessage: viewer->UpdateCheckCompleteMessage(reinterpret_cast<UpdateCheckResult*>(lParam)); return 0;
     case kExternalOpenMessage: viewer->ProcessExternalOpen(); return 0;
+    case WM_CLOSE: viewer->PrepareForClose(); break;
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE && viewer->FilmstripInteractionActive()) {
             viewer->CancelFilmstripInteraction();

@@ -6,6 +6,7 @@
 #include <array>
 #include <string>
 #include <thread>
+#include <vector>
 
 struct UpdateCheckResult {
     bool succeeded = false;
@@ -13,6 +14,7 @@ struct UpdateCheckResult {
     std::wstring latestVersion;
     std::wstring releaseUrl;
     std::wstring message;
+    std::vector<std::wstring> notes;
 };
 
 bool ParseUpdateVersion(const std::wstring& text, std::array<unsigned int, 4>& version);

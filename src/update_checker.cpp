@@ -7,6 +7,7 @@
 #include <cwctype>
 #include <limits>
 #include <memory>
+#include <utility>
 
 namespace {
 
@@ -15,6 +16,8 @@ constexpr wchar_t kUpdatePath[] = L"/update.json";
 constexpr DWORD kTimeoutMs = 5000;
 constexpr DWORD kMaximumResponseBytes = 16 * 1024;
 constexpr size_t kMaximumFieldLength = 2048;
+constexpr size_t kMaximumNotes = 6;
+constexpr size_t kMaximumNoteLength = 240;
 
 bool ParseVersionImpl(const std::wstring& text, std::array<unsigned int, 4>& version) {
     size_t begin = 0;
@@ -77,11 +80,27 @@ bool ReadInteger(const std::wstring& input, size_t& cursor, unsigned int& value)
     value = static_cast<unsigned int>(parsed); return true;
 }
 
+bool ReadNotes(const std::wstring& input, size_t& cursor, std::vector<std::wstring>& notes) {
+    if (cursor >= input.size() || input[cursor++] != L'[') return false;
+    notes.clear(); SkipWhitespace(input, cursor);
+    if (cursor < input.size() && input[cursor] == L']') { ++cursor; return true; }
+    while (true) {
+        if (notes.size() >= kMaximumNotes) return false;
+        std::wstring note;
+        if (!ReadString(input, cursor, note) || note.size() > kMaximumNoteLength) return false;
+        notes.push_back(std::move(note));
+        SkipWhitespace(input, cursor); if (cursor >= input.size()) return false;
+        if (input[cursor] == L']') { ++cursor; return true; }
+        if (input[cursor++] != L',') return false;
+        SkipWhitespace(input, cursor);
+    }
+}
+
 bool ParseResponse(const std::string& bytes, UpdateCheckResult& result) {
     std::wstring json;
     if (!DecodeUtf8(bytes, json)) return false;
     size_t cursor = 0; SkipWhitespace(json, cursor); if (cursor >= json.size() || json[cursor++] != L'{') return false;
-    bool schemaSeen = false, versionSeen = false, urlSeen = false;
+    bool schemaSeen = false, versionSeen = false, urlSeen = false, notesSeen = false;
     unsigned int schema = 0;
     while (true) {
         SkipWhitespace(json, cursor); if (cursor < json.size() && json[cursor] == L'}') { ++cursor; break; }
@@ -92,6 +111,7 @@ bool ParseResponse(const std::string& bytes, UpdateCheckResult& result) {
         else if (key == L"latest_version") { if (versionSeen || !ReadString(json, cursor, result.latestVersion)) return false; versionSeen = true; }
         else if (key == L"release_url") { if (urlSeen || !ReadString(json, cursor, result.releaseUrl)) return false; urlSeen = true; }
         else if (key == L"message") { if (!ReadString(json, cursor, result.message)) return false; }
+        else if (key == L"notes") { if (notesSeen || !ReadNotes(json, cursor, result.notes)) return false; notesSeen = true; }
         else return false;
         SkipWhitespace(json, cursor); if (cursor >= json.size()) return false;
         if (json[cursor] == L'}') { ++cursor; break; }

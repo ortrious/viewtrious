@@ -96,11 +96,70 @@ bool ReadNotes(const std::wstring& input, size_t& cursor, std::vector<std::wstri
     }
 }
 
+bool SkipJsonString(const std::wstring& input, size_t& cursor) {
+    if (cursor >= input.size() || input[cursor++] != L'\"') return false;
+    while (cursor < input.size()) {
+        const wchar_t character = input[cursor++];
+        if (character == L'\"') return true;
+        if (character < 0x20) return false;
+        if (character != L'\\') continue;
+        if (cursor >= input.size()) return false;
+        const wchar_t escape = input[cursor++];
+        if (escape == L'\"' || escape == L'\\' || escape == L'/' || escape == L'b' || escape == L'f' || escape == L'n' || escape == L'r' || escape == L't') continue;
+        if (escape != L'u' || cursor + 4 > input.size()) return false;
+        for (size_t index = 0; index < 4; ++index) if (!iswxdigit(input[cursor++])) return false;
+    }
+    return false;
+}
+
+bool SkipJsonValue(const std::wstring& input, size_t& cursor) {
+    SkipWhitespace(input, cursor);
+    if (cursor >= input.size()) return false;
+    if (input[cursor] == L'\"') return SkipJsonString(input, cursor);
+    if (input[cursor] == L'[') {
+        ++cursor; SkipWhitespace(input, cursor);
+        if (cursor < input.size() && input[cursor] == L']') { ++cursor; return true; }
+        while (SkipJsonValue(input, cursor)) {
+            SkipWhitespace(input, cursor);
+            if (cursor < input.size() && input[cursor] == L']') { ++cursor; return true; }
+            if (cursor >= input.size() || input[cursor++] != L',') return false;
+        }
+        return false;
+    }
+    if (input[cursor] == L'{') {
+        ++cursor; SkipWhitespace(input, cursor);
+        if (cursor < input.size() && input[cursor] == L'}') { ++cursor; return true; }
+        while (true) {
+            if (!SkipJsonString(input, cursor)) return false;
+            SkipWhitespace(input, cursor); if (cursor >= input.size() || input[cursor++] != L':' || !SkipJsonValue(input, cursor)) return false;
+            SkipWhitespace(input, cursor);
+            if (cursor < input.size() && input[cursor] == L'}') { ++cursor; return true; }
+            if (cursor >= input.size() || input[cursor++] != L',') return false;
+            SkipWhitespace(input, cursor);
+        }
+    }
+    const size_t begin = cursor;
+    while (cursor < input.size() && input[cursor] != L',' && input[cursor] != L'}' && input[cursor] != L']' && !iswspace(input[cursor])) ++cursor;
+    return cursor > begin;
+}
+
+bool ReadOptionalNotesUrl(const std::wstring& input, size_t& cursor, std::wstring& url) {
+    if (cursor >= input.size() || input[cursor] != L'\"') return SkipJsonValue(input, cursor);
+    const size_t begin = cursor;
+    std::wstring candidate;
+    if (ReadString(input, cursor, candidate) && candidate.rfind(L"https://", 0) == 0) url = std::move(candidate);
+    else {
+        cursor = begin;
+        if (!SkipJsonValue(input, cursor)) return false;
+    }
+    return true;
+}
+
 bool ParseResponse(const std::string& bytes, UpdateCheckResult& result) {
     std::wstring json;
     if (!DecodeUtf8(bytes, json)) return false;
     size_t cursor = 0; SkipWhitespace(json, cursor); if (cursor >= json.size() || json[cursor++] != L'{') return false;
-    bool schemaSeen = false, versionSeen = false, urlSeen = false, notesSeen = false;
+    bool schemaSeen = false, versionSeen = false, urlSeen = false, notesSeen = false, notesUrlSeen = false;
     unsigned int schema = 0;
     while (true) {
         SkipWhitespace(json, cursor); if (cursor < json.size() && json[cursor] == L'}') { ++cursor; break; }
@@ -112,6 +171,11 @@ bool ParseResponse(const std::string& bytes, UpdateCheckResult& result) {
         else if (key == L"release_url") { if (urlSeen || !ReadString(json, cursor, result.releaseUrl)) return false; urlSeen = true; }
         else if (key == L"message") { if (!ReadString(json, cursor, result.message)) return false; }
         else if (key == L"notes") { if (notesSeen || !ReadNotes(json, cursor, result.notes)) return false; notesSeen = true; }
+        else if (key == L"notes_url") {
+            if (notesUrlSeen) return false;
+            notesUrlSeen = true;
+            if (!ReadOptionalNotesUrl(json, cursor, result.notesUrl)) return false;
+        }
         else return false;
         SkipWhitespace(json, cursor); if (cursor >= json.size()) return false;
         if (json[cursor] == L'}') { ++cursor; break; }

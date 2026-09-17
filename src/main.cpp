@@ -334,7 +334,7 @@ enum class ButtonKind { None, CanvasPrevious, CanvasNext, SettingsGeneralPage, S
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsAutomaticUpdateChecks, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAdjustmentsDatabase, SettingsResetAdjustmentsDatabase, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsFilmstripDisplayToggle, SettingsFilmstripHidden, SettingsFilmstripAutomatic, SettingsFilmstripAlwaysShow, SettingsImageScalingToggle, SettingsVideoSizingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsModelReverseWheelZoom, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, ResetAdjustmentsConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, UpdateDownload, UpdateLater, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments, ViewBarBuildPlateSize, ViewBarPlateWidth, ViewBarPlateDepth, ViewBarPlateLink, ViewBarPlateReset, Count };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, UpdateDownload, UpdateLater, UpdateNotesLink, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments, ViewBarBuildPlateSize, ViewBarPlateWidth, ViewBarPlateDepth, ViewBarPlateLink, ViewBarPlateReset, Count };
 enum class TutorialStep { None, OpenImage, MenuSettings, ImageDetails, ContextMenu, ZoomBox, Adjustments, ResizeApp, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
@@ -1448,15 +1448,15 @@ public:
         if (!owned) return;
         if (!updateCheckManual_) {
             if (owned->succeeded && owned->updateAvailable && !IsDismissedUpdateVersion(owned->latestVersion)) {
-                updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message; updateNotes_ = owned->notes; updateNotesScroll_ = 0.0f;
+                updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message; updateNotes_ = owned->notes; updateNotesUrl_ = owned->notesUrl; updateNotesLinkError_ = false; updateNotesScroll_ = 0.0f;
                 ShowOverlay(OverlayKind::UpdateCheck);
             }
             return;
         }
         if (owned->succeeded && owned->updateAvailable) {
-            updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message; updateNotes_ = owned->notes; updateNotesScroll_ = 0.0f;
+            updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message; updateNotes_ = owned->notes; updateNotesUrl_ = owned->notesUrl; updateNotesLinkError_ = false; updateNotesScroll_ = 0.0f;
         } else {
-            updateVersion_.clear(); updateReleaseUrl_.clear(); updateNotes_.clear(); updateNotesScroll_ = 0.0f;
+            updateVersion_.clear(); updateReleaseUrl_.clear(); updateNotes_.clear(); updateNotesUrl_.clear(); updateNotesLinkError_ = false; updateNotesScroll_ = 0.0f;
             updateCheckStatus_ = owned->succeeded ? L"viewtrious is up to date." : L"unable to check for updates right now.";
         }
         InvalidateRect(window_, nullptr, FALSE);
@@ -4566,6 +4566,17 @@ public:
         const RECT button = GetUpdateActionBounds(download);
         return overlay_ == OverlayKind::UpdateCheck && PtInRect(&button, point);
     }
+    RECT GetUpdateNotesLinkBounds() const {
+        if (updateNotesUrl_.empty()) return {};
+        const RECT bounds = GetOverlayBounds(); const RECT action = GetUpdateActionBounds(true); const int dpi = GetDpiForWindow(window_);
+        const int width = MulDiv(116, dpi, 96), height = MulDiv(22, dpi, 96);
+        const int left = bounds.left + (bounds.right - bounds.left - width) / 2;
+        return { left, action.top - height - MulDiv(8, dpi, 96), left + width, action.top - MulDiv(8, dpi, 96) };
+    }
+    bool UpdateNotesLinkContains(POINT point) const {
+        const RECT link = GetUpdateNotesLinkBounds();
+        return overlay_ == OverlayKind::UpdateCheck && !updateNotesUrl_.empty() && PtInRect(&link, point);
+    }
     int UpdateNoticeDesiredHeightDips() const {
         return updateNotes_.empty() ? 190 : std::min(470, 190 + 32 + static_cast<int>(updateNotes_.size()) * 42);
     }
@@ -4573,7 +4584,9 @@ public:
         const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
         const RECT actions = GetUpdateActionBounds(true);
         const int top = bounds.top + MulDiv(88, dpi, 96);
-        return { bounds.left + MulDiv(24, dpi, 96), top, bounds.right - MulDiv(24, dpi, 96), actions.top - MulDiv(14, dpi, 96) };
+        const RECT link = GetUpdateNotesLinkBounds();
+        const int bottom = updateNotesUrl_.empty() ? actions.top - MulDiv(14, dpi, 96) : link.top - MulDiv(updateNotesLinkError_ ? 32 : 12, dpi, 96);
+        return { bounds.left + MulDiv(24, dpi, 96), top, bounds.right - MulDiv(24, dpi, 96), bottom };
     }
     float UpdateNotesMaximumScroll() const {
         const RECT viewport = GetUpdateNotesViewport();
@@ -4922,6 +4935,7 @@ public:
         if (DefaultAppsHelperButtonContains(point, true)) return ButtonKind::DefaultAppsHelperOpen;
         if (FeedbackActionContains(point, false)) return ButtonKind::FeedbackBug;
         if (FeedbackActionContains(point, true)) return ButtonKind::FeedbackFeature;
+        if (UpdateNotesLinkContains(point)) return ButtonKind::UpdateNotesLink;
         if (UpdateActionContains(point, true)) return updateReleaseUrl_.empty() ? ButtonKind::UpdateLater : ButtonKind::UpdateDownload;
         if (!updateReleaseUrl_.empty() && UpdateActionContains(point, false)) return ButtonKind::UpdateLater;
         if (PrintErrorDismissButtonContains(point)) return ButtonKind::PrintErrorDismiss;
@@ -5156,6 +5170,10 @@ public:
         else if (button == ButtonKind::UpdateDownload) {
             if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", updateReleaseUrl_.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32) DismissUpdateNotice();
             else { updateReleaseUrl_.clear(); updateCheckStatus_ = L"unable to open the release page right now."; InvalidateRect(window_, nullptr, FALSE); }
+        }
+        else if (button == ButtonKind::UpdateNotesLink) {
+            updateNotesLinkError_ = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", updateNotesUrl_.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32;
+            InvalidateRect(window_, nullptr, FALSE);
         }
         else if (button == ButtonKind::PrintErrorDismiss) DismissOverlay();
         else if (button == ButtonKind::TutorialSkip) StopTutorial();
@@ -13451,6 +13469,15 @@ private:
             renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(60.f / 255.f, 64.f / 255.f, 74.f / 255.f) : D2D1::ColorF(228.f / 255.f, 228.f / 255.f, 228.f / 255.f), &neutralHover);
             renderTarget_->CreateSolidColorBrush(dark ? D2D1::ColorF(75.f / 255.f, 80.f / 255.f, 92.f / 255.f) : D2D1::ColorF(210.f / 255.f, 210.f / 255.f, 210.f / 255.f), &neutralPressed);
             renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &accentText);
+            if (updateAvailable && !updateNotesUrl_.empty()) {
+                const RECT link = GetUpdateNotesLinkBounds();
+                ID2D1Brush* linkBrush = pressedButton_ == ButtonKind::UpdateNotesLink ? accentPressed.Get() : hoveredButton_ == ButtonKind::UpdateNotesLink ? accentHover.Get() : accent.Get();
+                DrawOverlayText(L"full patch notes", static_cast<float>(link.left), static_cast<float>(link.top), static_cast<float>(link.right - link.left), static_cast<float>(link.bottom - link.top),
+                    13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, linkBrush ? linkBrush : primaryBrush.Get(), true, false, true);
+                if (linkBrush) renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(link.left), static_cast<float>(link.bottom - 2.0f * dpiScale)), D2D1::Point2F(static_cast<float>(link.right), static_cast<float>(link.bottom - 2.0f * dpiScale)), linkBrush, 1.0f);
+                if (updateNotesLinkError_) DrawOverlayText(L"unable to open full patch notes.", left, static_cast<float>(link.top) - 18.0f * dpiScale, contentWidth, 16.0f * dpiScale,
+                    12.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true);
+            }
             const auto drawAction = [&](RECT action, ButtonKind button, const wchar_t* label, bool primaryAction) {
                 const bool pressed = pressedButton_ == button, hovered = hoveredButton_ == button;
                 const float pressOffset = pressed ? 1.5f * dpiScale : 0.0f;
@@ -14672,6 +14699,8 @@ private:
     std::wstring updateReleaseUrl_;
     std::wstring updateMessage_;
     std::vector<std::wstring> updateNotes_;
+    std::wstring updateNotesUrl_;
+    bool updateNotesLinkError_ = false;
     float updateNotesScroll_ = 0.0f;
     bool dropdownOpen_ = false;
     bool triangleCountTooltipHovering_ = false;
@@ -14978,7 +15007,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (viewer->UpdateNoticeOpen()) {
             const ButtonKind button = viewer->ButtonAt(point);
-            if (button == ButtonKind::UpdateDownload || button == ButtonKind::UpdateLater) { viewer->SetButtonPressed(button); SetCapture(window); }
+            if (button == ButtonKind::UpdateDownload || button == ButtonKind::UpdateLater || button == ButtonKind::UpdateNotesLink) { viewer->SetButtonPressed(button); SetCapture(window); }
             return 0;
         }
         if (viewer->HandleVideoFrameSaveToastClick(point)) return 0;

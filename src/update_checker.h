@@ -15,6 +15,7 @@ struct UpdateCheckResult {
     std::wstring releaseUrl;
     std::wstring message;
     std::vector<std::wstring> notes;
+    std::wstring notesUrl;
 };
 
 bool ParseUpdateVersion(const std::wstring& text, std::array<unsigned int, 4>& version);

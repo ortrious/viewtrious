@@ -101,6 +101,9 @@ function Write-SquarePng([string]$Source, [string]$Destination, [int]$Size) {
 
 $assets = Join-Path $stagingDirectory 'Assets'
 $mainIcon = Join-Path $root 'assets\icon_sources\icon_1024.png'
+Copy-Item -LiteralPath (Join-Path $root 'assets\Viewtrious.ico') -Destination $assets
+Copy-Item -LiteralPath (Join-Path $root 'assets\ViewtriousVideo.ico') -Destination $assets
+Copy-Item -LiteralPath (Join-Path $root 'assets\Viewtrious3D.ico') -Destination $assets
 Write-SquarePng $mainIcon (Join-Path $assets 'StoreLogo.png') 50
 Write-SquarePng $mainIcon (Join-Path $assets 'Square44x44Logo.png') 44
 Write-SquarePng $mainIcon (Join-Path $assets 'Square150x150Logo.png') 150
@@ -111,9 +114,6 @@ foreach ($size in $appListTargetSizes) {
         Write-SquarePng $mainIcon (Join-Path $assets $fileName) $size
     }
 }
-Write-SquarePng (Join-Path $root 'assets\icon_sources\icon_play_1024.png') (Join-Path $assets 'Square44x44VideoLogo.png') 44
-Write-SquarePng (Join-Path $root 'assets\icon_sources\icon_3d_1024.png') (Join-Path $assets 'Square44x44ModelLogo.png') 44
-
 function Escape-Xml([string]$Value) { return [System.Security.SecurityElement]::Escape($Value) }
 $manifest = Get-Content -LiteralPath (Join-Path $root 'installer\msix\AppxManifest.xml.in') -Raw
 $manifest = $manifest.Replace('@PACKAGE_IDENTITY_NAME@', (Escape-Xml $IdentityName))

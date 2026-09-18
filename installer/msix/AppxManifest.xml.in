@@ -3,9 +3,10 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
+  xmlns:desktop7="http://schemas.microsoft.com/appx/manifest/desktop/windows10/7"
   xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap desktop2 com rescap">
+  IgnorableNamespaces="uap desktop2 desktop7 com rescap">
   <Identity
     Name="@PACKAGE_IDENTITY_NAME@"
     Publisher="@PACKAGE_PUBLISHER@"
@@ -45,7 +46,7 @@
         <uap:Extension Category="windows.fileTypeAssociation">
           <uap:FileTypeAssociation Name="viewtriousimages">
             <uap:DisplayName>viewtrious images</uap:DisplayName>
-            <uap:Logo>Assets\Square44x44Logo.png</uap:Logo>
+            <desktop7:Logo>Assets\Viewtrious.ico</desktop7:Logo>
             <uap:SupportedFileTypes>
               <uap:FileType>.jpg</uap:FileType>
               <uap:FileType>.jpeg</uap:FileType>
@@ -61,7 +62,7 @@
         <uap:Extension Category="windows.fileTypeAssociation">
           <uap:FileTypeAssociation Name="viewtriousvideos">
             <uap:DisplayName>viewtrious videos</uap:DisplayName>
-            <uap:Logo>Assets\Square44x44VideoLogo.png</uap:Logo>
+            <desktop7:Logo>Assets\ViewtriousVideo.ico</desktop7:Logo>
             <uap:SupportedFileTypes>
               <uap:FileType>.mp4</uap:FileType>
               <uap:FileType>.mov</uap:FileType>
@@ -72,7 +73,7 @@
         <uap:Extension Category="windows.fileTypeAssociation">
           <uap:FileTypeAssociation Name="viewtriousstl">
             <uap:DisplayName>viewtrious STL</uap:DisplayName>
-            <uap:Logo>Assets\Square44x44ModelLogo.png</uap:Logo>
+            <desktop7:Logo>Assets\Viewtrious3D.ico</desktop7:Logo>
             <uap:SupportedFileTypes>
               <uap:FileType>.stl</uap:FileType>
             </uap:SupportedFileTypes>
@@ -82,7 +83,7 @@
         <uap:Extension Category="windows.fileTypeAssociation">
           <uap:FileTypeAssociation Name="viewtrious3mf">
             <uap:DisplayName>viewtrious 3MF</uap:DisplayName>
-            <uap:Logo>Assets\Square44x44ModelLogo.png</uap:Logo>
+            <desktop7:Logo>Assets\Viewtrious3D.ico</desktop7:Logo>
             <uap:SupportedFileTypes>
               <uap:FileType>.3mf</uap:FileType>
             </uap:SupportedFileTypes>

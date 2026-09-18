@@ -14,4 +14,17 @@ bool IsPackagedProcess() {
     return packaged;
 }
 
+bool TryGetCurrentApplicationUserModelId(std::wstring& applicationUserModelId) {
+    applicationUserModelId.clear();
+    UINT32 length = 0;
+    if (GetCurrentApplicationUserModelId(&length, nullptr) != ERROR_INSUFFICIENT_BUFFER || length <= 1) return false;
+
+    std::wstring buffer(length, L'\0');
+    if (GetCurrentApplicationUserModelId(&length, buffer.data()) != ERROR_SUCCESS || length <= 1) return false;
+    buffer.resize(length - 1);
+    if (buffer.empty()) return false;
+    applicationUserModelId.swap(buffer);
+    return true;
+}
+
 } // namespace ViewtriousPackage

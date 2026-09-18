@@ -9408,8 +9408,13 @@ private:
         if (ViewtriousPaths::IsPortable()) { ShowPortableIntegrationUnavailable(); return; }
         const bool packaged = ViewtriousPackage::IsPackagedProcess();
         if (!packaged && verifyRegistration && !RegisterDefaultAppCapabilities()) { ShowOverlay(OverlayKind::RegistrationError); return; }
-        INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
-            packaged ? L"ms-settings:defaultapps" : L"ms-settings:defaultapps?registeredAppUser=viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
+        std::wstring settingsUri = L"ms-settings:defaultapps";
+        if (packaged) {
+            std::wstring applicationUserModelId;
+            if (ViewtriousPackage::TryGetCurrentApplicationUserModelId(applicationUserModelId))
+                settingsUri += L"?registeredAUMID=" + applicationUserModelId;
+        } else settingsUri += L"?registeredAppUser=viewtrious";
+        INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", settingsUri.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
         if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
         if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
     }

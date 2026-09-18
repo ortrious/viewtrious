@@ -4571,26 +4571,49 @@ public:
         const RECT bounds = GetOverlayBounds(); const RECT action = GetUpdateActionBounds(true); const int dpi = GetDpiForWindow(window_);
         const int width = MulDiv(116, dpi, 96), height = MulDiv(22, dpi, 96);
         const int left = bounds.left + (bounds.right - bounds.left - width) / 2;
-        return { left, action.top - height - MulDiv(8, dpi, 96), left + width, action.top - MulDiv(8, dpi, 96) };
+        return { left, action.top - height - MulDiv(24, dpi, 96), left + width, action.top - MulDiv(24, dpi, 96) };
     }
     bool UpdateNotesLinkContains(POINT point) const {
         const RECT link = GetUpdateNotesLinkBounds();
         return overlay_ == OverlayKind::UpdateCheck && !updateNotesUrl_.empty() && PtInRect(&link, point);
     }
     int UpdateNoticeDesiredHeightDips() const {
-        return updateNotes_.empty() ? 190 : std::min(470, 190 + 32 + static_cast<int>(updateNotes_.size()) * 42);
+        if (updateNotes_.empty()) return 190;
+        return std::min(388, (updateNotesUrl_.empty() ? 176 : 220) + static_cast<int>(updateNotes_.size()) * 28);
+    }
+    int MeasureUpdateNoteHeight(const std::wstring& text, int width) const {
+        if (!dwriteFactory_ || width <= 0) return MulDiv(20, GetDpiForWindow(window_), 96);
+        ComPtr<IDWriteTextFormat> format;
+        const float scale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, 15.0f * scale, L"", &format))) return MulDiv(20, GetDpiForWindow(window_), 96);
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format.Get(), static_cast<float>(width), 4096.0f, &layout))) return MulDiv(20, GetDpiForWindow(window_), 96);
+        DWRITE_TEXT_METRICS metrics{};
+        return SUCCEEDED(layout->GetMetrics(&metrics)) ? std::max(MulDiv(20, GetDpiForWindow(window_), 96), static_cast<int>(std::ceil(metrics.height))) : MulDiv(20, GetDpiForWindow(window_), 96);
+    }
+    float UpdateNotesContentHeight(int width) const {
+        const int gap = MulDiv(8, GetDpiForWindow(window_), 96);
+        float height = 0.0f;
+        for (size_t index = 0; index < updateNotes_.size(); ++index) {
+            const std::wstring text = L"\u2022  " + updateNotes_[index];
+            height += static_cast<float>(MeasureUpdateNoteHeight(text, width));
+            if (index + 1 < updateNotes_.size()) height += static_cast<float>(gap);
+        }
+        return height;
     }
     RECT GetUpdateNotesViewport() const {
         const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
         const RECT actions = GetUpdateActionBounds(true);
-        const int top = bounds.top + MulDiv(88, dpi, 96);
+        const int top = bounds.top + MulDiv(112, dpi, 96);
         const RECT link = GetUpdateNotesLinkBounds();
         const int bottom = updateNotesUrl_.empty() ? actions.top - MulDiv(14, dpi, 96) : link.top - MulDiv(updateNotesLinkError_ ? 32 : 12, dpi, 96);
         return { bounds.left + MulDiv(24, dpi, 96), top, bounds.right - MulDiv(24, dpi, 96), bottom };
     }
     float UpdateNotesMaximumScroll() const {
         const RECT viewport = GetUpdateNotesViewport();
-        const float contentHeight = static_cast<float>(MulDiv(static_cast<int>(updateNotes_.size()) * 42, GetDpiForWindow(window_), 96));
+        const float contentHeight = UpdateNotesContentHeight(viewport.right - viewport.left);
         return std::max(0.0f, contentHeight - static_cast<float>(std::max(0L, viewport.bottom - viewport.top)));
     }
     bool UpdateNotesContains(POINT point) const {
@@ -13448,16 +13471,19 @@ private:
             if (!updateAvailable) DrawOverlayText(updateCheckStatus_.c_str(), left, static_cast<float>(bounds.top) + panelPadding + 48.0f * dpiScale, contentWidth, 44.0f * dpiScale,
                 16.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, true, true);
             if (updateAvailable && !updateNotes_.empty()) {
-                DrawOverlayText(L"what's new", left, static_cast<float>(bounds.top) + panelPadding + 40.0f * dpiScale,
+                DrawOverlayText(L"what's new", left, static_cast<float>(bounds.top) + panelPadding + 58.0f * dpiScale,
                     contentWidth, 22.0f * dpiScale, 15.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, primaryBrush.Get());
                 const RECT notesViewport = GetUpdateNotesViewport();
                 renderTarget_->PushAxisAlignedClip(D2D1::RectF((float)notesViewport.left, (float)notesViewport.top, (float)notesViewport.right, (float)notesViewport.bottom), D2D1_ANTIALIAS_MODE_ALIASED);
                 renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -updateNotesScroll_));
-                const float noteHeight = 42.0f * dpiScale;
+                float noteTop = static_cast<float>(notesViewport.top);
+                const float noteGap = 8.0f * dpiScale;
                 for (size_t index = 0; index < updateNotes_.size(); ++index) {
                     const std::wstring text = L"\u2022  " + updateNotes_[index];
-                    DrawOverlayText(text.c_str(), static_cast<float>(notesViewport.left), static_cast<float>(notesViewport.top) + noteHeight * static_cast<float>(index),
+                    const float noteHeight = static_cast<float>(MeasureUpdateNoteHeight(text, notesViewport.right - notesViewport.left));
+                    DrawOverlayText(text.c_str(), static_cast<float>(notesViewport.left), noteTop,
                         static_cast<float>(notesViewport.right - notesViewport.left), noteHeight, 15.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+                    noteTop += noteHeight + (index + 1 < updateNotes_.size() ? noteGap : 0.0f);
                 }
                 renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
                 renderTarget_->PopAxisAlignedClip();

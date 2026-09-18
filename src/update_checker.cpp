@@ -85,10 +85,9 @@ bool ReadNotes(const std::wstring& input, size_t& cursor, std::vector<std::wstri
     notes.clear(); SkipWhitespace(input, cursor);
     if (cursor < input.size() && input[cursor] == L']') { ++cursor; return true; }
     while (true) {
-        if (notes.size() >= kMaximumNotes) return false;
         std::wstring note;
         if (!ReadString(input, cursor, note) || note.size() > kMaximumNoteLength) return false;
-        notes.push_back(std::move(note));
+        if (notes.size() < kMaximumNotes) notes.push_back(std::move(note));
         SkipWhitespace(input, cursor); if (cursor >= input.size()) return false;
         if (input[cursor] == L']') { ++cursor; return true; }
         if (input[cursor++] != L',') return false;

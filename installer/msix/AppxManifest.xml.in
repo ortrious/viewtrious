@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop2 com rescap">
+  <Identity
+    Name="@PACKAGE_IDENTITY_NAME@"
+    Publisher="@PACKAGE_PUBLISHER@"
+    Version="@PACKAGE_VERSION@"
+    ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>@PACKAGE_DISPLAY_NAME@</DisplayName>
+    <PublisherDisplayName>@PACKAGE_PUBLISHER_DISPLAY_NAME@</PublisherDisplayName>
+    <Description>Lightweight native Windows media viewer</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Applications>
+    <Application Id="Viewtrious" Executable="viewtrious.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="@PACKAGE_DISPLAY_NAME@"
+        Description="Lightweight native Windows media viewer"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="viewtrious STL thumbnail provider">
+              <com:Class
+                Id="D812B4F2-B141-4A0D-9A4F-574DDB2975B2"
+                Path="shellextensions\ViewtriousStlThumbnail.dll"
+                ThreadingModel="Both" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="viewtriousimages">
+            <uap:DisplayName>viewtrious images</uap:DisplayName>
+            <uap:Logo>Assets\Square44x44Logo.png</uap:Logo>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.jpg</uap:FileType>
+              <uap:FileType>.jpeg</uap:FileType>
+              <uap:FileType>.png</uap:FileType>
+              <uap:FileType>.bmp</uap:FileType>
+              <uap:FileType>.gif</uap:FileType>
+              <uap:FileType>.heic</uap:FileType>
+              <uap:FileType>.heif</uap:FileType>
+              <uap:FileType>.dng</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="viewtriousvideos">
+            <uap:DisplayName>viewtrious videos</uap:DisplayName>
+            <uap:Logo>Assets\Square44x44VideoLogo.png</uap:Logo>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.mp4</uap:FileType>
+              <uap:FileType>.mov</uap:FileType>
+              <uap:FileType>.mkv</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="viewtriousstl">
+            <uap:DisplayName>viewtrious STL</uap:DisplayName>
+            <uap:Logo>Assets\Square44x44ModelLogo.png</uap:Logo>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.stl</uap:FileType>
+            </uap:SupportedFileTypes>
+            <desktop2:ThumbnailHandler Clsid="D812B4F2-B141-4A0D-9A4F-574DDB2975B2" />
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="viewtrious3mf">
+            <uap:DisplayName>viewtrious 3MF</uap:DisplayName>
+            <uap:Logo>Assets\Square44x44ModelLogo.png</uap:Logo>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.3mf</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

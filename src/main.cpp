@@ -28,6 +28,7 @@
 #include "adjustment_persistence.h"
 #include "application_paths.h"
 #include "application_settings.h"
+#include "package_identity.h"
 #include "update_checker.h"
 
 #include <algorithm>
@@ -314,6 +315,14 @@ const D2D1_COLOR_F kViewerBackground = D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.
 constexpr float kSharpnessSliderMaximum = 2.0f;
 constexpr float kSignedAdjustmentSliderMinimum = -1.0f;
 constexpr float kSignedAdjustmentSliderMaximum = 1.0f;
+
+bool UpdateChecksEnabledForProcess() {
+#if defined(VIEWTRIOUS_ENABLE_UPDATE_CHECKS)
+    return !ViewtriousPackage::IsPackagedProcess();
+#else
+    return false;
+#endif
+}
 
 
 enum class OverlayKind { None, KeyboardShortcuts, About, Settings, ResetConfirm, ResetAdjustmentsConfirm, DeleteConfirm, Welcome, DefaultAppsHelper, Feedback, Help, PrintError, RegistrationError, UpdateCheck };
@@ -1295,9 +1304,9 @@ class Viewer {
 public:
     explicit Viewer(const StartupTimer& timer) : timer_(timer) {}
 
-    bool RegisterIntegrationForMaintenance() { return !ViewtriousPaths::IsPortable() && RegisterDefaultAppCapabilities(); }
-    bool UnregisterIntegrationForMaintenance() { return !ViewtriousPaths::IsPortable() && UnregisterDefaultAppCapabilities(); }
-    bool CleanupDataForUninstallMaintenance() { return !ViewtriousPaths::IsPortable() && CleanupDataForUninstall(); }
+    bool RegisterIntegrationForMaintenance() { return !ViewtriousPaths::IsPortable() && !ViewtriousPackage::IsPackagedProcess() && RegisterDefaultAppCapabilities(); }
+    bool UnregisterIntegrationForMaintenance() { return !ViewtriousPaths::IsPortable() && !ViewtriousPackage::IsPackagedProcess() && UnregisterDefaultAppCapabilities(); }
+    bool CleanupDataForUninstallMaintenance() { return !ViewtriousPaths::IsPortable() && !ViewtriousPackage::IsPackagedProcess() && CleanupDataForUninstall(); }
 
     HRESULT Initialize(const std::wstring& path) {
         ApplicationSettings::Initialize();
@@ -1318,7 +1327,7 @@ public:
             error_ = L"DirectWrite could not be initialized.";
             return hr;
         }
-        if (!ViewtriousPaths::IsPortable()) RegisterDefaultAppCapabilities();
+        if (!ViewtriousPaths::IsPortable() && !ViewtriousPackage::IsPackagedProcess()) RegisterDefaultAppCapabilities();
         DWORD rememberPlacement = 1;
         ReadSetting(L"RememberWindowPlacement", rememberPlacement);
         rememberWindowPlacement_ = rememberPlacement != 0;
@@ -1426,7 +1435,7 @@ public:
     }
 
     void BeginAutomaticUpdateCheck() {
-        if (!automaticUpdateChecks_ || updateChecker_.Active()) return;
+        if (!UpdateChecksEnabledForProcess() || !automaticUpdateChecks_ || updateChecker_.Active()) return;
         const ULONGLONG now = CurrentUtcSeconds();
         const ULONGLONG lastAttempt = ReadUpdateAttemptUtc();
         if (lastAttempt && (now <= lastAttempt || now - lastAttempt < 24ull * 60ull * 60ull)) return;
@@ -1436,6 +1445,7 @@ public:
     }
 
     void BeginManualUpdateCheck() {
+        if (!UpdateChecksEnabledForProcess()) return;
         updateCheckManual_ = true;
         WriteUpdateAttemptUtc(CurrentUtcSeconds());
         updateCheckStatus_ = L"checking for updates...";
@@ -1445,7 +1455,7 @@ public:
 
     void UpdateCheckCompleteMessage(UpdateCheckResult* result) {
         std::unique_ptr<UpdateCheckResult> owned(result);
-        if (!owned) return;
+        if (!owned || !UpdateChecksEnabledForProcess()) return;
         if (!updateCheckManual_) {
             if (owned->succeeded && owned->updateAvailable && !IsDismissedUpdateVersion(owned->latestVersion)) {
                 updateCheckStatus_.clear(); updateVersion_ = owned->latestVersion; updateReleaseUrl_ = owned->releaseUrl; updateMessage_ = owned->message; updateNotes_ = owned->notes; updateNotesUrl_ = owned->notesUrl; updateNotesLinkError_ = false; updateNotesScroll_ = 0.0f;
@@ -1718,7 +1728,7 @@ public:
         item = hit(DropdownItem::KeyboardShortcuts); if (item != DropdownItem::None) return item;
         top += separatorGap;
         item = hit(DropdownItem::Help); if (item != DropdownItem::None) return item;
-        item = hit(DropdownItem::CheckForUpdates); if (item != DropdownItem::None) return item;
+        if (UpdateChecksEnabledForProcess()) { item = hit(DropdownItem::CheckForUpdates); if (item != DropdownItem::None) return item; }
         item = hit(DropdownItem::Feedback); if (item != DropdownItem::None) return item;
         item = hit(DropdownItem::About); if (item != DropdownItem::None) return item;
         top += separatorGap;
@@ -4057,7 +4067,7 @@ public:
     static bool SameGraphicsAdapterLuid(const LUID& left, const LUID& right) { return left.HighPart == right.HighPart && left.LowPart == right.LowPart; }
     std::wstring GraphicsAdapterLabel() const { if (graphicsAdapterAuto_) return L"Auto (High Performance)"; for (const auto& adapter : graphicsAdapters_) if (SameGraphicsAdapterLuid(adapter.luid, graphicsAdapterLuid_)) return adapter.name; return L"Saved adapter unavailable"; }
     int GetSettingsGeneralBehaviorHeadingTop() const { return SettingsFirstCardHeadingTop(); }
-    RECT GetSettingsGeneralBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsGeneralBehaviorHeadingTop(), GetSettingsOptionBounds(SettingsPage::General, 4).bottom); }
+    RECT GetSettingsGeneralBehaviorCardBounds() const { return GetSettingsCardBounds(GetSettingsGeneralBehaviorHeadingTop(), GetSettingsOptionBounds(SettingsPage::General, UpdateChecksEnabledForProcess() ? 4 : 3).bottom); }
     int GetSettingsThemeHeadingTop() const { return SettingsNextCardHeadingTop(GetSettingsGeneralBehaviorCardBounds()); }
     RECT GetSettingsThemeBounds(ThemePreference preference) const {
         const int buttonWidth = MulDiv(76, GetDpiForWindow(window_), 96), gap = MulDiv(8, GetDpiForWindow(window_), 96);
@@ -4895,7 +4905,7 @@ public:
                 if (settingsContains(GetSettingsOptionBounds(1))) return ButtonKind::SettingsIncludeHidden;
                 if (settingsContains(GetSettingsOptionBounds(2))) return ButtonKind::SettingsConfirmDelete;
                 if (settingsContains(GetSettingsOptionBounds(3))) return ButtonKind::SettingsSwipeToNavigateWhenFit;
-                if (settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAutomaticUpdateChecks;
+                if (UpdateChecksEnabledForProcess() && settingsContains(GetSettingsOptionBounds(4))) return ButtonKind::SettingsAutomaticUpdateChecks;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::System))) return ButtonKind::SettingsThemeSystem;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Light))) return ButtonKind::SettingsThemeLight;
                 if (settingsContains(GetSettingsThemeBounds(ThemePreference::Dark))) return ButtonKind::SettingsThemeDark;
@@ -5173,7 +5183,7 @@ public:
         }
         else if (button == ButtonKind::DefaultAppsHelperOpen) {
             if (ViewtriousPaths::IsPortable()) { ShowPortableIntegrationUnavailable(); return; }
-            if (!RegisterDefaultAppCapabilities()) { ShowOverlay(OverlayKind::RegistrationError); return; }
+            if (!ViewtriousPackage::IsPackagedProcess() && !RegisterDefaultAppCapabilities()) { ShowOverlay(OverlayKind::RegistrationError); return; }
             overlay_ = OverlayKind::Welcome;
             CompleteWelcome(true);
             OpenRegisteredDefaultApps(false);
@@ -9264,7 +9274,7 @@ private:
     }
 
     bool RegisterDefaultAppCapabilities() {
-        if (ViewtriousPaths::IsPortable()) return false;
+        if (ViewtriousPaths::IsPortable() || ViewtriousPackage::IsPackagedProcess()) return false;
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) {
             TraceRegistryFailure(L"resolve executable", L"(module path)", L"", GetLastError());
@@ -9341,7 +9351,7 @@ private:
     }
 
     bool UnregisterDefaultAppCapabilities() {
-        if (ViewtriousPaths::IsPortable()) return false;
+        if (ViewtriousPaths::IsPortable() || ViewtriousPackage::IsPackagedProcess()) return false;
         wchar_t modulePath[MAX_PATH]{};
         if (!GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath))) return false;
         const std::wstring executable(modulePath);
@@ -9396,9 +9406,10 @@ private:
 
     void OpenRegisteredDefaultApps(bool verifyRegistration = true) {
         if (ViewtriousPaths::IsPortable()) { ShowPortableIntegrationUnavailable(); return; }
-        if (verifyRegistration && !RegisterDefaultAppCapabilities()) { ShowOverlay(OverlayKind::RegistrationError); return; }
+        const bool packaged = ViewtriousPackage::IsPackagedProcess();
+        if (!packaged && verifyRegistration && !RegisterDefaultAppCapabilities()) { ShowOverlay(OverlayKind::RegistrationError); return; }
         INT_PTR result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open",
-            L"ms-settings:defaultapps?registeredAppUser=viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
+            packaged ? L"ms-settings:defaultapps" : L"ms-settings:defaultapps?registeredAppUser=viewtrious", nullptr, nullptr, SW_SHOWNORMAL));
         if (result <= 32) result = reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
         if (result <= 32) ShowActionError(L"Windows could not open Default Apps settings.");
     }
@@ -10658,7 +10669,7 @@ private:
         const LONG rowHeight = MulDiv(38, dpi, 96);
         const LONG separatorGap = MulDiv(9, dpi, 96);
         const LONG panelPadding = MulDiv(4, dpi, 96);
-        const LONG height = panelPadding * 2 + rowHeight * 9 + separatorGap * 3;
+        const LONG height = panelPadding * 2 + rowHeight * (UpdateChecksEnabledForProcess() ? 9 : 8) + separatorGap * 3;
         const LONG left = std::clamp<LONG>(frame.hamburger.left + margin, margin,
             std::max<LONG>(margin, client.right - width - margin));
         const LONG top = std::min<LONG>(frame.hamburger.bottom + margin,
@@ -13256,7 +13267,7 @@ private:
             drawToggle(1, ButtonKind::SettingsIncludeHidden, L"include hidden files in current folder", includeHiddenImages_);
             drawToggle(2, ButtonKind::SettingsConfirmDelete, L"confirm before deleting images", confirmBeforeDeleting_);
             drawToggle(3, ButtonKind::SettingsSwipeToNavigateWhenFit, L"swipe to navigate when fit", swipeToNavigateWhenFit_);
-            drawToggle(4, ButtonKind::SettingsAutomaticUpdateChecks, L"check for updates automatically", automaticUpdateChecks_);
+            if (UpdateChecksEnabledForProcess()) drawToggle(4, ButtonKind::SettingsAutomaticUpdateChecks, L"check for updates automatically", automaticUpdateChecks_);
             group(L"theme", static_cast<float>(GetSettingsThemeHeadingTop() - bounds.top) / dpiScale);
             const auto drawTheme = [&](ThemePreference preference, ButtonKind button, const wchar_t* label) {
                 const RECT segmentBounds = GetSettingsThemeBounds(preference);
@@ -13639,7 +13650,7 @@ private:
         drawItem(DropdownItem::KeyboardShortcuts, top, L"keyboard shortcuts", L'\uE765'); top += rowHeight;
         separator();
         drawItem(DropdownItem::Help, top, L"help", L'\uE897'); top += rowHeight;
-        drawItem(DropdownItem::CheckForUpdates, top, L"check for updates", L'\uE895'); top += rowHeight;
+        if (UpdateChecksEnabledForProcess()) { drawItem(DropdownItem::CheckForUpdates, top, L"check for updates", L'\uE895'); top += rowHeight; }
         drawItem(DropdownItem::Feedback, top, L"feedback", L'\uE939'); top += rowHeight;
         drawItem(DropdownItem::About, top, L"about", L'\uE946'); top += rowHeight;
         separator();

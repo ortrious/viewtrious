@@ -35,5 +35,6 @@ Desktop.ini
 /.env
 /.env.*
 *.pfx
+*.cer
 *.p12
 *.key

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 1.0.2.1 LANGUAGES CXX)
+project(Viewtrious VERSION 1.0.3.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -8,6 +8,7 @@ endif()
 
 set(VIEWTRIOUS_3DXWARE_SDK_ROOT "" CACHE PATH "Root of the 3Dconnexion 3DxWare SDK (required for SpaceMouse support)")
 option(VIEWTRIOUS_BUILD_AI_ADDON "Build the optional local AI adjustment add-on" OFF)
+option(VIEWTRIOUS_ENABLE_UPDATE_CHECKS "Enable the built-in Viewtrious update checker for development/fallback builds" OFF)
 option(VIEWTRIOUS_SHOW_DEV_VERSION_BADGE "Show the developer version badge in the bottom-left corner" OFF)
 set(VIEWTRIOUS_ONNXRUNTIME_ROOT "" CACHE PATH "Root of the ONNX Runtime SDK (required only for the AI add-on)")
 if(NOT VIEWTRIOUS_3DXWARE_SDK_ROOT)
@@ -45,6 +46,7 @@ add_executable(Viewtrious WIN32
     src/adjustment_persistence.cpp
     src/application_paths.cpp
     src/application_settings.cpp
+    src/package_identity.cpp
     src/update_checker.cpp
     src/ai_addon_loader.cpp
     src/video_player.cpp
@@ -85,6 +87,9 @@ target_compile_features(Viewtrious PRIVATE cxx_std_20)
 target_compile_definitions(Viewtrious PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX VIEWTRIOUS_VERSION=L\"${PROJECT_VERSION}\")
 if(VIEWTRIOUS_SHOW_DEV_VERSION_BADGE)
     target_compile_definitions(Viewtrious PRIVATE VIEWTRIOUS_SHOW_DEV_VERSION_BADGE=1)
+endif()
+if(VIEWTRIOUS_ENABLE_UPDATE_CHECKS)
+    target_compile_definitions(Viewtrious PRIVATE VIEWTRIOUS_ENABLE_UPDATE_CHECKS=1)
 endif()
 target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_3DXWARE_INCLUDE_DIR}")
 target_include_directories(Viewtrious PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz")

@@ -104,6 +104,13 @@ $mainIcon = Join-Path $root 'assets\icon_sources\icon_1024.png'
 Write-SquarePng $mainIcon (Join-Path $assets 'StoreLogo.png') 50
 Write-SquarePng $mainIcon (Join-Path $assets 'Square44x44Logo.png') 44
 Write-SquarePng $mainIcon (Join-Path $assets 'Square150x150Logo.png') 150
+$appListTargetSizes = @(16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256)
+foreach ($size in $appListTargetSizes) {
+    foreach ($alternateForm in @('', '_altform-unplated', '_altform-lightunplated')) {
+        $fileName = "Square44x44Logo.targetsize-$size$alternateForm.png"
+        Write-SquarePng $mainIcon (Join-Path $assets $fileName) $size
+    }
+}
 Write-SquarePng (Join-Path $root 'assets\icon_sources\icon_play_1024.png') (Join-Path $assets 'Square44x44VideoLogo.png') 44
 Write-SquarePng (Join-Path $root 'assets\icon_sources\icon_3d_1024.png') (Join-Path $assets 'Square44x44ModelLogo.png') 44
 
@@ -115,7 +122,15 @@ $manifest = $manifest.Replace('@PACKAGE_VERSION@', $version)
 $manifest = $manifest.Replace('@PACKAGE_DISPLAY_NAME@', (Escape-Xml $DisplayName))
 $manifest = $manifest.Replace('@PACKAGE_PUBLISHER_DISPLAY_NAME@', (Escape-Xml $PublisherDisplayName))
 if ($manifest -match '@PACKAGE_[A-Z_]+@') { throw 'The generated AppxManifest.xml contains an unresolved placeholder.' }
-[System.IO.File]::WriteAllText((Join-Path $stagingDirectory 'AppxManifest.xml'), $manifest, [System.Text.UTF8Encoding]::new($false))
+$manifestPath = Join-Path $stagingDirectory 'AppxManifest.xml'
+[System.IO.File]::WriteAllText($manifestPath, $manifest, [System.Text.UTF8Encoding]::new($false))
+
+$makePri = Find-WindowsSdkTool 'MakePri.exe'
+$priConfig = Join-Path $outputDirectory 'priconfig.xml'
+& $makePri createconfig /cf $priConfig /dq en-US /o
+if ($LASTEXITCODE -ne 0) { throw "MakePri configuration generation failed with exit code $LASTEXITCODE." }
+& $makePri new /pr $stagingDirectory /cf $priConfig /mn $manifestPath /of (Join-Path $stagingDirectory 'resources.pri') /o
+if ($LASTEXITCODE -ne 0) { throw "MakePri resource indexing failed with exit code $LASTEXITCODE." }
 
 $makeAppx = Find-WindowsSdkTool 'MakeAppx.exe'
 $unsignedPackage = Join-Path $outputDirectory "viewtrious-$version-x64.msix"

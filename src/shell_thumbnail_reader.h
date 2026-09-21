@@ -15,4 +15,4 @@ struct ShellThumbnailPixels {
 
 // Obtains a Windows Shell thumbnail, copies it to Viewtrious-owned PBGRA RAM, and
 // releases the Shell item, thumbnail factory, and HBITMAP before returning.
-HRESULT DecodeShellVideoThumbnailPixels(const std::wstring& path, UINT requestedSize, ShellThumbnailPixels& decoded, float& aspect);
+HRESULT DecodeShellThumbnailPixels(const std::wstring& path, UINT requestedSize, ShellThumbnailPixels& decoded, float& aspect);

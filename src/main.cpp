@@ -29,6 +29,7 @@
 #include "application_paths.h"
 #include "application_settings.h"
 #include "package_identity.h"
+#include "explorer_view_order.h"
 #include "update_checker.h"
 
 #include <algorithm>
@@ -357,6 +358,7 @@ enum class SettingsPage { General, Image2D, Model3D, AddOns };
 enum class ContentKind { None, Image2D, Model3D, Video2D };
 enum class ExternalOpenBehavior : DWORD { NewWindow = 0, SameWindow = 1 };
 enum class ExternalOpenMediaFamily : WPARAM { ImageOrGif = 1, Video = 2, Any2D = 3 };
+struct ExternalOpenRequest { std::wstring path; HWND explorerSourceWindow = nullptr; };
 enum class FilmstripVisibilityState { Hidden, Revealing, Holding, Fading };
 
 struct SettingsToggleVisualState {
@@ -913,7 +915,7 @@ BOOL CALLBACK FindPrimaryWindowProc(HWND window, LPARAM parameter) {
     return TRUE;
 }
 
-bool ForwardExternalOpenToPrimary(const std::wstring& path, ExternalOpenMediaFamily family) {
+bool ForwardExternalOpenToPrimary(const std::wstring& path, ExternalOpenMediaFamily family, HWND explorerSourceWindow) {
     if (!gPrimaryWindowQueryMessage || path.empty() || path.size() >= 32768) return false;
     for (int attempt = 0; attempt < 4; ++attempt) {
         PrimaryWindowSearch search{ nullptr, family };
@@ -925,7 +927,8 @@ bool ForwardExternalOpenToPrimary(const std::wstring& path, ExternalOpenMediaFam
             data.cbData = static_cast<DWORD>((path.size() + 1) * sizeof(wchar_t));
             data.lpData = const_cast<wchar_t*>(path.c_str());
             DWORD_PTR delivered = 0;
-            if (SendMessageTimeoutW(search.window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&data), SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &delivered) && delivered) return true;
+            if (SendMessageTimeoutW(search.window, WM_COPYDATA, reinterpret_cast<WPARAM>(explorerSourceWindow),
+                    reinterpret_cast<LPARAM>(&data), SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &delivered) && delivered) return true;
         }
         Sleep(75);
     }
@@ -1308,7 +1311,7 @@ public:
     bool UnregisterIntegrationForMaintenance() { return !ViewtriousPaths::IsPortable() && !ViewtriousPackage::IsPackagedProcess() && UnregisterDefaultAppCapabilities(); }
     bool CleanupDataForUninstallMaintenance() { return !ViewtriousPaths::IsPortable() && !ViewtriousPackage::IsPackagedProcess() && CleanupDataForUninstall(); }
 
-    HRESULT Initialize(const std::wstring& path) {
+    HRESULT Initialize(const std::wstring& path, HWND explorerSourceWindow) {
         ApplicationSettings::Initialize();
         HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
             IID_PPV_ARGS(&wicFactory_));
@@ -1428,6 +1431,7 @@ public:
         tourPending_ = tourPending != 0;
         aiAddon_.Initialize();
         startupPath_ = path;
+        startupExplorerSourceWindow_ = explorerSourceWindow;
         coldOpenFadePending_ = !path.empty() && !IsModelPath(path);
         coldOpenFadePath_ = path;
         startupVideoSizingRequested_ = videoWindowSizing_ == VideoWindowSizing::ResizeWindowToVideo && IsVideoPath(path);
@@ -1472,9 +1476,15 @@ public:
         InvalidateRect(window_, nullptr, FALSE);
     }
 
-    HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true) {
+    HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true, HWND explorerSourceWindow = nullptr) {
+        if (resetNavigation) {
+            pendingExplorerSourceWindow_ = explorerSourceWindow;
+            pendingExplorerOrderFolder_ = explorerSourceWindow ? fs::path(path).parent_path() : fs::path{};
+            navigationUsesExplorerOrder_ = false;
+            navigationOrderFolder_.clear();
+        }
         CancelExternalMediaDragArming();
-        if (!IsModelPath(path) && (resetNavigation || currentPath_.empty() || !PathsEqual(fs::path(path), fs::path(currentPath_))))
+        if (resetNavigation || currentPath_.empty() || !PathsEqual(fs::path(path), fs::path(currentPath_)))
             RequestFilmstripSelectionAnchor();
         ++activeOpenAttemptId_;
         BeginLowerUiNavigation(path, !resetNavigation);
@@ -1492,7 +1502,7 @@ public:
             coldOpenFadePath_.clear();
         }
         if (!(dissolveAwaitingTarget_ && PathsEqual(fs::path(path), fs::path(dissolveTargetPath_)))) ClearStillDissolve();
-        if (IsModelPath(path)) { BeginModelLoad(path); return S_OK; }
+        if (IsModelPath(path)) { BeginModelLoad(path, resetNavigation); return S_OK; }
         if (IsVideoPath(path)) { BeginVideoLoad(path, activeOpenAttemptId_, resetNavigation); return S_OK; }
         DeactivateVideo();
         DeactivateModel();
@@ -1507,19 +1517,19 @@ public:
         if (family == ExternalOpenMediaFamily::Any2D) return imageOrGif || VideoActive();
         return false;
     }
-    void QueueExternalOpen(std::wstring path) {
+    void QueueExternalOpen(std::wstring path, HWND explorerSourceWindow) {
         if (!IsExternalOpenPath(path)) return;
-        externalOpenQueue_.push_back(std::move(path));
+        externalOpenQueue_.push_back({ std::move(path), explorerSourceWindow });
         PostMessageW(window_, kExternalOpenMessage, 0, 0);
     }
     void ProcessExternalOpen() {
         if (externalOpenQueue_.empty()) return;
-        std::wstring path = std::move(externalOpenQueue_.front());
+        ExternalOpenRequest request = std::move(externalOpenQueue_.front());
         externalOpenQueue_.pop_front();
         if (IsIconic(window_)) ShowWindow(window_, SW_RESTORE);
         BringWindowToTop(window_);
         SetForegroundWindow(window_);
-        LoadContent(path, true);
+        LoadContent(request.path, true, request.explorerSourceWindow);
         if (!externalOpenQueue_.empty()) PostMessageW(window_, kExternalOpenMessage, 0, 0);
     }
 
@@ -1586,6 +1596,7 @@ public:
         modelTriangleCount_ = modelDocument_->geometries.front().indices.size() / 3;
         resolutionText_ = FormatCompactTriangleCount(modelTriangleCount_) + L" triangles";
         SetCommittedMediaWindowTitle(result->path);
+        if (!navigationBuilt_) BuildNavigation();
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -1616,7 +1627,7 @@ public:
         EnsureRenderTarget();
         InitializeSpaceMouse();
         ActivateGifPlayback();
-        if (!startupPath_.empty()) LoadContent(std::exchange(startupPath_, {}), true);
+        if (!startupPath_.empty()) LoadContent(std::exchange(startupPath_, {}), true, std::exchange(startupExplorerSourceWindow_, nullptr));
     }
     void InitializeSpaceMouse() {
         if (!window_ || spaceMouse_) return;
@@ -5570,7 +5581,7 @@ public:
             std::error_code typeError;
             const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
             const bool hidden = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_HIDDEN) != 0;
-            if (iterator->is_regular_file(typeError) && !typeError && IsTwoDimensionalMediaPath(iterator->path()) &&
+            if (iterator->is_regular_file(typeError) && !typeError && IsSupportedExtension(iterator->path()) &&
                 (includeHiddenImages_ || !hidden)) {
                 scannedFiles.push_back(iterator->path());
             }
@@ -5582,6 +5593,57 @@ public:
             });
         };
         sortNaturally(scannedFiles);
+        const auto pathKey = [](const fs::path& path) {
+            std::wstring key = path.lexically_normal().wstring();
+            std::transform(key.begin(), key.end(), key.begin(),
+                [](wchar_t character) { return static_cast<wchar_t>(std::towlower(character)); });
+            return key;
+        };
+        std::unordered_set<std::wstring> scannedPaths;
+        scannedPaths.reserve(scannedFiles.size());
+        for (const fs::path& candidate : scannedFiles) scannedPaths.insert(pathKey(candidate));
+        if (!navigationBuilt_ && pendingExplorerSourceWindow_ &&
+            PathsEqual(pendingExplorerOrderFolder_, current.parent_path())) {
+            const std::optional<ExplorerViewOrder> explorerOrder =
+                ReadExplorerViewOrder(current.parent_path(), pendingExplorerSourceWindow_);
+            pendingExplorerSourceWindow_ = nullptr;
+            pendingExplorerOrderFolder_.clear();
+            if (explorerOrder) {
+                std::vector<fs::path> orderedFiles;
+                orderedFiles.reserve(explorerOrder->items.size());
+                std::unordered_set<std::wstring> orderedPaths;
+                orderedPaths.reserve(explorerOrder->items.size());
+                for (const fs::path& candidate : explorerOrder->items) {
+                    const std::wstring key = pathKey(candidate);
+                    if (!scannedPaths.contains(key) || !orderedPaths.insert(key).second) continue;
+                    orderedFiles.push_back(candidate);
+                }
+                if (orderedPaths.contains(pathKey(current))) {
+                    scannedFiles = std::move(orderedFiles);
+                    navigationUsesExplorerOrder_ = true;
+                    navigationOrderFolder_ = current.parent_path();
+                }
+            }
+        } else if (!navigationBuilt_) {
+            pendingExplorerSourceWindow_ = nullptr;
+            pendingExplorerOrderFolder_.clear();
+        }
+        if (navigationBuilt_ && navigationUsesExplorerOrder_ && PathsEqual(navigationOrderFolder_, current.parent_path())) {
+            std::vector<fs::path> retainedOrder;
+            retainedOrder.reserve(scannedFiles.size());
+            std::unordered_set<std::wstring> retainedPaths;
+            retainedPaths.reserve(scannedFiles.size());
+            for (const fs::path& existing : navigationFiles_)
+                if (scannedPaths.contains(pathKey(existing))) {
+                    retainedPaths.insert(pathKey(existing));
+                    retainedOrder.push_back(existing);
+                }
+            for (const fs::path& candidate : scannedFiles) {
+                if (!retainedPaths.insert(pathKey(candidate)).second) continue;
+                retainedOrder.push_back(candidate);
+            }
+            scannedFiles = std::move(retainedOrder);
+        }
         bool currentRenamed = false;
         if (currentFileIdentity_.valid) {
             for (const fs::path& candidate : scannedFiles) {
@@ -5605,7 +5667,7 @@ public:
         }
         const DWORD currentAttributes = GetFileAttributesW(current.c_str());
         const bool currentHidden = currentAttributes != INVALID_FILE_ATTRIBUTES && (currentAttributes & FILE_ATTRIBUTE_HIDDEN) != 0;
-        if (IsTwoDimensionalMediaPath(current) && fs::exists(current, currentError) && (includeHiddenImages_ || !currentHidden) && std::none_of(scannedFiles.begin(), scannedFiles.end(),
+        if (IsSupportedExtension(current) && fs::exists(current, currentError) && (includeHiddenImages_ || !currentHidden) && std::none_of(scannedFiles.begin(), scannedFiles.end(),
                 [&current](const fs::path& path) { return PathsEqual(path, current); })) {
             scannedFiles.push_back(current);
             sortNaturally(scannedFiles);
@@ -6004,9 +6066,9 @@ public:
                     if (request.folderGeneration != filmstripThumbnailFolderGeneration_.load(std::memory_order_acquire)) continue;
                     auto* result = new FilmstripThumbnailResult{};
                     result->request = request;
-                    if (IsVideoPath(request.path)) {
+                    if (IsVideoPath(request.path) || IsModelPath(request.path)) {
                         ShellThumbnailPixels decoded;
-                        result->result = DecodeShellVideoThumbnailPixels(request.path, 256, decoded, result->aspect);
+                        result->result = DecodeShellThumbnailPixels(request.path, 256, decoded, result->aspect);
                         result->width = decoded.width;
                         result->height = decoded.height;
                         result->stride = decoded.stride;
@@ -7251,6 +7313,8 @@ public:
                 renderTarget_->DrawBitmap(thumbnail, visualBox, contentOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
             } else if (IsVideoPath(navigationFiles_[index].wstring())) {
                 DrawOverlayText(L"video", visualBox.left, visualBox.top, visualBox.right - visualBox.left, visualBox.bottom - visualBox.top, 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
+            } else if (IsModelPath(navigationFiles_[index].wstring())) {
+                DrawOverlayText(L"3D", visualBox.left, visualBox.top, visualBox.right - visualBox.left, visualBox.bottom - visualBox.top, 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
             } else {
                 DrawOverlayText(L"image", visualBox.left, visualBox.top, visualBox.right - visualBox.left, visualBox.bottom - visualBox.top, 11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, placeholderText.Get(), true, false, true);
             }
@@ -7457,7 +7521,7 @@ public:
     }
 
     std::optional<std::wstring> NavigationTargetPath(int direction) {
-        if (currentPath_.empty() || ModelActive()) return std::nullopt;
+        if (currentPath_.empty()) return std::nullopt;
         if (!BuildNavigation(true)) return std::nullopt;
         if (navigationFiles_.empty()) return std::nullopt;
 
@@ -8866,13 +8930,17 @@ private:
         if (!modelLoading_) { StopModelLoadingAnimation(); return; }
         if (ModelLoadingOverlayVisible()) InvalidateRect(window_, nullptr, FALSE);
     }
-    void BeginModelLoad(const std::wstring& path) {
+    void BeginModelLoad(const std::wstring& path, bool resetNavigation) {
+        const bool preserveNavigation = !resetNavigation && !currentPath_.empty() &&
+            PathsEqual(fs::path(path).parent_path(), fs::path(currentPath_).parent_path());
         DeactivateVideo(); DeactivateModel(); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         ++decodeRequestGeneration_; ++modelLoadGeneration_; const uint64_t generation = modelLoadGeneration_;
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); source_.Reset(); bitmap_.Reset(); displayedPixels_.reset(); imageWidth_ = imageHeight_ = 0;
         ClearPresentationTitleMetadata();
+        currentFileIdentity_ = ReadFileIdentity(fs::path(path));
         filenameText_ = fs::path(path).filename().wstring(); fileSizeText_ = FormatFileSize(path); resolutionText_ = L"3D"; error_.clear();
-        navigationFiles_.clear(); navigationBuilt_ = false; modelLoading_ = true; modelLoadingStartedAtMs_ = GetTickCount64(); contentKind_ = ContentKind::Model3D;
+        if (!preserveNavigation) { navigationFiles_.clear(); navigationBuilt_ = false; }
+        navigationBuildQueued_ = false; modelLoading_ = true; modelLoadingStartedAtMs_ = GetTickCount64(); contentKind_ = ContentKind::Model3D;
         ClearModelFaceSelection(); ResetComponentsPanelState(); modelClickCandidate_ = false;
         SetTimer(window_, kModelLoadingAnimationTimer, 16, nullptr);
         const HWND window = window_;
@@ -10523,8 +10591,12 @@ private:
         RebuildFilmstripLayout(true, false);
         for (const fs::path& candidate : candidates) {
             const std::wstring candidatePath = candidate.wstring();
+            if (ModelActive()) {
+                LoadContent(candidatePath, false);
+                return;
+            }
             const bool dissolve = BeginStillDissolveToTarget(candidatePath);
-            if (IsVideoPath(candidatePath)) {
+            if (IsVideoPath(candidatePath) || IsModelPath(candidatePath)) {
                 LoadContent(candidatePath, false);
                 return;
             }
@@ -14361,7 +14433,7 @@ private:
     std::atomic<uint64_t> videoPlaybackWakePendingGeneration_{ 0 };
     std::atomic<LONGLONG> videoPlaybackWakeQpc_{ 0 };
     bool videoPausedSeekRefreshPending_ = false;
-    std::deque<std::wstring> externalOpenQueue_;
+    std::deque<ExternalOpenRequest> externalOpenQueue_;
     bool reuseImageWindow_ = false;
     bool reuseVideoWindow_ = false;
     ImageAdjustments videoAdjustments_;
@@ -14501,6 +14573,10 @@ private:
     bool presented_ = false;
     bool navigationBuilt_ = false;
     bool navigationBuildQueued_ = false;
+    HWND pendingExplorerSourceWindow_ = nullptr;
+    fs::path pendingExplorerOrderFolder_;
+    bool navigationUsesExplorerOrder_ = false;
+    fs::path navigationOrderFolder_;
     std::vector<float> filmstripItemWidths_;
     std::vector<float> filmstripItemOffsets_;
     bool filmstripAdjustmentAvoidanceInitialized_ = false;
@@ -14638,6 +14714,7 @@ private:
     ULONGLONG modelHomeAnimationStartMs_ = 0;
     ULONGLONG modelAnimationDurationMs_ = kModelHomeAnimationDurationMs;
     std::wstring startupPath_;
+    HWND startupExplorerSourceWindow_ = nullptr;
     bool startupVideoSizingRequested_ = false;
     bool startupWindowRevealPending_ = false;
     int startupWindowShowCommand_ = SW_SHOWNORMAL;
@@ -14834,7 +14911,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const size_t characters = data->cbData / sizeof(wchar_t);
         if (path[characters - 1] != L'\0') return FALSE;
         for (size_t index = 0; index + 1 < characters; ++index) if (path[index] == L'\0') return FALSE;
-        viewer->QueueExternalOpen(std::wstring(path, characters - 1));
+        viewer->QueueExternalOpen(std::wstring(path, characters - 1), reinterpret_cast<HWND>(wParam));
         return TRUE;
     }
 
@@ -15524,6 +15601,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     StartupTimer timer;
+    const HWND activationSourceWindow = GetForegroundWindow();
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(com)) return 1;
     const HRESULT ole = OleInitialize(nullptr);
@@ -15563,7 +15641,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     const bool firstReuseTarget = primaryMutex && GetLastError() != ERROR_ALREADY_EXISTS;
     gPrimaryReuseTarget = primaryMutex != nullptr;
     const std::optional<ExternalOpenMediaFamily> reuseFamily = ExternalOpenReuseFamily(path);
-    if (path.size() && !firstReuseTarget && reuseFamily && ForwardExternalOpenToPrimary(path, *reuseFamily)) {
+    if (path.size() && !firstReuseTarget && reuseFamily && ForwardExternalOpenToPrimary(path, *reuseFamily, activationSourceWindow)) {
         if (primaryMutex) CloseHandle(primaryMutex);
         OleUninitialize();
         CoUninitialize();
@@ -15571,7 +15649,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     }
 
     Viewer viewer(timer);
-    viewer.Initialize(path);
+    viewer.Initialize(path, activationSourceWindow);
 
     WNDCLASSEXW windowClass{ sizeof(windowClass) };
     windowClass.style = CS_DBLCLKS;

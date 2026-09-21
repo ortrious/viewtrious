@@ -9,7 +9,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-HRESULT DecodeShellVideoThumbnailPixels(const std::wstring& path, UINT requestedSize, ShellThumbnailPixels& decoded, float& aspect) {
+HRESULT DecodeShellThumbnailPixels(const std::wstring& path, UINT requestedSize, ShellThumbnailPixels& decoded, float& aspect) {
     decoded = {};
     aspect = 1.0f;
     if (path.empty() || !requestedSize) return E_INVALIDARG;
@@ -49,7 +49,7 @@ HRESULT DecodeShellVideoThumbnailPixels(const std::wstring& path, UINT requested
             if (dc) DeleteDC(dc);
             if (copied != static_cast<int>(height)) hr = E_FAIL;
             if (SUCCEEDED(hr)) {
-                // Video thumbnails are opaque. Keep the shared thumbnail path PBGRA-compatible.
+                // Shell thumbnails are treated as opaque. Keep the shared path PBGRA-compatible.
                 for (UINT y = 0; y < height; ++y) for (UINT x = 0; x < width; ++x) (*pixels)[(static_cast<size_t>(y) * width + x) * 4 + 3] = 255;
                 decoded.width = width;
                 decoded.height = height;

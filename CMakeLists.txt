@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 1.0.3.4 LANGUAGES CXX)
+project(Viewtrious VERSION 1.0.4.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -47,6 +47,7 @@ add_executable(Viewtrious WIN32
     src/application_paths.cpp
     src/application_settings.cpp
     src/package_identity.cpp
+    src/explorer_view_order.cpp
     src/update_checker.cpp
     src/ai_addon_loader.cpp
     src/video_player.cpp

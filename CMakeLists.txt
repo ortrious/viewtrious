@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 1.0.4.0 LANGUAGES CXX)
+project(Viewtrious VERSION 1.0.4.1 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -9,8 +9,12 @@ endif()
 set(VIEWTRIOUS_3DXWARE_SDK_ROOT "" CACHE PATH "Root of the 3Dconnexion 3DxWare SDK (required for SpaceMouse support)")
 option(VIEWTRIOUS_BUILD_AI_ADDON "Build the optional local AI adjustment add-on" OFF)
 option(VIEWTRIOUS_ENABLE_UPDATE_CHECKS "Enable the built-in Viewtrious update checker for development/fallback builds" OFF)
+option(VIEWTRIOUS_STORE_BUILD "Build the Microsoft Store package application" OFF)
 option(VIEWTRIOUS_SHOW_DEV_VERSION_BADGE "Show the developer version badge in the bottom-left corner" OFF)
 set(VIEWTRIOUS_ONNXRUNTIME_ROOT "" CACHE PATH "Root of the ONNX Runtime SDK (required only for the AI add-on)")
+if(VIEWTRIOUS_STORE_BUILD)
+    set(VIEWTRIOUS_ENABLE_UPDATE_CHECKS OFF CACHE BOOL "Enable the built-in Viewtrious update checker for development/fallback builds" FORCE)
+endif()
 if(NOT VIEWTRIOUS_3DXWARE_SDK_ROOT)
     message(FATAL_ERROR "Set VIEWTRIOUS_3DXWARE_SDK_ROOT to a 3DxWare SDK installation.")
 endif()
@@ -33,6 +37,11 @@ configure_file(NOTICE "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-Notice.txt" C
 configure_file(app/licenses/miniz.txt "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-Miniz.txt" COPYONLY)
 configure_file(installer/ViewtriousSetup.rc.in "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup.rc" @ONLY)
 
+set(VIEWTRIOUS_UPDATE_CHECKER_SOURCE src/update_checker_disabled.cpp)
+if(VIEWTRIOUS_ENABLE_UPDATE_CHECKS)
+    set(VIEWTRIOUS_UPDATE_CHECKER_SOURCE src/update_checker.cpp)
+endif()
+
 add_executable(Viewtrious WIN32
     src/main.cpp
     src/lanczos_resampler.cpp
@@ -48,7 +57,7 @@ add_executable(Viewtrious WIN32
     src/application_settings.cpp
     src/package_identity.cpp
     src/explorer_view_order.cpp
-    src/update_checker.cpp
+    ${VIEWTRIOUS_UPDATE_CHECKER_SOURCE}
     src/ai_addon_loader.cpp
     src/video_player.cpp
     src/shell_thumbnail_reader.cpp
@@ -103,7 +112,10 @@ if(NOT VIEWTRIOUS_CPPWINRT_INCLUDE_DIR)
     message(FATAL_ERROR "The installed Windows SDK C++/WinRT projection is required for the Windows.UI.Composition compositor host.")
 endif()
 target_include_directories(Viewtrious PRIVATE "${VIEWTRIOUS_CPPWINRT_INCLUDE_DIR}")
-target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 bcrypt winhttp d3d11 dxgi dxguid d3dcompiler dcomp xmllite ole32 oleaut32 mfplat mf mfreadwrite mfuuid windowsapp coremessaging "${VIEWTRIOUS_3DXWARE_LIBRARY}")
+target_link_libraries(Viewtrious PRIVATE d2d1 dwrite gdiplus windowscodecs shell32 shlwapi propsys dwmapi advapi32 bcrypt d3d11 dxgi dxguid d3dcompiler dcomp xmllite ole32 oleaut32 mfplat mf mfreadwrite mfuuid windowsapp coremessaging "${VIEWTRIOUS_3DXWARE_LIBRARY}")
+if(VIEWTRIOUS_ENABLE_UPDATE_CHECKS)
+    target_link_libraries(Viewtrious PRIVATE winhttp)
+endif()
 
 if(VIEWTRIOUS_BUILD_AI_ADDON)
     set(VIEWTRIOUS_ONNXRUNTIME_INCLUDE_DIR "${VIEWTRIOUS_ONNXRUNTIME_ROOT}/include")

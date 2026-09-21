@@ -1,37 +1,68 @@
-# Viewtrious MSIX feasibility package
+# Viewtrious MSIX packaging
 
-This parallel package does not replace the native custom installer. It uses development identity placeholders until Microsoft Partner Center supplies the production package identity and publisher values.
+MSIX is a parallel distribution path. The existing custom installer remains the direct/manual distribution package.
 
-Build an unsigned package:
+## Development package
+
+Build the local-test identity without signing:
 
 ```powershell
 .\tools\Build-MSIX.ps1
 ```
 
-The default output is `out\msix\viewtrious-<version>-x64.msix`. `MakeAppx.exe` validates the manifest and package structure while packing it.
+Identity: `Viewtrious.Development` / `CN=Viewtrious Development`. Output:
 
-For a local sideload test, create a development certificate whose subject exactly matches the manifest publisher placeholder:
+```text
+out\msix\development\viewtrious-<version>-x64-development.msix
+```
+
+Add `-SignForLocalTest -CertificatePath <PFX> -CertificatePassword <SecureString>` to create the separate `-development-localtest.msix` artifact. The certificate subject must exactly match the manifest publisher.
+
+## Microsoft Store package
+
+Build the unsigned Partner Center submission package:
 
 ```powershell
-$cert = New-SelfSignedCertificate -Type Custom -KeyUsage DigitalSignature `
-  -Subject 'CN=Viewtrious Development' -CertStoreLocation 'Cert:\CurrentUser\My' `
-  -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}') `
-  -FriendlyName 'Viewtrious MSIX Development'
+.\tools\Build-MSIX.ps1 -Store
+```
+
+The stable identity values come from Partner Center **Product identity** and are kept in the packaging script for reproducible builds:
+
+```text
+Name:                 ortrious.viewtrious
+Publisher:            CN=3A400F6A-D8BA-4784-84CE-0351CAC0C7F3
+PublisherDisplayName: ortrious
+DisplayName:          viewtrious
+```
+
+Output:
+
+```text
+out\msix\store\viewtrious-<version>-x64-store.msix
+```
+
+The Store package uses an isolated Release build configured with `VIEWTRIOUS_STORE_BUILD=ON`; CMake forcibly disables `VIEWTRIOUS_ENABLE_UPDATE_CHECKS`. Microsoft Store performs production signing after certification. Do not sign the submission artifact with the development certificate.
+
+To make a separately named Store-identity package for local testing, supply a PFX whose Subject exactly matches the Store Publisher:
+
+```powershell
 $password = Read-Host 'PFX password' -AsSecureString
-Export-PfxCertificate -Cert $cert -FilePath '.\viewtrious-dev.pfx' -Password $password
-Export-Certificate -Cert $cert -FilePath '.\viewtrious-dev.cer'
+.\tools\Build-MSIX.ps1 -Store -SignForLocalTest `
+  -CertificatePath '<path-to-store-localtest.pfx>' `
+  -CertificatePassword $password
 ```
 
-Trust is an explicit user action. To trust only for the current user:
+This creates `viewtrious-<version>-x64-store-localtest.msix`. The script does not create or trust certificates and does not install the package.
+
+Both package modes declare the Microsoft `Microsoft.VCLibs.140.00.UWPDesktop` framework required by the dynamically linked MSVC runtime. The Store installs this dependency automatically; a sideload test machine must already have the matching x64 framework package.
+
+## Verify identity
+
+Inspect a generated package without installing it:
 
 ```powershell
-Import-Certificate -FilePath '.\viewtrious-dev.cer' -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople'
+MakeAppx.exe unpack /p '<package.msix>' /d '<empty-inspection-directory>' /o
+Get-Content '<empty-inspection-directory>\AppxManifest.xml'
 ```
 
-Build and sign a separate local-test package with SHA-256:
-
-```powershell
-.\tools\Build-MSIX.ps1 -SignForLocalTest -CertificatePath '.\viewtrious-dev.pfx' -CertificatePassword $password
-```
-
-The signed output is `out\msix\viewtrious-<version>-x64-localtest.msix`. Never commit the PFX or other private-key material. Microsoft Store submission packages are signed by the Store and must use the Partner Center identity values instead of these development placeholders.
+Confirm the manifest identity and four-part version match the intended mode. Never upload a `Viewtrious.Development` package to Partner Center.

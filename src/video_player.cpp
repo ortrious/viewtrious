@@ -151,7 +151,6 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
     const HRESULT startup = MFStartup(MF_VERSION);
     if (FAILED(startup)) { error = kMissingMediaFeaturesMessage; return false; }
     mediaFoundationStarted_ = true;
-    ReadNominalFrameRate(path);
     if (!RebindDevice(device, error)) { Shutdown(); return false; }
     ComPtr<IMFAttributes> attributes;
     ComPtr<IMFMediaEngineClassFactory> factory;
@@ -262,6 +261,7 @@ bool VideoPlayer::CreateFrameTexture(std::wstring& error) {
 bool VideoPlayer::HandleMediaEvent(DWORD event, std::wstring& error) {
     if (!engine_) return false;
     if (event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA || event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY) {
+        ReadNominalFrameRate();
         const HRESULT size = engine_->GetNativeVideoSize(&videoWidth_, &videoHeight_);
         if (FAILED(size) || !videoWidth_ || !videoHeight_ || !CreateFrameTexture(error)) {
             if (error.empty()) error = L"viewtrious could not read the video dimensions.";
@@ -340,43 +340,26 @@ bool VideoPlayer::GetNativeVideoSize(DWORD& width, DWORD& height) const {
     return width != 0 && height != 0;
 }
 
-bool VideoPlayer::ReadNominalFrameRate(const std::wstring& path) {
-    ComPtr<IMFSourceResolver> resolver;
-    ComPtr<IUnknown> sourceObject;
-    ComPtr<IMFMediaSource> source;
-    ComPtr<IMFPresentationDescriptor> presentation;
-    MF_OBJECT_TYPE objectType = MF_OBJECT_INVALID;
-    HRESULT result = MFCreateSourceResolver(&resolver);
-    if (SUCCEEDED(result)) {
-        const std::wstring url = FileUrl(path);
-        result = resolver->CreateObjectFromURL(url.c_str(), MF_RESOLUTION_MEDIASOURCE, nullptr, &objectType, &sourceObject);
-    }
-    if (SUCCEEDED(result) && objectType != MF_OBJECT_MEDIASOURCE) result = E_NOINTERFACE;
-    if (SUCCEEDED(result)) result = sourceObject.As(&source);
-    if (SUCCEEDED(result)) result = source->CreatePresentationDescriptor(&presentation);
-
+bool VideoPlayer::ReadNominalFrameRate() {
+    if (hasFramesPerSecond_ || !engineEx_) return hasFramesPerSecond_;
     DWORD streamCount = 0;
-    if (SUCCEEDED(result)) result = presentation->GetStreamDescriptorCount(&streamCount);
-    for (DWORD index = 0; SUCCEEDED(result) && index < streamCount; ++index) {
+    if (FAILED(engineEx_->GetNumberOfStreams(&streamCount))) return false;
+    for (DWORD index = 0; index < streamCount; ++index) {
         BOOL selected = FALSE;
-        ComPtr<IMFStreamDescriptor> stream;
-        result = presentation->GetStreamDescriptorByIndex(index, &selected, &stream);
-        if (FAILED(result) || !selected) continue;
-
-        ComPtr<IMFMediaTypeHandler> handler;
-        ComPtr<IMFMediaType> mediaType;
-        GUID majorType{};
-        if (FAILED(stream->GetMediaTypeHandler(&handler)) || FAILED(handler->GetCurrentMediaType(&mediaType)) ||
-            FAILED(mediaType->GetGUID(MF_MT_MAJOR_TYPE, &majorType)) || majorType != MFMediaType_Video) continue;
-
+        if (FAILED(engineEx_->GetStreamSelection(index, &selected)) || !selected) continue;
+        PROPVARIANT frameRate{};
+        PropVariantInit(&frameRate);
+        const HRESULT result = engineEx_->GetStreamAttribute(index, MF_MT_FRAME_RATE, &frameRate);
         UINT32 numerator = 0, denominator = 0;
-        if (SUCCEEDED(MFGetAttributeRatio(mediaType.Get(), MF_MT_FRAME_RATE, &numerator, &denominator)) && numerator && denominator) {
+        if (SUCCEEDED(result) && frameRate.vt == VT_UI8)
+            Unpack2UINT32AsUINT64(frameRate.uhVal.QuadPart, &numerator, &denominator);
+        PropVariantClear(&frameRate);
+        if (numerator && denominator) {
             framesPerSecond_ = static_cast<float>(numerator) / static_cast<float>(denominator);
             hasFramesPerSecond_ = std::isfinite(framesPerSecond_) && framesPerSecond_ > 0.0f;
             break;
         }
     }
-    if (source) source->Shutdown();
     return hasFramesPerSecond_;
 }
 

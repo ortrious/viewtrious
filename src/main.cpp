@@ -7442,23 +7442,18 @@ public:
         CancelVideoAutoPlayNextCountdown();
         if (!skipWrapFade) CancelFilmstripWrapAnchor();
         if (!skipWrapFade && BeginFilmstripWrapFade(direction, immediatePaint)) return;
-        if (BeginStillDissolveNavigation(direction)) {
-            if (VideoActive() || IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) {
-                LoadContent(dissolveTargetPath_, false);
-                if (immediatePaint) UpdateWindow(window_);
-            } else SelectNavigationTarget(dissolveTargetPath_, direction, immediatePaint);
-            return;
-        }
         const std::optional<std::wstring> path = NavigationTargetPath(direction);
         if (!path) return;
-        if (VideoActive() && BeginVideoSiblingDissolve(*path)) {
+        // A superseded dissolve can retain a composed frame from an older request even
+        // after decode-generation checks reject that request. Direct navigation keeps
+        // the currently committed image visible until the newest decode is ready.
+        ClearStillDissolve();
+        if (source_ && !VideoActive() && !ModelActive() && !IsGifPath(*path) && !IsVideoPath(*path) && !IsModelPath(*path))
+            SelectNavigationTarget(*path, direction, immediatePaint);
+        else {
             LoadContent(*path, false);
             if (immediatePaint) UpdateWindow(window_);
-            return;
         }
-        ClearStillDissolve();
-        LoadContent(*path, false);
-        if (immediatePaint) UpdateWindow(window_);
     }
 
     std::optional<std::wstring> NavigationTargetPath(int direction) {
@@ -8027,9 +8022,6 @@ public:
             const int direction = action == CanvasSwipeAction::NavigateNext ? 1 : -1;
             if (BeginFilmstripWrapFade(direction, true)) {
                 return true;
-            } else if (BeginStillDissolveNavigation(direction)) {
-                if (VideoActive() || IsGifPath(dissolveTargetPath_) || IsVideoPath(dissolveTargetPath_)) LoadContent(dissolveTargetPath_, false);
-                else SelectNavigationTarget(dissolveTargetPath_, direction);
             }
             else Navigate(direction);
         } else if (action == CanvasSwipeAction::DismissFilmstrip) DismissFilmstripForCanvasSwipe();
@@ -8037,11 +8029,6 @@ public:
     }
 
     void CancelSwipeNavigation() { swipeNavigationPending_ = false; }
-
-    bool BeginStillDissolveNavigation(int direction) {
-        const std::optional<std::wstring> target = NavigationTargetPath(direction);
-        return target && BeginStillDissolveToTarget(*target);
-    }
 
     bool CopyCanvasPresentation(ComPtr<ID2D1Bitmap>& snapshot) {
         if (!renderTarget_) return false;

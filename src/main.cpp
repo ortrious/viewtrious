@@ -87,6 +87,7 @@ constexpr UINT kFilmstripThumbnailCompleteMessage = WM_APP + 12;
 constexpr UINT kFilmstripScrollWakeMessage = WM_APP + 13;
 constexpr UINT kFilmstripHoverPreviewCompleteMessage = WM_APP + 14;
 constexpr UINT kUpdateCheckCompleteMessage = WM_APP + 17;
+constexpr UINT kExplorerViewOrderCompleteMessage = WM_APP + 18;
 // A small pool prevents one expensive WIC decode (for example HEIC or DNG) from
 // holding up every later visible filmstrip thumbnail, without creating an
 // unbounded background decode workload.
@@ -552,6 +553,16 @@ bool ComputeAutoImageAdjustments(const AiImageBuffer& image, ImageAdjustments& a
 struct DecodeWorkerFinished { std::thread::id workerId{}; };
 struct ModelLoadResult { std::wstring path; uint64_t generation = 0; std::shared_ptr<ModelDocument> document; std::wstring error; bool IsSuccess() const { return document != nullptr; } };
 struct ModelLoadWorker { uint64_t generation = 0; std::thread thread; };
+struct ExplorerViewOrderRequest {
+    fs::path folder;
+    HWND preferredWindow = nullptr;
+    uint64_t openAttemptId = 0;
+    uint64_t navigationGeneration = 0;
+};
+struct ExplorerViewOrderResult {
+    ExplorerViewOrderRequest request;
+    std::optional<ExplorerViewOrder> order;
+};
 struct LanczosRequest {
     std::shared_ptr<std::vector<BYTE>> sourcePixels;
     UINT sourceWidth = 0, sourceHeight = 0, targetWidth = 0, targetHeight = 0;
@@ -1477,6 +1488,7 @@ public:
     }
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true, HWND explorerSourceWindow = nullptr) {
+        ++activeOpenAttemptId_;
         if (resetNavigation) {
             pendingExplorerSourceWindow_ = explorerSourceWindow;
             pendingExplorerOrderFolder_ = explorerSourceWindow ? fs::path(path).parent_path() : fs::path{};
@@ -1486,7 +1498,6 @@ public:
         CancelExternalMediaDragArming();
         if (resetNavigation || currentPath_.empty() || !PathsEqual(fs::path(path), fs::path(currentPath_)))
             RequestFilmstripSelectionAnchor();
-        ++activeOpenAttemptId_;
         BeginLowerUiNavigation(path, !resetNavigation);
         BeginAdjustmentPanelNavigation(path);
         CancelVideoAutoPlayNextCountdown();
@@ -5569,11 +5580,125 @@ public:
         StopFilmstripScrollAnimation();
     }
 
+    void QueueExplorerViewOrder(fs::path folder, HWND preferredWindow, uint64_t openAttemptId, uint64_t navigationGeneration) {
+        if (shuttingDown_ || !preferredWindow || folder.empty()) return;
+        {
+            std::lock_guard<std::mutex> lock(explorerViewOrderMutex_);
+            // One persistent STA performs every cross-process Shell call. The single
+            // pending slot makes rapid activations latest-request-wins without spawning
+            // an unbounded set of workers behind a slow Explorer window.
+            explorerViewOrderPending_ = ExplorerViewOrderRequest{
+                std::move(folder), preferredWindow, openAttemptId, navigationGeneration
+            };
+            if (!explorerViewOrderThread_.joinable()) {
+                explorerViewOrderStopping_ = false;
+                explorerViewOrderThread_ = std::thread([this] {
+                    const HRESULT apartment = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+                    explorerViewOrderThreadId_ = GetCurrentThreadId();
+                    const bool cancellationEnabled = SUCCEEDED(apartment) && SUCCEEDED(CoEnableCallCancellation(nullptr));
+                    for (;;) {
+                        ExplorerViewOrderRequest request;
+                        {
+                            std::unique_lock<std::mutex> lock(explorerViewOrderMutex_);
+                            explorerViewOrderWake_.wait(lock, [this] {
+                                return explorerViewOrderStopping_.load(std::memory_order_acquire) || explorerViewOrderPending_.has_value();
+                            });
+                            if (explorerViewOrderStopping_.load(std::memory_order_acquire)) break;
+                            request = std::move(*explorerViewOrderPending_);
+                            explorerViewOrderPending_.reset();
+                        }
+                        auto* result = new ExplorerViewOrderResult{};
+                        result->request = std::move(request);
+                        if (SUCCEEDED(apartment))
+                            result->order = ReadExplorerViewOrder(result->request.folder, result->request.preferredWindow);
+                        if (explorerViewOrderStopping_.load(std::memory_order_acquire) ||
+                            !PostMessageW(window_, kExplorerViewOrderCompleteMessage, 0, reinterpret_cast<LPARAM>(result)))
+                            delete result;
+                    }
+                    if (cancellationEnabled) CoDisableCallCancellation(nullptr);
+                    explorerViewOrderThreadId_ = 0;
+                    if (SUCCEEDED(apartment)) CoUninitialize();
+                });
+            }
+        }
+        explorerViewOrderWake_.notify_one();
+    }
+
+    void StopExplorerViewOrderWorker() {
+        explorerViewOrderStopping_ = true;
+        {
+            std::lock_guard<std::mutex> lock(explorerViewOrderMutex_);
+            explorerViewOrderPending_.reset();
+        }
+        explorerViewOrderWake_.notify_all();
+        const DWORD threadId = explorerViewOrderThreadId_.load(std::memory_order_acquire);
+        if (threadId) CoCancelCall(threadId, 0);
+        if (explorerViewOrderThread_.joinable()) explorerViewOrderThread_.join();
+        MSG message{};
+        while (PeekMessageW(&message, window_, kExplorerViewOrderCompleteMessage, kExplorerViewOrderCompleteMessage, PM_REMOVE))
+            delete reinterpret_cast<ExplorerViewOrderResult*>(message.lParam);
+    }
+
+    void ExplorerViewOrderCompleteMessage(ExplorerViewOrderResult* result) {
+        std::unique_ptr<ExplorerViewOrderResult> owned(result);
+        // Both generations must still describe the fallback list built for this open.
+        // A path match alone is insufficient if the directory changed while Shell RPC ran.
+        if (!owned || shuttingDown_ || !owned->order ||
+            owned->request.openAttemptId != activeOpenAttemptId_ ||
+            owned->request.navigationGeneration != navigationFolderGeneration_ ||
+            !navigationBuilt_ || currentPath_.empty() ||
+            !PathsEqual(owned->request.folder, fs::path(currentPath_).parent_path())) return;
+
+        const auto pathKey = [](const fs::path& path) {
+            std::wstring key = path.lexically_normal().wstring();
+            std::transform(key.begin(), key.end(), key.begin(),
+                [](wchar_t character) { return static_cast<wchar_t>(std::towlower(character)); });
+            return key;
+        };
+        std::unordered_set<std::wstring> availablePaths;
+        availablePaths.reserve(navigationFiles_.size());
+        for (const fs::path& candidate : navigationFiles_) availablePaths.insert(pathKey(candidate));
+
+        std::vector<fs::path> orderedFiles;
+        orderedFiles.reserve(owned->order->items.size());
+        std::unordered_set<std::wstring> orderedPaths;
+        orderedPaths.reserve(owned->order->items.size());
+        for (const fs::path& candidate : owned->order->items) {
+            const std::wstring key = pathKey(candidate);
+            if (!availablePaths.contains(key) || !orderedPaths.insert(key).second) continue;
+            orderedFiles.push_back(candidate);
+        }
+        if (!orderedPaths.contains(pathKey(fs::path(currentPath_)))) return;
+
+        navigationUsesExplorerOrder_ = true;
+        navigationOrderFolder_ = owned->request.folder;
+        const bool changed = orderedFiles.size() != navigationFiles_.size() ||
+            !std::equal(orderedFiles.begin(), orderedFiles.end(), navigationFiles_.begin(),
+                [](const fs::path& left, const fs::path& right) { return PathsEqual(left, right); });
+        if (!changed) return;
+
+        SynchronizeFilmstripMembership(std::move(orderedFiles));
+        RequestFilmstripSelectionAnchor();
+        RebuildFilmstripLayout(true, false);
+        ResolveFilmstripSelectionAnchor();
+        SynchronizeFilmstripVisibilityToCurrentState();
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+
     bool BuildNavigation(bool refresh = false, bool reanchorSelection = false) {
         navigationBuildQueued_ = false;
         if ((navigationBuilt_ && !refresh) || currentPath_.empty()) return true;
 
         fs::path current(currentPath_);
+        const bool initialBuild = !navigationBuilt_;
+        HWND explorerSourceWindow = nullptr;
+        if (initialBuild && pendingExplorerSourceWindow_ &&
+            PathsEqual(pendingExplorerOrderFolder_, current.parent_path()))
+            explorerSourceWindow = pendingExplorerSourceWindow_;
+        if (initialBuild) {
+            pendingExplorerSourceWindow_ = nullptr;
+            pendingExplorerOrderFolder_.clear();
+        }
         std::vector<fs::path> scannedFiles;
         std::error_code error;
         fs::directory_iterator iterator(current.parent_path(), error);
@@ -5602,32 +5727,6 @@ public:
         std::unordered_set<std::wstring> scannedPaths;
         scannedPaths.reserve(scannedFiles.size());
         for (const fs::path& candidate : scannedFiles) scannedPaths.insert(pathKey(candidate));
-        if (!navigationBuilt_ && pendingExplorerSourceWindow_ &&
-            PathsEqual(pendingExplorerOrderFolder_, current.parent_path())) {
-            const std::optional<ExplorerViewOrder> explorerOrder =
-                ReadExplorerViewOrder(current.parent_path(), pendingExplorerSourceWindow_);
-            pendingExplorerSourceWindow_ = nullptr;
-            pendingExplorerOrderFolder_.clear();
-            if (explorerOrder) {
-                std::vector<fs::path> orderedFiles;
-                orderedFiles.reserve(explorerOrder->items.size());
-                std::unordered_set<std::wstring> orderedPaths;
-                orderedPaths.reserve(explorerOrder->items.size());
-                for (const fs::path& candidate : explorerOrder->items) {
-                    const std::wstring key = pathKey(candidate);
-                    if (!scannedPaths.contains(key) || !orderedPaths.insert(key).second) continue;
-                    orderedFiles.push_back(candidate);
-                }
-                if (orderedPaths.contains(pathKey(current))) {
-                    scannedFiles = std::move(orderedFiles);
-                    navigationUsesExplorerOrder_ = true;
-                    navigationOrderFolder_ = current.parent_path();
-                }
-            }
-        } else if (!navigationBuilt_) {
-            pendingExplorerSourceWindow_ = nullptr;
-            pendingExplorerOrderFolder_.clear();
-        }
         if (navigationBuilt_ && navigationUsesExplorerOrder_ && PathsEqual(navigationOrderFolder_, current.parent_path())) {
             std::vector<fs::path> retainedOrder;
             retainedOrder.reserve(scannedFiles.size());
@@ -5690,6 +5789,10 @@ public:
         if (reanchorSelection) ResolveFilmstripSelectionAnchor();
         SynchronizeFilmstripVisibilityToCurrentState();
         InvalidateRect(window_, nullptr, FALSE);
+        // The deterministic filename order is already live. Explorer ordering is an
+        // opportunistic refinement and never participates in first-media presentation.
+        if (explorerSourceWindow)
+            QueueExplorerViewOrder(current.parent_path(), explorerSourceWindow, activeOpenAttemptId_, navigationFolderGeneration_);
         return true;
     }
 
@@ -8599,6 +8702,7 @@ public:
 
     void Shutdown() {
         shuttingDown_ = true;
+        StopExplorerViewOrderWorker();
         updateChecker_.Shutdown();
         MSG updateMessage{};
         while (PeekMessageW(&updateMessage, window_, kUpdateCheckCompleteMessage, kUpdateCheckCompleteMessage, PM_REMOVE))
@@ -8665,6 +8769,7 @@ public:
     void DecodeWorkerFinishedMessage(DecodeWorkerFinished* finished) { HandleDecodeWorkerFinished(finished); }
     void FilmstripThumbnailCompleteMessage(FilmstripThumbnailResult* result) { HandleFilmstripThumbnailResult(result); }
     void FilmstripHoverPreviewCompleteMessage(FilmstripHoverPreviewResult* result) { HandleFilmstripHoverPreviewResult(result); }
+    void ExplorerViewOrderCompleteWindowMessage(ExplorerViewOrderResult* result) { ExplorerViewOrderCompleteMessage(result); }
     void ImageAdjustmentPersistenceCompleteMessage(ImageAdjustmentPersistenceResult* result) {
         std::unique_ptr<ImageAdjustmentPersistenceResult> owned(result);
         if (!result || shuttingDown_ || !adjustmentPersistenceEnabled_ || !result->hashResolved) return;
@@ -14575,6 +14680,12 @@ private:
     bool navigationBuildQueued_ = false;
     HWND pendingExplorerSourceWindow_ = nullptr;
     fs::path pendingExplorerOrderFolder_;
+    std::thread explorerViewOrderThread_;
+    std::mutex explorerViewOrderMutex_;
+    std::condition_variable explorerViewOrderWake_;
+    std::optional<ExplorerViewOrderRequest> explorerViewOrderPending_;
+    std::atomic<bool> explorerViewOrderStopping_{ false };
+    std::atomic<DWORD> explorerViewOrderThreadId_{ 0 };
     bool navigationUsesExplorerOrder_ = false;
     fs::path navigationOrderFolder_;
     std::vector<float> filmstripItemWidths_;
@@ -15537,6 +15648,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kAiAnalysisCompleteMessage: viewer->AiAnalysisCompleteMessage(reinterpret_cast<AiAnalysisResult*>(lParam)); return 0;
     case kImageAdjustmentPersistenceCompleteMessage: viewer->ImageAdjustmentPersistenceCompleteMessage(reinterpret_cast<ImageAdjustmentPersistenceResult*>(lParam)); return 0;
     case kUpdateCheckCompleteMessage: viewer->UpdateCheckCompleteMessage(reinterpret_cast<UpdateCheckResult*>(lParam)); return 0;
+    case kExplorerViewOrderCompleteMessage: viewer->ExplorerViewOrderCompleteWindowMessage(reinterpret_cast<ExplorerViewOrderResult*>(lParam)); return 0;
     case kExternalOpenMessage: viewer->ProcessExternalOpen(); return 0;
     case WM_CLOSE: viewer->PrepareForClose(); break;
     case WM_KEYDOWN:

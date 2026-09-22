@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-struct VideoHoverPreviewRequest { std::wstring path; uint64_t generation = 0; UINT maximumDimension = 768; };
+struct VideoHoverPreviewRequest { std::wstring path; uint64_t generation = 0; UINT maximumDimension = 768; bool earliestFrame = false; };
 struct VideoHoverPreviewFrame { std::shared_ptr<std::vector<BYTE>> pixels; UINT width = 0, height = 0, stride = 0; LONGLONG timestamp = 0; };
 class VideoHoverFrameStream {
 public:

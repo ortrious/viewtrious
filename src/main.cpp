@@ -92,6 +92,10 @@ constexpr UINT kExplorerViewOrderCompleteMessage = WM_APP + 18;
 // holding up every later visible filmstrip thumbnail, without creating an
 // unbounded background decode workload.
 constexpr size_t kFilmstripThumbnailWorkerCount = 2;
+constexpr UINT kVideoOpeningFrameMaximumLongEdge = 1280;
+constexpr size_t kVideoOpeningFrameCacheBudget = 48u * 1024u * 1024u;
+constexpr int kVideoOpeningSiblingRadius = 2;
+constexpr double kLowerUiMorphDurationMs = 100.0;
 // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is available on Windows 10 version 1803 and later.
 constexpr DWORD kHighResolutionWaitableTimerFlag = 0x00000002;
 constexpr UINT_PTR kCopyFeedbackTimer = 1;
@@ -110,6 +114,8 @@ constexpr UINT_PTR kVideoAutoPlayNextCountdownTimer = 27;
 constexpr UINT_PTR kVideoFullscreenGlyphTimer = 28;
 constexpr UINT_PTR kVideoPlaybackSpeedHoverTimer = 29;
 constexpr UINT_PTR kLowerUiMorphTimer = 30;
+constexpr UINT_PTR kFastVideoNavigationTimer = 37;
+constexpr UINT kFastVideoNavigationSettleMs = 180;
 constexpr UINT_PTR kStillDissolveTimer = 17;
 constexpr UINT_PTR kStartupVideoSizingFallbackTimer = 23;
 constexpr UINT kVideoStepHoldThresholdMs = 250;
@@ -478,6 +484,18 @@ struct PixelBuffer {
     bool hasTransparency = false;
     std::shared_ptr<std::vector<BYTE>> pixels;
 };
+struct VideoOpeningFrameKey {
+    std::wstring path;
+    uint64_t size = 0;
+    FILETIME lastWrite{};
+    bool valid = false;
+};
+enum class VideoOpeningFrameSource : unsigned char { Shell, SourceReaderFirstFrame, MediaEngineFirstFrame };
+struct VideoOpeningFrameEntry : PixelBuffer {
+    VideoOpeningFrameKey key;
+    VideoOpeningFrameSource source = VideoOpeningFrameSource::Shell;
+    uint64_t lastUse = 0;
+};
 bool PixelsHaveTransparency(const std::vector<BYTE>& pixels) {
     for (size_t offset = 3; offset < pixels.size(); offset += 4) {
         if (pixels[offset] != 255) return true;
@@ -488,6 +506,7 @@ struct DecodeRequest {
     std::wstring path;
     uint64_t requestGeneration = 0;
     uint64_t folderGeneration = 0;
+    bool postResult = false;
 };
 struct FullDecodeResult : PixelBuffer {
     DecodeRequest request;
@@ -583,14 +602,17 @@ struct FilmstripThumbnailRequest {
     uint64_t itemGeneration = 0;
     UINT targetHeight = 0;
 };
+enum class FilmstripThumbnailSource : unsigned char { Image, Shell, SourceReaderFirstFrame };
 struct FilmstripThumbnailResult : PixelBuffer {
     FilmstripThumbnailRequest request;
+    FilmstripThumbnailSource source = FilmstripThumbnailSource::Image;
     float aspect = 1.0f;
     HRESULT result = E_FAIL;
 };
 struct FilmstripThumbnailEntry : PixelBuffer {
     std::wstring path;
     uint64_t itemGeneration = 0;
+    FilmstripThumbnailSource source = FilmstripThumbnailSource::Image;
     float aspect = 1.0f;
     // Derived solely from pixels; it cannot retain the source file or WIC objects.
     ComPtr<ID2D1Bitmap> bitmap;
@@ -856,6 +878,20 @@ bool PathsEqual(const fs::path& left, const fs::path& right) {
     const std::wstring rightText = right.lexically_normal().wstring();
     return CompareStringOrdinal(leftText.c_str(), static_cast<int>(leftText.size()),
         rightText.c_str(), static_cast<int>(rightText.size()), TRUE) == CSTR_EQUAL;
+}
+
+VideoOpeningFrameKey ReadVideoOpeningFrameKey(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes)) return {};
+    ULARGE_INTEGER size{};
+    size.HighPart = attributes.nFileSizeHigh;
+    size.LowPart = attributes.nFileSizeLow;
+    return { fs::path(path).lexically_normal().wstring(), size.QuadPart, attributes.ftLastWriteTime, true };
+}
+
+bool SameVideoOpeningFrameKey(const VideoOpeningFrameKey& left, const VideoOpeningFrameKey& right) {
+    return left.valid && right.valid && PathsEqual(fs::path(left.path), fs::path(right.path)) &&
+        left.size == right.size && CompareFileTime(&left.lastWrite, &right.lastWrite) == 0;
 }
 
 struct FileIdentity {
@@ -1488,6 +1524,8 @@ public:
     }
 
     HRESULT LoadContent(const std::wstring& path, bool resetNavigation = true, HWND explorerSourceWindow = nullptr) {
+        videoToImageNavigationPending_ = false;
+        if (!fastVideoNavigationSettling_) CancelFastVideoNavigation();
         ++activeOpenAttemptId_;
         if (resetNavigation) {
             pendingExplorerSourceWindow_ = explorerSourceWindow;
@@ -1507,6 +1545,12 @@ public:
         }
         ++aiRequestGeneration_;
         titleMetadataHandoffActive_ = !IsModelPath(path) && !titleResolutionWidthText_.empty();
+        const bool changingFromVideo = VideoActive() &&
+            !currentPath_.empty() && !PathsEqual(fs::path(path), fs::path(currentPath_));
+        const bool alreadyHoldingTarget = (dissolveAwaitingTarget_ || dissolveActive_) &&
+            PathsEqual(fs::path(path), fs::path(dissolveTargetPath_));
+        if (changingFromVideo && !alreadyHoldingTarget && !fastVideoNavigationSettling_)
+            BeginVideoSiblingDissolve(path);
         if ((!coldOpenFadePending_ && !coldOpenFadeActive_) || !PathsEqual(fs::path(path), fs::path(coldOpenFadePath_))) {
             coldOpenFadePending_ = false;
             coldOpenFadeActive_ = false;
@@ -1564,6 +1608,7 @@ public:
         if (SUCCEEDED(hr)) {
             CommitImage(path, source, width, height, resetNavigation);
         } else {
+            ClearStillDissolve();
             StopDirectoryWatcher();
             CancelLowerUiMorph();
             source_.Reset();
@@ -1591,13 +1636,13 @@ public:
         if (shuttingDown_ || result->generation != modelLoadGeneration_ || !PathsEqual(fs::path(result->path), fs::path(currentPath_))) return;
         StopModelLoadingAnimation();
         modelLoading_ = false;
-        if (!result->IsSuccess()) { contentKind_ = ContentKind::None; error_ = result->error; SetCommittedMediaWindowTitle(L""); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (!result->IsSuccess()) { ClearStillDissolve(); contentKind_ = ContentKind::None; error_ = result->error; SetCommittedMediaWindowTitle(L""); InvalidateRect(window_, nullptr, FALSE); return; }
         modelDocument_ = result->document;
         std::wstring viewportError;
         EnsureRenderTarget();
         const bool centerOnBuildPlate=modelBuildPlate_==ModelBuildPlate::On||(modelBuildPlate_==ModelBuildPlate::Auto&&modelDocument_->sourceFormat==ModelSourceFormat::ThreeMf);
         if (!graphicsHost_.Ready() || (!modelViewport_.Active() && !modelViewport_.Create(graphicsHost_, modelDocument_, viewportError, ModelUpVector(), centerOnBuildPlate))) {
-            modelDocument_.reset(); contentKind_ = ContentKind::None; error_ = viewportError; SetCommittedMediaWindowTitle(L""); InvalidateRect(window_, nullptr, FALSE); return;
+            ClearStillDissolve(); modelDocument_.reset(); contentKind_ = ContentKind::None; error_ = viewportError; SetCommittedMediaWindowTitle(L""); InvalidateRect(window_, nullptr, FALSE); return;
         }
         modelViewport_.SetProjectionMode(modelProjectionMode_);
         modelViewport_.SetVisualStyle(modelVisualStyle_);
@@ -1607,6 +1652,7 @@ public:
         modelTriangleCount_ = modelDocument_->geometries.front().indices.size() / 3;
         resolutionText_ = FormatCompactTriangleCount(modelTriangleCount_) + L" triangles";
         SetCommittedMediaWindowTitle(result->path);
+        BeginStillDissolveIfReady(result->path);
         if (!navigationBuilt_) BuildNavigation();
         error_.clear(); InvalidateRect(window_, nullptr, FALSE);
     }
@@ -5416,9 +5462,11 @@ public:
             if (contentKind_ != ContentKind::Model3D || !ModelActive() || TutorialActive()) renderTarget_->Clear(kViewerBackground);
             if (VideoActive() && !tutorialPresentation_) {
                 // A paused scrub explicitly owns this retry; ordinary paints stay cache-only.
-                if (videoPausedSeekRefreshPending_ && videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek))
+                if (fastVideoNavigationPath_.empty() && videoPausedSeekRefreshPending_ &&
+                    videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Seek))
                     videoPausedSeekRefreshPending_ = false;
-                DrawVideoPresentation();
+                if (!fastVideoNavigationPath_.empty()) DrawFastVideoNavigationPreview();
+                else DrawVideoPresentation();
                 DrawVideoAutoPlayNextCountdown();
                 DrawVideoAutoPlayNextCountdownHelper();
                 DrawCanvasNavigationButtons();
@@ -5433,6 +5481,9 @@ public:
                 if (bitmap_) { if (dissolveActive_) DrawStillDissolve(); else DrawImage(ColdOpenFadeOpacity()); if (!TransitionOverlayActive()) DrawZoomHud(); DrawCanvasNavigationButtons(); DrawFilmstrip(); DrawGifPlaybackControls(); }
             } else if (dissolveAwaitingTarget_ && dissolveOldBitmap_) DrawDissolveOldFrame();
             else if (EmptyStatePresentationActive()) DrawEmptyState();
+            if (!VideoActive() && !fastVideoNavigationPath_.empty()) DrawFastVideoNavigationPreview();
+            if (ModelActive() && dissolveActive_ && dissolveOldBitmap_)
+                DrawDissolveOldFrame(1.0f - SmoothTransitionProgress(StillDissolveProgress()));
             if (!tutorialPresentation_) {
                 DrawTransitionOverlay();
                 DrawLowerUiMorph();
@@ -5474,6 +5525,7 @@ public:
             bitmap_.Reset(); lanczosBitmap_.Reset(); imageAdjustedBitmap_.Reset(); aboutLogo_.Reset(); aboutLogoWidth_ = 0; aboutLogoHeight_ = 0;
             checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
             filmstripVideoIcon_.Reset(); filmstripVideoIconSize_ = 0;
+            fastVideoNavigationBitmap_.Reset();
             if (VideoActive()) videoPlayer_.HandleRenderTargetResize();
         }
         if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < MinimumScale()) CenterAtMinimumScale();
@@ -5967,7 +6019,7 @@ public:
         }
     }
     std::optional<size_t> CurrentNavigationIndex() const {
-        const fs::path current(currentPath_);
+        const fs::path current(fastVideoNavigationPath_.empty() ? currentPath_ : fastVideoNavigationPath_);
         const auto found = std::find_if(navigationFiles_.begin(), navigationFiles_.end(), [&current](const fs::path& path) { return PathsEqual(path, current); });
         if (found == navigationFiles_.end()) return std::nullopt;
         return static_cast<size_t>(std::distance(navigationFiles_.begin(), found));
@@ -6167,9 +6219,46 @@ public:
                     }
                     if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) continue;
                     if (request.folderGeneration != filmstripThumbnailFolderGeneration_.load(std::memory_order_acquire)) continue;
+                    const auto publish = [this](FilmstripThumbnailResult* result) {
+                        if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) delete result;
+                        else if (!PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
+                    };
+                    if (IsVideoPath(request.path)) {
+                        auto* result = new FilmstripThumbnailResult{};
+                        result->request = request;
+                        result->source = FilmstripThumbnailSource::Shell;
+                        ShellThumbnailPixels decoded;
+                        result->result = DecodeShellThumbnailPixels(request.path, 256, decoded, result->aspect);
+                        result->width = decoded.width;
+                        result->height = decoded.height;
+                        result->stride = decoded.stride;
+                        result->pixels = std::move(decoded.pixels);
+                        publish(result);
+                        if (filmstripThumbnailStopping_.load(std::memory_order_acquire) ||
+                            request.folderGeneration != filmstripThumbnailFolderGeneration_.load(std::memory_order_acquire)) continue;
+                        result = new FilmstripThumbnailResult{};
+                        result->request = request;
+                        result->source = FilmstripThumbnailSource::SourceReaderFirstFrame;
+                        VideoHoverFrameStream stream;
+                        result->result = stream.Open({ request.path, request.folderGeneration, 256, true },
+                            &filmstripThumbnailFolderGeneration_);
+                        VideoHoverPreviewFrame frame;
+                        if (SUCCEEDED(result->result)) result->result = stream.ReadNext(frame);
+                        stream.Close();
+                        if (SUCCEEDED(result->result)) {
+                            result->width = frame.width;
+                            result->height = frame.height;
+                            result->stride = frame.stride;
+                            result->pixels = std::move(frame.pixels);
+                            result->aspect = static_cast<float>(result->width) / std::max(1u, result->height);
+                        }
+                        publish(result);
+                        continue;
+                    }
                     auto* result = new FilmstripThumbnailResult{};
                     result->request = request;
-                    if (IsVideoPath(request.path) || IsModelPath(request.path)) {
+                    if (IsModelPath(request.path)) {
+                        result->source = FilmstripThumbnailSource::Shell;
                         ShellThumbnailPixels decoded;
                         result->result = DecodeShellThumbnailPixels(request.path, 256, decoded, result->aspect);
                         result->width = decoded.width;
@@ -6181,8 +6270,7 @@ public:
                     }
                     // Both decode paths release all source objects before returning, so only copied
                     // Viewtrious-owned RAM pixels can cross onto the UI thread.
-                    if (filmstripThumbnailStopping_.load(std::memory_order_acquire)) delete result;
-                    else if (!PostMessageW(window_, kFilmstripThumbnailCompleteMessage, 0, reinterpret_cast<LPARAM>(result))) delete result;
+                    publish(result);
                 }
                 if (SUCCEEDED(apartment)) CoUninitialize();
             });
@@ -6459,18 +6547,307 @@ public:
         }
         delete result;
     }
+    VideoOpeningFrameEntry* FindVideoOpeningFrame(const VideoOpeningFrameKey& key) {
+        if (!key.valid) return nullptr;
+        videoOpeningFrames_.erase(std::remove_if(videoOpeningFrames_.begin(), videoOpeningFrames_.end(), [&](const VideoOpeningFrameEntry& entry) {
+            return PathsEqual(fs::path(entry.key.path), fs::path(key.path)) && !SameVideoOpeningFrameKey(entry.key, key);
+        }), videoOpeningFrames_.end());
+        const auto found = std::find_if(videoOpeningFrames_.begin(), videoOpeningFrames_.end(), [&](const VideoOpeningFrameEntry& entry) {
+            return SameVideoOpeningFrameKey(entry.key, key);
+        });
+        if (found == videoOpeningFrames_.end()) return nullptr;
+        found->lastUse = ++videoOpeningFrameUseSeed_;
+        return &*found;
+    }
+    void PruneVideoOpeningFrames() {
+        const auto bytes = [&] {
+            size_t total = 0;
+            for (const VideoOpeningFrameEntry& entry : videoOpeningFrames_) if (entry.pixels) total += entry.pixels->size();
+            return total;
+        };
+        while (bytes() > kVideoOpeningFrameCacheBudget && !videoOpeningFrames_.empty()) {
+            const auto oldest = std::min_element(videoOpeningFrames_.begin(), videoOpeningFrames_.end(),
+                [](const VideoOpeningFrameEntry& left, const VideoOpeningFrameEntry& right) { return left.lastUse < right.lastUse; });
+            videoOpeningFrames_.erase(oldest);
+        }
+    }
+    void StoreVideoOpeningFrame(const VideoOpeningFrameKey& key, PixelBuffer frame, VideoOpeningFrameSource source) {
+        if (!key.valid || !frame.pixels || !frame.width || !frame.height || !frame.stride) return;
+        const auto existing = std::find_if(videoOpeningFrames_.begin(), videoOpeningFrames_.end(), [&](const VideoOpeningFrameEntry& entry) {
+            return SameVideoOpeningFrameKey(entry.key, key);
+        });
+        if (existing != videoOpeningFrames_.end() && static_cast<unsigned char>(existing->source) > static_cast<unsigned char>(source)) return;
+        videoOpeningFrames_.erase(std::remove_if(videoOpeningFrames_.begin(), videoOpeningFrames_.end(), [&](const VideoOpeningFrameEntry& entry) {
+            return SameVideoOpeningFrameKey(entry.key, key);
+        }), videoOpeningFrames_.end());
+        VideoOpeningFrameEntry entry{};
+        entry.key = key;
+        entry.width = frame.width;
+        entry.height = frame.height;
+        entry.stride = frame.stride;
+        entry.pixels = std::move(frame.pixels);
+        entry.source = source;
+        entry.lastUse = ++videoOpeningFrameUseSeed_;
+        videoOpeningFrames_.push_back(std::move(entry));
+        PruneVideoOpeningFrames();
+    }
+    static PixelBuffer DownscaleVideoOpeningFrame(const std::vector<unsigned char>& source, UINT sourceWidth, UINT sourceHeight) {
+        PixelBuffer frame;
+        if (!sourceWidth || !sourceHeight || source.size() < static_cast<size_t>(sourceWidth) * sourceHeight * 4) return frame;
+        const float scale = std::min(1.0f, static_cast<float>(kVideoOpeningFrameMaximumLongEdge) /
+            static_cast<float>(std::max(sourceWidth, sourceHeight)));
+        frame.width = std::max(1u, static_cast<UINT>(std::lround(sourceWidth * scale)));
+        frame.height = std::max(1u, static_cast<UINT>(std::lround(sourceHeight * scale)));
+        frame.stride = frame.width * 4;
+        frame.pixels = std::make_shared<std::vector<BYTE>>(static_cast<size_t>(frame.stride) * frame.height);
+        for (UINT y = 0; y < frame.height; ++y) {
+            const UINT sourceY = std::min(sourceHeight - 1, static_cast<UINT>((static_cast<uint64_t>(y) * sourceHeight) / frame.height));
+            for (UINT x = 0; x < frame.width; ++x) {
+                const UINT sourceX = std::min(sourceWidth - 1, static_cast<UINT>((static_cast<uint64_t>(x) * sourceWidth) / frame.width));
+                std::memcpy(frame.pixels->data() + static_cast<size_t>(y) * frame.stride + x * 4,
+                    source.data() + (static_cast<size_t>(sourceY) * sourceWidth + sourceX) * 4, 4);
+            }
+        }
+        return frame;
+    }
+    bool SeedVideoOpeningFrameFromFilmstrip(const VideoOpeningFrameKey& key) {
+        if (FindVideoOpeningFrame(key)) return true;
+        const auto thumbnail = std::find_if(filmstripThumbnails_.begin(), filmstripThumbnails_.end(), [&](const FilmstripThumbnailEntry& entry) {
+            return entry.pixels && entry.width && entry.height && entry.stride && PathsEqual(fs::path(entry.path), fs::path(key.path));
+        });
+        if (thumbnail == filmstripThumbnails_.end()) return false;
+        PixelBuffer frame{};
+        frame.width = thumbnail->width;
+        frame.height = thumbnail->height;
+        frame.stride = thumbnail->stride;
+        frame.pixels = thumbnail->pixels;
+        const VideoOpeningFrameSource source = thumbnail->source == FilmstripThumbnailSource::SourceReaderFirstFrame
+            ? VideoOpeningFrameSource::SourceReaderFirstFrame : VideoOpeningFrameSource::Shell;
+        StoreVideoOpeningFrame(key, std::move(frame), source);
+        return FindVideoOpeningFrame(key) != nullptr;
+    }
+    bool ShowVideoOpeningFrame(const VideoOpeningFrameKey& key) {
+        VideoOpeningFrameEntry* entry = FindVideoOpeningFrame(key);
+        if (!entry) return false;
+        videoOpeningPresentation_.width = entry->width;
+        videoOpeningPresentation_.height = entry->height;
+        videoOpeningPresentation_.stride = entry->stride;
+        videoOpeningPresentation_.pixels = entry->pixels;
+        videoOpeningPresentationBitmap_.Reset();
+        videoOpeningPresentationShowing_ = true;
+        return true;
+    }
+    void CancelFastVideoNavigation() {
+        KillTimer(window_, kFastVideoNavigationTimer);
+        fastVideoNavigationPath_.clear();
+        fastVideoNavigationPreview_ = {};
+        fastVideoNavigationBitmap_.Reset();
+        fastVideoNavigationSettling_ = false;
+    }
+    bool PreviewFastVideoNavigation(const std::wstring& path) {
+        if (!IsVideoPath(path)) return false;
+        const VideoOpeningFrameKey key = ReadVideoOpeningFrameKey(path);
+        if (!key.valid || (!FindVideoOpeningFrame(key) && !SeedVideoOpeningFrameFromFilmstrip(key))) return false;
+        const VideoOpeningFrameEntry* entry = FindVideoOpeningFrame(key);
+        if (!entry) return false;
+        PixelBuffer preview = *entry;
+        if (!preview.pixels || !preview.width || !preview.height || !preview.stride) return false;
+
+        if (videoToImageNavigationPending_) {
+            videoToImageNavigationPending_ = false;
+            ++decodeRequestGeneration_;
+            pendingFullDecode_.reset();
+            imageDecodePending_ = false;
+            KillTimer(window_, kNavigationDecodeDebounceTimer);
+        }
+
+        // Keep the old Media Engine alive only until the latest sibling is selected.
+        // Its callbacks and scheduler wakeups cannot publish over this RAM preview.
+        ++activeOpenAttemptId_;
+        StopVideoPlaybackScheduler();
+        videoPausedSeekRefreshPending_ = false;
+        ClearStillDissolve();
+        fastVideoNavigationSettling_ = false;
+        fastVideoNavigationPath_ = path;
+        fastVideoNavigationPreview_ = std::move(preview);
+        fastVideoNavigationBitmap_.Reset();
+        filenameText_ = fs::path(path).filename().wstring();
+        resolutionText_.clear();
+        fileSizeText_.clear();
+        ClearPresentationTitleMetadata();
+        InvalidateRect(window_, nullptr, FALSE);
+        UpdateWindow(window_);
+        QueueFilmstripThumbnails();
+        if (videoPlayer_.Playing()) videoPlayer_.TogglePlayPause();
+        if (!SetTimer(window_, kFastVideoNavigationTimer, kFastVideoNavigationSettleMs, nullptr))
+            FinishFastVideoNavigation();
+        return true;
+    }
+    void FinishFastVideoNavigation() {
+        if (fastVideoNavigationPath_.empty() || fastVideoNavigationSettling_) return;
+        const std::wstring path = fastVideoNavigationPath_;
+        KillTimer(window_, kFastVideoNavigationTimer);
+        fastVideoNavigationSettling_ = true;
+        LoadContent(path, false);
+        if (!VideoActive() && !source_) CancelFastVideoNavigation();
+        UpdateWindow(window_);
+    }
+    void SelectVideoToImageNavigationTarget(const std::wstring& path, int direction, bool immediatePaint) {
+        // SelectNavigationTarget queues the same full-resolution worker as image-to-image.
+        // Keep the old frame until that result commits; do not enter LoadContent here.
+        if (!videoToImageNavigationPending_) {
+            ++activeOpenAttemptId_;
+            FlushVideoAdjustmentPersistence();
+        }
+        videoToImageNavigationPending_ = true;
+        KillTimer(window_, kFastVideoNavigationTimer);
+        fastVideoNavigationSettling_ = false;
+        if (!fastVideoNavigationPath_.empty()) fastVideoNavigationPath_ = path;
+        ClearStillDissolve();
+        SelectNavigationTarget(path, direction, immediatePaint);
+        // The worker is running before scheduler teardown or Media Engine calls can
+        // hold up this UI-thread navigation handoff.
+        StopVideoPlaybackScheduler();
+        videoPausedSeekRefreshPending_ = false;
+        if (videoPlayer_.Playing()) videoPlayer_.TogglePlayPause();
+    }
+    void DrawFastVideoNavigationPreview() {
+        const PixelBuffer& preview = fastVideoNavigationPreview_;
+        if (!renderTarget_ || !preview.pixels || !preview.width || !preview.height) return;
+        if (!fastVideoNavigationBitmap_) {
+            const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+                RenderTargetDpi(), RenderTargetDpi());
+            if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(preview.width, preview.height),
+                    preview.pixels->data(), preview.stride, properties, &fastVideoNavigationBitmap_))) return;
+        }
+        const RECT canvas = ModelCanvasBounds();
+        const float width = static_cast<float>(std::max(1L, canvas.right - canvas.left));
+        const float height = static_cast<float>(std::max(1L, canvas.bottom - canvas.top));
+        const float scale = std::min(width / preview.width, height / preview.height);
+        const float displayedWidth = preview.width * scale, displayedHeight = preview.height * scale;
+        const D2D1_RECT_F bounds = D2D1::RectF(canvas.left + (width - displayedWidth) * 0.5f,
+            canvas.top + (height - displayedHeight) * 0.5f,
+            canvas.left + (width + displayedWidth) * 0.5f,
+            canvas.top + (height + displayedHeight) * 0.5f);
+        renderTarget_->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(canvas.left), static_cast<float>(canvas.top),
+            static_cast<float>(canvas.right), static_cast<float>(canvas.bottom)), D2D1_ANTIALIAS_MODE_ALIASED);
+        renderTarget_->DrawBitmap(fastVideoNavigationBitmap_.Get(), bounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        renderTarget_->PopAxisAlignedClip();
+    }
+    void ClearVideoOpeningPresentation() {
+        videoOpeningPresentationShowing_ = false;
+        videoOpeningAwaitingLiveFrame_ = false;
+        videoOpeningRequireAccuratePaint_ = false;
+        videoOpeningMediaEngineCaptureAttempted_ = false;
+        videoOpeningFrameKey_ = {};
+        videoOpeningPresentation_ = {};
+        videoOpeningPresentationBitmap_.Reset();
+    }
+    void CaptureMediaEngineOpeningFrame() {
+        if (videoOpeningMediaEngineCaptureAttempted_ || !VideoActive() || !videoPlayer_.HasValidFrame()) return;
+        videoOpeningMediaEngineCaptureAttempted_ = true;
+        const VideoOpeningFrameKey current = ReadVideoOpeningFrameKey(currentPath_);
+        if (!SameVideoOpeningFrameKey(current, videoOpeningFrameKey_)) return;
+        std::vector<unsigned char> pixels;
+        UINT width = 0, height = 0;
+        if (!videoPlayer_.CopyCurrentFrameBgra(pixels, width, height) || !width || !height) {
+            if (videoOpeningPresentationShowing_) videoOpeningAwaitingLiveFrame_ = true;
+            return;
+        }
+        PixelBuffer frame = DownscaleVideoOpeningFrame(pixels, width, height);
+        if (!frame.pixels) return;
+        StoreVideoOpeningFrame(current, frame, VideoOpeningFrameSource::MediaEngineFirstFrame);
+        if (videoOpeningPresentationShowing_) {
+            videoOpeningPresentation_ = std::move(frame);
+            videoOpeningPresentationBitmap_.Reset();
+            videoOpeningAwaitingLiveFrame_ = true;
+            videoOpeningRequireAccuratePaint_ = true;
+        }
+    }
+    ID2D1Bitmap* VideoOpeningFrameBitmap() {
+        if (!renderTarget_ || !videoOpeningPresentationShowing_ || !videoOpeningPresentation_.pixels) return nullptr;
+        if (!videoOpeningPresentationBitmap_) {
+            const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), RenderTargetDpi(), RenderTargetDpi());
+            if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(videoOpeningPresentation_.width, videoOpeningPresentation_.height),
+                    videoOpeningPresentation_.pixels->data(), videoOpeningPresentation_.stride, properties, &videoOpeningPresentationBitmap_)))
+                return nullptr;
+        }
+        return videoOpeningPresentationBitmap_.Get();
+    }
+    void DrawVideoOpeningFrame(float opacity) {
+        ID2D1Bitmap* bitmap = VideoOpeningFrameBitmap();
+        if (!bitmap || opacity <= 0.0f) return;
+        const RECT canvas = ModelCanvasBounds();
+        DWORD nativeWidth = 0, nativeHeight = 0;
+        const bool nativeSizeReady = videoPlayer_.GetNativeVideoSize(nativeWidth, nativeHeight);
+        const UINT width = nativeSizeReady ? nativeWidth : bitmap->GetPixelSize().width;
+        const UINT height = nativeSizeReady ? nativeHeight : bitmap->GetPixelSize().height;
+        if (!width || !height) return;
+        const float canvasWidth = static_cast<float>(std::max(1L, canvas.right - canvas.left));
+        const float canvasHeight = static_cast<float>(std::max(1L, canvas.bottom - canvas.top));
+        const float scale = nativeSizeReady ? VideoCurrentScale() : std::min(canvasWidth / width, canvasHeight / height);
+        const D2D1_POINT_2F pan = nativeSizeReady ? videoPan_ : D2D1::Point2F();
+        const float displayedWidth = width * scale, displayedHeight = height * scale;
+        const D2D1_RECT_F destination = D2D1::RectF(canvas.left + (canvasWidth - displayedWidth) * 0.5f + pan.x,
+            canvas.top + (canvasHeight - displayedHeight) * 0.5f + pan.y,
+            canvas.left + (canvasWidth + displayedWidth) * 0.5f + pan.x,
+            canvas.top + (canvasHeight + displayedHeight) * 0.5f + pan.y);
+        renderTarget_->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(canvas.left), static_cast<float>(canvas.top),
+            static_cast<float>(canvas.right), static_cast<float>(canvas.bottom)), D2D1_ANTIALIAS_MODE_ALIASED);
+        renderTarget_->DrawBitmap(bitmap, destination, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        renderTarget_->PopAxisAlignedClip();
+        if (videoOpeningRequireAccuratePaint_) videoOpeningRequireAccuratePaint_ = false;
+    }
     void QueueFilmstripThumbnails() {
-        if (shuttingDown_ || filmstripThumbnailStopping_.load(std::memory_order_acquire) || !FilmstripEligible() ||
+        if (shuttingDown_ || filmstripThumbnailStopping_.load(std::memory_order_acquire) || !navigationBuilt_ ||
             navigationFiles_.empty() || filmstripThumbnailGenerations_.size() != navigationFiles_.size()) return;
-        const auto [visibleFirst, visibleLast] = FilmstripVisibleRange();
-        const size_t first = visibleFirst > 2 ? visibleFirst - 2 : 0;
-        const size_t last = std::min(navigationFiles_.size(), visibleLast + 2);
         std::vector<size_t> requested;
-        for (size_t index = first; index < last; ++index) requested.push_back(index);
+        const bool filmstripDemand = FilmstripEligible();
         const std::optional<size_t> current = CurrentNavigationIndex();
-        if (current && std::find(requested.begin(), requested.end(), *current) == requested.end()) requested.push_back(*current);
+        if (current) {
+            const size_t count = navigationFiles_.size();
+            for (int offset = -kVideoOpeningSiblingRadius; offset <= kVideoOpeningSiblingRadius; ++offset) {
+                const size_t index = static_cast<size_t>((static_cast<long long>(*current) + offset + static_cast<long long>(count)) % static_cast<long long>(count));
+                if (std::find(requested.begin(), requested.end(), index) == requested.end()) requested.push_back(index);
+            }
+        }
+        if (filmstripDemand) {
+            const auto [visibleFirst, visibleLast] = FilmstripVisibleRange();
+            const size_t first = visibleFirst > 2 ? visibleFirst - 2 : 0;
+            const size_t last = std::min(navigationFiles_.size(), visibleLast + 2);
+            for (size_t index = first; index < last; ++index)
+                if (std::find(requested.begin(), requested.end(), index) == requested.end()) requested.push_back(index);
+        }
+        videoOpeningFrames_.erase(std::remove_if(videoOpeningFrames_.begin(), videoOpeningFrames_.end(), [&](const VideoOpeningFrameEntry& entry) {
+            return std::none_of(requested.begin(), requested.end(), [&](size_t index) {
+                return IsVideoPath(navigationFiles_[index].wstring()) && PathsEqual(fs::path(entry.key.path), navigationFiles_[index]);
+            });
+        }), videoOpeningFrames_.end());
+        std::vector<FilmstripThumbnailRequest> canceled;
+        {
+            std::lock_guard<std::mutex> lock(filmstripThumbnailMutex_);
+            filmstripThumbnailQueue_.erase(std::remove_if(filmstripThumbnailQueue_.begin(), filmstripThumbnailQueue_.end(), [&](const FilmstripThumbnailRequest& request) {
+                const bool demanded = std::any_of(requested.begin(), requested.end(), [&](size_t index) {
+                    return (filmstripDemand || IsVideoPath(navigationFiles_[index].wstring())) &&
+                        request.folderGeneration == navigationFolderGeneration_ &&
+                        request.itemGeneration == filmstripThumbnailGenerations_[index] &&
+                        PathsEqual(fs::path(request.path), navigationFiles_[index]);
+                });
+                if (!demanded) canceled.push_back(request);
+                return !demanded;
+            }), filmstripThumbnailQueue_.end());
+        }
+        for (const FilmstripThumbnailRequest& request : canceled) {
+            filmstripThumbnailPending_.erase(std::remove_if(filmstripThumbnailPending_.begin(), filmstripThumbnailPending_.end(), [&](const FilmstripThumbnailRequest& pending) {
+                return pending.folderGeneration == request.folderGeneration && pending.itemGeneration == request.itemGeneration &&
+                    PathsEqual(fs::path(pending.path), fs::path(request.path));
+            }), filmstripThumbnailPending_.end());
+        }
         for (size_t index : requested) {
             const std::wstring path = navigationFiles_[index].wstring();
+            if (!filmstripDemand && !IsVideoPath(path)) continue;
             const uint64_t itemGeneration = filmstripThumbnailGenerations_[index];
             if (FindFilmstripThumbnail(path, itemGeneration) >= 0 ||
                 FilmstripThumbnailPending(path, itemGeneration) || FilmstripThumbnailFailed(path, itemGeneration)) continue;
@@ -6523,12 +6900,39 @@ public:
             filmstripThumbnailGenerations_[index] == result->request.itemGeneration;
         const bool succeeded = current && SUCCEEDED(result->result) && result->pixels && result->width && result->height;
         if (succeeded) {
+            if (IsVideoPath(result->request.path) &&
+                (result->source == FilmstripThumbnailSource::Shell || result->source == FilmstripThumbnailSource::SourceReaderFirstFrame)) {
+                PixelBuffer openingFrame{};
+                openingFrame.width = result->width;
+                openingFrame.height = result->height;
+                openingFrame.stride = result->stride;
+                openingFrame.pixels = result->pixels;
+                const VideoOpeningFrameKey key = ReadVideoOpeningFrameKey(result->request.path);
+                const VideoOpeningFrameSource source = result->source == FilmstripThumbnailSource::SourceReaderFirstFrame
+                    ? VideoOpeningFrameSource::SourceReaderFirstFrame : VideoOpeningFrameSource::Shell;
+                StoreVideoOpeningFrame(key, std::move(openingFrame), source);
+                if (VideoActive() && !videoPlayer_.HasValidFrame() &&
+                    SameVideoOpeningFrameKey(key, videoOpeningFrameKey_) && ShowVideoOpeningFrame(key)) {
+                    CommitLowerUiNavigation(currentPath_, true);
+                    BeginStillDissolveIfReady(currentPath_);
+                    BeginColdOpenFadeIfReady(currentPath_);
+                }
+            }
+            const auto existing = std::find_if(filmstripThumbnails_.begin(), filmstripThumbnails_.end(), [&](const FilmstripThumbnailEntry& entry) {
+                return PathsEqual(fs::path(entry.path), fs::path(result->request.path));
+            });
+            if (existing != filmstripThumbnails_.end() &&
+                static_cast<unsigned char>(existing->source) > static_cast<unsigned char>(result->source)) {
+                delete result;
+                return;
+            }
             filmstripThumbnails_.erase(std::remove_if(filmstripThumbnails_.begin(), filmstripThumbnails_.end(), [&](const FilmstripThumbnailEntry& entry) {
                 return PathsEqual(fs::path(entry.path), fs::path(result->request.path));
             }), filmstripThumbnails_.end());
             FilmstripThumbnailEntry entry{};
             entry.path = result->request.path;
             entry.itemGeneration = result->request.itemGeneration;
+            entry.source = result->source;
             entry.aspect = result->aspect;
             entry.width = result->width;
             entry.height = result->height;
@@ -6549,7 +6953,8 @@ public:
             }
             InvalidateRect(window_, nullptr, FALSE);
         } else {
-            if (current) filmstripThumbnailFailures_.push_back(result->request);
+            if (current && result->source != FilmstripThumbnailSource::SourceReaderFirstFrame)
+                filmstripThumbnailFailures_.push_back(result->request);
             ReleaseFilmstripWrapAnchorIfSettled();
             QueueFilmstripThumbnails();
         }
@@ -7111,7 +7516,7 @@ public:
         return LowerUiRect(strip);
     }
     bool CaptureLowerUiContents(bool video, bool wrapSnapshot = false) {
-        if (!renderTarget_ || (video ? !VideoActive() || !videoPlayer_.HasValidFrame() : !FilmstripEligible())) return false;
+        if (!renderTarget_ || (video ? !VideoActive() : !FilmstripEligible())) return false;
         const RECT bounds = video ? GetVideoControlsLayout(false).island : GetFilmstripBounds();
         if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) return false;
         float dpiX = 96.0f, dpiY = 96.0f;
@@ -7161,14 +7566,14 @@ public:
         if (!state.active) return;
         const double elapsed = LowerUiElapsedMs();
         const auto ease = [](double value) { return SmoothTransitionProgress(static_cast<float>(std::clamp(value, 0.0, 1.0))); };
-        const float geometry = ease((elapsed - state.geometryMs) / 200.0);
+        const float geometry = ease((elapsed - state.geometryMs) / kLowerUiMorphDurationMs);
         const auto lerp = [geometry](float a, float b) { return a + (b - a) * geometry; };
         state.bounds = D2D1::RectF(lerp(state.startBounds.left, state.targetBounds.left), lerp(state.startBounds.top, state.targetBounds.top),
             lerp(state.startBounds.right, state.targetBounds.right), lerp(state.startBounds.bottom, state.targetBounds.bottom));
         state.radius = lerp(state.startRadius, state.targetVideo ? 11.0f : 12.0f);
-        state.shellOpacity = state.startShell + (1.0f - state.startShell) * ease(elapsed / 100.0);
-        const float outgoing = 1.0f - ease((elapsed - state.holdMs) / 100.0);
-        const float incoming = state.ready ? ease((elapsed - std::max(state.holdMs + 100.0, state.readyMs)) / 140.0) : 0.0f;
+        state.shellOpacity = state.startShell + (1.0f - state.startShell) * ease(elapsed / kLowerUiMorphDurationMs);
+        const float outgoing = 1.0f - ease(elapsed / kLowerUiMorphDurationMs);
+        const float incoming = state.ready ? ease((elapsed - state.readyMs) / kLowerUiMorphDurationMs) : 0.0f;
         state.filmOpacity = state.targetVideo ? state.startFilm * outgoing : state.startFilm + (1.0f - state.startFilm) * incoming;
         state.videoOpacity = state.targetVideo ? state.startVideo * outgoing + (1.0f - state.startVideo * outgoing) * incoming : state.startVideo * outgoing;
     }
@@ -7193,7 +7598,7 @@ public:
         }
         // Capture while the source still owns its resources. Never capture the composed canvas.
         bool captured = false;
-        if (VideoActive() && videoPlayer_.HasValidFrame()) captured = CaptureLowerUiContents(true);
+        if (VideoActive()) captured = (continuing && state.videoContents) || CaptureLowerUiContents(true);
         else if (FilmstripEligible()) {
             if (video && filmstripWrapFade_.active && filmstripWrapFade_.outgoingContents) {
                 state.filmContents = filmstripWrapFade_.outgoingContents;
@@ -7212,8 +7617,7 @@ public:
         state.ready = false;
         state.started = video ? now.QuadPart : 0;
         state.frequency = frequency.QuadPart;
-        state.holdMs = !continuing ? 90.0 : 0.0;
-        state.geometryMs = state.holdMs;
+        state.geometryMs = 0.0;
         state.readyMs = 0.0;
         state.startBounds = state.bounds;
         state.startRadius = state.radius;
@@ -7258,9 +7662,9 @@ public:
         RetargetLowerUiGeometry();
         SampleLowerUiMorph();
         const double elapsed = LowerUiElapsedMs();
-        if (elapsed >= state.geometryMs + 200.0 && elapsed >= state.holdMs + 100.0) {
+        if (elapsed >= state.geometryMs + kLowerUiMorphDurationMs) {
             if (!state.ready) KillTimer(window_, kLowerUiMorphTimer); // Wait event-driven for the latest commit.
-            else if (elapsed >= std::max(state.holdMs + 100.0, state.readyMs) + 140.0) {
+            else if (elapsed >= state.readyMs + kLowerUiMorphDurationMs) {
                 const bool video = state.targetVideo;
                 CancelLowerUiMorph();
                 if (video) ShowVideoControls();
@@ -7611,10 +8015,26 @@ public:
         if (!skipWrapFade && BeginFilmstripWrapFade(direction, immediatePaint)) return;
         const std::optional<std::wstring> path = NavigationTargetPath(direction);
         if (!path) return;
-        // A superseded dissolve can retain a composed frame from an older request even
-        // after decode-generation checks reject that request. Direct navigation keeps
-        // the currently committed image visible until the newest decode is ready.
-        ClearStillDissolve();
+        if (VideoActive() && !IsGifPath(*path) && !IsVideoPath(*path) && !IsModelPath(*path)) {
+            SelectVideoToImageNavigationTarget(*path, direction, immediatePaint);
+            return;
+        }
+        if (VideoActive() && (videoOpeningPresentationShowing_ || !fastVideoNavigationPath_.empty()) &&
+            PreviewFastVideoNavigation(*path)) return;
+        videoToImageNavigationPending_ = false;
+        if (!fastVideoNavigationPath_.empty()) {
+            // Images use their real decoder; uncached videos use normal startup.
+            // Hold the last video preview only until the destination commits.
+            fastVideoNavigationPath_ = *path;
+            fastVideoNavigationSettling_ = false;
+            FinishFastVideoNavigation();
+            return;
+        }
+        CancelFastVideoNavigation();
+        // An active video can rebase its held presentation onto the next target;
+        // clearing it here would drop the controls and zoom HUD during rapid navigation.
+        // Still-image navigation keeps the existing direct-selection behavior.
+        if (!VideoActive()) ClearStillDissolve();
         if (source_ && !VideoActive() && !ModelActive() && !IsGifPath(*path) && !IsVideoPath(*path) && !IsModelPath(*path))
             SelectNavigationTarget(*path, direction, immediatePaint);
         else {
@@ -7625,10 +8045,12 @@ public:
 
     std::optional<std::wstring> NavigationTargetPath(int direction) {
         if (currentPath_.empty()) return std::nullopt;
-        if (!BuildNavigation(true)) return std::nullopt;
+        const bool previewNavigation = VideoActive() &&
+            (videoOpeningPresentationShowing_ || !fastVideoNavigationPath_.empty());
+        if (!BuildNavigation(!previewNavigation)) return std::nullopt;
         if (navigationFiles_.empty()) return std::nullopt;
 
-        const fs::path current(currentPath_);
+        const fs::path current(fastVideoNavigationPath_.empty() ? currentPath_ : fastVideoNavigationPath_);
         auto currentIt = std::find_if(navigationFiles_.begin(), navigationFiles_.end(),
             [&current](const fs::path& path) { return PathsEqual(path, current); });
         if (currentIt != navigationFiles_.end() && navigationFiles_.size() < 2) return std::nullopt;
@@ -8224,6 +8646,7 @@ public:
         dissolveOldHeight_ = static_cast<UINT>(height);
         dissolveOldScale_ = 1.0f;
         dissolveOldTopLeft_ = D2D1::Point2F(static_cast<float>(canvas.left), static_cast<float>(canvas.top));
+        dissolveOldReflowToCanvas_ = false;
         return true;
     }
 
@@ -8233,7 +8656,9 @@ public:
     }
 
     void CaptureTransitionOverlay(bool outgoingVideo) {
-        lowerUiReplacesTransitionControls_ = false;
+        // A navigation morph may already own the outgoing controls when the media
+        // snapshot is captured from the common LoadContent handoff.
+        if (!lowerUiMorph_.active) lowerUiReplacesTransitionControls_ = false;
         // Keep presentation snapshots media-only. Replaying a crop of the composed canvas
         // would retain whatever video pixels happened to be behind a translucent (or hidden)
         // control island. Store only the visible overlay state and redraw it above the held media.
@@ -8259,7 +8684,7 @@ public:
     }
 
     bool RebaseStillDissolveToTarget(const std::wstring& target) {
-        if ((!dissolveAwaitingTarget_ && !dissolveActive_) || !dissolveOldBitmap_ || IsModelPath(target)) return false;
+        if ((!dissolveAwaitingTarget_ && !dissolveActive_) || !dissolveOldBitmap_) return false;
         // The old snapshot is already the fully visible source while awaiting. During an
         // active dissolve, capture the last composed canvas so a superseding request starts
         // from exactly what was on screen rather than from a torn-down media object.
@@ -8314,20 +8739,28 @@ public:
     }
 
     bool BeginVideoSiblingDissolve(const std::wstring& target) {
-        if (RebaseStillDissolveToTarget(target)) return true;
-        if (!VideoActive() || IsModelPath(target) || !renderTarget_) return false;
+        const bool reflowAfterWindowRestore = videoWindowResizeSequenceActive_;
+        if (RebaseStillDissolveToTarget(target)) {
+            dissolveOldReflowToCanvas_ = reflowAfterWindowRestore;
+            return true;
+        }
+        if (!VideoActive() || !renderTarget_) return false;
         std::vector<unsigned char> pixels;
         UINT width = 0, height = 0;
-        if (!videoPlayer_.CopyCurrentFrameBgra(pixels, width, height) || !width || !height) {
-            CaptureTransitionOverlay(true);
-            return BeginStillDissolveFromCanvas(target);
+        if (!videoPlayer_.CopyCurrentDisplayedFrameBgra(pixels, width, height) || !width || !height) {
+            if (!IsModelPath(target)) CaptureTransitionOverlay(true);
+            const bool held = BeginStillDissolveFromCanvas(target);
+            if (held) dissolveOldReflowToCanvas_ = reflowAfterWindowRestore;
+            return held;
         }
         const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
         ComPtr<ID2D1Bitmap> frame;
         if (FAILED(renderTarget_->CreateBitmap(D2D1::SizeU(width, height), pixels.data(), width * 4, properties, &frame))) {
-            CaptureTransitionOverlay(true);
-            return BeginStillDissolveFromCanvas(target);
+            if (!IsModelPath(target)) CaptureTransitionOverlay(true);
+            const bool held = BeginStillDissolveFromCanvas(target);
+            if (held) dissolveOldReflowToCanvas_ = reflowAfterWindowRestore;
+            return held;
         }
         dissolveOldBitmap_ = frame;
         dissolveOldWidth_ = width;
@@ -8336,6 +8769,7 @@ public:
         const RECT canvas = ModelCanvasBounds();
         dissolveOldTopLeft_ = D2D1::Point2F(canvas.left + (canvas.right - canvas.left - width * dissolveOldScale_) * 0.5f + videoPan_.x,
             canvas.top + (canvas.bottom - canvas.top - height * dissolveOldScale_) * 0.5f + videoPan_.y);
+        dissolveOldReflowToCanvas_ = reflowAfterWindowRestore;
         if (!IsModelPath(target)) CaptureTransitionOverlay(true);
         dissolveTargetPath_ = target;
         if (!QueryPerformanceFrequency(&dissolveQpcFrequency_) || dissolveQpcFrequency_.QuadPart <= 0) { ClearStillDissolve(); return false; }
@@ -8351,21 +8785,48 @@ public:
         const float presentationOpacity = ColdOpenFadeOpacity();
         const bool transitioning = dissolveOldBitmap_ && (dissolveAwaitingTarget_ || dissolveActive_) &&
             PathsEqual(fs::path(currentPath_), fs::path(dissolveTargetPath_));
-        if (!transitioning) { videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, presentationOpacity); return; }
+        if (!transitioning) {
+            if (videoOpeningPresentationShowing_) DrawVideoOpeningFrame(presentationOpacity);
+            else videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, presentationOpacity);
+            return;
+        }
         const float progress = dissolveActive_ ? SmoothTransitionProgress(StillDissolveProgress()) : 0.0f;
         DrawDissolveOldFrame(1.0f - progress);
-        if (dissolveActive_) videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, progress);
+        if (dissolveActive_) {
+            if (videoOpeningPresentationShowing_) DrawVideoOpeningFrame(progress);
+            else videoPlayer_.Draw(renderTarget_.Get(), ModelCanvasBounds(), VideoCurrentScale(), videoPan_, progress);
+        }
     }
 
     void DrawDissolveOldFrame(float opacity = 1.0f) {
         if (!dissolveOldBitmap_) return;
-        const D2D1_RECT_F destination = D2D1::RectF(dissolveOldTopLeft_.x, dissolveOldTopLeft_.y,
-            dissolveOldTopLeft_.x + dissolveOldWidth_ * dissolveOldScale_, dissolveOldTopLeft_.y + dissolveOldHeight_ * dissolveOldScale_);
+        float scale = dissolveOldScale_;
+        D2D1_POINT_2F topLeft = dissolveOldTopLeft_;
+        if (dissolveOldReflowToCanvas_ && dissolveOldWidth_ && dissolveOldHeight_) {
+            const RECT canvas = ModelCanvasBounds();
+            const float canvasWidth = static_cast<float>(std::max(1L, canvas.right - canvas.left));
+            const float canvasHeight = static_cast<float>(std::max(1L, canvas.bottom - canvas.top));
+            scale = std::min(canvasWidth / dissolveOldWidth_, canvasHeight / dissolveOldHeight_);
+            topLeft = D2D1::Point2F(canvas.left + (canvasWidth - dissolveOldWidth_ * scale) * 0.5f,
+                canvas.top + (canvasHeight - dissolveOldHeight_ * scale) * 0.5f);
+        }
+        const D2D1_RECT_F destination = D2D1::RectF(topLeft.x, topLeft.y,
+            topLeft.x + dissolveOldWidth_ * scale, topLeft.y + dissolveOldHeight_ * scale);
         renderTarget_->DrawBitmap(dissolveOldBitmap_.Get(), destination, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
     void BeginStillDissolveIfReady(const std::wstring& path) {
+        if (fastVideoNavigationSettling_ && PathsEqual(fs::path(path), fs::path(fastVideoNavigationPath_)))
+            CancelFastVideoNavigation();
         if (!dissolveAwaitingTarget_ || !PathsEqual(fs::path(path), fs::path(dissolveTargetPath_))) return;
+        // Temporary video-origin comparison: keep the outgoing presentation until
+        // the incoming video or image/GIF is ready, then cut without the dissolve.
+        if (transitionOverlayDefersVideoControls_ &&
+            (VideoActive() || contentKind_ == ContentKind::Image2D)) {
+            ClearStillDissolve();
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
         dissolveAwaitingTarget_ = false;
         LARGE_INTEGER now{};
         QueryPerformanceCounter(&now);
@@ -8403,6 +8864,7 @@ public:
         dissolveOldWidth_ = dissolveOldHeight_ = 0;
         dissolveOldScale_ = 0.0f;
         dissolveOldTopLeft_ = D2D1::Point2F();
+        dissolveOldReflowToCanvas_ = false;
         dissolveTargetPath_.clear();
         transitionOverlayHasVideoControls_ = false;
         transitionOverlayDefersVideoControls_ = false;
@@ -8701,7 +9163,8 @@ public:
     }
 
     void Shutdown() {
-        shuttingDown_ = true;
+        if (shuttingDown_.exchange(true)) return;
+        CancelFastVideoNavigation();
         StopExplorerViewOrderWorker();
         updateChecker_.Shutdown();
         MSG updateMessage{};
@@ -9082,6 +9545,7 @@ private:
             PathsEqual(fs::path(path).parent_path(), fs::path(currentPath_).parent_path());
         const bool replacingVideo = VideoActive();
         const std::wstring previousTitleMetadata = resolutionText_;
+        const VideoOpeningFrameKey openingFrameKey = ReadVideoOpeningFrameKey(path);
         if (replacingVideo && PathsEqual(fs::path(path), fs::path(currentPath_))) FlushVideoAdjustmentPersistence();
         DeactivateModel(); DeactivateVideo(false); StopGifPlayback(); StopDirectoryWatcher(); InvalidateLanczosVariant(false);
         videoPreferredPlaybackRatePercent_ = 100;
@@ -9101,16 +9565,22 @@ private:
         ++videoAdjustmentMediaGeneration_;
         currentPath_ = path; SuppressFilmstripHoverPreviewForCurrentMedia(); displayedPath_.clear(); filenameText_ = fs::path(path).filename().wstring();
         currentFileIdentity_ = ReadFileIdentity(fs::path(path));
+        videoOpeningFrameKey_ = openingFrameKey;
+        const bool openingFrameAvailable = openingFrameKey.valid &&
+            (FindVideoOpeningFrame(openingFrameKey) || SeedVideoOpeningFrameFromFilmstrip(openingFrameKey)) &&
+            ShowVideoOpeningFrame(openingFrameKey);
         fileSizeText_ = FormatFileSize(path); resolutionText_ = replacingVideo ? previousTitleMetadata : L""; error_.clear();
         // Sibling navigation must retain the path-to-thumbnail/aspect mapping. Clearing
         // it makes the next same-folder scan discard the cache as if the folder changed.
         if (!preserveNavigation) { navigationFiles_.clear(); navigationBuilt_ = false; }
         navigationBuildQueued_ = false; contentKind_ = ContentKind::Video2D;
+        QueueFilmstripThumbnails();
         ResetVideoControls();
         EnsureRenderTarget();
         std::wstring videoError;
         if (!graphicsHost_.Ready() || !videoPlayer_.Open(window_, graphicsHost_.Device(), path, openAttemptId, videoError)) {
             CancelLowerUiMorph();
+            ClearVideoOpeningPresentation();
             contentKind_ = ContentKind::None;
             resolutionText_.clear();
             error_ = videoError.empty() ? L"viewtrious could not open this video." : videoError;
@@ -9123,6 +9593,13 @@ private:
             videoEffectivePlaybackRate_ = videoPlayer_.EffectivePlaybackRate();
             if (adjustmentPersistenceEnabled_)
                 adjustmentPersistence_.Resolve(path, videoAdjustmentMediaGeneration_, videoAdjustmentEditGeneration_, AdjustmentMediaKind::Video);
+            if (openingFrameAvailable) {
+                SetCommittedMediaWindowTitle(currentPath_);
+                CommitLowerUiNavigation(currentPath_, true);
+                CommitAdjustmentPanelNavigation(currentPath_);
+                BeginStillDissolveIfReady(currentPath_);
+                BeginColdOpenFadeIfReady(currentPath_);
+            }
         }
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -9132,6 +9609,7 @@ private:
         videoPausedSeekRefreshPending_ = false;
         StopVideoPlaybackScheduler();
         StopVideoControls();
+        ClearVideoOpeningPresentation();
         videoPlayer_.Shutdown();
         videoStepHoldSeekInFlight_ = false;
         if (contentKind_ == ContentKind::Video2D) { resolutionText_.clear(); contentKind_ = ContentKind::None; }
@@ -9160,7 +9638,7 @@ public:
             videoPan_ = D2D1::Point2F();
         }
         if (!videoError.empty()) error_ = videoError;
-        if (videoPlayer_.Failed()) { CancelLowerUiMorph(); DeactivateVideo(); SetCommittedMediaWindowTitle(L""); InvalidateRect(window_, nullptr, FALSE); return; }
+        if (videoPlayer_.Failed()) { CancelFastVideoNavigation(); CancelLowerUiMorph(); DeactivateVideo(); SetCommittedMediaWindowTitle(L""); InvalidateRect(window_, nullptr, FALSE); return; }
         if (videoStepHoldTransportActive_ && !videoPlayer_.Playing()) StopVideoStepHold();
         if (event == MF_MEDIA_ENGINE_EVENT_SEEKED) {
             if (videoStepHoldSeekInFlight_) CompleteVideoStepHoldSeek();
@@ -9170,6 +9648,7 @@ public:
             videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::InitialLoad);
         }
         if (videoPlayer_.HasValidFrame()) {
+            CaptureMediaEngineOpeningFrame();
             SetCommittedMediaWindowTitle(currentPath_);
             CommitLowerUiNavigation(currentPath_, true);
             CommitAdjustmentPanelNavigation(currentPath_);
@@ -9221,7 +9700,13 @@ public:
         QueryPerformanceCounter(&now);
         videoPlayer_.RecordFramePacingTimer(videoPlaybackWakeQpc_.load(std::memory_order_acquire),
             static_cast<LONGLONG>(std::llround(videoPlaybackDeadlineQpc_)));
-        videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Scheduler);
+        const bool transferred = videoPlayer_.UpdateFrame(VideoPlayer::FrameAcquisitionReason::Scheduler);
+        if (transferred && videoOpeningAwaitingLiveFrame_ && !videoOpeningRequireAccuratePaint_) {
+            videoOpeningPresentationShowing_ = false;
+            videoOpeningAwaitingLiveFrame_ = false;
+            videoOpeningPresentation_ = {};
+            videoOpeningPresentationBitmap_.Reset();
+        }
         // Advance the stable QPC grid past missed slots instead of replaying stale wakeups.
         while (videoPlaybackDeadlineQpc_ <= static_cast<double>(now.QuadPart))
             videoPlaybackDeadlineQpc_ += videoPlaybackFramePeriodQpc_;
@@ -11615,7 +12100,7 @@ private:
         error_.clear();
         imageDecodePending_ = true;
         ++decodeRequestGeneration_;
-        pendingFullDecode_ = DecodeRequest{ path, decodeRequestGeneration_, navigationFolderGeneration_ };
+        pendingFullDecode_ = DecodeRequest{ path, decodeRequestGeneration_, navigationFolderGeneration_, videoToImageNavigationPending_ };
         QueueLatestFullDecode();
         PresentNavigationUpdate(immediatePaint);
     }
@@ -11639,7 +12124,9 @@ private:
                 if (!PostMessageW(window_, kDecodeWorkerFinishedMessage, 0, reinterpret_cast<LPARAM>(finished))) delete finished;
                 return;
             }
-            if (IsFastNavigationPath(request.path) && !decodeShuttingDown_.load(std::memory_order_acquire)) {
+            // Video retirement can outlive the 250 ms synchronous-send timeout.
+            // Post that result once so the worker never races the UI over ownership.
+            if (!request.postResult && IsFastNavigationPath(request.path) && !decodeShuttingDown_.load(std::memory_order_acquire)) {
                 result->deliveredSynchronously = true;
                 DWORD_PTR ignored = 0;
                 if (SendMessageTimeoutW(window_, kFullDecodeCompleteMessage, 0, reinterpret_cast<LPARAM>(result),
@@ -11675,6 +12162,12 @@ private:
             result->request.folderGeneration == navigationFolderGeneration_ && PathsEqual(fs::path(result->request.path), fs::path(currentPath_));
         if (current) {
             imageDecodePending_ = false;
+            const bool leavingVideo = videoToImageNavigationPending_;
+            if (leavingVideo) {
+                videoToImageNavigationPending_ = false;
+                CancelFastVideoNavigation();
+                contentKind_ = ContentKind::Image2D;
+            }
             if (SUCCEEDED(result->result) && result->pixels) {
                 ComPtr<IWICBitmap> bitmap;
                 const HRESULT hr = wicFactory_->CreateBitmapFromMemory(result->width, result->height, GUID_WICPixelFormat32bppPBGRA,
@@ -11690,7 +12183,31 @@ private:
                 SetCommittedMediaWindowTitle(L"");
             }
             InvalidateRect(window_, nullptr, FALSE);
-            if (result->deliveredSynchronously) UpdateWindow(window_);
+            if (result->deliveredSynchronously || leavingVideo) UpdateWindow(window_);
+            if (leavingVideo) {
+                const bool resumeMorph = lowerUiMorph_.active && lowerUiMorph_.ready && !lowerUiMorph_.targetVideo;
+                const D2D1_RECT_F morphStartBounds = lowerUiMorph_.startBounds;
+                const float morphStartRadius = lowerUiMorph_.startRadius;
+                const float morphStartFilm = lowerUiMorph_.startFilm;
+                const float morphStartVideo = lowerUiMorph_.startVideo;
+                const float morphStartShell = lowerUiMorph_.startShell;
+                DeactivateVideo();
+                if (resumeMorph && lowerUiMorph_.active && lowerUiMorph_.ready && !lowerUiMorph_.targetVideo) {
+                    // The first image paint happens before synchronous Media Engine teardown.
+                    // Restart the short morph after that pause so it remains visible.
+                    auto& morph = lowerUiMorph_;
+                    morph.bounds = morph.startBounds = morphStartBounds;
+                    morph.radius = morph.startRadius = morphStartRadius;
+                    morph.filmOpacity = morph.startFilm = morphStartFilm;
+                    morph.videoOpacity = morph.startVideo = morphStartVideo;
+                    morph.shellOpacity = morph.startShell = morphStartShell;
+                    morph.targetBounds = LowerUiTargetBounds();
+                    morph.started = 0;
+                    morph.readyMs = morph.geometryMs = 0.0;
+                    SetTimer(window_, kLowerUiMorphTimer, 15, nullptr);
+                    InvalidateRect(window_, nullptr, FALSE);
+                }
+            }
         }
         if (!result->deliveredSynchronously) {
             delete result;
@@ -14401,6 +14918,8 @@ private:
         checkerboardDpi_ = 0;
         for (FilmstripThumbnailEntry& entry : filmstripThumbnails_) entry.bitmap.Reset();
         if (filmstripVideoHoverPreview_) filmstripVideoHoverPreview_->bitmap.Reset();
+        videoOpeningPresentationBitmap_.Reset();
+        fastVideoNavigationBitmap_.Reset();
         modelViewport_.Destroy();
         renderTarget_.Reset();
         graphicsHost_.Destroy();
@@ -14428,7 +14947,7 @@ private:
         bool active = false, targetVideo = false, ready = false;
         std::wstring path;
         LONGLONG started = 0, frequency = 0;
-        double holdMs = 0.0, readyMs = 0.0, geometryMs = 0.0;
+        double readyMs = 0.0, geometryMs = 0.0;
         D2D1_RECT_F bounds{}, startBounds{}, targetBounds{};
         float radius = 12.0f, startRadius = 12.0f;
         float filmOpacity = 0.0f, videoOpacity = 0.0f, shellOpacity = 1.0f;
@@ -14661,8 +15180,23 @@ private:
     UINT dissolveOldHeight_ = 0;
     float dissolveOldScale_ = 0.0f;
     D2D1_POINT_2F dissolveOldTopLeft_ = D2D1::Point2F();
+    bool dissolveOldReflowToCanvas_ = false;
     std::wstring dissolveTargetPath_;
     ComPtr<ID2D1Bitmap> dissolveOldBitmap_;
+    std::vector<VideoOpeningFrameEntry> videoOpeningFrames_;
+    uint64_t videoOpeningFrameUseSeed_ = 0;
+    VideoOpeningFrameKey videoOpeningFrameKey_;
+    PixelBuffer videoOpeningPresentation_;
+    ComPtr<ID2D1Bitmap> videoOpeningPresentationBitmap_;
+    std::wstring fastVideoNavigationPath_;
+    PixelBuffer fastVideoNavigationPreview_;
+    ComPtr<ID2D1Bitmap> fastVideoNavigationBitmap_;
+    bool fastVideoNavigationSettling_ = false;
+    bool videoToImageNavigationPending_ = false;
+    bool videoOpeningPresentationShowing_ = false;
+    bool videoOpeningMediaEngineCaptureAttempted_ = false;
+    bool videoOpeningAwaitingLiveFrame_ = false;
+    bool videoOpeningRequireAccuratePaint_ = false;
     bool coldOpenFadePending_ = false;
     bool coldOpenFadeActive_ = false;
     std::wstring coldOpenFadePath_;
@@ -15589,6 +16123,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_TIMER:
+        if (wParam == kFastVideoNavigationTimer) { viewer->FinishFastVideoNavigation(); return 0; }
         if (wParam == kLowerUiMorphTimer) { viewer->UpdateLowerUiMorph(); return 0; }
         if (wParam == kGifPlaybackTimer) { viewer->GifPlaybackTimerMessage(); return 0; }
         if (wParam == kCopyFeedbackTimer) { viewer->UpdateCopyFeedback(); return 0; }
@@ -15760,6 +16295,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         return 0;
     }
 
+    // Keep the platform alive across video opens; preview workers balance their own references.
+    const HRESULT mediaFoundation = MFStartup(MF_VERSION);
+    if (FAILED(mediaFoundation)) {
+        MessageBoxW(nullptr, L"Media features are unavailable on this Windows installation. Windows 11 N users may need to install the Microsoft Media Feature Pack.",
+            kWindowTitle, MB_OK | MB_ICONERROR);
+        if (primaryMutex) CloseHandle(primaryMutex);
+        OleUninitialize();
+        CoUninitialize();
+        return 1;
+    }
+
     Viewer viewer(timer);
     viewer.Initialize(path, activationSourceWindow);
 
@@ -15797,7 +16343,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     HWND window = CreateWindowExW(0, kWindowClass, kWindowTitle, windowStyle,
         bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
         nullptr, nullptr, instance, &viewer);
-    if (!window) { if (primaryMutex) CloseHandle(primaryMutex); OleUninitialize(); CoUninitialize(); return 1; }
+    if (!window) { viewer.Shutdown(); MFShutdown(); if (primaryMutex) CloseHandle(primaryMutex); OleUninitialize(); CoUninitialize(); return 1; }
 
     SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(windowClass.hIcon));
     SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(windowClass.hIconSm));
@@ -15818,6 +16364,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    viewer.Shutdown(); // Joins SourceReader workers and releases the Media Engine first.
+    MFShutdown();
     if (primaryMutex) CloseHandle(primaryMutex);
     OleUninitialize();
     CoUninitialize();

@@ -88,7 +88,6 @@ private:
     UINT deviceResetToken_ = 0;
     DWORD videoWidth_ = 0;
     DWORD videoHeight_ = 0;
-    bool mediaFoundationStarted_ = false;
     bool ready_ = false;
     bool playing_ = false;
     bool ended_ = false;

@@ -148,9 +148,6 @@ bool VideoPlayer::Open(HWND window, ID3D11Device* device, const std::wstring& pa
     openAttemptId_ = openAttemptId;
     ResetFramePacingDiagnostics();
     if (!window || !device) { error = L"The video graphics device is unavailable."; return false; }
-    const HRESULT startup = MFStartup(MF_VERSION);
-    if (FAILED(startup)) { error = kMissingMediaFeaturesMessage; return false; }
-    mediaFoundationStarted_ = true;
     if (!RebindDevice(device, error)) { Shutdown(); return false; }
     ComPtr<IMFAttributes> attributes;
     ComPtr<IMFMediaEngineClassFactory> factory;
@@ -183,11 +180,13 @@ void VideoPlayer::Shutdown() {
     lastTransferredPts_ = 0;
     framesPerSecond_ = 0.0f;
     effectivePlaybackRate_ = 1.0;
-    adjustedFrameBitmap_.Reset(); frameBitmap_.Reset(); frameTexture_.Reset(); adjustmentProcessor_.Reset(); engineEx_.Reset();
+    adjustedFrameBitmap_.Reset(); frameBitmap_.Reset(); frameTexture_.Reset();
+    adjustmentProcessor_.Reset();
+    engineEx_.Reset();
     if (engine_) engine_->Shutdown();
-    engine_.Reset(); deviceManager_.Reset(); device_.Reset();
+    engine_.Reset();
+    deviceManager_.Reset(); device_.Reset();
     videoWidth_ = videoHeight_ = 0;
-    if (mediaFoundationStarted_) { MFShutdown(); mediaFoundationStarted_ = false; }
     openAttemptId_ = 0;
 }
 

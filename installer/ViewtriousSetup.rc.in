@@ -31,12 +31,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Ortrious"
             VALUE "FileDescription", "Viewtrious setup"
-            VALUE "FileVersion", "@PROJECT_VERSION@"
+            VALUE "FileVersion", "@VIEWTRIOUS_WINDOWS_VERSION@"
             VALUE "InternalName", "ViewtriousSetup"
             VALUE "LegalCopyright", "Copyright 2026 Dustin Wilson"
             VALUE "OriginalFilename", "viewtrious-setup-@PROJECT_VERSION@.exe"
             VALUE "ProductName", "viewtrious"
-            VALUE "ProductVersion", "@PROJECT_VERSION@"
+            VALUE "ProductVersion", "@VIEWTRIOUS_WINDOWS_VERSION@"
         END
     END
     BLOCK "VarFileInfo"

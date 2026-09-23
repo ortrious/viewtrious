@@ -19,11 +19,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "viewtrious"
             VALUE "FileDescription", "viewtrious STL thumbnail provider"
-            VALUE "FileVersion", "@PROJECT_VERSION@"
+            VALUE "FileVersion", "@VIEWTRIOUS_WINDOWS_VERSION@"
             VALUE "InternalName", "ViewtriousStlThumbnail"
             VALUE "OriginalFilename", "ViewtriousStlThumbnail.dll"
             VALUE "ProductName", "viewtrious"
-            VALUE "ProductVersion", "@PROJECT_VERSION@"
+            VALUE "ProductVersion", "@VIEWTRIOUS_WINDOWS_VERSION@"
         END
     END
     BLOCK "VarFileInfo"

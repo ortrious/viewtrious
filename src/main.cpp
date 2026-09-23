@@ -353,7 +353,7 @@ enum class ButtonKind { None, CanvasPrevious, CanvasNext, SettingsGeneralPage, S
     SettingsConfirmDelete, SettingsSwipeToNavigateWhenFit, SettingsAutomaticUpdateChecks, SettingsReuseImageWindow, SettingsReuseVideoWindow, SettingsShowZoomHud, SettingsAdjustmentsDatabase, SettingsResetAdjustmentsDatabase, SettingsAnimations, SettingsReverseWheelZoom, SettingsThemeSystem, SettingsThemeLight, SettingsThemeDark,
     SettingsZoomHudPositionToggle, SettingsZoomHudBottomLeft, SettingsZoomHudBottomRight, SettingsZoomHudTopLeft, SettingsZoomHudTopRight, SettingsFilmstripDisplayToggle, SettingsFilmstripHidden, SettingsFilmstripAutomatic, SettingsFilmstripAlwaysShow, SettingsImageScalingToggle, SettingsVideoSizingToggle, SettingsScrollUp, SettingsScrollDown,
     SettingsSpaceMouse, SettingsModelReverseWheelZoom, SettingsUpAxisToggle, SettingsUpAxisZ, SettingsUpAxisY, SettingsUpAxisX, SettingsBuildPlateToggle, SettingsBuildPlateAuto, SettingsBuildPlateOn, SettingsBuildPlateOff, SettingsAxisIndicatorPositionToggle, SettingsAxisIndicatorBottomLeft, SettingsAxisIndicatorBottomRight, SettingsAxisIndicatorTopLeft, SettingsAxisIndicatorTopRight, SettingsProjectionToggle, SettingsProjectionPerspective, SettingsProjectionOrthographic, SettingsGraphicsAdapterToggle, SettingsGraphicsAdapterOption, SettingsAntiAliasingToggle, SettingsAntiAliasingOff, SettingsAntiAliasing2x, SettingsAntiAliasing4x, SettingsAntiAliasing8x, SettingsAntiAliasingSsaa1_5x, SettingsAntiAliasingSsaa2x, ModelOffscreenIndicator, ViewBarProjectionToggle, ViewBarProjectionPerspective, ViewBarProjectionOrthographic, ViewBarVisualStyleToggle, ViewBarVisualStyleShaded, ViewBarVisualStyleVisibleEdges, ViewBarVisualStyleWireframe, SettingsScalingPerformance, SettingsScalingHybrid, SettingsScalingQuality, SettingsDefaultApps, SettingsReset, ResetCancel, ResetConfirm, ResetAdjustmentsConfirm, DeleteWarningSuppress, DeleteCancel, DeleteConfirm, WelcomeSecondary, WelcomePrimary, FeedbackBug,
-    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, PrintErrorDismiss, UpdateDownload, UpdateLater, UpdateNotesLink, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments, ViewBarBuildPlateSize, ViewBarPlateWidth, ViewBarPlateDepth, ViewBarPlateLink, ViewBarPlateReset, Count };
+    DefaultAppsHelperCancel, DefaultAppsHelperOpen, FeedbackFeature, HelpClose, HelpTopic, HelpLicense, PrintErrorDismiss, UpdateDownload, UpdateLater, UpdateNotesLink, TutorialSkip, TutorialNext, VideoPlayPause, VideoStepBackward, VideoStepForward, VideoMute, VideoAutoPlayNext, VideoPlaybackSpeed, VideoFullscreen, GifPlayPause, GifStepBackward, GifStepForward, ImageAdjustments, ViewBarBuildPlateSize, ViewBarPlateWidth, ViewBarPlateDepth, ViewBarPlateLink, ViewBarPlateReset, Count };
 enum class TutorialStep { None, OpenImage, MenuSettings, ImageDetails, ContextMenu, ZoomBox, Adjustments, ResizeApp, Shortcuts };
 enum class ThemePreference : DWORD { System = 0, Light = 1, Dark = 2 };
 enum class ImageScaling : DWORD { Performance = 0, Quality = 1, Hybrid = 2 };
@@ -414,13 +414,6 @@ constexpr std::array<HelpSection, 5> kTroubleshootingSections{{
     { L"SpaceMouse does not respond", L"confirm that SpaceMouse is enabled under 3D settings and that 3Dconnexion software recognizes the device." },
     { L"viewtrious behaves unexpectedly", L"use feedback from the main menu and include the file type and steps to reproduce the problem." },
 }};
-constexpr wchar_t kThirdPartyNotices[] =
-    L"3D input device development tools and related technology are provided under license from 3Dconnexion. "
-    L"\u00A9 3Dconnexion 1992 - 2025. All rights reserved.\n\n"
-    L"miniz\n\n"
-    L"Copyright 2013-2014 RAD Game Tools and Valve Software\n"
-    L"Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC\n\n"
-    L"ZIP/DEFLATE library used for 3MF package handling. The full license is included with viewtrious.";
 constexpr std::array<HelpTopic, 7> kHelpTopics{{
     { L"getting started", kGettingStartedSections.data(), kGettingStartedSections.size(), L"" },
     { L"SpaceMouse", kSpaceMouseSections.data(), kSpaceMouseSections.size(), L"" },
@@ -428,8 +421,74 @@ constexpr std::array<HelpTopic, 7> kHelpTopics{{
     { L"settings", kSettingsSections.data(), kSettingsSections.size(), L"" },
     { L"troubleshooting", kTroubleshootingSections.data(), kTroubleshootingSections.size(), L"" },
     { L"feedback and about", kFeedbackAndAboutSections.data(), kFeedbackAndAboutSections.size(), L"" },
-    { L"third-party notices", nullptr, 0, kThirdPartyNotices },
+    { L"licenses", nullptr, 0, L"" },
 }};
+struct HelpLicenseDocument { const wchar_t* label; const wchar_t* filename; };
+constexpr std::array<HelpLicenseDocument, 3> kHelpLicenseDocuments{{
+    { L"viewtrious license", L"viewtrious.txt" },
+    { L"viewtrious notice", L"notice.txt" },
+    { L"miniz license", L"miniz.txt" },
+}};
+constexpr int kHelpLicensesTopic = static_cast<int>(kHelpTopics.size()) - 1;
+constexpr float kHelpLicenseBodyFontSize = 12.0f;
+bool ReadHelpLicense(const wchar_t* filename, std::wstring& text) {
+    const fs::path directory = ViewtriousPaths::ExecutableDirectory();
+    if (directory.empty()) return false;
+    std::ifstream input(directory / L"licenses" / filename, std::ios::binary | std::ios::ate);
+    if (!input) return false;
+    const std::streamsize length = input.tellg();
+    if (length < 0 || length > 2 * 1024 * 1024) return false;
+    std::string bytes(static_cast<size_t>(length), '\0');
+    input.seekg(0);
+    if (length && !input.read(bytes.data(), length)) return false;
+    const size_t offset = bytes.size() >= 3 &&
+        static_cast<unsigned char>(bytes[0]) == 0xEF &&
+        static_cast<unsigned char>(bytes[1]) == 0xBB &&
+        static_cast<unsigned char>(bytes[2]) == 0xBF ? 3 : 0;
+    if (offset == bytes.size()) { text.clear(); return true; }
+    const char* utf8 = bytes.data() + offset;
+    const int byteCount = static_cast<int>(bytes.size() - offset);
+    const int characters = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, byteCount, nullptr, 0);
+    if (!characters) return false;
+    text.resize(static_cast<size_t>(characters));
+    return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, byteCount, text.data(), characters) == characters;
+}
+std::wstring ReflowHelpLicenseText(const std::wstring& source) {
+    std::wstring display;
+    std::wstring previousLine;
+    size_t previousIndent = 0;
+    size_t blankLines = 0;
+    for (size_t begin = 0; begin < source.size();) {
+        const size_t end = source.find_first_of(L"\r\n", begin);
+        const size_t lineEnd = end == std::wstring::npos ? source.size() : end;
+        const std::wstring line = source.substr(begin, lineEnd - begin);
+        begin = lineEnd;
+        if (begin < source.size() && source[begin++] == L'\r' && begin < source.size() && source[begin] == L'\n') ++begin;
+
+        const size_t first = line.find_first_not_of(L" \t");
+        if (first == std::wstring::npos) { ++blankLines; continue; }
+        const size_t last = line.find_last_not_of(L" \t");
+        const std::wstring trimmed = line.substr(first, last - first + 1);
+        const auto structural = [](const std::wstring& value) {
+            return value.starts_with(L"Copyright ") || value.starts_with(L"\u00a9") ||
+                value.starts_with(L"http://") || value.starts_with(L"https://");
+        };
+        if (!display.empty()) {
+            if (blankLines) display.append(blankLines + 1, L'\n');
+            else if (structural(previousLine) || structural(trimmed) || first >= previousIndent + 12 || previousIndent >= first + 12)
+                display += L'\n';
+            else display += L' ';
+        }
+        if (display.empty() || blankLines || structural(previousLine) || structural(trimmed) ||
+            first >= previousIndent + 12 || previousIndent >= first + 12)
+            display.append(line, 0, first);
+        display += trimmed;
+        previousLine = trimmed;
+        previousIndent = first;
+        blankLines = 0;
+    }
+    return display;
+}
 struct OpenWithHandler { std::wstring name; ComPtr<IAssocHandler> handler; };
 struct DeletedMediaUndoRecord {
     std::wstring originalPath;
@@ -3800,7 +3859,7 @@ public:
             settingsPage_ = SettingsPage::General;
             settingsScroll_ = 0.0f;
         }
-        if (overlay == OverlayKind::Help) { helpTopic_ = 0; helpTopicHover_ = -1; helpScroll_ = 0.0f; }
+        if (overlay == OverlayKind::Help) { helpTopic_ = 0; helpTopicHover_ = -1; helpScroll_ = 0.0f; helpLicenseNavScroll_ = 0.0f; }
         overlay_ = overlay;
         EndPan();
         ShowVideoControls();
@@ -3906,7 +3965,7 @@ public:
                 DWRITE_FONT_STRETCH_NORMAL, size * scale, L"", &format))) return MulDiv(20, GetDpiForWindow(window_), 96);
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
         ComPtr<IDWriteTextLayout> layout;
-        if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), static_cast<float>(width), 4096.0f, &layout))) return MulDiv(20, GetDpiForWindow(window_), 96);
+        if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), static_cast<float>(width), 100000.0f, &layout))) return MulDiv(20, GetDpiForWindow(window_), 96);
         DWRITE_TEXT_METRICS metrics{};
         return SUCCEEDED(layout->GetMetrics(&metrics)) ? std::max(MulDiv(20, GetDpiForWindow(window_), 96), static_cast<int>(std::ceil(metrics.height))) : MulDiv(20, GetDpiForWindow(window_), 96);
     }
@@ -3930,6 +3989,35 @@ public:
         const int left = bounds.left + MulDiv(220, dpi, 96);
         return { left, bounds.top + MulDiv(64, dpi, 96), bounds.right - MulDiv(24, dpi, 96), bounds.bottom - MulDiv(24, dpi, 96) };
     }
+    RECT GetHelpLicenseTextBounds() const {
+        RECT bounds = GetHelpContentBounds();
+        if (helpTopic_ == kHelpLicensesTopic) bounds.left = GetHelpLicenseNavBounds().right + MulDiv(16, GetDpiForWindow(window_), 96);
+        return bounds;
+    }
+    RECT GetHelpLicenseNavBounds() const {
+        const RECT content = GetHelpContentBounds();
+        const int dpi = GetDpiForWindow(window_);
+        const int width = std::min<int>(MulDiv(162, dpi, 96), std::max(1L, (content.right - content.left) * 2 / 5));
+        return { content.left, content.top, content.left + width, content.bottom };
+    }
+    RECT GetHelpLicenseRowBounds(int index) const {
+        const RECT nav = GetHelpLicenseNavBounds();
+        const int dpi = GetDpiForWindow(window_);
+        const int top = nav.top + index * MulDiv(38, dpi, 96) - static_cast<int>(std::round(helpLicenseNavScroll_));
+        return { nav.left, top, nav.right, top + MulDiv(32, dpi, 96) };
+    }
+    bool HelpLicenseNavContains(POINT point) const {
+        const RECT nav = GetHelpLicenseNavBounds();
+        return overlay_ == OverlayKind::Help && helpTopic_ == kHelpLicensesTopic && PtInRect(&nav, point);
+    }
+    int HelpLicenseTabAt(POINT point) const {
+        if (!HelpLicenseNavContains(point)) return -1;
+        for (int index = 0; index < static_cast<int>(kHelpLicenseDocuments.size()); ++index) {
+            const RECT bounds = GetHelpLicenseRowBounds(index);
+            if (PtInRect(&bounds, point)) return index;
+        }
+        return -1;
+    }
     RECT GetHelpTopicBounds(int topic) const {
         const RECT bounds = GetOverlayBounds(); const int dpi = GetDpiForWindow(window_);
         const int left = bounds.left + MulDiv(18, dpi, 96);
@@ -3945,20 +4033,36 @@ public:
         return -1;
     }
     bool HelpContentContains(POINT point) const {
-        const RECT bounds = GetHelpContentBounds();
+        const RECT bounds = GetHelpLicenseTextBounds();
         return overlay_ == OverlayKind::Help && PtInRect(&bounds, point);
     }
     void SetHelpTopic(int topic) {
         if (topic < 0 || topic >= static_cast<int>(kHelpTopics.size())) return;
         helpTopic_ = topic;
         helpScroll_ = 0.0f;
+        if (topic == kHelpLicensesTopic) helpLicenseNavScroll_ = 0.0f;
+        if (topic == kHelpLicensesTopic) SetHelpLicense(0);
         InvalidateRect(window_, nullptr, FALSE);
     }
+    void SetHelpLicense(int index) {
+        if (index < 0 || index >= static_cast<int>(kHelpLicenseDocuments.size())) return;
+        const wchar_t* filename = kHelpLicenseDocuments[index].filename;
+        std::wstring text;
+        if (ReadHelpLicense(filename, text)) text = ReflowHelpLicenseText(text);
+        else text = std::wstring(L"Unable to load license file: ") + filename;
+        helpLicenseText_ = std::move(text);
+        helpLicense_ = index;
+        helpScroll_ = 0.0f;
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    bool HelpLicensePressMatchesHit() const { return helpLicensePressed_ == helpLicenseHit_; }
     int HelpContentHeight() const {
         if (overlay_ != OverlayKind::Help) return 0;
-        const RECT content = GetHelpContentBounds(); const UINT dpi = GetDpiForWindow(window_);
+        const RECT content = GetHelpLicenseTextBounds(); const UINT dpi = GetDpiForWindow(window_);
         const int width = static_cast<int>(std::max<LONG>(1, content.right - content.left));
         int height = 0;
+        if (helpTopic_ == kHelpLicensesTopic)
+            return MeasureHelpTextHeight(helpLicenseText_.c_str(), width, kHelpLicenseBodyFontSize, DWRITE_FONT_WEIGHT_NORMAL);
         const HelpTopic& topic = kHelpTopics[helpTopic_];
         if (topic.sectionCount == 0)
             return height + MeasureHelpTextHeight(topic.body, width, 14.0f, DWRITE_FONT_WEIGHT_NORMAL);
@@ -3972,13 +4076,24 @@ public:
     }
     float HelpMaximumScroll() const {
         if (overlay_ != OverlayKind::Help) return 0.0f;
-        const RECT bounds = GetHelpContentBounds();
+        const RECT bounds = GetHelpLicenseTextBounds();
         const float viewport = static_cast<float>(bounds.bottom - bounds.top);
         return std::max(0.0f, static_cast<float>(HelpContentHeight()) - viewport);
     }
     void ScrollHelp(float delta) {
         if (overlay_ != OverlayKind::Help) return;
         helpScroll_ = std::clamp(helpScroll_ + delta, 0.0f, HelpMaximumScroll());
+        InvalidateRect(window_, nullptr, FALSE);
+    }
+    float HelpLicenseNavMaximumScroll() const {
+        const RECT nav = GetHelpLicenseNavBounds();
+        const int rowHeight = MulDiv(38, GetDpiForWindow(window_), 96);
+        const int contentHeight = static_cast<int>(kHelpLicenseDocuments.size()) * rowHeight;
+        return std::max(0.0f, static_cast<float>(contentHeight - (nav.bottom - nav.top)));
+    }
+    void ScrollHelpLicenseNav(float delta) {
+        if (overlay_ != OverlayKind::Help || helpTopic_ != kHelpLicensesTopic) return;
+        helpLicenseNavScroll_ = std::clamp(helpLicenseNavScroll_ + delta, 0.0f, HelpLicenseNavMaximumScroll());
         InvalidateRect(window_, nullptr, FALSE);
     }
     bool SettingsScrollUpVisible() const { return SettingsMaximumScroll() > 0.5f && settingsScroll_ > 0.5f; }
@@ -4951,6 +5066,8 @@ public:
         if (HelpCloseContains(point)) return ButtonKind::HelpClose;
         const int helpTopic = HelpTopicAt(point);
         if (helpTopic >= 0) { helpTopicHit_ = helpTopic; return ButtonKind::HelpTopic; }
+        const int helpLicense = HelpLicenseTabAt(point);
+        if (helpLicense >= 0) { helpLicenseHit_ = helpLicense; return ButtonKind::HelpLicense; }
         if (TutorialButtonContains(point, false)) return ButtonKind::TutorialSkip;
         if (TutorialButtonContains(point, true)) return ButtonKind::TutorialNext;
         if (overlay_ == OverlayKind::Settings) {
@@ -5046,9 +5163,11 @@ public:
     }
     void SetButtonHover(ButtonKind button) {
         const int helpTopic = button == ButtonKind::HelpTopic ? helpTopicHit_ : -1;
-        if (hoveredButton_ == button && helpTopicHover_ == helpTopic) return;
+        const int helpLicense = button == ButtonKind::HelpLicense ? helpLicenseHit_ : -1;
+        if (hoveredButton_ == button && helpTopicHover_ == helpTopic && helpLicenseHover_ == helpLicense) return;
         hoveredButton_ = button;
         helpTopicHover_ = helpTopic;
+        helpLicenseHover_ = helpLicense;
         InvalidateRect(window_, nullptr, FALSE);
     }
     void AdvanceCanvasNavigationFade() {
@@ -5134,6 +5253,7 @@ public:
     void SetButtonPressed(ButtonKind button) {
         if (pressedButton_ == button) return;
         pressedButton_ = button;
+        helpLicensePressed_ = button == ButtonKind::HelpLicense ? helpLicenseHit_ : -1;
         InvalidateRect(window_, nullptr, FALSE);
     }
     ButtonKind PressedButton() const { return pressedButton_; }
@@ -5266,6 +5386,7 @@ public:
         }
         else if (button == ButtonKind::HelpClose) DismissOverlay();
         else if (button == ButtonKind::HelpTopic) SetHelpTopic(helpTopicHit_);
+        else if (button == ButtonKind::HelpLicense) SetHelpLicense(helpLicenseHit_);
         else if (button == ButtonKind::UpdateLater) {
             if (!updateReleaseUrl_.empty()) DismissUpdateVersion(updateVersion_);
             DismissUpdateNotice();
@@ -5540,6 +5661,7 @@ public:
         if (!tutorialPresentation_ && !fitToWindow_ && zoom_ < MinimumScale()) CenterAtMinimumScale();
         settingsScroll_ = std::min(settingsScroll_, SettingsMaximumScroll());
         helpScroll_ = std::min(helpScroll_, HelpMaximumScroll());
+        helpLicenseNavScroll_ = std::min(helpLicenseNavScroll_, HelpLicenseNavMaximumScroll());
         ClampPan();
         ClampVideoPan();
         if (VideoActive()) SynchronizeVideoAdjustmentsPanelPresentedLayout(true);
@@ -13685,6 +13807,19 @@ private:
         renderTarget_->DrawTextLayout(D2D1::Point2F(x, y - opticalCenterOffset), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
+    void DrawHelpLicenseBody(const wchar_t* text, float x, float y, float width, float height, ID2D1Brush* brush) {
+        ComPtr<IDWriteTextFormat> format;
+        const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
+        if (FAILED(dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, kHelpLicenseBodyFontSize * dpiScale, L"", &format))) return;
+        format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        ComPtr<IDWriteTextLayout> layout;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text, static_cast<UINT32>(wcslen(text)), format.Get(), width, height, &layout))) return;
+        renderTarget_->DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
     void DrawProductName(const wchar_t* text, float x, float y, float width, float height, float size, ID2D1Brush* brush, bool centerAlign) {
         ComPtr<IDWriteTextFormat> format;
         const float dpiScale = static_cast<float>(GetDpiForWindow(window_)) / 96.0f;
@@ -13974,16 +14109,39 @@ private:
                 DrawOverlayText(kHelpTopics[topic].title, topicRect.left + 9.0f * dpiScale, topicRect.top, topicRect.right - topicRect.left - 18.0f * dpiScale,
                     topicRect.bottom - topicRect.top, 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, topic == helpTopic_ ? selectedText.Get() : primaryBrush.Get(), true);
             }
-            const RECT contentBounds = GetHelpContentBounds();
+            if (helpTopic_ == kHelpLicensesTopic) {
+                const RECT navBounds = GetHelpLicenseNavBounds();
+                const D2D1_RECT_F navViewport = D2D1::RectF(static_cast<float>(navBounds.left), static_cast<float>(navBounds.top),
+                    static_cast<float>(navBounds.right), static_cast<float>(navBounds.bottom));
+                renderTarget_->PushAxisAlignedClip(navViewport, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                for (int index = 0; index < static_cast<int>(kHelpLicenseDocuments.size()); ++index) {
+                    const RECT tabBounds = GetHelpLicenseRowBounds(index);
+                    const D2D1_RECT_F tab = D2D1::RectF(static_cast<float>(tabBounds.left), static_cast<float>(tabBounds.top),
+                        static_cast<float>(tabBounds.right), static_cast<float>(tabBounds.bottom));
+                    if (index == helpLicense_) renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(tab, 4.0f * dpiScale, 4.0f * dpiScale), accent.Get());
+                    else if (hoveredButton_ == ButtonKind::HelpLicense && helpLicenseHover_ == index)
+                        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(tab, 4.0f * dpiScale, 4.0f * dpiScale), rowHover.Get());
+                    DrawOverlayText(kHelpLicenseDocuments[index].label, tab.left + 9.0f * dpiScale, tab.top,
+                        tab.right - tab.left - 18.0f * dpiScale, tab.bottom - tab.top, 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                        index == helpLicense_ ? selectedText.Get() : primaryBrush.Get(), true);
+                }
+                renderTarget_->PopAxisAlignedClip();
+            }
+            const RECT contentBounds = GetHelpLicenseTextBounds();
             const D2D1_RECT_F viewport = D2D1::RectF(static_cast<float>(contentBounds.left), static_cast<float>(contentBounds.top), static_cast<float>(contentBounds.right), static_cast<float>(contentBounds.bottom));
             renderTarget_->PushAxisAlignedClip(viewport, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -helpScroll_));
             const HelpTopic& topic = kHelpTopics[helpTopic_];
             const int helpWidth = static_cast<int>(std::max<LONG>(1, contentBounds.right - contentBounds.left));
-            float y = viewport.top + helpScroll_;
+            float y = viewport.top + (helpTopic_ == kHelpLicensesTopic ? 0.0f : helpScroll_);
             if (topic.sectionCount == 0) {
-                const float bodyHeight = static_cast<float>(MeasureHelpTextHeight(topic.body, helpWidth, 14.0f, DWRITE_FONT_WEIGHT_NORMAL));
-                DrawOverlayText(topic.body, viewport.left, y, viewport.right - viewport.left, bodyHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
+                const wchar_t* body = helpTopic_ == kHelpLicensesTopic ? helpLicenseText_.c_str() : topic.body;
+                const float bodySize = helpTopic_ == kHelpLicensesTopic ? kHelpLicenseBodyFontSize : 14.0f;
+                const float bodyHeight = static_cast<float>(MeasureHelpTextHeight(body, helpWidth, bodySize, DWRITE_FONT_WEIGHT_NORMAL));
+                if (helpTopic_ == kHelpLicensesTopic)
+                    DrawHelpLicenseBody(body, viewport.left, y, viewport.right - viewport.left, bodyHeight, secondaryBrush.Get());
+                else
+                    DrawOverlayText(body, viewport.left, y, viewport.right - viewport.left, bodyHeight, 14.0f, DWRITE_FONT_WEIGHT_NORMAL, secondaryBrush.Get(), false, false, false, true);
             } else {
                 for (size_t index = 0; index < topic.sectionCount; ++index) {
                     const HelpSection& section = topic.sections[index];
@@ -15640,9 +15798,15 @@ private:
     const ModelDocument* componentPanelDocument_ = nullptr;
     bool componentPanelInteractionActive_ = false;
     float helpScroll_ = 0.0f;
+    float helpLicenseNavScroll_ = 0.0f;
     int helpTopic_ = 0;
     int helpTopicHover_ = -1;
     mutable int helpTopicHit_ = -1;
+    int helpLicense_ = 0;
+    int helpLicenseHover_ = -1;
+    int helpLicensePressed_ = -1;
+    mutable int helpLicenseHit_ = -1;
+    std::wstring helpLicenseText_;
     bool onboardingRequired_ = false;
     bool tourPending_ = false;
     TutorialStep tutorialStep_ = TutorialStep::None;
@@ -15862,6 +16026,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (viewer->SettingsContains(point)) {
             const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
             viewer->ScrollSettings(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
+            return 0;
+        }
+        if (viewer->HelpLicenseNavContains(point)) {
+            const float wheelUnits = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+            viewer->ScrollHelpLicenseNav(-wheelUnits * MulDiv(54, GetDpiForWindow(window), 96));
             return 0;
         }
         if (viewer->HelpContentContains(point)) {
@@ -16269,7 +16438,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             viewer->ClearButtonPressed();
             if (GetCapture() == window) ReleaseCapture();
             viewer->SetButtonHover(released);
-            if (pressed == released) viewer->InvokeButton(pressed);
+            if (pressed == released && (pressed != ButtonKind::HelpLicense || viewer->HelpLicensePressMatchesHit())) viewer->InvokeButton(pressed);
             return 0;
         }
         if (viewer->PressedContextAction() != ContextAction::None) {

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 1.0.5.6 LANGUAGES CXX)
+project(Viewtrious VERSION 1.6.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -24,7 +24,8 @@ if(NOT EXISTS "${VIEWTRIOUS_3DXWARE_INCLUDE_DIR}/SpaceMouse/CNavigation3D.hpp" O
     message(FATAL_ERROR "VIEWTRIOUS_3DXWARE_SDK_ROOT must contain inc/SpaceMouse/CNavigation3D.hpp and lib/x64/TDxNavLib.lib.")
 endif()
 
-string(REPLACE "." "," PROJECT_VERSION_COMMAS "${PROJECT_VERSION}")
+set(VIEWTRIOUS_WINDOWS_VERSION "${PROJECT_VERSION}.0")
+string(REPLACE "." "," PROJECT_VERSION_COMMAS "${VIEWTRIOUS_WINDOWS_VERSION}")
 configure_file(assets/Viewtrious.ico "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.ico" COPYONLY)
 configure_file(assets/ViewtriousVideo.ico "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousVideo.ico" COPYONLY)
 configure_file(assets/Viewtrious3D.ico "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious3D.ico" COPYONLY)
@@ -35,6 +36,9 @@ configure_file(assets/icon_sources/icon_1024.png "${CMAKE_CURRENT_BINARY_DIR}/Vi
 configure_file(LICENSE "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-License.txt" COPYONLY)
 configure_file(NOTICE "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-Notice.txt" COPYONLY)
 configure_file(app/licenses/miniz.txt "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup-Miniz.txt" COPYONLY)
+configure_file(LICENSE "${CMAKE_CURRENT_BINARY_DIR}/licenses/viewtrious.txt" COPYONLY)
+configure_file(NOTICE "${CMAKE_CURRENT_BINARY_DIR}/licenses/notice.txt" COPYONLY)
+configure_file(app/licenses/miniz.txt "${CMAKE_CURRENT_BINARY_DIR}/licenses/miniz.txt" COPYONLY)
 configure_file(installer/ViewtriousSetup.rc.in "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup.rc" @ONLY)
 
 set(VIEWTRIOUS_UPDATE_CHECKER_SOURCE src/update_checker_disabled.cpp)

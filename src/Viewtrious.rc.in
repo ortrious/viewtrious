@@ -27,11 +27,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "viewtrious"
             VALUE "FileDescription", "viewtrious"
-            VALUE "FileVersion", "@PROJECT_VERSION@"
+            VALUE "FileVersion", "@VIEWTRIOUS_WINDOWS_VERSION@"
             VALUE "InternalName", "Viewtrious"
             VALUE "OriginalFilename", "viewtrious.exe"
             VALUE "ProductName", "viewtrious"
-            VALUE "ProductVersion", "@PROJECT_VERSION@"
+            VALUE "ProductVersion", "@VIEWTRIOUS_WINDOWS_VERSION@"
         END
     END
     BLOCK "VarFileInfo"

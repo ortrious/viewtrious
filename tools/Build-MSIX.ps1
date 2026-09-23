@@ -102,8 +102,9 @@ foreach ($artifact in @($viewer, $thumbnailProvider)) {
     if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) { throw "Missing Release artifact: $artifact" }
 }
 
-$version = ([regex]::Match((Get-Content -LiteralPath (Join-Path $root 'CMakeLists.txt') -Raw), 'project\(Viewtrious VERSION ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)')).Groups[1].Value
-if (-not $version) { throw 'Could not determine the four-part Viewtrious version from CMakeLists.txt.' }
+$appVersion = ([regex]::Match((Get-Content -LiteralPath (Join-Path $root 'CMakeLists.txt') -Raw), 'project\(Viewtrious VERSION ([0-9]+\.[0-9]+\.[0-9]+)\s')).Groups[1].Value
+if (-not $appVersion) { throw 'Could not determine the three-part Viewtrious version from CMakeLists.txt.' }
+$version = "$appVersion.0"
 
 $outputDirectory = Join-Path $root "out\msix\$mode"
 $workDirectory = Join-Path $root "out\msix\.work-$mode"

@@ -88,6 +88,6 @@ try {
 finally { $destination.Dispose() }
 
 $metadata = (Get-Item -LiteralPath $publicInstaller).VersionInfo
-if ($metadata.ProductVersion -ne $version) { throw "Unexpected setup ProductVersion '$($metadata.ProductVersion)'." }
+if ($metadata.ProductVersion -ne "$version.0") { throw "Unexpected setup ProductVersion '$($metadata.ProductVersion)'." }
 Write-Host "Public installer: $publicInstaller ($((Get-Item -LiteralPath $publicInstaller).Length) bytes)"
 Write-Host "Internal backend: $coreInstaller ($((Get-Item -LiteralPath $coreInstaller).Length) bytes)"

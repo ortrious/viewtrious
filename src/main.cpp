@@ -9,6 +9,7 @@
 #include <propsys.h>
 #include <dwmapi.h>
 #include <d2d1_1.h>
+#include <d2d1effects.h>
 #include <dwrite.h>
 #include <gdiplus.h>
 #include <ole2.h>
@@ -93,6 +94,7 @@ constexpr UINT kExplorerViewOrderCompleteMessage = WM_APP + 18;
 // unbounded background decode workload.
 constexpr size_t kFilmstripThumbnailWorkerCount = 2;
 constexpr UINT kVideoOpeningFrameMaximumLongEdge = 1280;
+constexpr UINT kVideoPreviewSourceCropPixels = 3;
 constexpr size_t kVideoOpeningFrameCacheBudget = 48u * 1024u * 1024u;
 constexpr int kVideoOpeningSiblingRadius = 2;
 constexpr double kLowerUiMorphDurationMs = 100.0;
@@ -5525,6 +5527,13 @@ public:
             bitmap_.Reset(); lanczosBitmap_.Reset(); imageAdjustedBitmap_.Reset(); aboutLogo_.Reset(); aboutLogoWidth_ = 0; aboutLogoHeight_ = 0;
             checkerboardBrush_.Reset(); checkerboardBitmap_.Reset();
             filmstripVideoIcon_.Reset(); filmstripVideoIconSize_ = 0;
+            videoPreviewBadge_.Reset();
+            for (auto& effect : videoPreviewStripCropEffects_) effect.Reset();
+            for (auto& effect : videoPreviewStripBorderEffects_) effect.Reset();
+            for (auto& effect : videoPreviewStripExtendedCropEffects_) effect.Reset();
+            for (auto& effect : videoPreviewStripBlurEffects_) effect.Reset();
+            videoPreviewLinearStops_.Reset();
+            for (auto& brush : videoPreviewEdgeFeathers_) brush.Reset();
             fastVideoNavigationBitmap_.Reset();
             if (VideoActive()) videoPlayer_.HandleRenderTargetResize();
         }
@@ -6633,6 +6642,7 @@ public:
         videoOpeningPresentation_.height = entry->height;
         videoOpeningPresentation_.stride = entry->stride;
         videoOpeningPresentation_.pixels = entry->pixels;
+        videoOpeningPresentationSource_ = entry->source;
         videoOpeningPresentationBitmap_.Reset();
         videoOpeningPresentationShowing_ = true;
         return true;
@@ -6641,6 +6651,7 @@ public:
         KillTimer(window_, kFastVideoNavigationTimer);
         fastVideoNavigationPath_.clear();
         fastVideoNavigationPreview_ = {};
+        fastVideoNavigationSource_ = VideoOpeningFrameSource::Shell;
         fastVideoNavigationBitmap_.Reset();
         fastVideoNavigationSettling_ = false;
     }
@@ -6651,6 +6662,7 @@ public:
         const VideoOpeningFrameEntry* entry = FindVideoOpeningFrame(key);
         if (!entry) return false;
         PixelBuffer preview = *entry;
+        const VideoOpeningFrameSource previewSource = entry->source;
         if (!preview.pixels || !preview.width || !preview.height || !preview.stride) return false;
 
         if (videoToImageNavigationPending_) {
@@ -6670,6 +6682,7 @@ public:
         fastVideoNavigationSettling_ = false;
         fastVideoNavigationPath_ = path;
         fastVideoNavigationPreview_ = std::move(preview);
+        fastVideoNavigationSource_ = previewSource;
         fastVideoNavigationBitmap_.Reset();
         filenameText_ = fs::path(path).filename().wstring();
         resolutionText_.clear();
@@ -6730,10 +6743,8 @@ public:
             canvas.top + (height - displayedHeight) * 0.5f,
             canvas.left + (width + displayedWidth) * 0.5f,
             canvas.top + (height + displayedHeight) * 0.5f);
-        renderTarget_->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(canvas.left), static_cast<float>(canvas.top),
-            static_cast<float>(canvas.right), static_cast<float>(canvas.bottom)), D2D1_ANTIALIAS_MODE_ALIASED);
-        renderTarget_->DrawBitmap(fastVideoNavigationBitmap_.Get(), bounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        renderTarget_->PopAxisAlignedClip();
+        DrawStaticVideoFrame(fastVideoNavigationBitmap_.Get(), bounds, canvas, 1.0f,
+            fastVideoNavigationSource_ != VideoOpeningFrameSource::MediaEngineFirstFrame);
     }
     void ClearVideoOpeningPresentation() {
         videoOpeningPresentationShowing_ = false;
@@ -6742,6 +6753,7 @@ public:
         videoOpeningMediaEngineCaptureAttempted_ = false;
         videoOpeningFrameKey_ = {};
         videoOpeningPresentation_ = {};
+        videoOpeningPresentationSource_ = VideoOpeningFrameSource::Shell;
         videoOpeningPresentationBitmap_.Reset();
     }
     void CaptureMediaEngineOpeningFrame() {
@@ -6760,6 +6772,7 @@ public:
         StoreVideoOpeningFrame(current, frame, VideoOpeningFrameSource::MediaEngineFirstFrame);
         if (videoOpeningPresentationShowing_) {
             videoOpeningPresentation_ = std::move(frame);
+            videoOpeningPresentationSource_ = VideoOpeningFrameSource::MediaEngineFirstFrame;
             videoOpeningPresentationBitmap_.Reset();
             videoOpeningAwaitingLiveFrame_ = true;
             videoOpeningRequireAccuratePaint_ = true;
@@ -6775,6 +6788,198 @@ public:
                 return nullptr;
         }
         return videoOpeningPresentationBitmap_.Get();
+    }
+    bool EnsureVideoPreviewBadge() {
+        if (videoPreviewBadge_) return true;
+        const HRSRC groupResource = FindResourceW(nullptr, MAKEINTRESOURCEW(kFilmstripVideoIconGroupResourceId), RT_GROUP_ICON);
+        const DWORD groupSize = groupResource ? SizeofResource(nullptr, groupResource) : 0;
+        const HGLOBAL loadedGroup = groupResource ? LoadResource(nullptr, groupResource) : nullptr;
+        const BYTE* group = static_cast<const BYTE*>(loadedGroup ? LockResource(loadedGroup) : nullptr);
+        if (!group || groupSize < 6) return false;
+        const UINT count = static_cast<UINT>(group[4]) | static_cast<UINT>(group[5]) << 8;
+        UINT frameResourceId = 0;
+        UINT bestDistance = UINT_MAX;
+        for (UINT index = 0; index < count && groupSize >= 6 + (index + 1) * 14; ++index) {
+            const BYTE* entry = group + 6 + index * 14;
+            const UINT frameSize = entry[0] ? entry[0] : 256;
+            const UINT distance = frameSize > 256 ? frameSize - 256 : 256 - frameSize;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                frameResourceId = static_cast<UINT>(entry[12]) | static_cast<UINT>(entry[13]) << 8;
+            }
+        }
+        return frameResourceId && CreateBitmapFromResource(static_cast<int>(frameResourceId), RT_ICON, 256, 256, videoPreviewBadge_);
+    }
+    bool DrawBlurredVideoPerimeter(ID2D1Bitmap* bitmap, const D2D1_RECT_F& clean,
+        const D2D1_RECT_F& destination, const D2D1_RECT_F& centerDestination, float dpiScale) {
+        const D2D1_SIZE_F sourceSize = bitmap->GetSize();
+        const float fullWidth = destination.right - destination.left;
+        const float fullHeight = destination.bottom - destination.top;
+        const float scaleX = fullWidth / sourceSize.width;
+        const float scaleY = fullHeight / sourceSize.height;
+        const float validLeft = destination.left + clean.left * fullWidth / sourceSize.width;
+        const float validRight = destination.left + clean.right * fullWidth / sourceSize.width;
+        const float validTop = destination.top + clean.top * fullHeight / sourceSize.height;
+        const float validBottom = destination.top + clean.bottom * fullHeight / sourceSize.height;
+        const float ringX = centerDestination.left - validLeft;
+        const float ringY = centerDestination.top - validTop;
+        const float overlapX = std::min(2.0f / dpiScale, (centerDestination.right - centerDestination.left) * 0.25f);
+        const float overlapY = std::min(2.0f / dpiScale, (centerDestination.bottom - centerDestination.top) * 0.25f);
+        const float sampleX = ringX / scaleX;
+        const float sampleY = ringY / scaleY;
+        const float blurMarginX = 18.0f / (dpiScale * scaleX);
+        const float blurMarginY = 18.0f / (dpiScale * scaleY);
+        // Blend linearly from sharp at the inner edge of the 12-pixel ring to
+        // fully blurred at its outer edge; the cropped fill stays fully blurred.
+        const D2D1_POINT_2F linearStart[] = {
+            D2D1::Point2F(0.0f, validTop),
+            D2D1::Point2F(0.0f, validBottom),
+            D2D1::Point2F(validLeft, 0.0f),
+            D2D1::Point2F(validRight, 0.0f)
+        };
+        const D2D1_POINT_2F linearEnd[] = {
+            D2D1::Point2F(0.0f, centerDestination.top),
+            D2D1::Point2F(0.0f, centerDestination.bottom),
+            D2D1::Point2F(centerDestination.left, 0.0f),
+            D2D1::Point2F(centerDestination.right, 0.0f)
+        };
+        // Each band spans its whole edge. Their feathered overlap replaces the
+        // old separately clipped corner patches, which exposed faint joins.
+        const std::array<D2D1_RECT_F, 4> segments{{
+            D2D1::RectF(destination.left, destination.top, destination.right, centerDestination.top + overlapY),
+            D2D1::RectF(destination.left, centerDestination.bottom - overlapY, destination.right, destination.bottom),
+            D2D1::RectF(destination.left, destination.top, centerDestination.left + overlapX, destination.bottom),
+            D2D1::RectF(centerDestination.right - overlapX, destination.top, destination.right, destination.bottom)
+        }};
+        const std::array<D2D1_RECT_F, 4> sources{{
+            D2D1::RectF(clean.left, clean.top, clean.right, std::min(clean.bottom, clean.top + sampleY)),
+            D2D1::RectF(clean.left, std::max(clean.top, clean.bottom - sampleY), clean.right, clean.bottom),
+            D2D1::RectF(clean.left, clean.top, std::min(clean.right, clean.left + sampleX), clean.bottom),
+            D2D1::RectF(std::max(clean.left, clean.right - sampleX), clean.top, clean.right, clean.bottom)
+        }};
+        if (!videoPreviewLinearStops_) {
+            const D2D1_GRADIENT_STOP stops[] = {
+                { 0.0f, D2D1::ColorF(D2D1::ColorF::White, 1.0f) },
+                { 1.0f, D2D1::ColorF(D2D1::ColorF::White, 0.0f) }
+            };
+            if (FAILED(renderTarget_->CreateGradientStopCollection(stops, ARRAYSIZE(stops), &videoPreviewLinearStops_))) return false;
+        }
+        bool complete = true;
+        for (size_t index = 0; index < segments.size(); ++index) {
+            const D2D1_RECT_F& segment = segments[index];
+            if (segment.right <= segment.left || segment.bottom <= segment.top) { complete = false; continue; }
+            auto& crop = videoPreviewStripCropEffects_[index];
+            auto& border = videoPreviewStripBorderEffects_[index];
+            auto& extendedCrop = videoPreviewStripExtendedCropEffects_[index];
+            auto& blur = videoPreviewStripBlurEffects_[index];
+            if (!crop && FAILED(renderTarget_->CreateEffect(CLSID_D2D1Crop, &crop))) { complete = false; continue; }
+            if (!border && FAILED(renderTarget_->CreateEffect(CLSID_D2D1Border, &border))) { complete = false; continue; }
+            if (!extendedCrop && FAILED(renderTarget_->CreateEffect(CLSID_D2D1Crop, &extendedCrop))) { complete = false; continue; }
+            if (!blur && FAILED(renderTarget_->CreateEffect(CLSID_D2D1GaussianBlur, &blur))) { complete = false; continue; }
+            crop->SetInput(0, bitmap);
+            // Only the pixels within the visible 12-physical-pixel border feed
+            // the extension. No samples from the sharp center are pulled out.
+            const D2D1_RECT_F& source = sources[index];
+            const D2D1_RECT_F extendedSource = D2D1::RectF(
+                (segment.left - destination.left) / scaleX - blurMarginX,
+                (segment.top - destination.top) / scaleY - blurMarginY,
+                (segment.right - destination.left) / scaleX + blurMarginX,
+                (segment.bottom - destination.top) / scaleY + blurMarginY);
+            if (source.right <= source.left || source.bottom <= source.top) { complete = false; continue; }
+            if (FAILED(crop->SetValue(D2D1_CROP_PROP_RECT, source)) ||
+                FAILED(crop->SetValue(D2D1_CROP_PROP_BORDER_MODE, D2D1_BORDER_MODE_HARD)) ||
+                FAILED(border->SetValue(D2D1_BORDER_PROP_EDGE_MODE_X, D2D1_BORDER_EDGE_MODE_CLAMP)) ||
+                FAILED(border->SetValue(D2D1_BORDER_PROP_EDGE_MODE_Y, D2D1_BORDER_EDGE_MODE_CLAMP)) ||
+                FAILED(extendedCrop->SetValue(D2D1_CROP_PROP_RECT, extendedSource)) ||
+                FAILED(extendedCrop->SetValue(D2D1_CROP_PROP_BORDER_MODE, D2D1_BORDER_MODE_HARD)) ||
+                FAILED(blur->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
+                    5.0f / (dpiScale * std::max(scaleX, scaleY)))) ||
+                FAILED(blur->SetValue(D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_BORDER_MODE_HARD))) { complete = false; continue; }
+            ComPtr<ID2D1Image> cropped, bordered, extended, blurred;
+            crop->GetOutput(&cropped);
+            border->SetInput(0, cropped.Get());
+            border->GetOutput(&bordered);
+            extendedCrop->SetInput(0, bordered.Get());
+            extendedCrop->GetOutput(&extended);
+            blur->SetInput(0, extended.Get());
+            blur->GetOutput(&blurred);
+            if (!blurred) { complete = false; continue; }
+            auto& feather = videoPreviewEdgeFeathers_[index];
+            if (!feather && FAILED(renderTarget_->CreateLinearGradientBrush(
+                    D2D1::LinearGradientBrushProperties(linearStart[index], linearEnd[index]),
+                    videoPreviewLinearStops_.Get(), &feather))) { complete = false; continue; }
+            feather->SetStartPoint(linearStart[index]);
+            feather->SetEndPoint(linearEnd[index]);
+            D2D1_MATRIX_3X2_F originalTransform{};
+            renderTarget_->GetTransform(&originalTransform);
+            renderTarget_->PushAxisAlignedClip(segment, D2D1_ANTIALIAS_MODE_ALIASED);
+            renderTarget_->PushLayer(D2D1::LayerParameters(segment, nullptr,
+                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), 1.0f, feather.Get()), nullptr);
+            renderTarget_->SetTransform(D2D1::Matrix3x2F::Scale(scaleX, scaleY) *
+                D2D1::Matrix3x2F::Translation(destination.left, destination.top) * originalTransform);
+            renderTarget_->DrawImage(blurred.Get());
+            renderTarget_->SetTransform(originalTransform);
+            renderTarget_->PopLayer();
+            renderTarget_->PopAxisAlignedClip();
+        }
+        return complete;
+    }
+    void DrawStaticVideoFrame(ID2D1Bitmap* bitmap, const D2D1_RECT_F& destination, const RECT& canvas,
+        float opacity, bool provisional) {
+        if (!renderTarget_ || !bitmap || opacity <= 0.0f || destination.right <= destination.left || destination.bottom <= destination.top) return;
+        const D2D1_SIZE_U pixels = bitmap->GetPixelSize();
+        if (!pixels.width || !pixels.height) return;
+        FLOAT bitmapDpiX = 96.0f, bitmapDpiY = 96.0f;
+        bitmap->GetDpi(&bitmapDpiX, &bitmapDpiY);
+        const D2D1_SIZE_F sourceSize = bitmap->GetSize();
+        const UINT cropPixels = provisional && std::min(pixels.width, pixels.height) > 2 * kVideoPreviewSourceCropPixels
+            ? kVideoPreviewSourceCropPixels : 0;
+        const float cropX = cropPixels * 96.0f / std::max(1.0f, bitmapDpiX);
+        const float cropY = cropPixels * 96.0f / std::max(1.0f, bitmapDpiY);
+        const D2D1_RECT_F source = D2D1::RectF(cropX, cropY, sourceSize.width - cropX, sourceSize.height - cropY);
+        const float dpiScale = RenderTargetDpi() / 96.0f;
+        const float width = destination.right - destination.left;
+        const float height = destination.bottom - destination.top;
+
+        renderTarget_->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(canvas.left), static_cast<float>(canvas.top),
+            static_cast<float>(canvas.right), static_cast<float>(canvas.bottom)), D2D1_ANTIALIAS_MODE_ALIASED);
+        renderTarget_->PushAxisAlignedClip(destination, D2D1_ANTIALIAS_MODE_ALIASED);
+        if (opacity < 0.999f) renderTarget_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr,
+            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), opacity), nullptr);
+
+        const D2D1_RECT_F validDestination = D2D1::RectF(destination.left + cropX * width / sourceSize.width,
+            destination.top + cropY * height / sourceSize.height,
+            destination.right - cropX * width / sourceSize.width,
+            destination.bottom - cropY * height / sourceSize.height);
+        const float validWidth = validDestination.right - validDestination.left;
+        const float validHeight = validDestination.bottom - validDestination.top;
+        const float ringX = std::min(12.0f / dpiScale, validWidth * 0.49f);
+        const float ringY = std::min(12.0f / dpiScale, validHeight * 0.49f);
+        const D2D1_RECT_F centerDestination = D2D1::RectF(validDestination.left + ringX,
+            validDestination.top + ringY, validDestination.right - ringX, validDestination.bottom - ringY);
+        renderTarget_->DrawBitmap(bitmap, validDestination, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &source);
+        if (cropPixels) DrawBlurredVideoPerimeter(bitmap, source, destination, centerDestination, dpiScale);
+
+        if (opacity < 0.999f) renderTarget_->PopLayer();
+        renderTarget_->PopAxisAlignedClip();
+
+        if (EnsureVideoPreviewBadge()) {
+            const float canvasWidth = static_cast<float>(canvas.right - canvas.left);
+            const float canvasHeight = static_cast<float>(canvas.bottom - canvas.top);
+            const float smallerPhysical = std::min(canvasWidth, canvasHeight) * dpiScale;
+            const float badgePhysical = std::min(64.0f, smallerPhysical * 0.18f);
+            const float badgeWidth = badgePhysical / dpiScale;
+            const D2D1_SIZE_U iconPixels = videoPreviewBadge_->GetPixelSize();
+            const float badgeHeight = badgeWidth * iconPixels.height / std::max(1u, iconPixels.width);
+            const float inset = 14.0f / dpiScale;
+            float top = static_cast<float>(canvas.top) + inset;
+            if (zoomHudEnabled_ && zoomHudPosition_ == ZoomHudPosition::TopRight)
+                top = std::max(top, static_cast<float>(GetVideoZoomHudLayout().combined.bottom) + inset);
+            const D2D1_RECT_F badge = D2D1::RectF(static_cast<float>(canvas.right) - inset - badgeWidth, top,
+                static_cast<float>(canvas.right) - inset, top + badgeHeight);
+            renderTarget_->DrawBitmap(videoPreviewBadge_.Get(), badge, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+        renderTarget_->PopAxisAlignedClip();
     }
     void DrawVideoOpeningFrame(float opacity) {
         ID2D1Bitmap* bitmap = VideoOpeningFrameBitmap();
@@ -6794,10 +6999,8 @@ public:
             canvas.top + (canvasHeight - displayedHeight) * 0.5f + pan.y,
             canvas.left + (canvasWidth + displayedWidth) * 0.5f + pan.x,
             canvas.top + (canvasHeight + displayedHeight) * 0.5f + pan.y);
-        renderTarget_->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(canvas.left), static_cast<float>(canvas.top),
-            static_cast<float>(canvas.right), static_cast<float>(canvas.bottom)), D2D1_ANTIALIAS_MODE_ALIASED);
-        renderTarget_->DrawBitmap(bitmap, destination, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        renderTarget_->PopAxisAlignedClip();
+        DrawStaticVideoFrame(bitmap, destination, canvas, opacity,
+            videoOpeningPresentationSource_ != VideoOpeningFrameSource::MediaEngineFirstFrame);
         if (videoOpeningRequireAccuratePaint_) videoOpeningRequireAccuratePaint_ = false;
     }
     void QueueFilmstripThumbnails() {
@@ -9705,6 +9908,7 @@ public:
             videoOpeningPresentationShowing_ = false;
             videoOpeningAwaitingLiveFrame_ = false;
             videoOpeningPresentation_ = {};
+            videoOpeningPresentationSource_ = VideoOpeningFrameSource::Shell;
             videoOpeningPresentationBitmap_.Reset();
         }
         // Advance the stable QPC grid past missed slots instead of replaying stale wakeups.
@@ -14913,6 +15117,13 @@ private:
         aboutLogoHeight_ = 0;
         filmstripVideoIcon_.Reset();
         filmstripVideoIconSize_ = 0;
+        videoPreviewBadge_.Reset();
+        for (auto& effect : videoPreviewStripCropEffects_) effect.Reset();
+        for (auto& effect : videoPreviewStripBorderEffects_) effect.Reset();
+        for (auto& effect : videoPreviewStripExtendedCropEffects_) effect.Reset();
+        for (auto& effect : videoPreviewStripBlurEffects_) effect.Reset();
+        videoPreviewLinearStops_.Reset();
+        for (auto& brush : videoPreviewEdgeFeathers_) brush.Reset();
         checkerboardBrush_.Reset();
         checkerboardBitmap_.Reset();
         checkerboardDpi_ = 0;
@@ -14979,6 +15190,13 @@ private:
     UINT aboutLogoHeight_ = 0;
     ComPtr<ID2D1Bitmap> filmstripVideoIcon_;
     UINT filmstripVideoIconSize_ = 0;
+    ComPtr<ID2D1Bitmap> videoPreviewBadge_;
+    std::array<ComPtr<ID2D1Effect>, 4> videoPreviewStripCropEffects_;
+    std::array<ComPtr<ID2D1Effect>, 4> videoPreviewStripBorderEffects_;
+    std::array<ComPtr<ID2D1Effect>, 4> videoPreviewStripExtendedCropEffects_;
+    std::array<ComPtr<ID2D1Effect>, 4> videoPreviewStripBlurEffects_;
+    ComPtr<ID2D1GradientStopCollection> videoPreviewLinearStops_;
+    std::array<ComPtr<ID2D1LinearGradientBrush>, 4> videoPreviewEdgeFeathers_;
     ComPtr<ID2D1Bitmap> checkerboardBitmap_;
     ComPtr<ID2D1BitmapBrush> checkerboardBrush_;
     UINT checkerboardDpi_ = 0;
@@ -15187,9 +15405,11 @@ private:
     uint64_t videoOpeningFrameUseSeed_ = 0;
     VideoOpeningFrameKey videoOpeningFrameKey_;
     PixelBuffer videoOpeningPresentation_;
+    VideoOpeningFrameSource videoOpeningPresentationSource_ = VideoOpeningFrameSource::Shell;
     ComPtr<ID2D1Bitmap> videoOpeningPresentationBitmap_;
     std::wstring fastVideoNavigationPath_;
     PixelBuffer fastVideoNavigationPreview_;
+    VideoOpeningFrameSource fastVideoNavigationSource_ = VideoOpeningFrameSource::Shell;
     ComPtr<ID2D1Bitmap> fastVideoNavigationBitmap_;
     bool fastVideoNavigationSettling_ = false;
     bool videoToImageNavigationPending_ = false;

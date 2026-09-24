@@ -5889,7 +5889,7 @@ public:
             std::error_code typeError;
             const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
             const bool hidden = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_HIDDEN) != 0;
-            if (iterator->is_regular_file(typeError) && !typeError && IsSupportedExtension(iterator->path()) &&
+            if (iterator->is_regular_file(typeError) && !typeError && IsTwoDimensionalMediaPath(iterator->path()) &&
                 (includeHiddenImages_ || !hidden)) {
                 scannedFiles.push_back(iterator->path());
             }
@@ -5949,7 +5949,7 @@ public:
         }
         const DWORD currentAttributes = GetFileAttributesW(current.c_str());
         const bool currentHidden = currentAttributes != INVALID_FILE_ATTRIBUTES && (currentAttributes & FILE_ATTRIBUTE_HIDDEN) != 0;
-        if (IsSupportedExtension(current) && fs::exists(current, currentError) && (includeHiddenImages_ || !currentHidden) && std::none_of(scannedFiles.begin(), scannedFiles.end(),
+        if (IsTwoDimensionalMediaPath(current) && fs::exists(current, currentError) && (includeHiddenImages_ || !currentHidden) && std::none_of(scannedFiles.begin(), scannedFiles.end(),
                 [&current](const fs::path& path) { return PathsEqual(path, current); })) {
             scannedFiles.push_back(current);
             sortNaturally(scannedFiles);
@@ -8335,6 +8335,7 @@ public:
     }
     float FilmstripContentOpacity() const { return filmstripWrapFade_.active ? filmstripWrapFade_.opacity : 1.0f; }
     void Navigate(int direction, bool immediatePaint = true, bool skipWrapFade = false) {
+        if (IsModelPath(currentPath_)) return;
         CancelVideoAutoPlayNextCountdown();
         if (!skipWrapFade) CancelFilmstripWrapAnchor();
         if (!skipWrapFade && BeginFilmstripWrapFade(direction, immediatePaint)) return;
@@ -8369,7 +8370,7 @@ public:
     }
 
     std::optional<std::wstring> NavigationTargetPath(int direction) {
-        if (currentPath_.empty()) return std::nullopt;
+        if (currentPath_.empty() || IsModelPath(currentPath_)) return std::nullopt;
         const bool previewNavigation = VideoActive() &&
             (videoOpeningPresentationShowing_ || !fastVideoNavigationPath_.empty());
         if (!BuildNavigation(!previewNavigation)) return std::nullopt;

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Viewtrious VERSION 1.6.0 LANGUAGES CXX)
+project(Viewtrious VERSION 1.6.1 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Viewtrious currently targets Windows only.")
@@ -40,6 +40,10 @@ configure_file(LICENSE "${CMAKE_CURRENT_BINARY_DIR}/licenses/viewtrious.txt" COP
 configure_file(NOTICE "${CMAKE_CURRENT_BINARY_DIR}/licenses/notice.txt" COPYONLY)
 configure_file(app/licenses/miniz.txt "${CMAKE_CURRENT_BINARY_DIR}/licenses/miniz.txt" COPYONLY)
 configure_file(installer/ViewtriousSetup.rc.in "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup.rc" @ONLY)
+set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.rc" PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_CURRENT_BINARY_DIR}/Viewtrious.ico;${CMAKE_CURRENT_BINARY_DIR}/ViewtriousVideo.ico;${CMAKE_CURRENT_BINARY_DIR}/Viewtrious3D.ico")
+set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup.rc" PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_CURRENT_BINARY_DIR}/ViewtriousSetup.ico")
 
 set(VIEWTRIOUS_UPDATE_CHECKER_SOURCE src/update_checker_disabled.cpp)
 if(VIEWTRIOUS_ENABLE_UPDATE_CHECKS)

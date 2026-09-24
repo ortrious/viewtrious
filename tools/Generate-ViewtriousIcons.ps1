@@ -1,3 +1,5 @@
+param([switch]$VideoOnly)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -8,7 +10,11 @@ $sourceDirectory = Join-Path $root 'assets\icon_sources'
 $assetDirectory = Join-Path $root 'assets'
 $sizes = 16, 20, 24, 32, 40, 48, 64, 256
 
-function Get-PngBytes([System.Drawing.Image]$source, [int]$size) {
+function Get-PngBytes(
+    [System.Drawing.Image]$source,
+    [int]$size,
+    [System.Drawing.Drawing2D.InterpolationMode]$interpolation = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+) {
     $bitmap = [System.Drawing.Bitmap]::new($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppPArgb)
     try {
         $innerSize = $size - 2
@@ -35,7 +41,7 @@ function Get-PngBytes([System.Drawing.Image]$source, [int]$size) {
             try {
                 $graphics.Clear([System.Drawing.Color]::Transparent)
                 $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
-                $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+                $graphics.InterpolationMode = $interpolation
                 $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
                 $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
                 $graphics.DrawImage($sourceCanvas, [System.Drawing.Rectangle]::new(0, 0, $size, $size))
@@ -57,13 +63,42 @@ function Get-PngBytes([System.Drawing.Image]$source, [int]$size) {
     }
 }
 
-function New-Icon([string]$sourceName, [string]$outputName) {
+function Get-InsetPngBytes([System.Drawing.Image]$source, [int]$size) {
+    $bitmap = [System.Drawing.Bitmap]::new($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppPArgb)
+    try {
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        try {
+            $graphics.Clear([System.Drawing.Color]::Transparent)
+            $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+            $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+            $graphics.DrawImage($source, [System.Drawing.Rectangle]::new(0, 0, $size, $size))
+        } finally {
+            $graphics.Dispose()
+        }
+        $stream = [System.IO.MemoryStream]::new()
+        try {
+            $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+            return ,$stream.ToArray()
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
+function New-Icon([string]$sourceName, [string]$outputName, [string]$smallSourceName = '', [bool]$smallSourceAlreadyInset = $false) {
     $source = [System.Drawing.Image]::FromFile((Join-Path $sourceDirectory $sourceName))
+    $smallSource = if ($smallSourceName) { [System.Drawing.Image]::FromFile((Join-Path $sourceDirectory $smallSourceName)) } else { $null }
     try {
         $frames = foreach ($size in $sizes) {
             [pscustomobject]@{
                 Size = $size
-                Bytes = Get-PngBytes $source $size
+                Bytes = if ($smallSource -and $size -le 32) {
+                    if ($smallSourceAlreadyInset) { Get-InsetPngBytes $smallSource $size }
+                    else { Get-PngBytes $smallSource $size ([System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic) }
+                } else { Get-PngBytes $source $size }
             }
         }
         $stream = [System.IO.MemoryStream]::new()
@@ -84,17 +119,18 @@ function New-Icon([string]$sourceName, [string]$outputName) {
                 $writer.Write([UInt32]$offset)
                 $offset += $frame.Bytes.Length
             }
-            foreach ($frame in $frames) { $writer.Write($frame.Bytes) }
+            foreach ($frame in $frames) { $writer.Write([byte[]]$frame.Bytes) }
             [System.IO.File]::WriteAllBytes((Join-Path $assetDirectory $outputName), $stream.ToArray())
         } finally {
             $writer.Dispose()
             $stream.Dispose()
         }
     } finally {
+        if ($smallSource) { $smallSource.Dispose() }
         $source.Dispose()
     }
 }
 
-New-Icon 'icon_1024.png' 'Viewtrious.ico'
-New-Icon 'icon_play_1024.png' 'ViewtriousVideo.ico'
-New-Icon 'icon_3d_1024.png' 'Viewtrious3D.ico'
+if (-not $VideoOnly) { New-Icon 'icon_1024.png' 'Viewtrious.ico' 'icon_128.png' $true }
+New-Icon 'icon_play_1024.png' 'ViewtriousVideo.ico' 'icon_play_128.png' $true
+if (-not $VideoOnly) { New-Icon 'icon_3d_1024.png' 'Viewtrious3D.ico' 'icon_3d_128.png' $true }
